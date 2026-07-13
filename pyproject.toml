@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "libracore"
+description = "Motor comun reutilizable para la familia de productos LibraCore (Contalibra, Restolibra, Citalibra)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [
+    { name = "Mariano Cappucci" },
+]
+dynamic = ["version"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+# Tags sin 'v' inicial en el numero de version (v0.1.0 -> 0.1.0), y un
+# esquema simple para que un commit sin tag no rompa el build (usa el commit
+# hash como sufijo de desarrollo en vez de fallar).
+local_scheme = "no-local-version"
+
+[tool.hatch.build.targets.wheel]
+packages = ["libracore"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
