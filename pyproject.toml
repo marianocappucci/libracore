@@ -12,11 +12,14 @@ authors = [
     { name = "Mariano Cappucci" },
 ]
 dynamic = ["version"]
-dependencies = []
+dependencies = [
+    "starlette",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "httpx>=0.27",
 ]
 
 [tool.hatch.version]
