@@ -65,3 +65,42 @@ def test_caja_default_seedeada(conn):
 def test_deposito_default_seedeado(conn):
     row = conn.execute("SELECT * FROM depositos WHERE es_default=1").fetchone()
     assert row is not None
+
+
+def test_upgrade_de_tabla_existente_sin_columnas_nuevas(tmp_path):
+    """Regresión: `CREATE TABLE IF NOT EXISTS` es un no-op si la tabla ya
+    existe — no agrega columnas nuevas a una base de datos real que ya
+    corrió una versión anterior del schema. init_core_schema debe migrar
+    ese caso con ALTER TABLE, no solo crear tablas frescas desde cero (que
+    es todo lo que ejercitaban los demás tests, con tmp_path siempre
+    vacío)."""
+    db_path = str(tmp_path / "existing.db")
+    core.configure(db_path=db_path)
+    conn = core.get_connection()
+    # Simula una base "vieja": productos sin estacion/vendible, tal como
+    # estaba antes de que este schema las agregara.
+    conn.executescript("""
+        CREATE TABLE productos (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            codigo       TEXT UNIQUE,
+            nombre       TEXT NOT NULL,
+            descripcion  TEXT DEFAULT '',
+            precio_venta REAL NOT NULL DEFAULT 0,
+            precio_costo REAL NOT NULL DEFAULT 0,
+            unidad       TEXT NOT NULL DEFAULT 'u',
+            categoria    TEXT DEFAULT '',
+            activo       INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT DEFAULT (datetime('now'))
+        );
+    """)
+    conn.commit()
+
+    init_core_schema(conn)
+    conn.commit()
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(productos)").fetchall()}
+    assert "estacion" in cols
+    assert "vendible" in cols
+    assert "stock_minimo" in cols
+    conn.close()
+    core._db_path = None

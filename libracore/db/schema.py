@@ -420,6 +420,14 @@ def init_core_schema(conn: sqlite3.Connection):
     if "usuario_id" not in fact_cols:
         conn.execute("ALTER TABLE facturas ADD COLUMN usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL")
 
+    prod_cols = [r[1] for r in conn.execute("PRAGMA table_info(productos)").fetchall()]
+    if "stock_minimo" not in prod_cols:
+        conn.execute("ALTER TABLE productos ADD COLUMN stock_minimo REAL NOT NULL DEFAULT 0")
+    if "estacion" not in prod_cols:
+        conn.execute("ALTER TABLE productos ADD COLUMN estacion TEXT DEFAULT ''")
+    if "vendible" not in prod_cols:
+        conn.execute("ALTER TABLE productos ADD COLUMN vendible INTEGER NOT NULL DEFAULT 1")
+
     remito_cols = [r[1] for r in conn.execute("PRAGMA table_info(remitos)").fetchall()]
     if remito_cols and "usuario_id" not in remito_cols:
         conn.execute("ALTER TABLE remitos ADD COLUMN usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL")
