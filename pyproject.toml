@@ -19,6 +19,7 @@ dependencies = [
     "Pillow",
     "httpx>=0.27",
     "cryptography>=42.0.0",
+    "itsdangerous>=2.2.0",
 ]
 
 [project.optional-dependencies]
