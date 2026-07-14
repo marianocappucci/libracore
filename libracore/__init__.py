@@ -1,7 +1,10 @@
-"""LibraCore — motor comun reutilizable para Contalibra, Restolibra y Citalibra.
+"""LibraCore — motor comun reutilizable para Contalibra y Restolibra.
 
-Paquete interno versionado. Ver el plan de extraccion (fases 0-6) en el wiki
-del proyecto para el orden y criterio de que vive aca vs. en cada producto.
+Paquete interno versionado. Ver el plan de extraccion en el wiki del
+proyecto para el orden y criterio de que vive aca vs. en cada producto.
+Citalibra (turnos/reservas/agendas) es un producto futuro que consumira
+libracore desde el dia uno cuando arranque, pero no forma parte del plan
+de extraccion actual.
 """
 
 try:

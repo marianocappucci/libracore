@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "libracore"
-description = "Motor comun reutilizable para la familia de productos LibraCore (Contalibra, Restolibra, Citalibra)."
+description = "Motor comun reutilizable para la familia de productos LibraCore (Contalibra, Restolibra)."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
@@ -14,6 +14,8 @@ authors = [
 dynamic = ["version"]
 dependencies = [
     "starlette",
+    "fastapi>=0.111.0",
+    "jinja2>=3.1.4",
     "fpdf2>=2.8.0",
     "qrcode>=7.4.2",
     "Pillow",
@@ -25,6 +27,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "httpx>=0.27",
 ]
 
 [tool.hatch.version]
