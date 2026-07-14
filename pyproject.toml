@@ -17,12 +17,12 @@ dependencies = [
     "fpdf2>=2.8.0",
     "qrcode>=7.4.2",
     "Pillow",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
-    "httpx>=0.27",
 ]
 
 [tool.hatch.version]
