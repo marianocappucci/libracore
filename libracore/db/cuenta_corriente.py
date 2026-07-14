@@ -1,0 +1,157 @@
+"""
+Cuenta corriente por cliente: saldo y movimientos combinando ventas a
+cuenta corriente, facturas cobradas a cuenta corriente y pagos manuales
+(cc_pagos). Extraído de database.py de Contalibra/Restolibra (idéntico en
+ambos) como parte de la migración real a libracore.db (Fase 3 de
+LibraCore, ver wiki/entities/libracore.md).
+"""
+import sqlite3
+import contextlib
+
+from libracore.db.core import get_connection
+
+
+def get_cc_saldo(cliente_id: int) -> float:
+    with get_connection() as conn:
+        _row = conn.execute("SELECT cuit_dni FROM clients WHERE id=?", (cliente_id,)).fetchone()
+        cuit = (_row["cuit_dni"] if _row else "") or ""
+        debitos_venta = conn.execute("""
+            SELECT COALESCE(SUM(vp.monto), 0)
+            FROM ventas_pagos vp
+            JOIN ventas v ON vp.venta_id = v.id
+            WHERE v.cliente_id = ? AND vp.medio = 'cuenta_corriente'
+        """, (cliente_id,)).fetchone()[0]
+        debitos_factura = 0.0
+        if cuit:
+            debitos_factura = conn.execute("""
+                SELECT COALESCE(SUM(cm.monto), 0)
+                FROM caja_movimientos cm
+                JOIN facturas f ON cm.factura_id = f.id
+                WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
+                  AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
+            """, (cuit,)).fetchone()[0]
+        abonos = conn.execute(
+            "SELECT COALESCE(SUM(monto), 0) FROM cc_pagos WHERE cliente_id = ?",
+            (cliente_id,),
+        ).fetchone()[0]
+    return float(debitos_venta) + float(debitos_factura) - float(abonos)
+
+
+def get_cc_movimientos(cliente_id: int) -> list[dict]:
+    with get_connection() as conn:
+        _row = conn.execute("SELECT cuit_dni FROM clients WHERE id=?", (cliente_id,)).fetchone()
+        cuit = (_row["cuit_dni"] if _row else "") or ""
+        movs = []
+
+        rows = conn.execute("""
+            SELECT v.fecha, v.numero, vp.monto, v.id AS venta_id
+            FROM ventas_pagos vp
+            JOIN ventas v ON vp.venta_id = v.id
+            WHERE v.cliente_id = ? AND vp.medio = 'cuenta_corriente'
+        """, (cliente_id,)).fetchall()
+        for r in rows:
+            movs.append({
+                "fecha": (r["fecha"] or "")[:10], "tipo": "debito",
+                "concepto": f"Venta #{r['numero']}",
+                "monto": r["monto"], "referencia": "", "medio": "",
+                "venta_id": r["venta_id"], "factura_id": None, "cc_pago_id": None,
+                "usuario_nombre": None,
+            })
+
+        if cuit:
+            rows = conn.execute("""
+                SELECT cm.fecha, f.tipo AS ftipo, f.punto_venta, f.numero,
+                       cm.monto, f.id AS factura_id, cm.referencia, u.nombre AS usuario_nombre
+                FROM caja_movimientos cm
+                JOIN facturas f ON cm.factura_id = f.id
+                LEFT JOIN usuarios u ON u.id = cm.usuario_id
+                WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
+                  AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
+            """, (cuit,)).fetchall()
+            _TIPO_LABEL = {
+                1:"FACTURA A", 6:"FACTURA B", 11:"FACTURA C",
+                2:"ND A", 3:"NC A", 7:"ND B", 8:"NC B", 12:"ND C", 13:"NC C",
+            }
+            for r in rows:
+                lbl = _TIPO_LABEL.get(r["ftipo"], "COMP")
+                pv  = str(r["punto_venta"]).zfill(4)
+                num = str(r["numero"]).zfill(8)
+                movs.append({
+                    "fecha": (r["fecha"] or "")[:10], "tipo": "debito",
+                    "concepto": f"{lbl} {pv}-{num}",
+                    "monto": r["monto"], "referencia": r["referencia"] or "",
+                    "medio": "", "venta_id": None,
+                    "factura_id": r["factura_id"], "cc_pago_id": None,
+                    "usuario_nombre": r["usuario_nombre"],
+                })
+
+        rows = conn.execute("""
+            SELECT cc_pagos.id, fecha, concepto, monto, referencia, medio_pago, u.nombre AS usuario_nombre
+            FROM cc_pagos
+            LEFT JOIN usuarios u ON u.id = cc_pagos.usuario_id
+            WHERE cc_pagos.cliente_id = ? ORDER BY fecha, cc_pagos.id
+        """, (cliente_id,)).fetchall()
+        for r in rows:
+            movs.append({
+                "fecha": (r["fecha"] or "")[:10], "tipo": "credito",
+                "concepto": r["concepto"] or "Pago a cuenta",
+                "monto": r["monto"], "referencia": r["referencia"] or "",
+                "medio": r["medio_pago"] or "",
+                "venta_id": None, "factura_id": None, "cc_pago_id": r["id"],
+                "usuario_nombre": r["usuario_nombre"],
+            })
+
+    return sorted(movs, key=lambda x: x["fecha"])
+
+
+def get_clientes_con_saldo_cc() -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute("""
+            WITH dv AS (
+                SELECT v.cliente_id AS cid, SUM(vp.monto) AS total
+                FROM ventas_pagos vp JOIN ventas v ON vp.venta_id = v.id
+                WHERE vp.medio = 'cuenta_corriente' AND v.cliente_id IS NOT NULL
+                GROUP BY v.cliente_id
+            ),
+            df AS (
+                SELECT c.id AS cid, SUM(cm.monto) AS total
+                FROM caja_movimientos cm
+                JOIN facturas f ON cm.factura_id = f.id
+                JOIN clients c ON c.cuit_dni = f.cliente_cuit
+                WHERE cm.tipo = 'ingreso'
+                  AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
+                GROUP BY c.id
+            ),
+            cr AS (
+                SELECT cliente_id AS cid, SUM(monto) AS total
+                FROM cc_pagos GROUP BY cliente_id
+            )
+            SELECT c.id, c.name, c.cuit_dni,
+                   COALESCE(dv.total,0) + COALESCE(df.total,0) - COALESCE(cr.total,0) AS saldo
+            FROM clients c
+            LEFT JOIN dv ON dv.cid = c.id
+            LEFT JOIN df ON df.cid = c.id
+            LEFT JOIN cr ON cr.cid = c.id
+            WHERE dv.cid IS NOT NULL OR df.cid IS NOT NULL OR cr.cid IS NOT NULL
+            ORDER BY saldo DESC, c.name
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_cc_pago(cliente_id: int, monto: float, fecha: str, concepto: str,
+                   referencia: str, medio_pago: str, caja_id, usuario_id,
+                   conn: sqlite3.Connection | None = None) -> int:
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        cur = c.execute(
+            """INSERT INTO cc_pagos
+               (cliente_id, monto, fecha, concepto, referencia, medio_pago, caja_id, usuario_id)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (cliente_id, float(monto), fecha, concepto, referencia, medio_pago, caja_id, usuario_id),
+        )
+        return cur.lastrowid
+
+
+def delete_cc_pago(pago_id: int):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM cc_pagos WHERE id=?", (pago_id,))
