@@ -50,6 +50,36 @@ def test_caja(conn):
     assert resumen["ingresos"] == 1000.0
 
 
+def test_caja_movimiento_idempotencia_por_referencia_scopeada_a_factura(conn):
+    cid = caja.create_caja_config("Caja 1", "", ["transferencia"])
+    caja.set_default_caja(cid)
+
+    # Misma referencia bancaria cubriendo el cobro de dos facturas distintas:
+    # ambos movimientos deben insertarse (bug real: antes el guard de
+    # idempotencia miraba solo la referencia, sin factura_id, y el segundo
+    # se descartaba silenciosamente aunque fuera una factura distinta).
+    mid1 = caja.create_caja_movimiento(
+        "2026-07-18", "ingreso", "Cobro factura 37", 95000, caja_id=cid,
+        medio_pago="transferencia", referencia="169339948070", factura_id=48,
+    )
+    mid2 = caja.create_caja_movimiento(
+        "2026-07-18", "ingreso", "Cobro factura 42", 90000, caja_id=cid,
+        medio_pago="transferencia", referencia="169339948070", factura_id=54,
+    )
+    assert mid1 != mid2
+    resumen = caja.get_caja_resumen()
+    assert resumen["ingresos"] == 185000.0
+
+    # La misma referencia reenviada para la MISMA factura sigue deduplicando
+    # (reintento de una notificación ya procesada, comportamiento original).
+    mid1_retry = caja.create_caja_movimiento(
+        "2026-07-18", "ingreso", "Cobro factura 37", 95000, caja_id=cid,
+        medio_pago="transferencia", referencia="169339948070", factura_id=48,
+    )
+    assert mid1_retry == mid1
+    assert caja.get_caja_resumen()["ingresos"] == 185000.0
+
+
 def test_egresos(conn):
     cid = caja.create_caja_config("Caja", "", ["efectivo"])
     catid = egresos.create_categoria_egreso("Insumos")

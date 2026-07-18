@@ -91,11 +91,24 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
                            conn: sqlite3.Connection | None = None):
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
-        # Idempotencia: si ya existe un movimiento con la misma referencia, no duplicar
+        # Idempotencia: si ya existe un movimiento con la misma referencia PARA LA MISMA
+        # factura (o, si no hay factura, otro movimiento sin factura con esa referencia),
+        # no duplicar. Antes el chequeo era global por referencia sin mirar factura_id: una
+        # misma transferencia real que cubre dos facturas distintas (misma referencia
+        # bancaria en ambos cobros) bloqueaba silenciosamente el movimiento de la segunda
+        # factura, aunque el saldo de cuenta corriente sí se actualizaba — la factura
+        # quedaba "Sin cobrar" pese a estar paga.
         if referencia:
-            exists = c.execute(
-                "SELECT id FROM caja_movimientos WHERE referencia=? LIMIT 1", (referencia,)
-            ).fetchone()
+            if factura_id is not None:
+                exists = c.execute(
+                    "SELECT id FROM caja_movimientos WHERE referencia=? AND factura_id=? LIMIT 1",
+                    (referencia, factura_id),
+                ).fetchone()
+            else:
+                exists = c.execute(
+                    "SELECT id FROM caja_movimientos WHERE referencia=? AND factura_id IS NULL LIMIT 1",
+                    (referencia,),
+                ).fetchone()
             if exists:
                 return exists[0]
         _caja_id = caja_id or get_default_caja_id()
