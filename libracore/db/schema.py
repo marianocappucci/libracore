@@ -204,7 +204,8 @@ def init_core_schema(conn: sqlite3.Connection):
             created_at   TEXT DEFAULT (datetime('now')),
             stock_minimo REAL NOT NULL DEFAULT 0,
             estacion     TEXT DEFAULT '',
-            vendible     INTEGER NOT NULL DEFAULT 1
+            vendible     INTEGER NOT NULL DEFAULT 1,
+            tipo         TEXT NOT NULL DEFAULT 'producto' CHECK (tipo IN ('producto', 'servicio'))
         );
 
         CREATE TABLE IF NOT EXISTS depositos (
@@ -427,6 +428,11 @@ def init_core_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE productos ADD COLUMN estacion TEXT DEFAULT ''")
     if "vendible" not in prod_cols:
         conn.execute("ALTER TABLE productos ADD COLUMN vendible INTEGER NOT NULL DEFAULT 1")
+    if "tipo" not in prod_cols:
+        conn.execute(
+            "ALTER TABLE productos ADD COLUMN tipo TEXT NOT NULL DEFAULT 'producto' "
+            "CHECK (tipo IN ('producto', 'servicio'))"
+        )
 
     remito_cols = [r[1] for r in conn.execute("PRAGMA table_info(remitos)").fetchall()]
     if remito_cols and "usuario_id" not in remito_cols:

@@ -78,7 +78,7 @@ def get_stock_por_deposito(deposito_id: int) -> list[dict]:
                    COALESCE(SUM(m.cantidad), 0) AS stock_actual
             FROM productos p
             LEFT JOIN movimientos_stock m ON m.producto_id = p.id AND m.deposito_id = ?
-            WHERE p.activo = 1
+            WHERE p.activo = 1 AND p.tipo = 'producto'
             GROUP BY p.id
             HAVING stock_actual != 0 OR p.stock_minimo > 0
             ORDER BY p.nombre
@@ -149,15 +149,17 @@ def create_producto(nombre: str, codigo: str = "", descripcion: str = "",
                     precio_venta: float = 0, precio_costo: float = 0,
                     unidad: str = "u", categoria: str = "",
                     stock_minimo: float = 0, estacion: str = "",
-                    vendible: int = 1) -> int:
+                    vendible: int = 1, tipo: str = "producto") -> int:
+    if tipo not in ("producto", "servicio"):
+        raise ValueError(f"tipo inválido: {tipo!r} (debe ser 'producto' o 'servicio')")
     with get_connection() as conn:
         cur = conn.execute(
             """INSERT INTO productos
                (codigo, nombre, descripcion, precio_venta, precio_costo,
-                unidad, categoria, stock_minimo, estacion, vendible)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                unidad, categoria, stock_minimo, estacion, vendible, tipo)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (codigo or None, nombre, descripcion, precio_venta, precio_costo,
-             unidad, categoria, stock_minimo, estacion or "", vendible),
+             unidad, categoria, stock_minimo, estacion or "", vendible, tipo),
         )
         return cur.lastrowid
 
@@ -218,15 +220,17 @@ def update_producto(pid: int, nombre: str, codigo: str, descripcion: str,
                     precio_venta: float, precio_costo: float,
                     unidad: str, categoria: str, activo: int,
                     stock_minimo: float = 0, estacion: str = "",
-                    vendible: int = 1):
+                    vendible: int = 1, tipo: str = "producto"):
+    if tipo not in ("producto", "servicio"):
+        raise ValueError(f"tipo inválido: {tipo!r} (debe ser 'producto' o 'servicio')")
     with get_connection() as conn:
         conn.execute(
             """UPDATE productos SET nombre=?, codigo=?, descripcion=?,
                precio_venta=?, precio_costo=?, unidad=?, categoria=?,
-               activo=?, stock_minimo=?, estacion=?, vendible=?
+               activo=?, stock_minimo=?, estacion=?, vendible=?, tipo=?
                WHERE id=?""",
             (nombre, codigo or None, descripcion, precio_venta, precio_costo,
-             unidad, categoria, activo, stock_minimo, estacion or "", vendible, pid),
+             unidad, categoria, activo, stock_minimo, estacion or "", vendible, tipo, pid),
         )
 
 

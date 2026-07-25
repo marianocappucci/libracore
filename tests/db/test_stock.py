@@ -97,6 +97,30 @@ def test_descontar_stock_venta_con_modificadores(conn):
     assert stock.get_stock_actual(carne_id) == 48.0   # "doble" -> se descuenta 2x
 
 
+def test_descontar_stock_venta_no_genera_movimiento_para_servicio(conn):
+    consulta_id = productos.create_producto("Consulta profesional", tipo="servicio")
+    stock.descontar_stock_venta(None, [{"producto_id": consulta_id, "qty": 1}])
+    assert stock.get_stock_actual(consulta_id) == 0.0
+    assert stock.get_movimientos_stock(producto_id=consulta_id) == []
+
+
+def test_descontar_stock_venta_servicio_con_resolver_no_descuenta_receta(conn):
+    # Un servicio nunca tiene inventario propio, ni siquiera si por error
+    # quedara configurada una receta para su id — el chequeo de tipo va
+    # antes de resolver la receta.
+    consulta_id = productos.create_producto("Consulta profesional", tipo="servicio")
+    insumo_id = productos.create_producto("Insumo")
+    stock.add_movimiento_stock(insumo_id, "compra", 10)
+
+    core.configure_resolver_receta(
+        lambda pid: {"ingredientes": [{"ingrediente_id": insumo_id, "cantidad": 1}]}
+        if pid == consulta_id
+        else None
+    )
+    stock.descontar_stock_venta(None, [{"producto_id": consulta_id, "qty": 1}])
+    assert stock.get_stock_actual(insumo_id) == 10.0
+
+
 def test_resumen_modificadores():
     import json
     modificadores = json.dumps([

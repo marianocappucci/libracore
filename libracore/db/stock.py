@@ -98,10 +98,19 @@ def ajustar_stock(producto_id: int, stock_nuevo: float, referencia: str,
     )
 
 
+def _es_servicio(producto_id: int, conn: sqlite3.Connection | None = None) -> bool:
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        row = c.execute("SELECT tipo FROM productos WHERE id=?", (producto_id,)).fetchone()
+    return bool(row) and row[0] == "servicio"
+
+
 def descontar_stock_venta(venta_id: int, items: list, fecha: str = "",
                            usuario_id: int | None = None,
                            conn: sqlite3.Connection | None = None):
-    """Descuenta stock por cada ítem de la venta que tenga producto_id.
+    """Descuenta stock por cada ítem de la venta que tenga producto_id y sea
+    de tipo 'producto' — un servicio (`productos.tipo = 'servicio'`) nunca
+    genera movimiento de stock, ni propio ni de receta: no tiene inventario.
 
     Si hay un resolver de recetas configurado (`configure_resolver_receta`,
     solo en productos con dominio de recetas — hoy Restolibra) y el
@@ -124,6 +133,8 @@ def descontar_stock_venta(venta_id: int, items: list, fecha: str = "",
     for item in items:
         pid = item.get("producto_id")
         if not pid:
+            continue
+        if _es_servicio(pid, conn=conn):
             continue
         qty = abs(float(item.get("qty", 0)))
         receta = resolver_receta(pid) if resolver_receta else None
