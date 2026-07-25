@@ -184,7 +184,7 @@ def generar_codigo_producto(categoria: str = "") -> str:
 
 
 def get_all_productos(solo_activos: bool = False, q: str = "",
-                      solo_vendibles: bool = False) -> list[dict]:
+                      solo_vendibles: bool = False, tipo: str = "") -> list[dict]:
     with get_connection() as conn:
         where = []
         params = []
@@ -192,6 +192,11 @@ def get_all_productos(solo_activos: bool = False, q: str = "",
             where.append("activo=1")
         if solo_vendibles:
             where.append("vendible=1")
+        if tipo:
+            if tipo not in ("producto", "servicio"):
+                raise ValueError(f"tipo inválido: {tipo!r} (debe ser 'producto' o 'servicio')")
+            where.append("tipo=?")
+            params.append(tipo)
         if q:
             where.append("(nombre LIKE ? OR codigo LIKE ? OR categoria LIKE ?)")
             params += [f"%{q}%", f"%{q}%", f"%{q}%"]

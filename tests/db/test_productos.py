@@ -62,3 +62,25 @@ def test_get_stock_por_deposito_excludes_servicios(conn):
     ids = {row["id"] for row in listado}
     assert producto_id in ids
     assert servicio_id not in ids
+
+
+def test_get_all_productos_filters_by_tipo(conn):
+    producto_id = productos.create_producto("Yerba")
+    servicio_id = productos.create_producto("Consulta")
+    productos.update_producto(
+        servicio_id, nombre="Consulta", codigo="", descripcion="", precio_venta=0,
+        precio_costo=0, unidad="u", categoria="", activo=1, tipo="servicio",
+    )
+
+    solo_productos = {p["id"] for p in productos.get_all_productos(tipo="producto")}
+    solo_servicios = {p["id"] for p in productos.get_all_productos(tipo="servicio")}
+    todos = {p["id"] for p in productos.get_all_productos()}
+
+    assert solo_productos == {producto_id}
+    assert solo_servicios == {servicio_id}
+    assert todos == {producto_id, servicio_id}
+
+
+def test_get_all_productos_rejects_invalid_tipo(conn):
+    with pytest.raises(ValueError):
+        productos.get_all_productos(tipo="otro")
