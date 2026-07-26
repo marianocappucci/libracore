@@ -106,3 +106,33 @@ def forward_host_from_config():
 def le_email_from_config():
     npm = _npm_api()
     return npm.le_email_from_config() if npm else None
+
+
+def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: str) -> None:
+    """Escribe el estado de módulos (habilitado + plan) directo en la tabla
+    `modulos` de la base SQLite de un cliente (`clientes/<slug>/data/*.db`).
+    Idempotente (INSERT OR IGNORE + UPDATE), funciona igual sobre una base
+    recién migrada o una existente. Requiere que la tabla `modulos` ya
+    exista (la crea la migración propia de cada vertical). Extraído
+    2026-07-26 de Gestiolibra/MedLibra/VentaLibra
+    (`plans.py::aplicar_plan_en_db`), donde el cuerpo era idéntico salvo el
+    nombre de la variable — ver
+    wiki/analyses/auditoria-duplicacion-familia-libra.md. La definición del
+    plan en sí (`PLANES`/`PLAN_MODULOS`/precios) sigue viviendo en el
+    `plans.py` de cada producto — es catálogo propio, no código."""
+    import sqlite3
+    con = sqlite3.connect(db_path)
+    try:
+        for m in sorted(all_modules):
+            on = 1 if m in active_modules else 0
+            con.execute(
+                "INSERT OR IGNORE INTO modulos (modulo, habilitado, plan) VALUES (?,?,?)",
+                (m, on, plan),
+            )
+            con.execute(
+                "UPDATE modulos SET habilitado=?, plan=? WHERE modulo=?",
+                (on, plan, m),
+            )
+        con.commit()
+    finally:
+        con.close()

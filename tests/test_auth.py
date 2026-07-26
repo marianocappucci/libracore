@@ -281,3 +281,195 @@ def test_admin_secret_key_fail_fast_without_env_development(monkeypatch):
     monkeypatch.delenv("ENV", raising=False)
     with pytest.raises(RuntimeError, match="backoffice de superadmin"):
         AdminAuth(dev_secret_fallback="admin-dev-fallback")
+
+
+# ── Dependencias JSON API (Gestiolibra/MedLibra/VentaLibra) ─────────────────
+#
+# Extraídas 2026-07-26 tras confirmar que app/auth.py + app/routers/auth.py
+# eran byte-idénticos en los tres verticales, ver
+# wiki/analyses/auditoria-duplicacion-familia-libra.md.
+
+from fastapi import Depends, FastAPI
+from fastapi.testclient import TestClient
+
+from libracore.auth import (
+    build_json_api_auth_router,
+    json_api_require_admin,
+    json_api_require_staff,
+)
+
+
+class _FakeJsonApiUsers:
+    """Contrato UserRepository (id/username/name/role/active) con
+    check_credentials/get_by_username -- mismo contrato que
+    libracore.db.usuarios.UserRepository."""
+
+    def __init__(self):
+        self._users = {
+            "admin":    {"id": "1", "username": "admin",    "name": "Admin",    "role": "admin", "active": True,  "_password": "adminpw"},
+            "staffer":  {"id": "2", "username": "staffer",  "name": "Staffer",  "role": "staff",  "active": True,  "_password": "staffpw"},
+            "disabled": {"id": "3", "username": "disabled", "name": "Disabled", "role": "staff",  "active": False, "_password": "pw"},
+        }
+
+    def _public(self, u):
+        return {k: v for k, v in u.items() if k != "_password"}
+
+    def get_by_username(self, username):
+        u = self._users.get(username)
+        return self._public(u) if u else None
+
+    def check_credentials(self, username, password):
+        u = self._users.get(username)
+        if u and u["_password"] == password:
+            return self._public(u)
+        return None
+
+    def deactivate(self, username):
+        self._users[username]["active"] = False
+
+
+def _make_json_api_app(users=None):
+    app = FastAPI()
+    users = users or _FakeJsonApiUsers()
+    app.state.users = users
+    app.state.session_auth = SessionAuth(
+        dev_secret_fallback="test-secret",
+        get_user_by_username=users.get_by_username,
+        check_credentials=users.check_credentials,
+        cookie_name="test_json_session",
+    )
+    app.include_router(build_json_api_auth_router())
+
+    @app.get("/admin-only", dependencies=[Depends(json_api_require_admin)])
+    def admin_only():
+        return {"ok": True}
+
+    @app.get("/staff-only", dependencies=[Depends(json_api_require_staff)])
+    def staff_only():
+        return {"ok": True}
+
+    return app
+
+
+def test_json_api_login_success_sets_cookie():
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    r = client.post("/auth/login", json={"username": "admin", "password": "adminpw"})
+    assert r.status_code == 200
+    assert r.json()["username"] == "admin"
+    assert "test_json_session" in r.cookies
+
+
+def test_json_api_login_wrong_password_401():
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    r = client.post("/auth/login", json={"username": "admin", "password": "wrong"})
+    assert r.status_code == 401
+
+
+def test_json_api_login_unknown_username_401():
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    r = client.post("/auth/login", json={"username": "ghost", "password": "x"})
+    assert r.status_code == 401
+
+
+def test_json_api_me_without_session_401():
+    assert TestClient(_make_json_api_app(), base_url="https://testserver").get("/auth/me").status_code == 401
+
+
+def test_json_api_me_after_login_returns_current_user():
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    client.post("/auth/login", json={"username": "staffer", "password": "staffpw"})
+    r = client.get("/auth/me")
+    assert r.status_code == 200
+    assert r.json()["role"] == "staff"
+
+
+def test_json_api_logout_clears_the_session():
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    client.post("/auth/login", json={"username": "admin", "password": "adminpw"})
+    assert client.get("/auth/me").status_code == 200
+    assert client.post("/auth/logout").status_code == 200
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_json_api_get_current_user_rejects_user_deactivated_after_login():
+    users = _FakeJsonApiUsers()
+    client = TestClient(_make_json_api_app(users), base_url="https://testserver")
+    client.post("/auth/login", json={"username": "staffer", "password": "staffpw"})
+    assert client.get("/auth/me").status_code == 200
+    users.deactivate("staffer")
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_json_api_require_admin_blocks_staff():
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    client.post("/auth/login", json={"username": "staffer", "password": "staffpw"})
+    assert client.get("/admin-only").status_code == 403
+
+
+def test_json_api_require_admin_allows_admin():
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    client.post("/auth/login", json={"username": "admin", "password": "adminpw"})
+    assert client.get("/admin-only").status_code == 200
+
+
+def test_json_api_require_staff_allows_both_admin_and_staff():
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    client.post("/auth/login", json={"username": "staffer", "password": "staffpw"})
+    assert client.get("/staff-only").status_code == 200
+
+
+def test_json_api_verify_without_secret_configured_401(monkeypatch):
+    monkeypatch.delenv("DOCS_AUTH_SECRET", raising=False)
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    r = client.post(
+        "/auth/verify",
+        json={"username": "admin", "password": "adminpw"},
+        headers={"X-Internal-Auth": "whatever"},
+    )
+    assert r.status_code == 401
+
+
+def test_json_api_verify_wrong_secret_401(monkeypatch):
+    monkeypatch.setenv("DOCS_AUTH_SECRET", "the-real-secret")
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    r = client.post(
+        "/auth/verify",
+        json={"username": "admin", "password": "adminpw"},
+        headers={"X-Internal-Auth": "not-the-secret"},
+    )
+    assert r.status_code == 401
+
+
+def test_json_api_verify_correct_secret_valid_credentials_returns_true(monkeypatch):
+    monkeypatch.setenv("DOCS_AUTH_SECRET", "the-real-secret")
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    r = client.post(
+        "/auth/verify",
+        json={"username": "admin", "password": "adminpw"},
+        headers={"X-Internal-Auth": "the-real-secret"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"valid": True}
+
+
+def test_json_api_verify_correct_secret_invalid_password_returns_false(monkeypatch):
+    monkeypatch.setenv("DOCS_AUTH_SECRET", "the-real-secret")
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    r = client.post(
+        "/auth/verify",
+        json={"username": "admin", "password": "wrong"},
+        headers={"X-Internal-Auth": "the-real-secret"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"valid": False}
+
+
+def test_json_api_verify_does_not_create_a_session(monkeypatch):
+    monkeypatch.setenv("DOCS_AUTH_SECRET", "the-real-secret")
+    client = TestClient(_make_json_api_app(), base_url="https://testserver")
+    client.post(
+        "/auth/verify",
+        json={"username": "admin", "password": "adminpw"},
+        headers={"X-Internal-Auth": "the-real-secret"},
+    )
+    assert client.get("/auth/me").status_code == 401

@@ -18,7 +18,9 @@ import threading
 import time
 from typing import Callable
 
+from fastapi import APIRouter, Depends, Header, Response
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from pydantic import BaseModel
 from starlette.requests import Request
 from starlette.exceptions import HTTPException
 
@@ -111,6 +113,121 @@ class SessionAuth:
 
     def check_credentials(self, username: str, password: str) -> bool:
         return self._check_credentials_fn(username, password) is not None
+
+
+# ── Dependencias para APIs JSON puras ───────────────────────────────────────
+#
+# A diferencia de SessionAuth.require_auth/require_role (redirect 307 a
+# /login, pensado para apps server-rendered como Contalibra/Restolibra),
+# estas dependencias devuelven 401/403 con cuerpo JSON -- para verticales sin
+# página de login propia (Gestiolibra/MedLibra/VentaLibra). Extraídas
+# 2026-07-26 tras confirmar que `app/auth.py`/`app/routers/auth.py` eran
+# byte-idénticos en los tres, ver
+# wiki/analyses/auditoria-duplicacion-familia-libra.md. Esperan
+# `request.app.state.session_auth` (una `SessionAuth`) y
+# `request.app.state.users` (contrato UserRepository: `check_credentials`,
+# `get_by_username`, ver `libracore.db.usuarios.UserRepository`).
+
+class _LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class _UserOut(BaseModel):
+    id: str
+    username: str
+    name: str
+    role: str
+    active: bool
+
+
+class _VerifyRequest(BaseModel):
+    username: str
+    password: str
+
+
+class _VerifyResponse(BaseModel):
+    valid: bool
+
+
+def json_api_get_session_auth(request: Request) -> "SessionAuth":
+    return request.app.state.session_auth
+
+
+def json_api_get_current_user(
+    request: Request, auth: "SessionAuth" = Depends(json_api_get_session_auth),
+) -> dict:
+    """401 JSON (no redirect) si no hay sesión válida o el usuario está
+    inactivo."""
+    username = auth.get_current_user(request)
+    if username is None:
+        raise HTTPException(401, "not authenticated")
+    users = request.app.state.users
+    user = users.get_by_username(username)
+    if user is None or not user["active"]:
+        raise HTTPException(401, "not authenticated")
+    return user
+
+
+def json_api_require_role(*roles: str):
+    """Dependency factory: 403 JSON a menos que el usuario logueado tenga
+    uno de roles."""
+
+    def _dependency(user: dict = Depends(json_api_get_current_user)) -> dict:
+        if user["role"] not in roles:
+            raise HTTPException(403, "forbidden")
+        return user
+
+    return _dependency
+
+
+json_api_require_admin = json_api_require_role("admin")
+json_api_require_staff = json_api_require_role("admin", "staff")
+
+
+def build_json_api_auth_router() -> APIRouter:
+    """Router `/auth` completo (login/logout/me/verify) para APIs JSON de
+    la familia Libra sin backoffice server-rendered propio. Espera
+    `request.app.state.users`/`request.app.state.session_auth` ya
+    configurados al arrancar la app (ver `json_api_get_session_auth`)."""
+    router = APIRouter(prefix="/auth", tags=["auth"])
+
+    @router.post("/login", response_model=_UserOut)
+    def login(data: _LoginRequest, request: Request, response: Response):
+        users = request.app.state.users
+        user = users.check_credentials(data.username, data.password)
+        if user is None:
+            raise HTTPException(401, "invalid credentials")
+        json_api_get_session_auth(request).create_session_cookie(response, user["username"])
+        return user
+
+    @router.post("/logout")
+    def logout(request: Request, response: Response):
+        json_api_get_session_auth(request).clear_session_cookie(response)
+        return {"ok": True}
+
+    @router.get("/me", response_model=_UserOut)
+    def me(user: dict = Depends(json_api_get_current_user)):
+        return user
+
+    @router.post("/verify", response_model=_VerifyResponse)
+    def verify(
+        data: _VerifyRequest,
+        request: Request,
+        x_internal_auth: str = Header(default=""),
+    ):
+        """Chequeo de credenciales stateless para el login de `/docs/` de
+        la landing del producto. Server-to-server (secreto compartido
+        `DOCS_AUTH_SECRET`), nunca crea cookie de sesión. Falla cerrado si
+        el secreto no está configurado."""
+        secret = os.environ.get("DOCS_AUTH_SECRET", "")
+        if not secret or not hmac.compare_digest(x_internal_auth, secret):
+            raise HTTPException(401, "invalid internal auth")
+        users = request.app.state.users
+        user = users.check_credentials(data.username, data.password)
+        return _VerifyResponse(valid=user is not None)
+
+    return router
 
 
 class AdminAuth:
