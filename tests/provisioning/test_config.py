@@ -109,3 +109,73 @@ def test_check_venv_sync_version_distinta_avisa(tmp_path, monkeypatch):
     assert "0.15.0" in aviso
     assert "0.23.0" in aviso
     assert "pip install --upgrade" in aviso
+
+
+def test_requiere_libracommerce_via_requirements_txt(tmp_path):
+    (tmp_path / "requirements.txt").write_text(
+        "fastapi\nlibracommerce @ git+ssh://...\n", encoding="utf-8"
+    )
+    assert provisioning._requiere_libracommerce(tmp_path) is True
+
+
+def test_requiere_libracommerce_via_pyproject_toml(tmp_path):
+    # VentaLibra no tiene requirements.txt -- declara sus dependencias
+    # privadas en pyproject.toml (formato PEP 621). Antes de este fix,
+    # _requiere_libracommerce solo miraba requirements.txt y nunca
+    # detectaba esta dependencia real.
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = [\n'
+        '    "libracommerce @ git+https://github.com/marianocappucci/libracommerce.git@v0.1.5",\n'
+        ']\n',
+        encoding="utf-8",
+    )
+    assert provisioning._requiere_libracommerce(tmp_path) is True
+
+
+def test_requiere_libracommerce_sin_dependencia_es_false(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["libracore @ git+https://..."]\n', encoding="utf-8"
+    )
+    assert provisioning._requiere_libracommerce(tmp_path) is False
+
+
+def test_requiere_libragenda_via_pyproject_toml(tmp_path):
+    # Gestiolibra/MedLibra: mismo caso que libracommerce/VentaLibra, pero
+    # con libragenda.
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = [\n'
+        '    "libragenda @ git+https://github.com/marianocappucci/libragenda.git@v0.9.0",\n'
+        ']\n',
+        encoding="utf-8",
+    )
+    assert provisioning._requiere_libragenda(tmp_path) is True
+
+
+def test_requiere_libragenda_sin_pyproject_ni_requirements_es_false(tmp_path):
+    assert provisioning._requiere_libragenda(tmp_path) is False
+
+
+def test_docker_build_ssh_args_agrega_libragenda_si_corresponde(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = [\n'
+        '    "libragenda @ git+https://github.com/marianocappucci/libragenda.git@v0.9.0",\n'
+        '    "libracore @ git+https://github.com/marianocappucci/libracore.git@v0.18.0",\n'
+        ']\n',
+        encoding="utf-8",
+    )
+    args = provisioning.docker_build_ssh_args(tmp_path)
+    assert "libragenda=" + provisioning.LIBRAGENDA_SSH_KEY in args
+    assert not any(a.startswith("libracommerce=") for a in args)
+
+
+def test_docker_build_ssh_args_agrega_libracommerce_via_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = [\n'
+        '    "libracommerce @ git+https://github.com/marianocappucci/libracommerce.git@v0.1.5",\n'
+        '    "libracore @ git+https://github.com/marianocappucci/libracore.git@v0.18.0",\n'
+        ']\n',
+        encoding="utf-8",
+    )
+    args = provisioning.docker_build_ssh_args(tmp_path)
+    assert "libracommerce=" + provisioning.LIBRACOMMERCE_SSH_KEY in args
+    assert not any(a.startswith("libragenda=") for a in args)
