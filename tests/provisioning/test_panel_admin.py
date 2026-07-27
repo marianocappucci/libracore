@@ -177,3 +177,37 @@ def test_cli_actualizar_sin_slug_actualiza_todos(cfg, monkeypatch):
     monkeypatch.setattr(pa.subprocess, "run",
                         lambda *a, **k: subprocess.CompletedProcess([], 0))
     pa.cli()  # no debe lanzar
+
+
+def test_cmd_actualizar_sin_libracommerce_no_pasa_ese_ssh_id(cfg, monkeypatch):
+    (cfg.repo_root / "requirements.txt").write_text("fastapi\nlibracore @ git+ssh://...\n", encoding="utf-8")
+    build_calls = []
+
+    def fake_run(cmd, **kwargs):
+        build_calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(pa.subprocess, "run", fake_run)
+    pa.cmd_actualizar()
+
+    build_cmd = build_calls[0]
+    assert "default=" + pa.LIBRACORE_SSH_KEY in build_cmd
+    assert "libracore=" + pa.LIBRACORE_SSH_KEY in build_cmd
+    assert not any(a.startswith("libracommerce=") for a in build_cmd)
+
+
+def test_cmd_actualizar_con_libracommerce_agrega_su_ssh_id(cfg, monkeypatch):
+    (cfg.repo_root / "requirements.txt").write_text(
+        "fastapi\nlibracore @ git+ssh://...\nlibracommerce @ git+ssh://...\n", encoding="utf-8"
+    )
+    build_calls = []
+
+    def fake_run(cmd, **kwargs):
+        build_calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(pa.subprocess, "run", fake_run)
+    pa.cmd_actualizar()
+
+    build_cmd = build_calls[0]
+    assert "libracommerce=" + pa.LIBRACOMMERCE_SSH_KEY in build_cmd
