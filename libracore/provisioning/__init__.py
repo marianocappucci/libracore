@@ -43,6 +43,15 @@ LIBRACOMMERCE_SSH_KEY = os.environ.get(
     "LIBRACOMMERCE_SSH_KEY", os.path.expanduser("~/.ssh/id_ed25519_libracommerce")
 )
 
+# libra-ui (paquete de frontend compartido, ver wiki/entities/libra-ui.md)
+# es una dependencia de NPM (frontend/package.json), no de pip
+# (requirements.txt) como libracore/libracommerce — mismo motivo de fondo
+# (repo privado propio, su propia deploy key) pero detectado con un grep
+# distinto (ver _requiere_libra_ui).
+LIBRA_UI_SSH_KEY = os.environ.get(
+    "LIBRA_UI_SSH_KEY", os.path.expanduser("~/.ssh/id_ed25519_libra_ui")
+)
+
 
 def _requiere_libracommerce(repo_root: Path) -> bool:
     """True si requirements.txt del producto depende de libracommerce —
@@ -57,15 +66,25 @@ def _requiere_libracommerce(repo_root: Path) -> bool:
     )
 
 
+def _requiere_libra_ui(repo_root: Path) -> bool:
+    """True si frontend/package.json del producto depende de libra-ui —
+    equivalente a _requiere_libracommerce pero para la dependencia de NPM
+    (no vive en requirements.txt)."""
+    pkg_file = repo_root / "frontend" / "package.json"
+    if not pkg_file.exists():
+        return False
+    return '"libra-ui"' in pkg_file.read_text(encoding="utf-8")
+
+
 def docker_build_ssh_args(repo_root: Path) -> list[str]:
     """Arma los `--ssh id=key` para `docker build`, compartido entre
     `panel_admin.cmd_actualizar` y `nuevo_cliente.build_image` (mismo
     Dockerfile, mismo requisito de mounts SSH en ambos flujos de build).
     Se pasan `default` y `libracore` apuntando a la misma key (compat con
     Dockerfile viejos de un solo mount id y con los nuevos que ya usan
-    `id=libracore` explícito); `libracommerce` solo si el producto
-    depende de ese paquete (si no, la key puede ni existir en esta
-    máquina). Pasar un `--ssh` de más para un id que el Dockerfile no
+    `id=libracore` explícito); `libracommerce`/`libra-ui` solo si el
+    producto depende de ese paquete (si no, la key puede ni existir en
+    esta máquina). Pasar un `--ssh` de más para un id que el Dockerfile no
     monta es inofensivo (BuildKit lo ignora), pero pasar uno con una key
     inexistente rompe el build."""
     args = [
@@ -74,6 +93,8 @@ def docker_build_ssh_args(repo_root: Path) -> list[str]:
     ]
     if _requiere_libracommerce(repo_root):
         args += ["--ssh", f"libracommerce={LIBRACOMMERCE_SSH_KEY}"]
+    if _requiere_libra_ui(repo_root):
+        args += ["--ssh", f"libra-ui={LIBRA_UI_SSH_KEY}"]
     return args
 
 

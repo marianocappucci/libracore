@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import (
     get_config, _npm_api,
-    LIBRACORE_SSH_KEY, LIBRACOMMERCE_SSH_KEY, docker_build_ssh_args,
+    LIBRACORE_SSH_KEY, LIBRACOMMERCE_SSH_KEY, LIBRA_UI_SSH_KEY, docker_build_ssh_args,
 )
 
 BACKUP_RETENTION_DIAS = 14

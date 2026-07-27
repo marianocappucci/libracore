@@ -211,3 +211,39 @@ def test_cmd_actualizar_con_libracommerce_agrega_su_ssh_id(cfg, monkeypatch):
 
     build_cmd = build_calls[0]
     assert "libracommerce=" + pa.LIBRACOMMERCE_SSH_KEY in build_cmd
+
+
+def test_cmd_actualizar_sin_libra_ui_no_pasa_ese_ssh_id(cfg, monkeypatch):
+    (cfg.repo_root / "requirements.txt").write_text("fastapi\nlibracore @ git+ssh://...\n", encoding="utf-8")
+    build_calls = []
+
+    def fake_run(cmd, **kwargs):
+        build_calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(pa.subprocess, "run", fake_run)
+    pa.cmd_actualizar()
+
+    build_cmd = build_calls[0]
+    assert not any(a.startswith("libra-ui=") for a in build_cmd)
+
+
+def test_cmd_actualizar_con_libra_ui_agrega_su_ssh_id(cfg, monkeypatch):
+    (cfg.repo_root / "requirements.txt").write_text("fastapi\nlibracore @ git+ssh://...\n", encoding="utf-8")
+    frontend_dir = cfg.repo_root / "frontend"
+    frontend_dir.mkdir(parents=True, exist_ok=True)
+    (frontend_dir / "package.json").write_text(
+        '{"dependencies": {"libra-ui": "git+https://github.com/marianocappucci/libra-ui.git#v0.2.0"}}',
+        encoding="utf-8",
+    )
+    build_calls = []
+
+    def fake_run(cmd, **kwargs):
+        build_calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(pa.subprocess, "run", fake_run)
+    pa.cmd_actualizar()
+
+    build_cmd = build_calls[0]
+    assert "libra-ui=" + pa.LIBRA_UI_SSH_KEY in build_cmd
