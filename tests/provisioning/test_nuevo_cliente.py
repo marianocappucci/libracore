@@ -141,6 +141,26 @@ def test_crear_cliente_con_dominio_y_npm_crea_proxy(cfg, monkeypatch):
     assert created["forward_host"] == "10.0.0.1"
 
 
+def test_build_image_sin_libracommerce_no_pasa_ese_ssh_id(cfg, fake_docker):
+    (cfg.repo_root / "requirements.txt").write_text("fastapi\nlibracore @ git+ssh://...\n", encoding="utf-8")
+    nc.build_image()
+
+    build_cmd = fake_docker[0]
+    assert "default=" + provisioning.LIBRACORE_SSH_KEY in build_cmd
+    assert "libracore=" + provisioning.LIBRACORE_SSH_KEY in build_cmd
+    assert not any(a.startswith("libracommerce=") for a in build_cmd)
+
+
+def test_build_image_con_libracommerce_agrega_su_ssh_id(cfg, fake_docker):
+    (cfg.repo_root / "requirements.txt").write_text(
+        "fastapi\nlibracore @ git+ssh://...\nlibracommerce @ git+ssh://...\n", encoding="utf-8"
+    )
+    nc.build_image()
+
+    build_cmd = fake_docker[0]
+    assert "libracommerce=" + provisioning.LIBRACOMMERCE_SSH_KEY in build_cmd
+
+
 def test_crear_cliente_proxy_existente_no_falla(cfg, monkeypatch):
     class FakeNPMError(Exception):
         pass

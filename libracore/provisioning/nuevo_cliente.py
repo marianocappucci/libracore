@@ -9,6 +9,7 @@ Requiere `libracore.provisioning.configure()` antes de usar cualquier
 función de acá. `plans.py` (planes reales de cada producto) se resuelve en
 tiempo de ejecución vía import diferido — ver `libracore.provisioning._plans()`.
 """
+import os
 import re
 import secrets
 import subprocess
@@ -19,6 +20,7 @@ from pathlib import Path
 from . import (
     get_config, _plans, _npm_api,
     client_from_config, forward_host_from_config, le_email_from_config, npm_available,
+    docker_build_ssh_args,
 )
 
 
@@ -57,7 +59,11 @@ def ask(msg: str, default: str = "") -> str:
 def build_image():
     cfg = get_config()
     print(f"\n[*] Construyendo imagen {cfg.image_name} ...")
-    r = subprocess.run(["docker","build","-t",cfg.image_name,"."], cwd=str(cfg.repo_root))
+    build_env = {**os.environ, "DOCKER_BUILDKIT": "1"}
+    r = subprocess.run(
+        ["docker", "build", *docker_build_ssh_args(cfg.repo_root), "-t", cfg.image_name, "."],
+        cwd=str(cfg.repo_root), env=build_env,
+    )
     if r.returncode != 0:
         sys.exit("[ERROR] Falló el build de la imagen.")
     print("[OK] Imagen lista.")
