@@ -104,6 +104,84 @@ def get_cc_movimientos(cliente_id: int) -> list[dict]:
     return sorted(movs, key=lambda x: x["fecha"])
 
 
+def get_cc_movimientos_periodo(cliente_id: int, desde: str, hasta: str) -> dict:
+    """Movimientos de un rango de fechas más el saldo con el que se entra al rango.
+
+    `desde`/`hasta` son fechas ISO (YYYY-MM-DD) inclusive. Se resuelve sobre
+    `get_cc_movimientos()` en vez de repetir las tres consultas: la cuenta
+    corriente es chica por cliente y así no hay riesgo de que el resumen que se
+    manda por mail se calcule distinto que la pantalla.
+    """
+    movs = get_cc_movimientos(cliente_id)
+
+    def _signo(m):
+        return float(m["monto"]) if m["tipo"] == "debito" else -float(m["monto"])
+
+    anteriores = [m for m in movs if m["fecha"] and m["fecha"] < desde]
+    del_periodo = [m for m in movs if desde <= (m["fecha"] or "") <= hasta]
+    # Un movimiento sin fecha no se puede ubicar en el tiempo: entra en el
+    # saldo anterior para que el saldo final siga cerrando con get_cc_saldo().
+    sin_fecha = [m for m in movs if not m["fecha"]]
+
+    saldo_anterior = sum(_signo(m) for m in anteriores + sin_fecha)
+    total_debitos = sum(float(m["monto"]) for m in del_periodo if m["tipo"] == "debito")
+    total_creditos = sum(float(m["monto"]) for m in del_periodo if m["tipo"] == "credito")
+
+    return {
+        "desde": desde,
+        "hasta": hasta,
+        "saldo_anterior": saldo_anterior,
+        "movimientos": del_periodo,
+        "total_debitos": total_debitos,
+        "total_creditos": total_creditos,
+        "saldo_final": saldo_anterior + total_debitos - total_creditos,
+    }
+
+
+def registrar_resumen_enviado(cliente_id: int, fecha: str, desde: str, hasta: str,
+                              saldo: float, email: str, estado: str = "ok",
+                              detalle: str = "", automatico: bool = True) -> int:
+    """Deja rastro de cada intento de envío (ok o error) y, si salió bien,
+    adelanta `cc_resumen_ultimo_envio` del cliente — que es lo que evita que
+    una segunda corrida del cron el mismo día reenvíe el mismo resumen."""
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO cc_resumenes_enviados
+               (cliente_id, fecha, periodo_desde, periodo_hasta, saldo, email,
+                estado, detalle, automatico)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (cliente_id, fecha, desde, hasta, float(saldo), email or "",
+             estado, detalle or "", 1 if automatico else 0),
+        )
+        if estado == "ok":
+            conn.execute(
+                "UPDATE clients SET cc_resumen_ultimo_envio=? WHERE id=?",
+                (fecha, cliente_id),
+            )
+        return cur.lastrowid
+
+
+def get_resumenes_enviados(cliente_id: int | None = None, limit: int = 50) -> list[dict]:
+    with get_connection() as conn:
+        if cliente_id is None:
+            rows = conn.execute(
+                """SELECT r.*, c.name AS cliente_nombre
+                   FROM cc_resumenes_enviados r
+                   LEFT JOIN clients c ON c.id = r.cliente_id
+                   ORDER BY r.id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT r.*, c.name AS cliente_nombre
+                   FROM cc_resumenes_enviados r
+                   LEFT JOIN clients c ON c.id = r.cliente_id
+                   WHERE r.cliente_id = ? ORDER BY r.id DESC LIMIT ?""",
+                (cliente_id, limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_clientes_con_saldo_cc() -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute("""

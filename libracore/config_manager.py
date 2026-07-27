@@ -44,6 +44,15 @@ DEFAULTS = {
     "email_smtp_password":    "",
     "email_from":             "",
     "email_from_name":        "",
+    # Resumen automático de cuenta corriente por email
+    # (el toggle real es por cliente — `clients.cc_resumen_auto` —; esto es la
+    # llave maestra del sistema y los parámetros comunes del envío)
+    "cc_resumen_habilitado":   "0",   # 0 | 1 — si está en 0 no se envía nada
+    "cc_resumen_dia_mes":      "1",   # día del mes para la frecuencia mensual (1-28)
+    "cc_resumen_dia_semana":   "1",   # 1=lunes … 7=domingo, para semanal/quincenal
+    "cc_resumen_solo_con_saldo": "1",  # 0 | 1 — omitir clientes con saldo <= 0
+    "cc_resumen_asunto":       "Resumen de cuenta corriente - {empresa}",
+    "cc_resumen_cuerpo":       "",    # vacío = texto por defecto de cc_resumen.py
     # Impresora de tickets (ticketeadora térmica)
     "ticket_ancho_mm":        "80",      # 58 | 80
     "ticket_fuente_size":     "9",       # puntos

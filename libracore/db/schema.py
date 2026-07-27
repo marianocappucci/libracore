@@ -388,6 +388,20 @@ def init_core_schema(conn: sqlite3.Connection):
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
             created_at  TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS cc_resumenes_enviados (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            fecha        TEXT NOT NULL,
+            periodo_desde TEXT NOT NULL,
+            periodo_hasta TEXT NOT NULL,
+            saldo        REAL NOT NULL DEFAULT 0,
+            email        TEXT DEFAULT '',
+            estado       TEXT NOT NULL DEFAULT 'ok',
+            detalle      TEXT DEFAULT '',
+            automatico   INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT DEFAULT (datetime('now'))
+        );
     """)
 
     # Migraciones defensivas (columnas agregadas después del CREATE original en
@@ -400,6 +414,15 @@ def init_core_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE clients ADD COLUMN activo INTEGER DEFAULT 1")
     if "auto_facturar" not in cols:
         conn.execute("ALTER TABLE clients ADD COLUMN auto_facturar INTEGER NOT NULL DEFAULT 0")
+    if "cc_resumen_auto" not in cols:
+        conn.execute("ALTER TABLE clients ADD COLUMN cc_resumen_auto INTEGER NOT NULL DEFAULT 0")
+    if "cc_resumen_frecuencia" not in cols:
+        conn.execute(
+            "ALTER TABLE clients ADD COLUMN cc_resumen_frecuencia TEXT NOT NULL DEFAULT 'mensual' "
+            "CHECK (cc_resumen_frecuencia IN ('semanal', 'quincenal', 'mensual'))"
+        )
+    if "cc_resumen_ultimo_envio" not in cols:
+        conn.execute("ALTER TABLE clients ADD COLUMN cc_resumen_ultimo_envio TEXT DEFAULT ''")
 
     fact_cols = [r[1] for r in conn.execute("PRAGMA table_info(facturas)").fetchall()]
     if "cliente_domicilio" not in fact_cols:
@@ -515,6 +538,7 @@ def init_core_schema(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_ventas_fecha ON ventas(fecha);
         CREATE INDEX IF NOT EXISTS idx_caja_movimientos_fecha ON caja_movimientos(fecha);
         CREATE INDEX IF NOT EXISTS idx_cc_pagos_cliente ON cc_pagos(cliente_id);
+        CREATE INDEX IF NOT EXISTS idx_cc_resumenes_cliente ON cc_resumenes_enviados(cliente_id, fecha);
         CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id);
     """)
 

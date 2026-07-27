@@ -37,6 +37,34 @@ def enviar_comprobante(
             f"Muchas gracias.\n{empresa_nombre}"
         )
 
+    enviar_documento(
+        to_email=to_email, to_name=to_name, pdf_path=pdf_path,
+        asunto=asunto, cuerpo=cuerpo,
+        smtp_host=smtp_host, smtp_port=smtp_port, smtp_user=smtp_user,
+        smtp_password=smtp_password, from_email=from_email, from_name=from_name,
+    )
+
+
+def enviar_documento(
+    to_email: str,
+    to_name: str,
+    pdf_path: str,
+    asunto: str,
+    cuerpo: str,
+    smtp_host: str,
+    smtp_port: int,
+    smtp_user: str,
+    smtp_password: str,
+    from_email: str,
+    from_name: str,
+    filename: str = "",
+):
+    """Envía un PDF adjunto sin asumir que sea un comprobante fiscal.
+
+    `enviar_comprobante` (que arma asunto/cuerpo con semántica de factura +
+    total) quedó como caso particular de ésta. Se separó al agregar el resumen
+    automático de cuenta corriente, cuyo adjunto no es un comprobante.
+    """
     msg = EmailMessage()
     msg["Subject"] = asunto
     msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
@@ -48,7 +76,7 @@ def enviar_comprobante(
             f.read(),
             maintype="application",
             subtype="pdf",
-            filename=os.path.basename(pdf_path),
+            filename=filename or os.path.basename(pdf_path),
         )
 
     with smtplib.SMTP(smtp_host, int(smtp_port)) as server:

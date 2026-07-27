@@ -77,3 +77,37 @@ def test_generate_pdf_recibo_returns_pdf_bytes(tmp_path, monkeypatch):
     pdf_bytes = pg2.generate_pdf_recibo(factura, cobros)
     assert isinstance(pdf_bytes, bytes)
     assert pdf_bytes[:5] == b"%PDF-"
+
+
+def test_generate_pdf_resumen_cc(tmp_path, monkeypatch):
+    pg2 = _set_data_dir(tmp_path, monkeypatch)
+    cliente = {
+        "id": 7, "name": "Cliente Test", "cuit_dni": "20111111112",
+        "address": "Calle 1", "email": "cliente@test.com", "phone": "",
+    }
+    periodo = {
+        "desde": "2026-07-01", "hasta": "2026-07-31", "emitido": "2026-07-31",
+        "saldo_anterior": 500.0,
+        "movimientos": [
+            {"fecha": "2026-07-05", "tipo": "debito", "concepto": "Venta #12",
+             "monto": 1000.0, "referencia": ""},
+            {"fecha": "2026-07-20", "tipo": "credito", "concepto": "Pago a cuenta",
+             "monto": 300.0, "referencia": "transf. 44"},
+        ],
+        "total_debitos": 1000.0, "total_creditos": 300.0, "saldo_final": 1200.0,
+    }
+    path = pg2.generate_pdf_resumen_cc(cliente, periodo, output_dir=str(tmp_path))
+    _assert_valid_pdf_file(path)
+
+
+def test_generate_pdf_resumen_cc_sin_movimientos(tmp_path, monkeypatch):
+    pg2 = _set_data_dir(tmp_path, monkeypatch)
+    cliente = {"id": 8, "name": "Cliente Sin Movimientos", "cuit_dni": "",
+               "address": "", "email": "", "phone": ""}
+    periodo = {
+        "desde": "2026-07-01", "hasta": "2026-07-31", "emitido": "2026-07-31",
+        "saldo_anterior": 0.0, "movimientos": [],
+        "total_debitos": 0.0, "total_creditos": 0.0, "saldo_final": 0.0,
+    }
+    path = pg2.generate_pdf_resumen_cc(cliente, periodo, output_dir=str(tmp_path))
+    _assert_valid_pdf_file(path)

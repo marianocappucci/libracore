@@ -12,6 +12,7 @@ CORE_TABLES = {
     "egresos_pagos", "turnos_caja", "movimientos_stock", "ventas",
     "ventas_pagos", "cuentas_tesoreria", "movimientos_tesoreria",
     "auth_log", "listas_precio", "lista_precio_items", "cc_pagos",
+    "cc_resumenes_enviados",
 }
 
 

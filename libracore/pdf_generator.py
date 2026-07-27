@@ -48,6 +48,7 @@ _DATA_DIR            = os.environ.get("DATA_DIR", os.path.dirname(__file__))
 PDF_DIR              = os.path.join(_DATA_DIR, "remitos_pdf")
 PRESUPUESTOS_PDF_DIR = os.path.join(_DATA_DIR, "presupuestos_pdf")
 FACTURAS_PDF_DIR     = os.path.join(_DATA_DIR, "facturas_pdf")
+RESUMENES_CC_PDF_DIR = os.path.join(_DATA_DIR, "resumenes_cc_pdf")
 
 _TIPO_LABELS     = {1:"FACTURA A",       6:"FACTURA B",       11:"FACTURA C",
                     3:"NOTA CREDITO A", 8:"NOTA CREDITO B", 13:"NOTA CREDITO C",
@@ -1138,3 +1139,169 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
              f"Documento no válido como factura", align="C")
 
     return bytes(pdf.output())
+
+
+# ── Resumen de cuenta corriente ──────────────────────────────────────────────
+
+class ResumenCCPDF(FPDF):
+    def __init__(self, cliente, periodo):
+        super().__init__(orientation="P", unit="mm", format="A4")
+        self.cliente = cliente
+        self.periodo = periodo
+        self._emp    = None
+        self.set_margins(_LX, _LX, _LX)
+        self.set_auto_page_break(auto=True, margin=22)
+
+    def header(self):
+        emp = self._emp or _empresa()
+        info_fields = [
+            ("Período desde:", _fmt_fecha(self.periodo["desde"])),
+            ("Período hasta:",  _fmt_fecha(self.periodo["hasta"])),
+            ("Emitido:",        _fmt_fecha(self.periodo["emitido"])),
+        ]
+        # `_draw_header_block` aplica .title() al título: usar dos palabras que
+        # queden bien capitalizadas ("Resumen de cuenta" daría "Resumen De…").
+        self.set_y(_draw_header_block(
+            self, "CC", "Cuenta corriente", "", info_fields, emp))
+
+    def footer(self):
+        pass
+
+
+def _draw_movimientos_cc(pdf, periodo):
+    """Tabla de movimientos del resumen: mismo lenguaje visual que
+    `_draw_items_table` pero con las columnas de una cuenta corriente
+    (débito/crédito/saldo acumulado) en vez de las de un comprobante."""
+    widths  = [26, 78, 24, 24, 22]
+    headers = ["FECHA", "CONCEPTO", "DEBE", "HABER", "SALDO"]
+    aligns  = ["L", "L", "R", "R", "R"]
+    th_h, LINE_H = 8, 5
+
+    def draw_header():
+        yh = pdf.get_y()
+        hx = _LX
+        pdf.set_font("Helvetica", "", 7)
+        pdf.set_text_color(*_MUTED)
+        for h, w, a in zip(headers, widths, aligns):
+            pdf.set_xy(hx, yh)
+            pad = "  " if a == "L" else ""
+            pdf.cell(w, th_h, pad + h, border=0, align=a)
+            hx += w
+        pdf.set_draw_color(*_INK)
+        pdf.set_line_width(0.7)
+        pdf.line(_LX, yh + th_h, _RX, yh + th_h)
+        pdf.set_line_width(0.3)
+        pdf.set_y(yh + th_h + 1)
+        pdf.set_text_color(*_INK)
+
+    def draw_row(fecha, concepto, debe, haber, saldo, bold=False, muted=False):
+        row_h = LINE_H + 3
+        if pdf.get_y() + row_h > pdf.h - 60:
+            pdf.add_page()
+            draw_header()
+        y_row = pdf.get_y()
+        pdf.set_font("Helvetica", "B" if bold else "", 8)
+        pdf.set_text_color(*(_MUTED if muted else _INK))
+        cx = _LX
+        for val, w, a in zip([fecha, concepto, debe, haber, saldo], widths, aligns):
+            pdf.set_xy(cx + (2 if a == "L" else 0), y_row + 1.5)
+            txt = val
+            if a == "L":
+                txt = "".join(_wrap_text(pdf, str(val), w - 4)[:1])
+                if pdf.get_string_width(str(val)) > w - 4:
+                    txt = txt[: max(0, len(txt) - 1)] + "…"
+            pdf.cell(w - (2 if a == "L" else 0), LINE_H, txt, align=a, ln=False)
+            cx += w
+        pdf.set_draw_color(*_LINE)
+        pdf.set_line_width(0.25)
+        pdf.line(_LX, y_row + row_h, _RX, y_row + row_h)
+        pdf.set_y(y_row + row_h)
+
+    draw_header()
+    saldo = float(periodo["saldo_anterior"])
+    draw_row("", "Saldo anterior", "", "", "$ " + _ar(saldo), bold=True, muted=True)
+
+    for m in periodo["movimientos"]:
+        monto = float(m["monto"])
+        es_debito = m["tipo"] == "debito"
+        saldo += monto if es_debito else -monto
+        concepto = m["concepto"] or ""
+        if m.get("referencia"):
+            concepto = f"{concepto} ({m['referencia']})"
+        draw_row(
+            _fmt_fecha(m["fecha"]) or m["fecha"],
+            concepto,
+            "$ " + _ar(monto) if es_debito else "",
+            "" if es_debito else "$ " + _ar(monto),
+            "$ " + _ar(saldo),
+        )
+
+    if not periodo["movimientos"]:
+        draw_row("", "Sin movimientos en el período", "", "", "", muted=True)
+
+    draw_row(
+        "", "Totales del período",
+        "$ " + _ar(periodo["total_debitos"]),
+        "$ " + _ar(periodo["total_creditos"]),
+        "$ " + _ar(periodo["saldo_final"]),
+        bold=True,
+    )
+    pdf.ln(4)
+
+
+def generate_pdf_resumen_cc(cliente: dict, periodo: dict, output_dir=None) -> str:
+    """Resumen de cuenta corriente de un cliente para un período.
+
+    `periodo` es lo que devuelve `libracore.db.cuenta_corriente
+    .get_cc_movimientos_periodo()` más la clave `emitido` (fecha de emisión).
+    No es un comprobante fiscal: lleva la misma leyenda que remitos y
+    presupuestos.
+    """
+    out_dir = output_dir or RESUMENES_CC_PDF_DIR
+    os.makedirs(out_dir, exist_ok=True)
+    periodo = {**periodo, "emitido": periodo.get("emitido") or periodo["hasta"]}
+    filepath = os.path.join(
+        out_dir, f"resumen_cc_{cliente['id']}_{periodo['desde']}_{periodo['hasta']}.pdf")
+
+    emp = _empresa()
+    pdf = ResumenCCPDF(cliente, periodo)
+    pdf._emp = emp
+    pdf.add_page()
+
+    client_fields = [
+        ("Nombre",    cliente.get("name", "")),
+        ("CUIT/DNI",  cliente.get("cuit_dni", "")),
+        ("Domicilio", cliente.get("address", "")),
+        ("Email",     cliente.get("email", "")),
+        ("Teléfono",  cliente.get("phone", "")),
+    ]
+    _draw_emisor_cliente(pdf, emp, client_fields)
+    _draw_movimientos_cc(pdf, periodo)
+
+    # Recuadro de saldo final
+    saldo = float(periodo["saldo_final"])
+    box_h = 16
+    if pdf.get_y() + box_h > pdf.h - 46:
+        pdf.add_page()
+    y_box = pdf.get_y()
+    box_w = _TOTALS_W
+    pdf.set_fill_color(*_ACCENT_SOFT)
+    _rrect(pdf, _RX - box_w, y_box, box_w, box_h, style="F")
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_text_color(*_ACCENT_DARK)
+    pdf.set_xy(_RX - box_w + 4, y_box + 2)
+    pdf.cell(box_w - 8, 5, "SALDO AL " + (_fmt_fecha(periodo["hasta"]) or ""), ln=False)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(*_INK)
+    pdf.set_xy(_RX - box_w + 4, y_box + 8)
+    pdf.cell(box_w - 8, 6, "$ " + _ar(saldo), align="R", ln=False)
+    pdf.set_y(y_box + box_h)
+
+    target_y = pdf.h - 40
+    if pdf.get_y() > target_y:
+        pdf.add_page()
+        target_y = pdf.h - 40
+    pdf.set_y(target_y)
+    _draw_no_fiscal_notice(pdf, "Resumen informativo: documento no válido como factura")
+    pdf.output(filepath)
+    return os.path.abspath(filepath)
