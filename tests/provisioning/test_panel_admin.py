@@ -179,6 +179,23 @@ def test_cli_actualizar_sin_slug_actualiza_todos(cfg, monkeypatch):
     pa.cli()  # no debe lanzar
 
 
+def test_cmd_actualizar_avisa_si_venv_desincronizado(cfg, monkeypatch, capsys):
+    (cfg.repo_root / "requirements.txt").write_text(
+        "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v0.23.0\n",
+        encoding="utf-8",
+    )
+    import libracore
+    monkeypatch.setattr(libracore, "__version__", "0.15.0")
+    monkeypatch.setattr(pa.subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0))
+
+    pa.cmd_actualizar()
+
+    salida = capsys.readouterr().out
+    assert "ADVERTENCIA" in salida
+    assert "0.15.0" in salida
+    assert "0.23.0" in salida
+
+
 def test_cmd_actualizar_sin_libracommerce_no_pasa_ese_ssh_id(cfg, monkeypatch):
     (cfg.repo_root / "requirements.txt").write_text("fastapi\nlibracore @ git+ssh://...\n", encoding="utf-8")
     build_calls = []

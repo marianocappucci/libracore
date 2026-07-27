@@ -98,6 +98,56 @@ def docker_build_ssh_args(repo_root: Path) -> list[str]:
     return args
 
 
+def _pin_de_requirements(repo_root: Path) -> str | None:
+    """Extrae la versión pineada de `libracore @ git+ssh://...@vX.Y.Z` en
+    requirements.txt del producto, o None si no está o no tiene ese
+    formato."""
+    req_file = repo_root / "requirements.txt"
+    if not req_file.exists():
+        return None
+    for line in req_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("libracore") and "@v" in line:
+            return line.rsplit("@v", 1)[1].strip()
+    return None
+
+
+def check_venv_sync(repo_root: Path) -> str | None:
+    """Compara la versión de `libracore` instalada en ESTE venv (el que
+    corre `panel_admin.py`/`nuevo_cliente.py` en el host) contra el pin
+    real de `requirements.txt` del producto — son dos lugares
+    independientes: `requirements.txt` fija qué versión se instala
+    *dentro* de la imagen Docker en cada build, este venv es aparte y
+    solo se actualiza con un `pip install --upgrade` manual (ver
+    ONBOARDING_CLIENTES.md). Si un bump de `requirements.txt` no se
+    replica acá, `panel_admin.py` sigue corriendo con lógica de
+    provisioning vieja sin que nada lo avise — incidente real detectado
+    2026-07-27 (ver wiki/entities/libracore.md, sección v0.23.0):
+    `.venv-scripts` quedó 8 versiones atrás, enmascarado por caché de
+    Docker hasta el primer build en frío real.
+
+    Devuelve un mensaje de advertencia si difieren, o None si coinciden
+    o no se puede determinar el pin (repo sin requirements.txt, o sin
+    dependencia de libracore ahí). No aborta nada — es una advertencia
+    para que la lea quien corre el comando, no un chequeo bloqueante."""
+    import libracore
+
+    pin = _pin_de_requirements(repo_root)
+    if pin is None:
+        return None
+    installed = libracore.__version__.split("+")[0]  # sin sufijo local de hatch-vcs
+    if installed == pin:
+        return None
+    return (
+        f"[ADVERTENCIA] Este venv tiene libracore=={installed} instalado, "
+        f"pero requirements.txt de este producto pinea v{pin}. "
+        "panel_admin.py puede estar corriendo logica de provisioning vieja "
+        "(el problema real detectado el 2026-07-27, ver wiki/entities/libracore.md). "
+        "Actualizar con:\n"
+        f"  pip install --upgrade --no-cache-dir 'libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v{pin}'"
+    )
+
+
 @dataclass(frozen=True)
 class ProductConfig:
     product_name: str        # nombre visible, ej. "CONTALIBRA"

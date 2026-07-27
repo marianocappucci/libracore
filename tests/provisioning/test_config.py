@@ -76,3 +76,36 @@ def test_npm_available_true_delega_al_modulo_inyectado(tmp_path, monkeypatch):
 def test_plans_requiere_configuracion_previa():
     with pytest.raises(RuntimeError):
         provisioning._plans()
+
+
+def test_check_venv_sync_sin_requirements_txt_no_avisa(tmp_path):
+    assert provisioning.check_venv_sync(tmp_path) is None
+
+
+def test_check_venv_sync_sin_pin_de_libracore_no_avisa(tmp_path):
+    (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
+    assert provisioning.check_venv_sync(tmp_path) is None
+
+
+def test_check_venv_sync_version_coincide_no_avisa(tmp_path, monkeypatch):
+    import libracore
+    monkeypatch.setattr(libracore, "__version__", "0.23.0")
+    (tmp_path / "requirements.txt").write_text(
+        "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v0.23.0\n",
+        encoding="utf-8",
+    )
+    assert provisioning.check_venv_sync(tmp_path) is None
+
+
+def test_check_venv_sync_version_distinta_avisa(tmp_path, monkeypatch):
+    import libracore
+    monkeypatch.setattr(libracore, "__version__", "0.15.0")
+    (tmp_path / "requirements.txt").write_text(
+        "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v0.23.0\n",
+        encoding="utf-8",
+    )
+    aviso = provisioning.check_venv_sync(tmp_path)
+    assert aviso is not None
+    assert "0.15.0" in aviso
+    assert "0.23.0" in aviso
+    assert "pip install --upgrade" in aviso

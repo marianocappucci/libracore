@@ -21,6 +21,7 @@ from pathlib import Path
 from . import (
     get_config, _npm_api,
     LIBRACORE_SSH_KEY, LIBRACOMMERCE_SSH_KEY, LIBRA_UI_SSH_KEY, docker_build_ssh_args,
+    check_venv_sync,
 )
 
 BACKUP_RETENTION_DIAS = 14
@@ -362,6 +363,9 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
 def cmd_actualizar(slugs: list[str] | None = None):
     """Reconstruye la imagen y reinicia los contenedores indicados (o todos)."""
     cfg = get_config()
+    aviso = check_venv_sync(cfg.repo_root)
+    if aviso:
+        print(aviso)
     print(f"[*] Reconstruyendo imagen {cfg.image_name} ...")
     build_env = {**os.environ, "DOCKER_BUILDKIT": "1"}
     r = subprocess.run(

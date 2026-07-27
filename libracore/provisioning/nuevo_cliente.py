@@ -20,7 +20,7 @@ from pathlib import Path
 from . import (
     get_config, _plans, _npm_api,
     client_from_config, forward_host_from_config, le_email_from_config, npm_available,
-    docker_build_ssh_args,
+    docker_build_ssh_args, check_venv_sync,
 )
 
 
@@ -58,6 +58,9 @@ def ask(msg: str, default: str = "") -> str:
 
 def build_image():
     cfg = get_config()
+    aviso = check_venv_sync(cfg.repo_root)
+    if aviso:
+        print(aviso)
     print(f"\n[*] Construyendo imagen {cfg.image_name} ...")
     build_env = {**os.environ, "DOCKER_BUILDKIT": "1"}
     r = subprocess.run(
