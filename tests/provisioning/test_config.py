@@ -111,6 +111,66 @@ def test_check_venv_sync_version_distinta_avisa(tmp_path, monkeypatch):
     assert "pip install --upgrade" in aviso
 
 
+# El comando sugerido por el aviso tiene que ser uno que REALMENTE funcione
+# donde se lo lee. En el VPS, github.com plano falla con "Repository not
+# found": la deploy key del repo esta declarada como alias en ~/.ssh/config
+# (incidente real 2026-07-28, ver wiki/entities/libracore.md v0.26.1).
+
+
+def _ssh_config(tmp_path, monkeypatch, contenido):
+    """Apunta Path.home() a un HOME descartable con el ~/.ssh/config dado."""
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    if contenido is not None:
+        (home / ".ssh" / "config").write_text(contenido, encoding="utf-8")
+    monkeypatch.setattr(provisioning.Path, "home", staticmethod(lambda: home))
+
+
+def test_url_usa_el_alias_ssh_cuando_esta_declarado(tmp_path, monkeypatch):
+    _ssh_config(tmp_path, monkeypatch, "Host github-libracore\n    IdentityFile ~/.ssh/k\n")
+    url = provisioning.url_instalacion_libracore("0.26.0")
+    assert "git@github-libracore/" in url
+    assert "git@github.com/" not in url
+    assert url.endswith("@v0.26.0")
+
+
+def test_url_cae_a_github_plano_sin_alias(tmp_path, monkeypatch):
+    _ssh_config(tmp_path, monkeypatch, "Host otro-host\n    IdentityFile ~/.ssh/k\n")
+    assert "git@github.com/" in provisioning.url_instalacion_libracore("0.26.0")
+
+
+def test_url_sin_ssh_config_no_rompe(tmp_path, monkeypatch):
+    _ssh_config(tmp_path, monkeypatch, None)
+    assert "git@github.com/" in provisioning.url_instalacion_libracore("0.26.0")
+
+
+def test_alias_declarado_junto_a_otros_en_la_misma_linea(tmp_path, monkeypatch):
+    # `Host a b c` es sintaxis valida de ssh_config
+    _ssh_config(tmp_path, monkeypatch, "Host github-otro github-libracore\n")
+    assert "git@github-libracore/" in provisioning.url_instalacion_libracore("0.26.0")
+
+
+def test_no_confunde_un_alias_que_lo_contiene_como_prefijo(tmp_path, monkeypatch):
+    _ssh_config(tmp_path, monkeypatch, "Host github-libracore-viejo\n")
+    assert "git@github.com/" in provisioning.url_instalacion_libracore("0.26.0")
+
+
+def test_el_aviso_sugiere_el_alias_en_un_entorno_con_deploy_key(tmp_path, monkeypatch):
+    import libracore
+    monkeypatch.setattr(libracore, "__version__", "0.24.0")
+    (tmp_path / "requirements.txt").write_text(
+        "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v0.26.0\n",
+        encoding="utf-8",
+    )
+    _ssh_config(tmp_path, monkeypatch, "Host github-libracore\n")
+    aviso = provisioning.check_venv_sync(tmp_path)
+    assert aviso is not None
+    # el pin del requirements viene con el host plano; el aviso NO debe
+    # copiarlo tal cual, porque es justamente el que falla en el VPS
+    assert "git@github-libracore/" in aviso
+    assert "git@github.com/" not in aviso
+
+
 def test_requiere_libracommerce_via_requirements_txt(tmp_path):
     (tmp_path / "requirements.txt").write_text(
         "fastapi\nlibracommerce @ git+ssh://...\n", encoding="utf-8"

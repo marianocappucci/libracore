@@ -142,6 +142,34 @@ def _pin_de_requirements(repo_root: Path) -> str | None:
     return None
 
 
+def _tiene_alias_ssh(alias: str) -> bool:
+    """True si `~/.ssh/config` declara `Host <alias>`."""
+    cfg = Path.home() / ".ssh" / "config"
+    try:
+        contenido = cfg.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in contenido.splitlines():
+        partes = line.strip().split()
+        if len(partes) >= 2 and partes[0].lower() == "host" and alias in partes[1:]:
+            return True
+    return False
+
+
+def url_instalacion_libracore(version: str) -> str:
+    """URL `pip`-instalable de libracore, preferindo el alias SSH del repo
+    si está declarado.
+
+    En el VPS, GitHub se autentica con una **deploy key por repo** expuesta
+    como alias en `~/.ssh/config` (`Host github-libracore`). Con el host
+    plano `github.com` se usa la clave por defecto, que no tiene acceso al
+    repo privado: el clone falla con `Repository not found`. Fuera del VPS
+    (WSL local, donde se usa `gh` como credential helper) el alias no
+    existe y el host plano es el correcto."""
+    host = "github-libracore" if _tiene_alias_ssh("github-libracore") else "github.com"
+    return f"git+ssh://git@{host}/marianocappucci/libracore.git@v{version}"
+
+
 def check_venv_sync(repo_root: Path) -> str | None:
     """Compara la versión de `libracore` instalada en ESTE venv (el que
     corre `panel_admin.py`/`nuevo_cliente.py` en el host) contra el pin
@@ -174,7 +202,7 @@ def check_venv_sync(repo_root: Path) -> str | None:
         "panel_admin.py puede estar corriendo logica de provisioning vieja "
         "(el problema real detectado el 2026-07-27, ver wiki/entities/libracore.md). "
         "Actualizar con:\n"
-        f"  pip install --upgrade --no-cache-dir 'libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v{pin}'"
+        f"  pip install --upgrade --no-cache-dir 'libracore @ {url_instalacion_libracore(pin)}'"
     )
 
 
