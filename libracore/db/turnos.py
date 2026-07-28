@@ -99,6 +99,60 @@ def get_resumen_turno(tid: int) -> dict:
     }
 
 
+def get_resumen_turno_caja(tid: int) -> dict:
+    """Resumen del turno calculado sobre `caja_movimientos`, no sobre
+    `ventas`.
+
+    Es la variante para productos cuyas ventas NO viven en la tabla `ventas`
+    de LibraCore — VentaLibra las tiene en LibraCommerce, así que
+    `get_resumen_turno()` (que hace JOIN con `ventas`/`ventas_pagos`) le
+    devolvería siempre vacío y el arqueo daría cero.
+
+    Contar sobre la caja además es más fiel a lo que se arquea: entra todo lo
+    que pasó por el cajón, incluidos ingresos y egresos que no son ventas."""
+    with get_connection() as conn:
+        movimientos = conn.execute(
+            """SELECT id, fecha, tipo, concepto, monto, medio_pago, referencia
+               FROM caja_movimientos WHERE turno_id=? ORDER BY id""",
+            (tid,),
+        ).fetchall()
+        por_medio = conn.execute(
+            """SELECT medio_pago, SUM(CASE WHEN tipo='egreso' THEN -monto ELSE monto END) AS total
+               FROM caja_movimientos WHERE turno_id=? GROUP BY medio_pago""",
+            (tid,),
+        ).fetchall()
+    pagos = {(r["medio_pago"] or "sin_medio"): r["total"] for r in por_medio}
+    return {
+        "movimientos": [dict(m) for m in movimientos],
+        "pagos_por_medio": pagos,
+        "total_ventas": sum(pagos.values()),
+        # Lo unico que se cuenta a mano al cerrar es el efectivo: lo demas
+        # queda en el resumen de la terminal o del banco.
+        "efectivo_ventas": pagos.get("efectivo", 0.0),
+    }
+
+
+def cerrar_turno_caja(tid: int, monto_declarado: float, notas: str = "") -> dict | None:
+    """Cierra el turno arqueando contra `caja_movimientos`
+    (ver get_resumen_turno_caja). Devuelve el turno cerrado, con el esperado
+    y la diferencia ya calculados, para no obligar al caller a releerlo."""
+    turno = get_turno(tid)
+    if not turno:
+        return None
+    resumen = get_resumen_turno_caja(tid)
+    monto_esperado = round(turno["monto_inicial"] + resumen["efectivo_ventas"], 2)
+    cierre = _ar_now()
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE turnos_caja
+               SET estado='cerrado', cierre=?, monto_declarado_cierre=?,
+                   monto_esperado_cierre=?, notas=?
+               WHERE id=?""",
+            (cierre, monto_declarado, monto_esperado, notas, tid),
+        )
+    return get_turno(tid)
+
+
 def cerrar_turno(tid: int, monto_declarado: float, notas: str = ""):
     turno = get_turno(tid)
     if not turno:

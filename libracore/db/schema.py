@@ -116,7 +116,8 @@ def init_core_schema(conn: sqlite3.Connection):
             monto       REAL NOT NULL,
             referencia  TEXT DEFAULT '',
             factura_id  INTEGER,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now')),
+            turno_id    INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS mp_pagos (
@@ -507,6 +508,18 @@ def init_core_schema(conn: sqlite3.Connection):
         conn.execute("UPDATE caja_movimientos SET caja_id=? WHERE caja_id IS NULL", (_default_caja_id,))
     if cm_cols and "medio_pago" not in cm_cols:
         conn.execute("ALTER TABLE caja_movimientos ADD COLUMN medio_pago TEXT DEFAULT ''")
+    # El arqueo se cuenta sobre la caja, no sobre las ventas: con `turno_id`
+    # el resumen de un turno sale de `caja_movimientos` directo.
+    # Contalibra/Restolibra lo derivan hoy de `ventas.turno_id`, que solo
+    # sirve si el producto usa la tabla `ventas` de LibraCore -- VentaLibra
+    # no la usa (sus ventas viven en LibraCommerce) y sin esto no tenia forma
+    # de arquear. Nullable a proposito: un movimiento que no nace de un turno
+    # (ajuste, egreso fuera de caja) sigue siendo valido sin turno.
+    if cm_cols and "turno_id" not in cm_cols:
+        conn.execute(
+            "ALTER TABLE caja_movimientos ADD COLUMN turno_id INTEGER "
+            "REFERENCES turnos_caja(id) ON DELETE SET NULL"
+        )
 
     tc_cols = [r[1] for r in conn.execute("PRAGMA table_info(turnos_caja)").fetchall()]
     if tc_cols and "caja_id" not in tc_cols:

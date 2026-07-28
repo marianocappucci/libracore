@@ -87,7 +87,7 @@ def delete_caja_config(cid: int):
 
 
 def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_id=None,
-                           usuario_id=None, caja_id=None, medio_pago="",
+                           usuario_id=None, caja_id=None, medio_pago="", turno_id=None,
                            conn: sqlite3.Connection | None = None):
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
@@ -114,9 +114,11 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
         _caja_id = caja_id or get_default_caja_id()
         cur = c.execute(
             """INSERT INTO caja_movimientos
-               (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id, medio_pago)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id, medio_pago),
+               (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id,
+                medio_pago, turno_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id,
+             medio_pago, turno_id),
         )
         return cur.lastrowid
 
