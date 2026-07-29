@@ -30,6 +30,7 @@ def revertir_cobro_venta(
     cliente_id: int | None = None,
     usuario_id: int | None = None,
     motivo: str = "Anulación",
+    turno_id: int | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> None:
     """Deshace el cobro de una venta: un egreso de caja por cada pago.
@@ -50,6 +51,12 @@ def revertir_cobro_venta(
     listado de movimientos de caja, o sea del historial que ve el usuario.
     Los totales daban igual, la pantalla no.
 
+    `turno_id` vincula los egresos al turno abierto. Importa en los
+    productos que arquean por turno (VentaLibra): sin él, la anulación no
+    descuenta del cierre y el cajero termina contando plata que ya devolvió.
+    Queda en None por defecto, que es como venía funcionando en
+    Contalibra/Restolibra.
+
     Idempotente por la referencia de cada movimiento
     (`anulacion:venta:<id>:pago:<id>`): reintentar no saca dos veces lo
     mismo de la caja.
@@ -66,7 +73,7 @@ def revertir_cobro_venta(
                 concepto=f"{motivo} venta {numero} — {label}",
                 monto=monto,
                 referencia=f"anulacion:venta:{venta_id}:pago:{pago['id']}",
-                medio_pago=medio, usuario_id=usuario_id, conn=c,
+                medio_pago=medio, usuario_id=usuario_id, turno_id=turno_id, conn=c,
             )
             if medio == MEDIO_CUENTA_CORRIENTE and cliente_id:
                 create_cc_pago(
