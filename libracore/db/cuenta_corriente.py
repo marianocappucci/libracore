@@ -280,7 +280,7 @@ def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[d
                 SELECT cliente_id AS cid, SUM(monto) AS total
                 FROM cc_pagos GROUP BY cliente_id
             )
-            SELECT c.id, c.name, c.cuit_dni,
+            SELECT c.id, c.name, c.cuit_dni, c.external_ref,
                    COALESCE(dv.total,0) + COALESCE(df.total,0) + COALESCE(dd.total,0)
                    - COALESCE(cr.total,0) AS saldo
             FROM clients c
