@@ -390,6 +390,23 @@ def init_core_schema(conn: sqlite3.Connection):
             created_at  TEXT DEFAULT (datetime('now'))
         );
 
+        -- Deuda que NO nace de una venta de esta base. Existe porque
+        -- VentaLibra tiene sus ventas en el archivo SQLite de LibraCommerce
+        -- (acá viven sólo caja y facturas), así que ningún JOIN las alcanza:
+        -- registra el débito explícitamente al confirmar la venta fiada.
+        -- Simétrica a `cc_pagos`, del signo contrario. Queda vacía en los
+        -- productos que no la usan, así que su saldo no cambia.
+        CREATE TABLE IF NOT EXISTS cc_debitos (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id  INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            monto       REAL NOT NULL,
+            fecha       TEXT NOT NULL,
+            concepto    TEXT DEFAULT '',
+            referencia  TEXT DEFAULT '',
+            usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+            created_at  TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS cc_resumenes_enviados (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             cliente_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -424,6 +441,14 @@ def init_core_schema(conn: sqlite3.Connection):
         )
     if "cc_resumen_ultimo_envio" not in cols:
         conn.execute("ALTER TABLE clients ADD COLUMN cc_resumen_ultimo_envio TEXT DEFAULT ''")
+    if "external_ref" not in cols:
+        # Quién es este cliente en el producto que lo dio de alta (ej.
+        # `party-7`). Lo necesita un producto cuyos clientes viven en otra
+        # base y que igual quiere llevarles cuenta corriente acá: sin esto no
+        # hay forma de volver a encontrar al mismo deudor en la segunda venta
+        # fiada. Queda NULL en Contalibra/Restolibra, donde `clients` ES la
+        # tabla de clientes.
+        conn.execute("ALTER TABLE clients ADD COLUMN external_ref TEXT")
 
     fact_cols = [r[1] for r in conn.execute("PRAGMA table_info(facturas)").fetchall()]
     if "cliente_domicilio" not in fact_cols:
@@ -551,6 +576,15 @@ def init_core_schema(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_ventas_fecha ON ventas(fecha);
         CREATE INDEX IF NOT EXISTS idx_caja_movimientos_fecha ON caja_movimientos(fecha);
         CREATE INDEX IF NOT EXISTS idx_cc_pagos_cliente ON cc_pagos(cliente_id);
+        CREATE INDEX IF NOT EXISTS idx_cc_debitos_cliente ON cc_debitos(cliente_id);
+        -- Parcial: la referencia es opcional (un débito cargado a mano no
+        -- tiene ninguna), pero cuando existe identifica la venta que lo
+        -- originó y no puede repetirse -- es lo que hace que reintentar un
+        -- cobro no fíe dos veces lo mismo.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_debitos_referencia
+            ON cc_debitos(referencia) WHERE referencia != '';
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_external_ref
+            ON clients(external_ref) WHERE external_ref IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_cc_resumenes_cliente ON cc_resumenes_enviados(cliente_id, fecha);
         CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id);
     """)

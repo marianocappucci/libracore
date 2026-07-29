@@ -31,6 +31,37 @@ def create_client(name, address="", cuit_dni="", email="", phone="", iva_conditi
         return cur.lastrowid
 
 
+def resolver_cliente_externo(external_ref: str, name: str, cuit_dni: str = "",
+                             email: str = "", phone: str = "") -> int:
+    """Devuelve el `clients.id` del cliente identificado por `external_ref`,
+    creándolo si es la primera vez que aparece.
+
+    Es para un producto cuyos clientes viven en otra base (VentaLibra: son
+    `parties` de LibraCommerce) y que igual necesita llevarles cuenta
+    corriente acá, donde está la caja. Sin esto no habría forma de reencontrar
+    al mismo deudor en su segunda compra fiada.
+
+    No espeja la cartera de clientes: sólo entra el que efectivamente fía. El
+    nombre se refresca en cada llamada porque el que vale en el resumen de
+    cuenta es el actual, no el que tenía la primera vez.
+    """
+    if not external_ref:
+        raise ValueError("external_ref no puede estar vacío")
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM clients WHERE external_ref = ?", (external_ref,)
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE clients SET name = ? WHERE id = ?", (name, row["id"]))
+            return row["id"]
+        cur = conn.execute(
+            """INSERT INTO clients (name, cuit_dni, email, phone, external_ref)
+               VALUES (?,?,?,?,?)""",
+            (name, cuit_dni or "", email or "", phone or "", external_ref),
+        )
+        return cur.lastrowid
+
+
 def get_all_clients():
     with get_connection() as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM clients WHERE activo = 1 ORDER BY name")]

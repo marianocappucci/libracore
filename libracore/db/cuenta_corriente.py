@@ -1,25 +1,78 @@
 """
 Cuenta corriente por cliente: saldo y movimientos combinando ventas a
-cuenta corriente, facturas cobradas a cuenta corriente y pagos manuales
-(cc_pagos). Extraído de database.py de Contalibra/Restolibra (idéntico en
-ambos) como parte de la migración real a libracore.db (Fase 3 de
-LibraCore, ver wiki/entities/libracore.md).
+cuenta corriente, facturas cobradas a cuenta corriente, débitos directos
+(`cc_debitos`) y pagos manuales (`cc_pagos`). Extraído de database.py de
+Contalibra/Restolibra (idéntico en ambos) como parte de la migración real
+a libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
+
+## De dónde salen las ventas
+
+El criterio de cálculo es siempre el mismo — **débitos por venta + débitos
+por factura + débitos directos − abonos** — pero la tabla donde viven las
+ventas no: los productos migrados a LibraCommerce las tienen en `sales`
+(con `customer_party_id`/`occurred_on`/`number`) y los que todavía no, en
+`ventas` (con `cliente_id`/`fecha`/`numero`). Eso se declara con un
+`OrigenVentas` en vez de duplicar las funciones.
+
+Hasta el 2026-07-28 esa duplicación era literal: Contalibra y Restolibra
+tenían cada uno una copia byte-a-byte de este módulo (`db_cuenta_corriente.py`)
+que sólo cambiaba el `JOIN`. Tres copias del mismo algoritmo de dinero, que
+había que corregir tres veces.
+
+## Cuando las ventas ni siquiera están en esta base
+
+`OrigenVentas` alcanza mientras las ventas vivan en la misma base que la
+caja. VentaLibra las tiene en un archivo SQLite separado (el de
+LibraCommerce; acá sólo viven caja y facturas), así que ningún `JOIN` las
+alcanza. Para ese caso está `cc_debitos`: el producto registra el débito
+explícitamente al confirmar la venta fiada, con la misma forma que un
+`cc_pago` pero del otro signo. La tabla queda vacía en los productos que no
+la usan, así que suma cero y su saldo no cambia.
 """
 import sqlite3
 import contextlib
+from dataclasses import dataclass
 
 from libracore.db.core import get_connection
 
+_TIPO_LABEL = {
+    1: "FACTURA A", 6: "FACTURA B", 11: "FACTURA C",
+    2: "ND A", 3: "NC A", 7: "ND B", 8: "NC B", 12: "ND C", 13: "NC C",
+}
 
-def get_cc_saldo(cliente_id: int) -> float:
+
+@dataclass(frozen=True)
+class OrigenVentas:
+    """En qué tabla de esta base están las ventas y cómo se llaman sus
+    columnas. Los nombres se interpolan en el SQL, así que sólo pueden salir
+    de las constantes de abajo — nunca de entrada de usuario."""
+
+    tabla: str
+    columna_cliente: str
+    columna_fecha: str
+    columna_numero: str
+
+
+#: Productos que todavía no migraron sus ventas a LibraCommerce.
+VENTAS_LIBRACORE = OrigenVentas("ventas", "cliente_id", "fecha", "numero")
+#: Productos con las ventas ya en `sales`, en esta misma base (Contalibra
+#: desde P7, Restolibra desde P8).
+VENTAS_LIBRACOMMERCE = OrigenVentas("sales", "customer_party_id", "occurred_on", "number")
+
+
+def _cuit_de(conn, cliente_id: int) -> str:
+    row = conn.execute("SELECT cuit_dni FROM clients WHERE id=?", (cliente_id,)).fetchone()
+    return (row["cuit_dni"] if row else "") or ""
+
+
+def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> float:
     with get_connection() as conn:
-        _row = conn.execute("SELECT cuit_dni FROM clients WHERE id=?", (cliente_id,)).fetchone()
-        cuit = (_row["cuit_dni"] if _row else "") or ""
-        debitos_venta = conn.execute("""
+        cuit = _cuit_de(conn, cliente_id)
+        debitos_venta = conn.execute(f"""
             SELECT COALESCE(SUM(vp.monto), 0)
             FROM ventas_pagos vp
-            JOIN ventas v ON vp.venta_id = v.id
-            WHERE v.cliente_id = ? AND vp.medio = 'cuenta_corriente'
+            JOIN {origen.tabla} v ON vp.venta_id = v.id
+            WHERE v.{origen.columna_cliente} = ? AND vp.medio = 'cuenta_corriente'
         """, (cliente_id,)).fetchone()[0]
         debitos_factura = 0.0
         if cuit:
@@ -30,24 +83,30 @@ def get_cc_saldo(cliente_id: int) -> float:
                 WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
                   AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
             """, (cuit,)).fetchone()[0]
+        debitos_directos = conn.execute(
+            "SELECT COALESCE(SUM(monto), 0) FROM cc_debitos WHERE cliente_id = ?",
+            (cliente_id,),
+        ).fetchone()[0]
         abonos = conn.execute(
             "SELECT COALESCE(SUM(monto), 0) FROM cc_pagos WHERE cliente_id = ?",
             (cliente_id,),
         ).fetchone()[0]
-    return float(debitos_venta) + float(debitos_factura) - float(abonos)
+    return (
+        float(debitos_venta) + float(debitos_factura) + float(debitos_directos) - float(abonos)
+    )
 
 
-def get_cc_movimientos(cliente_id: int) -> list[dict]:
+def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
     with get_connection() as conn:
-        _row = conn.execute("SELECT cuit_dni FROM clients WHERE id=?", (cliente_id,)).fetchone()
-        cuit = (_row["cuit_dni"] if _row else "") or ""
+        cuit = _cuit_de(conn, cliente_id)
         movs = []
 
-        rows = conn.execute("""
-            SELECT v.fecha, v.numero, vp.monto, v.id AS venta_id
+        rows = conn.execute(f"""
+            SELECT v.{origen.columna_fecha} AS fecha, v.{origen.columna_numero} AS numero,
+                   vp.monto, v.id AS venta_id
             FROM ventas_pagos vp
-            JOIN ventas v ON vp.venta_id = v.id
-            WHERE v.cliente_id = ? AND vp.medio = 'cuenta_corriente'
+            JOIN {origen.tabla} v ON vp.venta_id = v.id
+            WHERE v.{origen.columna_cliente} = ? AND vp.medio = 'cuenta_corriente'
         """, (cliente_id,)).fetchall()
         for r in rows:
             movs.append({
@@ -68,10 +127,6 @@ def get_cc_movimientos(cliente_id: int) -> list[dict]:
                 WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
                   AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
             """, (cuit,)).fetchall()
-            _TIPO_LABEL = {
-                1:"FACTURA A", 6:"FACTURA B", 11:"FACTURA C",
-                2:"ND A", 3:"NC A", 7:"ND B", 8:"NC B", 12:"ND C", 13:"NC C",
-            }
             for r in rows:
                 lbl = _TIPO_LABEL.get(r["ftipo"], "COMP")
                 pv  = str(r["punto_venta"]).zfill(4)
@@ -84,6 +139,21 @@ def get_cc_movimientos(cliente_id: int) -> list[dict]:
                     "factura_id": r["factura_id"], "cc_pago_id": None,
                     "usuario_nombre": r["usuario_nombre"],
                 })
+
+        rows = conn.execute("""
+            SELECT cc_debitos.id, fecha, concepto, monto, referencia, u.nombre AS usuario_nombre
+            FROM cc_debitos
+            LEFT JOIN usuarios u ON u.id = cc_debitos.usuario_id
+            WHERE cc_debitos.cliente_id = ? ORDER BY fecha, cc_debitos.id
+        """, (cliente_id,)).fetchall()
+        for r in rows:
+            movs.append({
+                "fecha": (r["fecha"] or "")[:10], "tipo": "debito",
+                "concepto": r["concepto"] or "Venta a cuenta corriente",
+                "monto": r["monto"], "referencia": r["referencia"] or "",
+                "medio": "", "venta_id": None, "factura_id": None, "cc_pago_id": None,
+                "cc_debito_id": r["id"], "usuario_nombre": r["usuario_nombre"],
+            })
 
         rows = conn.execute("""
             SELECT cc_pagos.id, fecha, concepto, monto, referencia, medio_pago, u.nombre AS usuario_nombre
@@ -104,7 +174,9 @@ def get_cc_movimientos(cliente_id: int) -> list[dict]:
     return sorted(movs, key=lambda x: x["fecha"])
 
 
-def get_cc_movimientos_periodo(cliente_id: int, desde: str, hasta: str) -> dict:
+def get_cc_movimientos_periodo(
+    cliente_id: int, desde: str, hasta: str, origen: OrigenVentas = VENTAS_LIBRACORE
+) -> dict:
     """Movimientos de un rango de fechas más el saldo con el que se entra al rango.
 
     `desde`/`hasta` son fechas ISO (YYYY-MM-DD) inclusive. Se resuelve sobre
@@ -112,7 +184,7 @@ def get_cc_movimientos_periodo(cliente_id: int, desde: str, hasta: str) -> dict:
     corriente es chica por cliente y así no hay riesgo de que el resumen que se
     manda por mail se calcule distinto que la pantalla.
     """
-    movs = get_cc_movimientos(cliente_id)
+    movs = get_cc_movimientos(cliente_id, origen)
 
     def _signo(m):
         return float(m["monto"]) if m["tipo"] == "debito" else -float(m["monto"])
@@ -182,14 +254,14 @@ def get_resumenes_enviados(cliente_id: int | None = None, limit: int = 50) -> li
     return [dict(r) for r in rows]
 
 
-def get_clientes_con_saldo_cc() -> list[dict]:
+def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
     with get_connection() as conn:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             WITH dv AS (
-                SELECT v.cliente_id AS cid, SUM(vp.monto) AS total
-                FROM ventas_pagos vp JOIN ventas v ON vp.venta_id = v.id
-                WHERE vp.medio = 'cuenta_corriente' AND v.cliente_id IS NOT NULL
-                GROUP BY v.cliente_id
+                SELECT v.{origen.columna_cliente} AS cid, SUM(vp.monto) AS total
+                FROM ventas_pagos vp JOIN {origen.tabla} v ON vp.venta_id = v.id
+                WHERE vp.medio = 'cuenta_corriente' AND v.{origen.columna_cliente} IS NOT NULL
+                GROUP BY v.{origen.columna_cliente}
             ),
             df AS (
                 SELECT c.id AS cid, SUM(cm.monto) AS total
@@ -200,17 +272,24 @@ def get_clientes_con_saldo_cc() -> list[dict]:
                   AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
                 GROUP BY c.id
             ),
+            dd AS (
+                SELECT cliente_id AS cid, SUM(monto) AS total
+                FROM cc_debitos GROUP BY cliente_id
+            ),
             cr AS (
                 SELECT cliente_id AS cid, SUM(monto) AS total
                 FROM cc_pagos GROUP BY cliente_id
             )
             SELECT c.id, c.name, c.cuit_dni,
-                   COALESCE(dv.total,0) + COALESCE(df.total,0) - COALESCE(cr.total,0) AS saldo
+                   COALESCE(dv.total,0) + COALESCE(df.total,0) + COALESCE(dd.total,0)
+                   - COALESCE(cr.total,0) AS saldo
             FROM clients c
             LEFT JOIN dv ON dv.cid = c.id
             LEFT JOIN df ON df.cid = c.id
+            LEFT JOIN dd ON dd.cid = c.id
             LEFT JOIN cr ON cr.cid = c.id
-            WHERE dv.cid IS NOT NULL OR df.cid IS NOT NULL OR cr.cid IS NOT NULL
+            WHERE dv.cid IS NOT NULL OR df.cid IS NOT NULL
+               OR dd.cid IS NOT NULL OR cr.cid IS NOT NULL
             ORDER BY saldo DESC, c.name
         """).fetchall()
     return [dict(r) for r in rows]
@@ -233,3 +312,35 @@ def create_cc_pago(cliente_id: int, monto: float, fecha: str, concepto: str,
 def delete_cc_pago(pago_id: int):
     with get_connection() as conn:
         conn.execute("DELETE FROM cc_pagos WHERE id=?", (pago_id,))
+
+
+def create_cc_debito(cliente_id: int, monto: float, fecha: str, concepto: str = "",
+                     referencia: str = "", usuario_id=None,
+                     conn: sqlite3.Connection | None = None) -> int:
+    """Registra deuda que no nace de una venta de ESTA base.
+
+    Idempotente por `referencia` cuando se pasa una: el producto la arma con
+    el id de su venta (`sale-12`), así que un reintento del cobro no fía dos
+    veces lo mismo. Devuelve el id existente si ya estaba registrada — mismo
+    criterio que `create_caja_movimiento`.
+    """
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        if referencia:
+            row = c.execute(
+                "SELECT id FROM cc_debitos WHERE referencia = ?", (referencia,)
+            ).fetchone()
+            if row:
+                return row["id"]
+        cur = c.execute(
+            """INSERT INTO cc_debitos
+               (cliente_id, monto, fecha, concepto, referencia, usuario_id)
+               VALUES (?,?,?,?,?,?)""",
+            (cliente_id, float(monto), fecha, concepto, referencia, usuario_id),
+        )
+        return cur.lastrowid
+
+
+def delete_cc_debito(debito_id: int):
+    with get_connection() as conn:
+        conn.execute("DELETE FROM cc_debitos WHERE id=?", (debito_id,))
