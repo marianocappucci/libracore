@@ -9,7 +9,7 @@ import pytest
 
 from libracore.db import core
 from libracore.db.schema import init_core_schema
-from libracore.db import usuarios, tesoreria, caja, egresos, modulos as modulos_mod
+from libracore.db import tesoreria, caja, egresos, modulos as modulos_mod
 from libracore.db import listas_precio, turnos, dashboard, logs, arca_config
 from libracore.db import cuenta_corriente, libros_iva, reportes, remitos_presupuestos
 
@@ -25,14 +25,8 @@ def conn(tmp_path):
     core._db_path = None
 
 
-def test_usuarios(conn):
-    uid = usuarios.create_usuario("mozo1", "Mozo Uno", "m1@x.com", "pass123", role="operador")
-    assert usuarios.get_usuario_by_username("mozo1")["id"] == uid
-    assert usuarios.check_usuario_credentials("mozo1", "pass123") is not None
-    assert usuarios.check_usuario_credentials("mozo1", "wrong") is None
-    assert usuarios.check_usuario_credentials("noexiste", "x") is None
-    usuarios.update_usuario_password(uid, "newpass456")
-    assert usuarios.check_usuario_credentials("mozo1", "newpass456") is not None
+# `crear_usuario` es una fixture de tests/db/conftest.py — reemplaza al
+# `usuarios.create_usuario` que se fue con el modulo de auth.
 
 
 def test_tesoreria(conn):
@@ -104,8 +98,8 @@ def test_listas_precio(conn):
     assert lid in [l["id"] for l in listas_precio.get_all_listas_precio()]
 
 
-def test_turnos(conn):
-    uid = usuarios.create_usuario("mozo2", "Mozo Dos", "m2@x.com", "pass", role="operador")
+def test_turnos(conn, crear_usuario):
+    uid = crear_usuario("mozo2")
     tid = turnos.create_turno(uid, 1000)
     assert turnos.get_turno_activo(uid) is not None
     turnos.cerrar_turno(tid, 1000)

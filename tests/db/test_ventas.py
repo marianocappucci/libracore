@@ -10,7 +10,10 @@ import pytest
 
 from libracore.db import core
 from libracore.db.schema import init_core_schema
-from libracore.db import usuarios, caja, turnos, productos, stock, ventas, facturas, remitos_presupuestos
+from libracore.db import caja, turnos, productos, stock, ventas, facturas, remitos_presupuestos
+
+# `crear_usuario` es una fixture de tests/db/conftest.py — reemplaza al
+# `usuarios.create_usuario` que se fue con el modulo de auth (2026-07-30).
 
 
 @pytest.fixture
@@ -24,8 +27,8 @@ def conn(tmp_path):
     core._db_path = None
 
 
-def test_crear_venta_directa_con_pago_stock_y_turno(conn):
-    uid = usuarios.create_usuario("cajero1", "Cajero Uno", "c1@x.com", "pass", role="operador")
+def test_crear_venta_directa_con_pago_stock_y_turno(conn, crear_usuario):
+    uid = crear_usuario("cajero1")
     caja.create_caja_config("Caja 1", "", ["efectivo"])
     turnos.create_turno(uid, 1000)
     pid = productos.create_producto("Producto Test Venta")

@@ -59,6 +59,17 @@ LIBRAGENDA_SSH_KEY = os.environ.get(
     "LIBRAGENDA_SSH_KEY", os.path.expanduser("~/.ssh/id_ed25519_libragenda")
 )
 
+# Los 5 productos dependen de libraauth desde la migracion de auth del
+# 2026-07-30 (ver wiki/entities/libraauth.md), que saco `auth.py` y
+# `db/usuarios.py` de este paquete. Faltaba aca: `docker_build_ssh_args()` no
+# emitia su `--ssh`, asi que `cmd_actualizar` y sobre todo
+# `nuevo_cliente.build_image` construian sin ese mount y el paso de pip de
+# libraauth fallaba — o sea que **no se podia dar de alta una instancia nueva**
+# en ningun producto ya migrado.
+LIBRAAUTH_SSH_KEY = os.environ.get(
+    "LIBRAAUTH_SSH_KEY", os.path.expanduser("~/.ssh/id_ed25519_libraauth")
+)
+
 
 def _depende_de(repo_root: Path, paquete: str) -> bool:
     """True si el producto declara una dependencia de `paquete` (paquete
@@ -94,6 +105,12 @@ def _requiere_libragenda(repo_root: Path) -> bool:
     return _depende_de(repo_root, "libragenda")
 
 
+def _requiere_libraauth(repo_root: Path) -> bool:
+    """True si el producto depende de libraauth (requirements.txt o
+    pyproject.toml) — equivalente a _requiere_libracommerce."""
+    return _depende_de(repo_root, "libraauth")
+
+
 def _requiere_libra_ui(repo_root: Path) -> bool:
     """True si frontend/package.json del producto depende de libra-ui —
     equivalente a _requiere_libracommerce pero para la dependencia de NPM
@@ -110,11 +127,17 @@ def docker_build_ssh_args(repo_root: Path) -> list[str]:
     Dockerfile, mismo requisito de mounts SSH en ambos flujos de build).
     Se pasan `default` y `libracore` apuntando a la misma key (compat con
     Dockerfile viejos de un solo mount id y con los nuevos que ya usan
-    `id=libracore` explícito); `libracommerce`/`libragenda`/`libra-ui` solo
+    `id=libracore` explícito);
+    `libracommerce`/`libragenda`/`libraauth`/`libra-ui` solo
     si el producto depende de ese paquete (si no, la key puede ni existir
     en esta máquina). Pasar un `--ssh` de más para un id que el Dockerfile
     no monta es inofensivo (BuildKit lo ignora), pero pasar uno con una key
-    inexistente rompe el build."""
+    inexistente rompe el build.
+
+    `libraauth` se sumó el 2026-07-30, al cerrarse la migración de auth: sin
+    él, los 5 productos (que ya lo declaran en `requirements.txt`) construían
+    sin ese mount y `nuevo_cliente.build_image` no podía dar de alta una
+    instancia nueva."""
     args = [
         "--ssh", f"default={LIBRACORE_SSH_KEY}",
         "--ssh", f"libracore={LIBRACORE_SSH_KEY}",
@@ -123,6 +146,8 @@ def docker_build_ssh_args(repo_root: Path) -> list[str]:
         args += ["--ssh", f"libracommerce={LIBRACOMMERCE_SSH_KEY}"]
     if _requiere_libragenda(repo_root):
         args += ["--ssh", f"libragenda={LIBRAGENDA_SSH_KEY}"]
+    if _requiere_libraauth(repo_root):
+        args += ["--ssh", f"libraauth={LIBRAAUTH_SSH_KEY}"]
     if _requiere_libra_ui(repo_root):
         args += ["--ssh", f"libra-ui={LIBRA_UI_SSH_KEY}"]
     return args

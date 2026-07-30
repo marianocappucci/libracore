@@ -2,19 +2,65 @@
 Tests de integración de libracore.admin.app::create_admin_app +
 libracore.admin.routers.clientes::create_clientes_router, con
 TestClient (Fase 4 de LibraCore, backoffice compartido — ver
-wiki/entities/libracore.md). auth real de libracore.auth.AdminAuth;
-services y templates mínimos de prueba (los templates HTML reales viven
-en cada producto, forkeados, nunca migran a LibraCore).
+wiki/entities/libracore.md). services, templates y **auth** mínimos de
+prueba (los templates HTML reales viven en cada producto, forkeados, nunca
+migran a LibraCore).
+
+> El auth era `libracore.auth.AdminAuth` hasta el 2026-07-30, cuando el auth
+> salió del motor a `libraauth`. `create_admin_app()` **recibe el objeto de
+> auth inyectado** — no lo importa —, así que acá va un doble que implementa
+> ese contrato: mantiene lo que estos tests prueban (rutas, redirects, gateo
+> del endpoint de docs) sin que LibraCore tenga que depender de libraauth para
+> correr sus tests. El comportamiento real de `AdminAuth` (firma de cookie,
+> fail-closed, rate limit) tiene sus propios 18 tests en libraauth.
 """
 import types
 
 import pytest
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
-from libracore.auth import AdminAuth
 from libracore.admin.app import create_admin_app
 from libracore.admin.routers.clientes import create_clientes_router
 from libracore.admin.templates_config import create_templates
+
+
+class FakeAdminAuth:
+    """Doble del contrato que `create_admin_app`/`create_clientes_router`
+    esperan del objeto de auth. Sin sesión válida por defecto: es el escenario
+    que ejercitan estos tests."""
+
+    def __init__(self):
+        self.intentos_fallidos = []
+        self.usuario = None
+
+    def current_user(self, request: Request):
+        return self.usuario
+
+    def require_login(self, request: Request) -> str:
+        # La anotacion `Request` es parte del contrato, no decoracion: se usa
+        # como `Depends(auth.require_login)` y sin ella FastAPI toma `request`
+        # como query param y devuelve 422 en vez de redirigir. Y el redirect
+        # es un 307 con `Location`, no una RedirectResponse (ver
+        # libraauth/admin_auth.py, de donde salio este comportamiento).
+        if self.usuario is None:
+            raise HTTPException(status_code=307, headers={"Location": "/login"})
+        return self.usuario
+
+    def rate_limit_excedido(self, ip):
+        return False
+
+    def check_credentials(self, username, password):
+        return username == "admin" and password == "correcta"
+
+    def registrar_intento_fallido(self, ip):
+        self.intentos_fallidos.append(ip)
+
+    def create_session_cookie(self, resp, username):
+        self.usuario = username
+
+    def clear_session_cookie(self, resp):
+        self.usuario = None
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +115,7 @@ def fake_services():
 
 @pytest.fixture
 def app(templates_dir, fake_services):
-    auth = AdminAuth(dev_secret_fallback="test-admin-secret")
+    auth = FakeAdminAuth()
     templates = create_templates(templates_dir)
     router = create_clientes_router(auth, fake_services, templates)
     return create_admin_app(
@@ -114,7 +160,7 @@ def test_api_clientes_publicos_sin_secret_devuelve_401(client, monkeypatch):
 
 def test_api_clientes_publicos_con_secret_devuelve_clientes(templates_dir, fake_services, monkeypatch):
     monkeypatch.setenv("DOCS_AUTH_SECRET", "shared-secret")
-    auth = AdminAuth(dev_secret_fallback="test-admin-secret")
+    auth = FakeAdminAuth()
     templates = create_templates(templates_dir)
     router = create_clientes_router(auth, fake_services, templates)
     app = create_admin_app(

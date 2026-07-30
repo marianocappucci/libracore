@@ -8,7 +8,7 @@ resumen viejo su arqueo daba siempre cero.
 """
 import pytest
 
-from libracore.db import caja, core, turnos, usuarios
+from libracore.db import caja, core, turnos
 from libracore.db.schema import init_core_schema
 
 
@@ -23,13 +23,20 @@ def conn(tmp_path):
     core._db_path = None
 
 
-def _turno_abierto(monto_inicial=5000.0):
-    uid = usuarios.create_usuario("cajero", "Cajero", "c@x.com", "pass", role="operador")
-    return turnos.create_turno(uid, monto_inicial)
+@pytest.fixture
+def turno_abierto(crear_usuario):
+    """Antes era una funcion de modulo que llamaba a
+    `usuarios.create_usuario`; pasa a fixture porque el alta de usuario ahora
+    la resuelve el helper de conftest (el modulo de auth salio de LibraCore el
+    2026-07-30, ver tests/db/conftest.py)."""
+    def _abrir(monto_inicial=5000.0):
+        return turnos.create_turno(crear_usuario("cajero"), monto_inicial)
+
+    return _abrir
 
 
-def test_caja_movimientos_acepta_turno_id(conn):
-    tid = _turno_abierto()
+def test_caja_movimientos_acepta_turno_id(conn, turno_abierto):
+    tid = turno_abierto()
     mid = caja.create_caja_movimiento(
         "2026-07-28", "ingreso", "Venta POS-1", 1500, referencia="sale-1-efectivo",
         medio_pago="efectivo", turno_id=tid,
@@ -45,8 +52,8 @@ def test_movimiento_sin_turno_sigue_siendo_valido(conn):
     assert fila["turno_id"] is None
 
 
-def test_resumen_agrupa_por_medio_de_pago(conn):
-    tid = _turno_abierto()
+def test_resumen_agrupa_por_medio_de_pago(conn, turno_abierto):
+    tid = turno_abierto()
     caja.create_caja_movimiento("2026-07-28", "ingreso", "V1", 1000, referencia="s1-efectivo",
                                 medio_pago="efectivo", turno_id=tid)
     caja.create_caja_movimiento("2026-07-28", "ingreso", "V2", 2500, referencia="s2-efectivo",
@@ -62,8 +69,8 @@ def test_resumen_agrupa_por_medio_de_pago(conn):
     assert len(resumen["movimientos"]) == 3
 
 
-def test_resumen_ignora_los_movimientos_de_otro_turno(conn):
-    primero = _turno_abierto()
+def test_resumen_ignora_los_movimientos_de_otro_turno(conn, turno_abierto):
+    primero = turno_abierto()
     caja.create_caja_movimiento("2026-07-28", "ingreso", "V1", 1000, referencia="s1",
                                 medio_pago="efectivo", turno_id=primero)
     turnos.cerrar_turno_caja(primero, 6000.0)
@@ -76,9 +83,9 @@ def test_resumen_ignora_los_movimientos_de_otro_turno(conn):
     assert turnos.get_resumen_turno_caja(segundo)["efectivo_ventas"] == 700.0
 
 
-def test_egreso_resta_en_el_arqueo(conn):
+def test_egreso_resta_en_el_arqueo(conn, turno_abierto):
     """Sacar plata de la caja durante el turno baja lo que se espera contar."""
-    tid = _turno_abierto()
+    tid = turno_abierto()
     caja.create_caja_movimiento("2026-07-28", "ingreso", "V1", 5000, referencia="s1",
                                 medio_pago="efectivo", turno_id=tid)
     caja.create_caja_movimiento("2026-07-28", "egreso", "Pago flete", 1200, referencia="e1",
@@ -87,8 +94,8 @@ def test_egreso_resta_en_el_arqueo(conn):
     assert turnos.get_resumen_turno_caja(tid)["efectivo_ventas"] == 3800.0
 
 
-def test_cierre_calcula_el_esperado_como_inicial_mas_efectivo(conn):
-    tid = _turno_abierto(monto_inicial=5000.0)
+def test_cierre_calcula_el_esperado_como_inicial_mas_efectivo(conn, turno_abierto):
+    tid = turno_abierto(monto_inicial=5000.0)
     caja.create_caja_movimiento("2026-07-28", "ingreso", "V1", 3000, referencia="s1",
                                 medio_pago="efectivo", turno_id=tid)
     # la tarjeta no entra al cajon: no cuenta para el arqueo de efectivo
@@ -103,10 +110,10 @@ def test_cierre_calcula_el_esperado_como_inicial_mas_efectivo(conn):
     assert cerrado["cierre"] is not None
 
 
-def test_cierre_deja_registrada_la_diferencia(conn):
+def test_cierre_deja_registrada_la_diferencia(conn, turno_abierto):
     """Faltante real: se declara menos de lo esperado y el turno lo conserva
     para que se pueda auditar despues."""
-    tid = _turno_abierto(monto_inicial=1000.0)
+    tid = turno_abierto(monto_inicial=1000.0)
     caja.create_caja_movimiento("2026-07-28", "ingreso", "V1", 4000, referencia="s1",
                                 medio_pago="efectivo", turno_id=tid)
 
@@ -121,8 +128,8 @@ def test_cerrar_un_turno_inexistente_no_explota(conn):
     assert turnos.cerrar_turno_caja(9999, 100.0) is None
 
 
-def test_turno_cerrado_ya_no_figura_como_activo(conn):
-    uid = usuarios.create_usuario("cajero2", "Cajero Dos", "c2@x.com", "pass", role="operador")
+def test_turno_cerrado_ya_no_figura_como_activo(conn, crear_usuario):
+    uid = crear_usuario("cajero2")
     tid = turnos.create_turno(uid, 1000.0)
     assert turnos.get_turno_activo(uid) is not None
 

@@ -239,3 +239,35 @@ def test_docker_build_ssh_args_agrega_libracommerce_via_pyproject(tmp_path):
     args = provisioning.docker_build_ssh_args(tmp_path)
     assert "libracommerce=" + provisioning.LIBRACOMMERCE_SSH_KEY in args
     assert not any(a.startswith("libragenda=") for a in args)
+
+
+def test_requiere_libraauth_sin_pyproject_ni_requirements_es_false(tmp_path):
+    assert provisioning._requiere_libraauth(tmp_path) is False
+
+
+def test_docker_build_ssh_args_agrega_libraauth_via_requirements(tmp_path):
+    """El caso real de los 5 productos desde la migracion de auth del
+    2026-07-30: `libraauth` en requirements.txt y el Dockerfile con un
+    `--mount=type=ssh,id=libraauth`. Sin este `--ssh`, el paso de pip de
+    libraauth falla y `nuevo_cliente.build_image` no puede dar de alta una
+    instancia nueva."""
+    (tmp_path / "requirements.txt").write_text(
+        "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v1.0.0\n"
+        "libraauth @ git+ssh://git@github.com/marianocappucci/libraauth.git@v0.4.0\n"
+        "fastapi>=0.111.0\n",
+        encoding="utf-8",
+    )
+    args = provisioning.docker_build_ssh_args(tmp_path)
+    assert "libraauth=" + provisioning.LIBRAAUTH_SSH_KEY in args
+    assert not any(a.startswith("libragenda=") for a in args)
+
+
+def test_docker_build_ssh_args_sin_libraauth_no_lo_agrega(tmp_path):
+    """Un producto que no lo declara no recibe el `--ssh`: pasar uno con una
+    key que no existe en la maquina rompe el build."""
+    (tmp_path / "requirements.txt").write_text(
+        "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v1.0.0\n",
+        encoding="utf-8",
+    )
+    args = provisioning.docker_build_ssh_args(tmp_path)
+    assert not any(a.startswith("libraauth=") for a in args)
