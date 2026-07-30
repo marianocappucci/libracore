@@ -6,6 +6,7 @@ tests/admin/test_services.py. Docker/subprocess se mockean: crear_cliente()
 no debe tocar Docker real.
 """
 import json
+import re
 import subprocess
 import sys
 import types
@@ -92,13 +93,68 @@ def test_crear_cliente_genera_compose_con_datos_del_producto(cfg):
     assert info["port"] == 9000  # base_port del producto, sin puertos usados
 
     compose_text = (cfg.clientes_dir / "cliente-uno" / "docker-compose.yml").read_text()
-    assert "image: testprod:latest" in compose_text
     assert "container_name: testprod-cliente-uno" in compose_text
     assert "ADMIN_PASSWORD=secreto123" in compose_text
 
     meta = json.loads((cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text())
     assert meta["container"] == "testprod-cliente-uno"
     assert meta["plan"] == "basico"
+
+
+def test_crear_cliente_pinea_version_y_nunca_latest(cfg):
+    """El compose de un cliente nuevo nace con una versión concreta: si
+    naciera en `:latest`, el próximo build de otro cliente lo movería."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    compose_text = (cfg.clientes_dir / "cliente-uno" / "docker-compose.yml").read_text()
+    assert "testprod:latest" not in compose_text
+    assert re.search(r"^\s*image: testprod:v20\d\d\.\d\d\.\d\d-\d{4}$",
+                     compose_text, re.MULTILINE)
+
+    meta = json.loads((cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text())
+    assert meta["version_desplegada"].startswith("v20")
+
+
+def test_crear_cliente_reusa_la_version_ya_construida(cfg, monkeypatch):
+    """Un cliente nuevo se suma a la versión que ya corre la familia en vez
+    de estrenar un artefacto propio por haberse creado más tarde."""
+    monkeypatch.setattr(nc, "version_para_cliente_nuevo", lambda rebuild=False: "v2026.01.02-0304")
+
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    compose_text = (cfg.clientes_dir / "cliente-uno" / "docker-compose.yml").read_text()
+    assert "image: testprod:v2026.01.02-0304" in compose_text
+
+
+def test_version_para_cliente_nuevo_toma_la_mas_reciente_disponible(cfg, monkeypatch):
+    from libracore.provisioning import panel_admin as pa
+
+    monkeypatch.setattr(pa, "versiones_disponibles",
+                        lambda: ["v2026.05.05-1200", "v2026.01.01-0900"])
+    monkeypatch.setattr(nc, "image_exists", lambda ref=None: True)
+    llamadas = []
+    monkeypatch.setattr(nc, "build_image", lambda *a, **k: llamadas.append(a) or "nueva")
+
+    assert nc.version_para_cliente_nuevo() == "v2026.05.05-1200"
+    assert llamadas == []  # no rebuildeó
+
+
+def test_version_para_cliente_nuevo_buildea_si_no_hay_ninguna(cfg, monkeypatch):
+    from libracore.provisioning import panel_admin as pa
+
+    monkeypatch.setattr(pa, "versiones_disponibles", lambda: [])
+    monkeypatch.setattr(nc, "build_image", lambda *a, **k: "v2026.09.09-0101")
+
+    assert nc.version_para_cliente_nuevo() == "v2026.09.09-0101"
+
+
+def test_version_para_cliente_nuevo_con_rebuild_siempre_construye(cfg, monkeypatch):
+    from libracore.provisioning import panel_admin as pa
+
+    monkeypatch.setattr(pa, "versiones_disponibles", lambda: ["v2026.05.05-1200"])
+    monkeypatch.setattr(nc, "build_image", lambda *a, **k: "v2026.09.09-0101")
+
+    assert nc.version_para_cliente_nuevo(rebuild=True) == "v2026.09.09-0101"
 
 
 def test_crear_cliente_aplica_plan_cuando_db_lista(cfg, fake_plans, monkeypatch):
@@ -141,11 +197,21 @@ def test_crear_cliente_con_dominio_y_npm_crea_proxy(cfg, monkeypatch):
     assert created["forward_host"] == "10.0.0.1"
 
 
+def _build_cmd(calls):
+    """El `docker build` entre las llamadas capturadas. No es la primera:
+    el build ahora va precedido por el `git rev-parse` que resuelve el
+    label del commit."""
+    for cmd in calls:
+        if list(cmd[:2]) == ["docker", "build"]:
+            return cmd
+    raise AssertionError(f"No hubo `docker build` en {calls}")
+
+
 def test_build_image_sin_libracommerce_no_pasa_ese_ssh_id(cfg, fake_docker):
     (cfg.repo_root / "requirements.txt").write_text("fastapi\nlibracore @ git+ssh://...\n", encoding="utf-8")
     nc.build_image()
 
-    build_cmd = fake_docker[0]
+    build_cmd = _build_cmd(fake_docker)
     assert "default=" + provisioning.LIBRACORE_SSH_KEY in build_cmd
     assert "libracore=" + provisioning.LIBRACORE_SSH_KEY in build_cmd
     assert not any(a.startswith("libracommerce=") for a in build_cmd)
@@ -157,8 +223,25 @@ def test_build_image_con_libracommerce_agrega_su_ssh_id(cfg, fake_docker):
     )
     nc.build_image()
 
-    build_cmd = fake_docker[0]
+    build_cmd = _build_cmd(fake_docker)
     assert "libracommerce=" + provisioning.LIBRACOMMERCE_SSH_KEY in build_cmd
+
+
+def test_build_image_etiqueta_version_y_latest(cfg, fake_docker):
+    version = nc.build_image("v2026.03.04-0506")
+
+    build_cmd = _build_cmd(fake_docker)
+    assert version == "v2026.03.04-0506"
+    assert build_cmd[build_cmd.index("-t") + 1] == "testprod:v2026.03.04-0506"
+    assert "testprod:latest" in build_cmd  # el puntero móvil se sigue moviendo
+    assert "org.libra.version=v2026.03.04-0506" in build_cmd
+
+
+def test_build_image_falla_corta_el_alta(cfg, monkeypatch):
+    # `nc` importó el helper por nombre, así que el doble va sobre `nc`.
+    monkeypatch.setattr(nc, "build_image_tagged", lambda *a, **k: False)
+    with pytest.raises(SystemExit):
+        nc.build_image()
 
 
 def test_crear_cliente_proxy_existente_no_falla(cfg, monkeypatch):

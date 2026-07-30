@@ -19,9 +19,11 @@ LibraCore) se resuelven en tiempo de ejecución vía imports diferidos, mismo
 patrón que `libracore.admin.services::_plans()/_pa()/_nc()`.
 """
 import os
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -244,6 +246,97 @@ class ProductConfig:
     @property
     def clientes_dir(self) -> Path:
         return self.repo_root / "clientes"
+
+    @property
+    def image_repo(self) -> str:
+        """`image_name` sin el tag: `contalibra:latest` → `contalibra`.
+
+        Los productos siguen declarando `image_name` con `:latest` en su
+        `configure()` (no se les cambia la llamada), pero desde el
+        versionado de imagen lo que importa es el repo, porque el tag lo
+        pone cada deploy — ver `deploy_version()`.
+
+        El `:` de un registry con puerto (`registry:5000/contalibra`) no es
+        un tag: solo se corta la última parte si no contiene `/`.
+        """
+        repo, sep, tag = self.image_name.rpartition(":")
+        if sep and "/" not in tag:
+            return repo
+        return self.image_name
+
+    def image_ref(self, version: str) -> str:
+        """Referencia completa de una versión: `contalibra:v2026.07.30-2110`."""
+        return f"{self.image_repo}:{version}"
+
+
+def deploy_version(now: datetime | None = None) -> str:
+    """Identificador de la versión de un deploy: `vYYYY.MM.DD-HHMM`.
+
+    Mismo esquema que `deploy.sh` de Farmacia (ver
+    wiki/entities/farmacia-python.md), que es el único producto del
+    inventario que ya versionaba sus deploys. La diferencia es dónde se
+    usa: Farmacia lo escribe en un archivo `VERSION` y crea un tag de git,
+    pero su imagen Docker sigue siendo `farmacia-app:latest`; acá además
+    **nombra la imagen**, que es lo que permite que el compose de cada
+    cliente pinee una versión concreta en vez de un `:latest` mutable.
+
+    Por qué timestamp y no la versión del producto: un deploy puede repetir
+    código (rebuild por un bump de dependencia, por ejemplo), y lo que hay
+    que poder distinguir es *el artefacto*, no el número de release.
+    """
+    return (now or datetime.now()).strftime("v%Y.%m.%d-%H%M")
+
+
+def _git_commit_corto(repo_root: Path) -> str | None:
+    """Hash corto del checkout, o None si no es un repo git (o no hay git).
+    Se guarda como label de la imagen: el tag dice *cuándo* se construyó,
+    el label dice *qué* se construyó."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True,
+        )
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    return (r.stdout or "").strip() or None
+
+
+def build_image_tagged(version: str, *, log=print) -> bool:
+    """Construye la imagen del producto activo etiquetándola **con la
+    versión y además con `latest`**, y devuelve si el build salió bien.
+
+    Compartido por `panel_admin.cmd_actualizar` y
+    `nuevo_cliente.build_image`, que hasta el versionado tenían el mismo
+    `docker build` duplicado con distinto mensaje.
+
+    `latest` se sigue moviendo a propósito, por compatibilidad con lo que
+    haya quedado apuntando ahí (un compose viejo, un script suelto). Lo que
+    hace segura la convivencia es que los clientes dejan de usarlo: cada
+    uno queda pineado a su versión, así que un `up -d` inocente ya no puede
+    saltarlos a código que nadie probó para ellos.
+    """
+    cfg = get_config()
+    ref = cfg.image_ref(version)
+    cmd = [
+        "docker", "build", *docker_build_ssh_args(cfg.repo_root),
+        "-t", ref,
+        "-t", cfg.image_ref("latest"),
+        "--label", f"org.libra.version={version}",
+        "--label", f"org.libra.built-at={datetime.now().astimezone().isoformat(timespec='seconds')}",
+    ]
+    commit = _git_commit_corto(cfg.repo_root)
+    if commit:
+        cmd += ["--label", f"org.libra.commit={commit}"]
+    cmd.append(".")
+
+    log(f"[*] Construyendo {ref}" + (f" (commit {commit})" if commit else "") + " ...")
+    r = subprocess.run(
+        cmd, cwd=str(cfg.repo_root),
+        env={**os.environ, "DOCKER_BUILDKIT": "1"},
+    )
+    return r.returncode == 0
 
 
 _lock = threading.Lock()

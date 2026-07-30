@@ -271,3 +271,111 @@ def test_docker_build_ssh_args_sin_libraauth_no_lo_agrega(tmp_path):
     )
     args = provisioning.docker_build_ssh_args(tmp_path)
     assert not any(a.startswith("libraauth=") for a in args)
+
+
+# ── versionado de imagen ──────────────────────────────────────────────────────
+
+def test_deploy_version_usa_el_esquema_de_farmacia():
+    from datetime import datetime
+    assert provisioning.deploy_version(datetime(2026, 7, 30, 21, 10)) == "v2026.07.30-2110"
+
+
+def test_deploy_version_sin_argumento_es_del_momento():
+    v = provisioning.deploy_version()
+    assert v.startswith("v20") and len(v) == len("v2026.07.30-2110")
+
+
+def test_image_repo_saca_el_tag(tmp_path):
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=tmp_path,
+    )
+    cfg = provisioning.get_config()
+    assert cfg.image_repo == "testprod"
+    assert cfg.image_ref("v2026.07.30-2110") == "testprod:v2026.07.30-2110"
+
+
+def test_image_repo_sin_tag_declarado(tmp_path):
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=tmp_path,
+    )
+    assert provisioning.get_config().image_repo == "testprod"
+
+
+def test_image_repo_no_confunde_el_puerto_de_un_registry_con_un_tag(tmp_path):
+    """`registry:5000/testprod` no tiene tag: el `:` es del puerto. Cortar
+    ahi dejaria la imagen apuntando a `registry`."""
+    provisioning.configure(
+        product_name="TESTPROD", image_name="registry:5000/testprod",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=tmp_path,
+    )
+    cfg = provisioning.get_config()
+    assert cfg.image_repo == "registry:5000/testprod"
+    assert cfg.image_ref("v1") == "registry:5000/testprod:v1"
+
+
+def test_build_image_tagged_arma_el_comando_con_los_dos_tags_y_labels(tmp_path, monkeypatch):
+    import subprocess as sp
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=tmp_path,
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[:2] == ["git", "-C"]:
+            return sp.CompletedProcess(cmd, 0, stdout="abc1234\n")
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(provisioning.subprocess, "run", fake_run)
+
+    assert provisioning.build_image_tagged("v2026.07.30-2110", log=lambda *a: None) is True
+
+    cmd, kwargs = next(c for c in calls if c[0][:2] == ["docker", "build"])
+    assert "-t" in cmd and "testprod:v2026.07.30-2110" in cmd
+    assert "testprod:latest" in cmd
+    assert "org.libra.version=v2026.07.30-2110" in cmd
+    assert "org.libra.commit=abc1234" in cmd
+    assert cmd[-1] == "."
+    assert kwargs["cwd"] == str(tmp_path)
+    assert kwargs["env"]["DOCKER_BUILDKIT"] == "1"
+
+
+def test_build_image_tagged_sin_git_omite_el_label_de_commit(tmp_path, monkeypatch):
+    import subprocess as sp
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=tmp_path,
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "-C"]:
+            return sp.CompletedProcess(cmd, 128, stdout="")
+        return sp.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(provisioning.subprocess, "run", fake_run)
+    provisioning.build_image_tagged("v2026.07.30-2110", log=lambda *a: None)
+
+    cmd = next(c for c in calls if c[:2] == ["docker", "build"])
+    assert not any(a.startswith("org.libra.commit=") for a in cmd)
+
+
+def test_build_image_tagged_devuelve_false_si_el_build_falla(tmp_path, monkeypatch):
+    import subprocess as sp
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=tmp_path,
+    )
+    monkeypatch.setattr(provisioning.subprocess, "run",
+                        lambda cmd, **k: sp.CompletedProcess(cmd, 1, stdout=""))
+    assert provisioning.build_image_tagged("v1", log=lambda *a: None) is False

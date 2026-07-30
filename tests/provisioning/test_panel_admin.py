@@ -51,15 +51,35 @@ def cfg(tmp_path, fake_docker):
     return provisioning.get_config()
 
 
-def _mkclient(cfg, slug, nombre="Cliente", domain="", port=9000, plan="basico", db_content=b""):
+def _mkclient(cfg, slug, nombre="Cliente", domain="", port=9000, plan="basico",
+              db_content=b"", image="testprod:latest", **extra_meta):
     cdir = cfg.clientes_dir / slug
     (cdir / "data").mkdir(parents=True)
     (cdir / "data" / cfg.db_filename).write_bytes(db_content)
     meta = {"nombre": nombre, "slug": slug, "domain": domain, "port": port,
             "container": f"{cfg.container_prefix}-{slug}", "admin_user": "admin",
             "admin_password": "pass", "plan": plan}
+    meta.update(extra_meta)
     (cdir / "cliente.json").write_text(json.dumps(meta), encoding="utf-8")
+    (cdir / "docker-compose.yml").write_text(
+        "services:\n"
+        f"  {cfg.container_prefix}:\n"
+        f"    image: {image}\n"
+        f"    container_name: {cfg.container_prefix}-{slug}\n"
+        "    ports:\n"
+        f'      - "{port}:8000"\n',
+        encoding="utf-8",
+    )
     return cdir
+
+
+def _build_cmd(calls):
+    """El `docker build` entre las llamadas capturadas — no es la primera:
+    lo precede el `git rev-parse` del label de commit."""
+    for cmd in calls:
+        if list(cmd[:2]) == ["docker", "build"]:
+            return cmd
+    raise AssertionError(f"No hubo `docker build` en {calls}")
 
 
 def test_load_clients_vacio(cfg):
@@ -207,9 +227,9 @@ def test_cmd_actualizar_sin_libracommerce_no_pasa_ese_ssh_id(cfg, monkeypatch):
     monkeypatch.setattr(pa.subprocess, "run", fake_run)
     pa.cmd_actualizar()
 
-    build_cmd = build_calls[0]
-    assert "default=" + pa.LIBRACORE_SSH_KEY in build_cmd
-    assert "libracore=" + pa.LIBRACORE_SSH_KEY in build_cmd
+    build_cmd = _build_cmd(build_calls)
+    assert "default=" + provisioning.LIBRACORE_SSH_KEY in build_cmd
+    assert "libracore=" + provisioning.LIBRACORE_SSH_KEY in build_cmd
     assert not any(a.startswith("libracommerce=") for a in build_cmd)
 
 
@@ -226,8 +246,8 @@ def test_cmd_actualizar_con_libracommerce_agrega_su_ssh_id(cfg, monkeypatch):
     monkeypatch.setattr(pa.subprocess, "run", fake_run)
     pa.cmd_actualizar()
 
-    build_cmd = build_calls[0]
-    assert "libracommerce=" + pa.LIBRACOMMERCE_SSH_KEY in build_cmd
+    build_cmd = _build_cmd(build_calls)
+    assert "libracommerce=" + provisioning.LIBRACOMMERCE_SSH_KEY in build_cmd
 
 
 def test_cmd_actualizar_sin_libra_ui_no_pasa_ese_ssh_id(cfg, monkeypatch):
@@ -241,7 +261,7 @@ def test_cmd_actualizar_sin_libra_ui_no_pasa_ese_ssh_id(cfg, monkeypatch):
     monkeypatch.setattr(pa.subprocess, "run", fake_run)
     pa.cmd_actualizar()
 
-    build_cmd = build_calls[0]
+    build_cmd = _build_cmd(build_calls)
     assert not any(a.startswith("libra-ui=") for a in build_cmd)
 
 
@@ -262,5 +282,201 @@ def test_cmd_actualizar_con_libra_ui_agrega_su_ssh_id(cfg, monkeypatch):
     monkeypatch.setattr(pa.subprocess, "run", fake_run)
     pa.cmd_actualizar()
 
-    build_cmd = build_calls[0]
-    assert "libra-ui=" + pa.LIBRA_UI_SSH_KEY in build_cmd
+    build_cmd = _build_cmd(build_calls)
+    assert "libra-ui=" + provisioning.LIBRA_UI_SSH_KEY in build_cmd
+
+
+# ── versionado de imagen ──────────────────────────────────────────────────────
+
+def test_leer_y_pinear_image_del_compose(cfg):
+    _mkclient(cfg, "cliente-uno", image="testprod:latest")
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:latest"
+
+    anterior = pa.pinear_image("cliente-uno", "testprod:v2026.03.04-0506")
+    assert anterior == "testprod:latest"
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.03.04-0506"
+
+    # el resto del compose queda intacto
+    texto = (cfg.clientes_dir / "cliente-uno" / "docker-compose.yml").read_text()
+    assert "container_name: testprod-cliente-uno" in texto
+    assert '- "9000:8000"' in texto
+
+
+def test_pinear_image_sin_compose_devuelve_none(cfg):
+    cdir = cfg.clientes_dir / "cliente-uno"
+    (cdir / "data").mkdir(parents=True)
+    (cdir / "cliente.json").write_text('{"slug": "cliente-uno"}', encoding="utf-8")
+    assert pa.pinear_image("cliente-uno", "testprod:v1") is None
+    assert pa.leer_image_pineada("cliente-uno") is None
+
+
+def test_pinear_image_solo_toca_la_primera_ocurrencia(cfg):
+    cdir = _mkclient(cfg, "cliente-uno", image="testprod:latest")
+    compose_file = cdir / "docker-compose.yml"
+    compose_file.write_text(
+        compose_file.read_text() + "  sidecar:\n    image: otra-cosa:9.9\n", encoding="utf-8"
+    )
+
+    pa.pinear_image("cliente-uno", "testprod:v2026.03.04-0506")
+
+    texto = compose_file.read_text()
+    assert "image: testprod:v2026.03.04-0506" in texto
+    assert "image: otra-cosa:9.9" in texto
+
+
+def test_cmd_actualizar_pinea_la_version_nueva_en_el_compose(cfg, monkeypatch):
+    _mkclient(cfg, "cliente-uno", image="testprod:latest")
+    monkeypatch.setattr(pa.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+
+    pa.cmd_actualizar(["cliente-uno"], version="v2026.03.04-0506")
+
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.03.04-0506"
+    meta = json.loads((cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text())
+    assert meta["version_desplegada"] == "v2026.03.04-0506"
+    assert meta["version_anterior"] == "testprod:latest"
+
+
+def test_cmd_actualizar_no_toca_a_los_clientes_no_nombrados(cfg, monkeypatch):
+    """El punto de todo el cambio: mover a un cliente no puede arrastrar al
+    otro, que es justo lo que hacía `:latest` compartido."""
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.01.01-0000")
+    _mkclient(cfg, "cliente-dos", image="testprod:v2026.01.01-0000")
+    monkeypatch.setattr(pa.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+
+    pa.cmd_actualizar(["cliente-uno"], version="v2026.03.04-0506")
+
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.03.04-0506"
+    assert pa.leer_image_pineada("cliente-dos") == "testprod:v2026.01.01-0000"
+
+
+def test_cmd_actualizar_no_repinea_a_un_cliente_detenido(cfg, monkeypatch):
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.01.01-0000")
+    monkeypatch.setattr(pa.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    monkeypatch.setattr(pa, "container_status", lambda c: {"status": "exited", "started": ""})
+
+    pa.cmd_actualizar(["cliente-uno"], version="v2026.03.04-0506")
+
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.01.01-0000"
+
+
+def test_cmd_actualizar_revierte_el_pin_si_falla_el_arranque(cfg, monkeypatch, capsys):
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.01.01-0000")
+    monkeypatch.setattr(pa.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    monkeypatch.setattr(pa, "compose", lambda slug, *a: subprocess.CompletedProcess([], 1))
+
+    pa.cmd_actualizar(["cliente-uno"], version="v2026.03.04-0506")
+
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.01.01-0000"
+    assert "repineado" in capsys.readouterr().out
+    meta = json.loads((cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text())
+    assert "version_desplegada" not in meta
+
+
+def test_cmd_actualizar_construye_con_tag_de_version(cfg, monkeypatch):
+    build_calls = []
+    monkeypatch.setattr(pa.subprocess, "run",
+                        lambda cmd, **k: build_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+
+    pa.cmd_actualizar(version="v2026.03.04-0506")
+
+    build_cmd = _build_cmd(build_calls)
+    assert "testprod:v2026.03.04-0506" in build_cmd
+    assert "testprod:latest" in build_cmd
+
+
+def test_versiones_disponibles_excluye_latest_y_ordena(cfg, monkeypatch):
+    monkeypatch.setattr(
+        pa, "docker",
+        lambda *a, capture=False, cwd=None: subprocess.CompletedProcess(
+            a, 0, stdout="latest\nv2026.01.01-0900\nv2026.05.05-1200\n<none>\n"),
+    )
+    assert pa.versiones_disponibles() == ["v2026.05.05-1200", "v2026.01.01-0900"]
+
+
+def test_cmd_versiones_marca_al_que_sigue_en_latest(cfg, monkeypatch, capsys):
+    _mkclient(cfg, "cliente-uno", image="testprod:latest")
+    _mkclient(cfg, "cliente-dos", image="testprod:v2026.03.04-0506")
+    monkeypatch.setattr(pa, "container_image",
+                        lambda c: "testprod:v2026.03.04-0506" if c.endswith("dos") else "testprod:latest")
+    monkeypatch.setattr(pa, "image_id", lambda ref: "sha256:aaa")
+    monkeypatch.setattr(pa, "container_image_id", lambda c: "sha256:aaa")
+
+    pa.cmd_versiones()
+
+    out = capsys.readouterr().out
+    assert "sin pin" in out
+    assert "cliente-uno" in out
+
+
+def test_cmd_versiones_marca_desfasaje_por_id_y_no_por_nombre(cfg, monkeypatch, capsys):
+    """El compose es la intención y el contenedor el hecho. La comparación
+    va por ID a propósito: dos contenedores pueden decir el mismo
+    `producto:latest` y correr imágenes distintas, así que comparar strings
+    daría un falso 'todo en orden'."""
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200")
+    monkeypatch.setattr(pa, "container_image", lambda c: "testprod:v2026.05.05-1200")
+    monkeypatch.setattr(pa, "image_id", lambda ref: "sha256:nueva")
+    monkeypatch.setattr(pa, "container_image_id", lambda c: "sha256:vieja")
+
+    pa.cmd_versiones()
+
+    assert "desfasado" in capsys.readouterr().out
+
+
+def test_cmd_versiones_sin_marcas_cuando_el_pin_y_el_contenedor_coinciden(cfg, monkeypatch, capsys):
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200")
+    monkeypatch.setattr(pa, "container_image", lambda c: "testprod:v2026.05.05-1200")
+    monkeypatch.setattr(pa, "image_id", lambda ref: "sha256:misma")
+    monkeypatch.setattr(pa, "container_image_id", lambda c: "sha256:misma")
+
+    pa.cmd_versiones()
+
+    out = capsys.readouterr().out
+    assert "⚠" not in out
+
+
+def test_cmd_rollback_sin_version_usa_la_anterior_del_cliente(cfg, fake_docker, monkeypatch):
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200",
+              version_anterior="testprod:v2026.01.01-0900")
+    monkeypatch.setattr(pa, "versiones_disponibles",
+                        lambda: ["v2026.05.05-1200", "v2026.01.01-0900"])
+    monkeypatch.setattr("builtins.input", lambda *_: "s")
+
+    pa.cmd_rollback("cliente-uno")
+
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.01.01-0900"
+    assert ("cliente-uno", ("up", "-d")) in fake_docker["compose_calls"]
+
+
+def test_cmd_rollback_rechaza_una_version_inexistente(cfg, monkeypatch, capsys):
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200")
+    monkeypatch.setattr(pa, "versiones_disponibles", lambda: ["v2026.05.05-1200"])
+
+    pa.cmd_rollback("cliente-uno", "v2020.01.01-0000")
+
+    assert "no está construida" in capsys.readouterr().out
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.05.05-1200"
+
+
+def test_cmd_rollback_cancelado_no_toca_el_compose(cfg, monkeypatch):
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200")
+    monkeypatch.setattr(pa, "versiones_disponibles",
+                        lambda: ["v2026.05.05-1200", "v2026.01.01-0900"])
+    monkeypatch.setattr("builtins.input", lambda *_: "n")
+
+    pa.cmd_rollback("cliente-uno", "v2026.01.01-0900")
+
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.05.05-1200"
+
+
+def test_cmd_rollback_revierte_el_pin_si_falla_el_arranque(cfg, monkeypatch, capsys):
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200")
+    monkeypatch.setattr(pa, "versiones_disponibles",
+                        lambda: ["v2026.05.05-1200", "v2026.01.01-0900"])
+    monkeypatch.setattr("builtins.input", lambda *_: "s")
+    monkeypatch.setattr(pa, "compose", lambda slug, *a: subprocess.CompletedProcess([], 1))
+
+    pa.cmd_rollback("cliente-uno", "v2026.01.01-0900")
+
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.05.05-1200"
+    assert "repineado" in capsys.readouterr().out

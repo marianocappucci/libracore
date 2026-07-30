@@ -9,7 +9,6 @@ Requiere `libracore.provisioning.configure()` antes de usar cualquier
 función de acá. `plans.py` (planes reales de cada producto) se resuelve en
 tiempo de ejecución vía import diferido — ver `libracore.provisioning._plans()`.
 """
-import os
 import re
 import secrets
 import subprocess
@@ -20,7 +19,7 @@ from pathlib import Path
 from . import (
     get_config, _plans, _npm_api,
     client_from_config, forward_host_from_config, le_email_from_config, npm_available,
-    docker_build_ssh_args, check_venv_sync,
+    check_venv_sync, build_image_tagged, deploy_version,
 )
 
 
@@ -56,26 +55,42 @@ def ask(msg: str, default: str = "") -> str:
     return val if val else default
 
 
-def build_image():
+def build_image(version: str | None = None) -> str:
+    """Construye la imagen del producto y devuelve **la versión** con la que
+    quedó etiquetada, que es la que el cliente nuevo va a pinear en su
+    compose."""
     cfg = get_config()
     aviso = check_venv_sync(cfg.repo_root)
     if aviso:
         print(aviso)
-    print(f"\n[*] Construyendo imagen {cfg.image_name} ...")
-    build_env = {**os.environ, "DOCKER_BUILDKIT": "1"}
-    r = subprocess.run(
-        ["docker", "build", *docker_build_ssh_args(cfg.repo_root), "-t", cfg.image_name, "."],
-        cwd=str(cfg.repo_root), env=build_env,
-    )
-    if r.returncode != 0:
+    version = version or deploy_version()
+    if not build_image_tagged(version):
         sys.exit("[ERROR] Falló el build de la imagen.")
-    print("[OK] Imagen lista.")
+    print(f"[OK] Imagen {cfg.image_ref(version)} lista.")
+    return version
 
 
-def image_exists() -> bool:
+def image_exists(ref: str | None = None) -> bool:
     cfg = get_config()
-    return subprocess.run(["docker","image","inspect",cfg.image_name],
+    return subprocess.run(["docker","image","inspect", ref or cfg.image_name],
                           capture_output=True).returncode == 0
+
+
+def version_para_cliente_nuevo(rebuild: bool = False) -> str:
+    """Versión que va a pinear un cliente recién creado.
+
+    Reusa la más reciente ya construida en este host — así dar de alta un
+    cliente no le mete un artefacto distinto al que corren sus hermanos por
+    el solo hecho de haberse creado más tarde. Si no hay ninguna versionada
+    (o se pidió `rebuild`), construye una nueva.
+    """
+    from .panel_admin import versiones_disponibles
+
+    if not rebuild:
+        disponibles = versiones_disponibles()
+        if disponibles and image_exists(get_config().image_ref(disponibles[0])):
+            return disponibles[0]
+    return build_image()
 
 
 def network_exists(name: str) -> bool:
@@ -195,11 +210,17 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
 
     container = f"{cfg.container_prefix}-{slug}"
 
+    # — versión de imagen — el compose nace pineado a una versión concreta,
+    # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
+    version   = version_para_cliente_nuevo(rebuild)
+    image_ref = cfg.image_ref(version)
+    log(f"[OK] Imagen para este cliente: {image_ref}")
+
     # — docker-compose.yml —
     compose = f"""\
 services:
   {cfg.container_prefix}:
-    image: {cfg.image_name}
+    image: {image_ref}
     container_name: {container}
     restart: unless-stopped
     mem_limit: 768m
@@ -231,13 +252,9 @@ services:
             "nombre": nombre, "slug": slug, "domain": domain,
             "port": port, "container": container,
             "admin_user": admin_user, "admin_password": admin_password,
-            "plan": plan,
+            "plan": plan, "version_desplegada": version,
         }, indent=2, ensure_ascii=False)
     )
-
-    # — imagen Docker —
-    if rebuild or not image_exists():
-        build_image()
 
     # — levantar —
     log(f"[*] Iniciando {container} ...")

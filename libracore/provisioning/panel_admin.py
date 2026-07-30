@@ -8,7 +8,7 @@ función de acá. `npm_api.py` (idéntico entre productos, pero vive en
 `scripts/` de cada repo, no en LibraCore) se resuelve en tiempo de
 ejecución vía import diferido — ver `libracore.provisioning._npm_api()`.
 """
-import os
+import re
 import sys
 import json
 import sqlite3
@@ -20,8 +20,7 @@ from pathlib import Path
 
 from . import (
     get_config, _npm_api,
-    LIBRACORE_SSH_KEY, LIBRACOMMERCE_SSH_KEY, LIBRA_UI_SSH_KEY, docker_build_ssh_args,
-    check_venv_sync,
+    check_venv_sync, build_image_tagged, deploy_version,
 )
 
 BACKUP_RETENTION_DIAS = 14
@@ -81,6 +80,112 @@ def find_client(slug: str) -> dict | None:
         if c["slug"] == slug:
             return c
     return None
+
+
+# ── versión de imagen por cliente ─────────────────────────────────────────────
+#
+# Cada cliente pinea en su `docker-compose.yml` una versión concreta de la
+# imagen (`contalibra:v2026.07.30-2110`), no `:latest`. El motivo es que
+# `:latest` es un tag mutable: con dos clientes del mismo producto,
+# actualizar a uno reconstruye la imagen que el otro también nombra, y el
+# segundo se salta a ese código en su próximo `up -d` — sin que nadie haya
+# pedido un deploy suyo. Con el pin, cada instancia se mueve solo cuando se
+# la nombra, y volver atrás es repinear el tag anterior (ver `cmd_rollback`).
+
+_IMAGE_LINE = re.compile(r"^(?P<pre>[ \t]*image:[ \t]*)(?P<ref>\S+)", re.MULTILINE)
+
+
+def _compose_path(slug: str) -> Path:
+    return get_config().clientes_dir / slug / "docker-compose.yml"
+
+
+def leer_image_pineada(slug: str) -> str | None:
+    """Referencia de imagen que declara hoy el compose del cliente, o None
+    si el archivo no existe o no tiene una línea `image:`."""
+    path = _compose_path(slug)
+    try:
+        contenido = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = _IMAGE_LINE.search(contenido)
+    return m.group("ref") if m else None
+
+
+def pinear_image(slug: str, ref: str) -> str | None:
+    """Reescribe la línea `image:` del compose del cliente y devuelve la
+    referencia que había antes (None si no se pudo tocar el archivo).
+
+    Se reemplaza solo la **primera** ocurrencia: el compose de un cliente
+    declara un único servicio, y limitarlo evita que un `image:` que
+    aparezca más abajo (un sidecar futuro) se pise sin querer."""
+    path = _compose_path(slug)
+    try:
+        contenido = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = _IMAGE_LINE.search(contenido)
+    if not m:
+        return None
+    anterior = m.group("ref")
+    if anterior != ref:
+        nuevo = contenido[:m.start()] + m.group("pre") + ref + contenido[m.end():]
+        path.write_text(nuevo, encoding="utf-8")
+    return anterior
+
+
+def _guardar_meta(slug: str, **campos):
+    """Merge de campos en `cliente.json` (versión desplegada, anterior,
+    fecha) conservando lo que ya estaba."""
+    meta_file = get_config().clientes_dir / slug / "cliente.json"
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    meta.update(campos)
+    meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def container_image(container: str) -> str | None:
+    """Referencia de imagen con la que se creó el contenedor (el string,
+    tal como lo nombró su compose)."""
+    r = docker("inspect", container, "--format", "{{.Config.Image}}", capture=True)
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def container_image_id(container: str) -> str | None:
+    """ID (sha256) de la imagen que el contenedor está corriendo.
+
+    Es lo que hace verificable el pin, y el string de `container_image()`
+    no alcanza: un contenedor creado desde `:latest` sigue diciendo
+    `producto:latest` aunque ese tag ya apunte a otra imagen. Comparar
+    nombres ahí da un falso "todo en orden" — exactamente el caso que este
+    cambio existe para evitar."""
+    r = docker("inspect", container, "--format", "{{.Image}}", capture=True)
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def image_id(ref: str) -> str | None:
+    """ID (sha256) de una referencia de imagen presente en este host."""
+    r = docker("image", "inspect", ref, "--format", "{{.Id}}", capture=True)
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def versiones_disponibles() -> list[str]:
+    """Tags versionados de la imagen del producto presentes en este host,
+    del más nuevo al más viejo. `latest` queda afuera a propósito: no es
+    una versión a la que se pueda volver, es un puntero móvil."""
+    cfg = get_config()
+    r = docker("images", cfg.image_repo, "--format", "{{.Tag}}", capture=True)
+    if r.returncode != 0:
+        return []
+    tags = [t.strip() for t in r.stdout.splitlines() if t.strip()]
+    return sorted({t for t in tags if t not in ("latest", "<none>")}, reverse=True)
 
 
 # ── display ───────────────────────────────────────────────────────────────────
@@ -360,36 +465,161 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
         print(f"[OK] Contenedor reiniciado.")
 
 
-def cmd_actualizar(slugs: list[str] | None = None):
-    """Reconstruye la imagen y reinicia los contenedores indicados (o todos)."""
+def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None):
+    """Construye una **versión nueva** de la imagen y mueve a ella los
+    contenedores indicados (o todos), repineando el compose de cada uno.
+
+    Un cliente que no esté corriendo se saltea **sin repinear**: queda en
+    la versión que ya tenía, así que arrancarlo más tarde no lo salta a
+    código que no se desplegó para él."""
     cfg = get_config()
     aviso = check_venv_sync(cfg.repo_root)
     if aviso:
         print(aviso)
-    print(f"[*] Reconstruyendo imagen {cfg.image_name} ...")
-    build_env = {**os.environ, "DOCKER_BUILDKIT": "1"}
-    r = subprocess.run(
-        ["docker", "build", *docker_build_ssh_args(cfg.repo_root), "-t", cfg.image_name, "."],
-        cwd=str(cfg.repo_root), env=build_env,
-    )
-    if r.returncode != 0:
+
+    version = version or deploy_version()
+    ref = cfg.image_ref(version)
+    if not build_image_tagged(version):
         print("[ERROR] Falló el build.")
         return
+    print(f"[OK] Imagen {ref} construida.")
 
     clients = load_clients()
     targets = [c for c in clients if (not slugs or c["slug"] in slugs)]
     if not targets:
-        print("[INFO] Sin contenedores que actualizar.")
+        print(f"[INFO] Sin contenedores que actualizar (imagen {ref} disponible).")
         return
 
     for c in targets:
+        slug = c["slug"]
         info = container_status(c["container"])
-        if info["status"] == "running":
-            print(f"[*] Actualizando {c['container']} ...")
-            compose(c["slug"], "up", "-d")
-        else:
-            print(f"[SKIP] {c['container']} no está en ejecución.")
+        if info["status"] != "running":
+            print(f"[SKIP] {c['container']} no está en ejecución — sigue pineado "
+                  f"en {leer_image_pineada(slug) or '?'}.")
+            continue
+
+        anterior = pinear_image(slug, ref)
+        if anterior is None:
+            print(f"[WARN] No se pudo pinear la versión en el compose de '{slug}' "
+                  "(sin línea `image:`) — se actualiza igual, pero sin pin.")
+        print(f"[*] Actualizando {c['container']} → {ref} ...")
+        r = compose(slug, "up", "-d")
+        if r.returncode != 0:
+            if anterior:
+                pinear_image(slug, anterior)
+                print(f"[ERROR] Falló el arranque de {c['container']}. "
+                      f"Compose repineado a {anterior} (no se aplicó el cambio).")
+            else:
+                print(f"[ERROR] Falló el arranque de {c['container']}.")
+            continue
+        _guardar_meta(slug, version_desplegada=version,
+                      version_anterior=anterior, desplegado_at=datetime.now().isoformat(timespec="seconds"))
     print("[OK] Actualización completa.")
+
+
+def cmd_versiones():
+    """Qué versión tiene pineada cada cliente y cuál está corriendo de
+    verdad. Las dos columnas existen porque son cosas distintas: el compose
+    es la intención, `docker inspect` es el hecho."""
+    cfg = get_config()
+    clients = load_clients()
+    if not clients:
+        print("No hay clientes.")
+        return
+    fmt = "{:<18}  {:<24}  {:<24}  {}"
+    print(fmt.format("SLUG", "PINEADO (compose)", "CORRIENDO", "ESTADO"))
+    print("-" * 88)
+    sin_pin, desfasados = [], []
+    for c in clients:
+        slug      = c["slug"]
+        pineado   = leer_image_pineada(slug) or "—"
+        corriendo = container_image(c["container"]) or "—"
+        estado    = container_status(c["container"])["status"]
+        marca     = ""
+        # El desfasaje se decide por ID, no por nombre: dos contenedores
+        # pueden decir `producto:latest` y estar corriendo imágenes
+        # distintas.
+        id_pineado   = image_id(pineado) if pineado != "—" else None
+        id_corriendo = container_image_id(c["container"])
+        if pineado.endswith(":latest"):
+            marca = "  ⚠ sin pin"
+            sin_pin.append(slug)
+        elif id_pineado and id_corriendo and id_pineado != id_corriendo:
+            marca = "  ⚠ desfasado"
+            desfasados.append(slug)
+        print(fmt.format(slug[:18], pineado[:24], corriendo[:24], estado + marca))
+    print()
+    for slug in sin_pin:
+        print(f"  ⚠ '{slug}': sigue en `:latest` — corré `actualizar {slug}` para pinearlo.")
+    for slug in desfasados:
+        print(f"  ⚠ '{slug}': el compose pinea una versión que el contenedor no está "
+              "corriendo — le falta un `up -d`.")
+    disponibles = versiones_disponibles()
+    if disponibles:
+        print(f"\n  Versiones de {cfg.image_repo} en este host: {', '.join(disponibles[:8])}"
+              + (" ..." if len(disponibles) > 8 else ""))
+    print()
+
+
+def cmd_rollback(slug: str, version: str | None = None):
+    """Devuelve un cliente a una versión anterior de la imagen: repinea su
+    compose y lo levanta. No toca sus datos — si el deploy que se está
+    revirtiendo migró la base, hay que restaurar el backup aparte
+    (`restore-db`)."""
+    cfg = get_config()
+    c = find_client(slug)
+    if not c:
+        print(f"[ERROR] Cliente '{slug}' no encontrado.")
+        return
+
+    disponibles = versiones_disponibles()
+    if not version:
+        version = c.get("version_anterior") or ""
+        # `version_anterior` se guarda como referencia completa
+        # (`contalibra:v...`), que es lo que se leyó del compose.
+        if version.startswith(f"{cfg.image_repo}:"):
+            version = version.split(":", 1)[1]
+        if not version:
+            if not disponibles:
+                print(f"[ERROR] No hay versiones de {cfg.image_repo} en este host.")
+                return
+            print(f"\n  Versiones disponibles de {cfg.image_repo}:")
+            for i, v in enumerate(disponibles, 1):
+                print(f"  {i:<3}  {v}")
+            sel = input("\nNúmero o versión (Enter para cancelar): ").strip()
+            if not sel:
+                print("Cancelado.")
+                return
+            version = disponibles[int(sel) - 1] if sel.isdigit() and 1 <= int(sel) <= len(disponibles) else sel
+
+    if disponibles and version not in disponibles:
+        print(f"[ERROR] La versión '{version}' no está construida en este host.")
+        print(f"  Disponibles: {', '.join(disponibles)}")
+        return
+
+    ref    = cfg.image_ref(version)
+    actual = leer_image_pineada(slug) or "?"
+    if actual == ref:
+        print(f"[INFO] '{slug}' ya está en {ref}.")
+        return
+
+    confirm = input(f"¿Volver '{slug}' de {actual} a {ref}? [S/n]: ").strip().lower()
+    if confirm == "n":
+        print("Cancelado.")
+        return
+
+    anterior = pinear_image(slug, ref)
+    if anterior is None:
+        print(f"[ERROR] No se pudo reescribir el compose de '{slug}'.")
+        return
+    r = compose(slug, "up", "-d")
+    if r.returncode != 0:
+        pinear_image(slug, anterior)
+        print(f"[ERROR] Falló el arranque. Compose repineado a {anterior}.")
+        return
+    _guardar_meta(slug, version_desplegada=version, version_anterior=anterior,
+                  desplegado_at=datetime.now().isoformat(timespec="seconds"))
+    print(f"[OK] '{slug}' corriendo en {ref}.")
 
 
 def _set_servicio_estado(slug: str, estado: str, mensaje: str = ""):
@@ -601,6 +831,9 @@ def _menu() -> str:
 ║  rb Restaurar DB             ║
 ║  lb Listar backups DB        ║
 ╠══════════════════════════════╣
+║  v  Versiones desplegadas    ║
+║  rv Rollback de versión      ║
+╠══════════════════════════════╣
 ║  sa Activar servicio         ║
 ║  sp Pausar servicio          ║
 ║  ss Suspender servicio       ║
@@ -657,6 +890,12 @@ def interactive():
             slug = pick_client("Listar backups de")
             if slug:
                 cmd_list_backups(slug)
+        elif opt == "v":
+            cmd_versiones()
+        elif opt == "rv":
+            slug = pick_client("Rollback de")
+            if slug:
+                cmd_rollback(slug)
         elif opt == "8":
             slugs_input = input("Slugs a actualizar (Enter = todos): ").strip()
             slugs = slugs_input.split() if slugs_input else None
@@ -720,6 +959,8 @@ def cli():
         "list-backups": lambda: cmd_list_backups(slug) if slug else print("Uso: panel_admin.py list-backups <slug>"),
         "restore-db":   lambda: cmd_restore_db(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py restore-db <slug> [archivo.db]"),
         "actualizar":  lambda: cmd_actualizar([slug] if slug else None),
+        "versiones":   lambda: cmd_versiones(),
+        "rollback":    lambda: cmd_rollback(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py rollback <slug> [version]"),
         "eliminar":    lambda: cmd_eliminar(slug) if slug else print("Uso: panel_admin.py eliminar <slug>"),
         "npm-listar":  lambda: cmd_npm_listar(),
         "npm-crear":   lambda: cmd_npm_crear(slug) if slug else print("Uso: panel_admin.py npm-crear <slug>"),
@@ -736,6 +977,7 @@ def cli():
     else:
         print(f"Comando desconocido: {cmd}")
         print("Comandos: listar | info | start | stop | restart | logs | backup | actualizar | eliminar")
+        print("Versión:  versiones | rollback <slug> [version]")
         print("DB:       list-backups <slug> | restore-db <slug> [archivo.db]")
         print("Servicio: activar <slug> | pausar <slug> | suspender <slug> | estado <slug>")
         print("NPM:      npm-listar | npm-crear <slug> | npm-eliminar <slug>")
