@@ -249,7 +249,7 @@ def generar_ticket_venta(venta: dict) -> bytes:
 
     # Encabezado de la venta
     fecha = fmt_fecha((venta.get("fecha") or "")[:16])
-    pdf._centrado(f"TICKET DE VENTA", bold=True)
+    pdf._centrado("TICKET DE VENTA", bold=True)
     pdf._centrado(f"N° {venta.get('id', '')}")
     pdf._centrado(fecha)
     pdf._separador()
