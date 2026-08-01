@@ -975,13 +975,11 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
     fecha_fac = _fmt_fecha((factura.get("fecha") or "")[:10])
     if es_venta:
         ref_line     = f"Venta N\xb0 {factura.get('_venta_numero', factura.get('numero', ''))}"
-        concepto_doc = "Venta"
     else:
         pv           = str(factura.get("punto_venta", 0)).zfill(4)
         num          = str(factura.get("numero", 0)).zfill(8)
         tipo_nombre  = _TIPO_NOMBRE_DOC.get(int(factura.get("tipo", 11)), "Comprobante")
         ref_line     = f"{tipo_nombre} {pv}-{num}"
-        concepto_doc = tipo_nombre
 
     info_fields = [
         ("Comprobante:", ref_line),

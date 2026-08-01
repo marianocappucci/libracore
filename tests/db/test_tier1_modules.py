@@ -76,7 +76,7 @@ def test_caja_movimiento_idempotencia_por_referencia_scopeada_a_factura(conn):
 
 def test_egresos(conn):
     cid = caja.create_caja_config("Caja", "", ["efectivo"])
-    catid = egresos.create_categoria_egreso("Insumos")
+    egresos.create_categoria_egreso("Insumos")  # el egreso la referencia por nombre
     pid = egresos.create_proveedor("Proveedor Test", cuit_dni="20111111111")
     eid = egresos.create_egreso("2026-07-14", "compra", 500, proveedor_id=pid,
                                  proveedor_nombre="Proveedor Test", categoria="Insumos", monto_neto=500)

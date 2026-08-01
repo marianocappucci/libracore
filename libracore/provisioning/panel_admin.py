@@ -462,7 +462,7 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
     if was_running:
         print(f"[*] Reiniciando {c['container']} ...")
         compose(slug, "up", "-d")
-        print(f"[OK] Contenedor reiniciado.")
+        print("[OK] Contenedor reiniciado.")
 
 
 def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None):
@@ -666,7 +666,7 @@ def cmd_estado_servicio(slug: str):
         return
     config_path = c["dir"] / "data" / "config.json"
     if not config_path.exists():
-        print(f"  Estado: desconocido (config.json no encontrado)")
+        print("  Estado: desconocido (config.json no encontrado)")
         return
     cfg    = json.loads(config_path.read_text(encoding="utf-8"))
     estado = cfg.get("servicio_estado", "activo")

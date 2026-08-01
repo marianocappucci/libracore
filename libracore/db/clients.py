@@ -13,6 +13,69 @@ from libracore.db.core import get_connection
 CC_RESUMEN_FRECUENCIAS = ("semanal", "quincenal", "mensual")
 
 
+def _hay_parties(conn) -> bool:
+    """`parties` es una tabla de LibraCommerce, no de LibraCore.
+
+    La tienen Contalibra, Restolibra y VentaLibra; Gestiolibra, MedLibra y
+    LibraDesk no. Por eso todo lo que la toca es condicional: LibraCore no
+    puede asumir que el producto que lo usa tiene LibraCommerce al lado.
+    """
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='parties'"
+    ).fetchone() is not None
+
+
+def _espejar_party(conn, client_id: int, name, cuit_dni, email, phone, activo=1):
+    """Crea el `parties` espejo de un cliente, con el MISMO id.
+
+    La identidad de ids no es casual: la migración P7
+    (`libracommerce/scripts/migrate_from_contalibra.py`) estableció que un
+    cliente es el party de igual id, y los proveedores van con offset
+    100.000. `sales.customer_party_id` tiene FK a `parties`, mientras que
+    los clientes de estos productos siguen viviendo en `clients` — sin este
+    espejo, vender a un cliente creado después de P7 falla con FOREIGN KEY
+    constraint, que el router traduce a un 409 "conflicto con otra venta
+    simultánea" e invita a reintentar algo que nunca va a andar.
+
+    Encontrado el 2026-07-30 por la suite nueva de Contalibra: en la base
+    del cliente real los 31 clientes tenían su party porque los creó P7, y
+    el alta nunca lo replicó — el bug esperaba al cliente número 32.
+    """
+    if not _hay_parties(conn):
+        return
+    conn.execute(
+        """INSERT OR IGNORE INTO parties
+               (id, party_type, display_name, legal_name, tax_id, tax_id_type,
+                email, phone, active)
+           VALUES (?, 'person', ?, NULL, ?, NULL, ?, ?, ?)""",
+        (client_id, name, cuit_dni or None, email or None, phone or None, int(activo)),
+    )
+
+
+def sincronizar_parties_de_clientes() -> int:
+    """Backfill: crea los `parties` que falten para clientes ya existentes.
+
+    Idempotente y barato (un INSERT ... SELECT sobre los que no tienen
+    espejo). Lo llama el `init_db()` de cada producto con LibraCommerce,
+    DESPUÉS de `init_schema` de LibraCommerce — antes de eso la tabla
+    `parties` todavía no existe. Devuelve cuántos creó.
+    """
+    with get_connection() as conn:
+        if not _hay_parties(conn):
+            return 0
+        cur = conn.execute("""
+            INSERT INTO parties
+                (id, party_type, display_name, legal_name, tax_id, tax_id_type,
+                 email, phone, active)
+            SELECT c.id, 'person', c.name, NULL, NULLIF(c.cuit_dni, ''), NULL,
+                   NULLIF(c.email, ''), NULLIF(c.phone, ''), COALESCE(c.activo, 1)
+            FROM clients c
+            LEFT JOIN parties p ON p.id = c.id
+            WHERE p.id IS NULL
+        """)
+        return cur.rowcount
+
+
 def create_client(name, address="", cuit_dni="", email="", phone="", iva_condition=""):
     if (cuit_dni or "").replace("-", "").strip():
         existing = get_client_by_cuit(cuit_dni)
@@ -28,7 +91,11 @@ def create_client(name, address="", cuit_dni="", email="", phone="", iva_conditi
             "INSERT INTO clients (name, address, cuit_dni, email, phone, iva_condition) VALUES (?,?,?,?,?,?)",
             (name, address, cuit_dni, email, phone, iva_condition),
         )
-        return cur.lastrowid
+        client_id = cur.lastrowid
+        # En la MISMA transacción que el alta: un cliente sin su party es
+        # un cliente al que no se le puede vender.
+        _espejar_party(conn, client_id, name, cuit_dni, email, phone)
+        return client_id
 
 
 def resolver_cliente_externo(external_ref: str, name: str, cuit_dni: str = "",
@@ -44,6 +111,12 @@ def resolver_cliente_externo(external_ref: str, name: str, cuit_dni: str = "",
     No espeja la cartera de clientes: sólo entra el que efectivamente fía. El
     nombre se refresca en cada llamada porque el que vale en el resumen de
     cuenta es el actual, no el que tenía la primera vez.
+
+    **A propósito NO crea el party espejo** que sí crea `create_client`: acá
+    la dirección es la inversa (el cliente YA es un party, y esta fila de
+    `clients` es su reflejo para la cuenta corriente). Crear un party con
+    este `clients.id` inventaría una entidad nueva y podría pisar el id de
+    un party ajeno.
     """
     if not external_ref:
         raise ValueError("external_ref no puede estar vacío")
@@ -82,6 +155,8 @@ def desactivar_cliente(client_id: int) -> bool:
     """Marca un cliente como inactivo (soft delete)."""
     with get_connection() as conn:
         conn.execute("UPDATE clients SET activo = 0 WHERE id = ?", (client_id,))
+        if _hay_parties(conn):
+            conn.execute("UPDATE parties SET active = 0 WHERE id = ?", (client_id,))
         return True
 
 
@@ -89,6 +164,8 @@ def activar_cliente(client_id: int) -> bool:
     """Reactiva un cliente previamente desactivado."""
     with get_connection() as conn:
         conn.execute("UPDATE clients SET activo = 1 WHERE id = ?", (client_id,))
+        if _hay_parties(conn):
+            conn.execute("UPDATE parties SET active = 1 WHERE id = ?", (client_id,))
         return True
 
 
@@ -138,17 +215,21 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
             f"Frecuencia de resumen inválida: {cc_resumen_frecuencia!r}. "
             f"Válidas: {', '.join(CC_RESUMEN_FRECUENCIAS)}."
         )
+    nuevo_name     = name          if name          is not None else client["name"]
+    nuevo_cuit     = cuit_dni      if cuit_dni      is not None else client["cuit_dni"]
+    nuevo_email    = email         if email         is not None else client["email"]
+    nuevo_phone    = phone         if phone         is not None else client["phone"]
     with get_connection() as conn:
         conn.execute(
             """UPDATE clients SET name=?, address=?, cuit_dni=?, email=?, phone=?,
                iva_condition=?, auto_facturar=?, cc_resumen_auto=?,
                cc_resumen_frecuencia=? WHERE id=?""",
             (
-                name          if name          is not None else client["name"],
+                nuevo_name,
                 address       if address       is not None else client["address"],
-                cuit_dni      if cuit_dni      is not None else client["cuit_dni"],
-                email         if email         is not None else client["email"],
-                phone         if phone         is not None else client["phone"],
+                nuevo_cuit,
+                nuevo_email,
+                nuevo_phone,
                 iva_condition if iva_condition is not None else client.get("iva_condition", ""),
                 int(auto_facturar) if auto_facturar is not None else int(client.get("auto_facturar", 0)),
                 int(cc_resumen_auto) if cc_resumen_auto is not None else int(client.get("cc_resumen_auto", 0)),
@@ -157,6 +238,16 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
                 client_id,
             ),
         )
+        # El espejo se mantiene al día (no solo se crea): el party es el
+        # que ve LibraCommerce, y un nombre viejo ahí contradice al de
+        # `clients` sin que nada lo delate.
+        if _hay_parties(conn):
+            conn.execute(
+                """UPDATE parties SET display_name=?, tax_id=?, email=?, phone=?
+                   WHERE id=?""",
+                (nuevo_name, nuevo_cuit or None, nuevo_email or None,
+                 nuevo_phone or None, client_id),
+            )
 
 
 def toggle_auto_facturar(client_id: int) -> bool:

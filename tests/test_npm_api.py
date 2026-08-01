@@ -137,7 +137,7 @@ def test_get_proxy_host_by_domain_encuentra_y_no_encuentra(monkeypatch):
 def test_create_proxy_host_con_ssl_pide_certificado(monkeypatch):
     captured = {}
 
-    def fake_post(url, json=None, **kwargs):
+    def fake_post(url, json=None, **kwargs):  # noqa: F811 (imita la firma de httpx.post)
         if url.endswith("/api/tokens"):
             return httpx.Response(200, json={"token": "TOK"})
         captured["body"] = json
