@@ -11,6 +11,7 @@ tiempo de ejecución vía import diferido — ver `libracore.provisioning._plans
 """
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import json
@@ -32,13 +33,62 @@ def slugify(name: str) -> str:
     return s or "cliente"
 
 
-def used_ports() -> set:
+def _docker_stdout(args: list) -> str:
+    """stdout de un comando docker, o cadena vacía si falló o no hay Docker."""
     try:
-        out = subprocess.run(["docker","ps","-a","--format","{{.Ports}}"],
-                             capture_output=True, text=True).stdout
-        return {int(m.group(1)) for m in re.finditer(r":(\d+)->8000", out)}
+        r = subprocess.run(args, capture_output=True, text=True)
     except Exception:
-        return set()
+        return ""
+    return r.stdout if r.returncode == 0 else ""
+
+
+# Un mapping publicado sale como `0.0.0.0:8071->8000/tcp`, `[::]:8071->8000/tcp`
+# o, en rangos, `0.0.0.0:80-81->80-81/tcp`. Lo único que importa es el lado
+# izquierdo — el puerto del **host**. A qué puerto del contenedor va es
+# irrelevante para saber si el host lo tiene tomado.
+_PUBLICADO_RE = re.compile(r":(\d+)(?:-(\d+))?->")
+
+
+def used_ports() -> set:
+    """Puertos del **host** ya tomados por algún contenedor de este Docker.
+
+    Mira todo el host, no sólo los clientes de este producto: un mismo VPS
+    corre los seis productos de la familia y todos publican en el mismo rango.
+
+    Dos fuentes, unidas porque cada una tapa el agujero de la otra:
+
+    - `HostConfig.PortBindings` de cada contenedor — incluye los **parados**,
+      que no aparecen en la columna PORTS de `docker ps` pero se quedan con el
+      puerto apenas alguien los vuelve a arrancar.
+    - La columna PORTS de `docker ps -a` — incluye los puertos efímeros que
+      asigna `-P`, que no quedan declarados en `PortBindings`.
+
+    > ⚠️ Esto matcheaba `:(\\d+)->8000`, con lo cual sólo veía instancias de
+    > producto: los sitios `<producto>-web` publican contra el puerto **80** del
+    > contenedor y eran invisibles. El 2026-08-02 un alta en Restolibra eligió
+    > 8079 —de `restolibra-web`— y murió con `port is already allocated`. El
+    > filtro por puerto de contenedor no aportaba nada y escondía la mitad del
+    > rango.
+    """
+    ports = set()
+
+    ids = _docker_stdout(["docker", "ps", "-aq"]).split()
+    if ids:
+        binds = _docker_stdout([
+            "docker", "inspect", "--format",
+            "{{range $port, $bindings := .HostConfig.PortBindings}}"
+            "{{range $bindings}}{{.HostPort}} {{end}}{{end}}",
+            *ids,
+        ])
+        ports.update(int(tok) for tok in binds.split() if tok.isdigit())
+
+    publicados = _docker_stdout(["docker", "ps", "-a", "--format", "{{.Ports}}"])
+    for m in _PUBLICADO_RE.finditer(publicados):
+        desde = int(m.group(1))
+        hasta = int(m.group(2) or desde)
+        ports.update(range(desde, hasta + 1))
+
+    return ports
 
 
 def next_port(used: set) -> int:
@@ -125,6 +175,33 @@ class ClienteError(Exception):
     """Error de alta de cliente (validación o infraestructura)."""
 
 
+def _rollback_alta(client_dir: Path, log) -> None:
+    """Deshace un alta que falló a mitad de camino.
+
+    `crear_cliente` escribe el directorio, `config.json`, el compose y
+    `cliente.json` **antes** de levantar el contenedor. Si el `up` falla —el
+    caso típico es un puerto ya bindeado— y nadie limpia, queda un cliente en
+    el inventario del backoffice (`load_clients()` lista `clientes/*/cliente.json`)
+    sin contenedor detrás, y con el slug tomado para el reintento.
+
+    El `compose down` va primero y no es opcional: un `up` que falla al publicar
+    el puerto deja el contenedor **creado** aunque no arrancado, así que borrar
+    sólo el directorio filtraría un contenedor con el nombre del slug puesto —
+    y el siguiente intento con ese mismo slug chocaría contra él.
+    """
+    if (client_dir / "docker-compose.yml").exists():
+        try:
+            subprocess.run(["docker", "compose", "down", "-v"],
+                           cwd=str(client_dir), capture_output=True)
+        except Exception as e:  # noqa: BLE001
+            log(f"[WARN] Rollback: no se pudo bajar el contenedor: {e}")
+    try:
+        shutil.rmtree(client_dir)
+        log(f"[OK] Rollback: se borró {client_dir}")
+    except Exception as e:  # noqa: BLE001
+        log(f"[ERROR] Rollback incompleto — revisá {client_dir} a mano: {e}")
+
+
 def _esperar_db_lista(db_path: Path, timeout: int = 25) -> bool:
     """Espera a que la instancia recién levantada cree su DB y la tabla `modulos`."""
     import sqlite3, time
@@ -181,43 +258,48 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
     admin_nombre = admin_nombre or nombre
     secret_key = secrets.token_hex(32)
 
-    # — directorios —
-    data_dir = client_dir / "data"
-    for sub in ["logos", "arca_certs", "facturas_pdf", "remitos_pdf", "presupuestos_pdf"]:
-        (data_dir / sub).mkdir(parents=True, exist_ok=True)
-    log(f"[OK] Directorios en {client_dir}")
+    # A partir de acá el alta escribe en disco, así que todo lo que sigue va
+    # bajo rollback: si algo falla a mitad, `client_dir` se borra entero. Es
+    # seguro borrarlo porque existe sólo porque lo creamos nosotros — el
+    # chequeo de slug duplicado de más arriba garantiza que no había nada.
+    try:
+        # — directorios —
+        data_dir = client_dir / "data"
+        for sub in ["logos", "arca_certs", "facturas_pdf", "remitos_pdf", "presupuestos_pdf"]:
+            (data_dir / sub).mkdir(parents=True, exist_ok=True)
+        log(f"[OK] Directorios en {client_dir}")
 
-    # — config.json — (claves deben coincidir con _DEFAULTS en config_manager.py)
-    config = {
-        "empresa_nombre": nombre, "empresa_direccion": "", "empresa_telefono": "",
-        "empresa_email": "", "empresa_cuit": "",
-        "empresa_iva_condition": "Responsable Inscripto",
-    }
-    (data_dir / "config.json").write_text(
-        json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+        # — config.json — (claves deben coincidir con _DEFAULTS en config_manager.py)
+        config = {
+            "empresa_nombre": nombre, "empresa_direccion": "", "empresa_telefono": "",
+            "empresa_email": "", "empresa_cuit": "",
+            "empresa_iva_condition": "Responsable Inscripto",
+        }
+        (data_dir / "config.json").write_text(
+            json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
-    # — detectar red Docker —
-    net_name    = "stack_stack-net"
-    if network_exists(net_name):
-        service_net = "    networks:\n      - stack-net\n"
-        top_net     = (f"\nnetworks:\n  stack-net:\n    external: true\n"
-                       f"    name: {net_name}\n")
-    else:
-        log(f"[WARN] Red '{net_name}' no encontrada — el contenedor usará la red por defecto.")
-        service_net = ""
-        top_net     = ""
+        # — detectar red Docker —
+        net_name    = "stack_stack-net"
+        if network_exists(net_name):
+            service_net = "    networks:\n      - stack-net\n"
+            top_net     = (f"\nnetworks:\n  stack-net:\n    external: true\n"
+                           f"    name: {net_name}\n")
+        else:
+            log(f"[WARN] Red '{net_name}' no encontrada — el contenedor usará la red por defecto.")
+            service_net = ""
+            top_net     = ""
 
-    container = f"{cfg.container_prefix}-{slug}"
+        container = f"{cfg.container_prefix}-{slug}"
 
-    # — versión de imagen — el compose nace pineado a una versión concreta,
-    # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
-    version   = version_para_cliente_nuevo(rebuild)
-    image_ref = cfg.image_ref(version)
-    log(f"[OK] Imagen para este cliente: {image_ref}")
+        # — versión de imagen — el compose nace pineado a una versión concreta,
+        # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
+        version   = version_para_cliente_nuevo(rebuild)
+        image_ref = cfg.image_ref(version)
+        log(f"[OK] Imagen para este cliente: {image_ref}")
 
-    # — docker-compose.yml —
-    compose = f"""\
+        # — docker-compose.yml —
+        compose = f"""\
 services:
   {cfg.container_prefix}:
     image: {image_ref}
@@ -244,52 +326,69 @@ services:
       - ADMIN_NOMBRE={admin_nombre}
       - DOCS_AUTH_SECRET={cfg.docs_auth_secret}
 {service_net}{top_net}"""
-    (client_dir / "docker-compose.yml").write_text(compose)
+        (client_dir / "docker-compose.yml").write_text(compose)
 
-    # — metadata del cliente —
-    (client_dir / "cliente.json").write_text(
-        json.dumps({
-            "nombre": nombre, "slug": slug, "domain": domain,
-            "port": port, "container": container,
-            "admin_user": admin_user, "admin_password": admin_password,
-            "plan": plan, "version_desplegada": version,
-        }, indent=2, ensure_ascii=False)
-    )
+        # — metadata del cliente —
+        (client_dir / "cliente.json").write_text(
+            json.dumps({
+                "nombre": nombre, "slug": slug, "domain": domain,
+                "port": port, "container": container,
+                "admin_user": admin_user, "admin_password": admin_password,
+                "plan": plan, "version_desplegada": version,
+            }, indent=2, ensure_ascii=False)
+        )
 
-    # — levantar —
-    log(f"[*] Iniciando {container} ...")
-    r = subprocess.run(["docker", "compose", "up", "-d"], cwd=str(client_dir))
-    if r.returncode != 0:
-        raise ClienteError("No se pudo iniciar el contenedor.")
+        # — levantar —
+        log(f"[*] Iniciando {container} ...")
+        r = subprocess.run(["docker", "compose", "up", "-d"], cwd=str(client_dir),
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            # `docker compose` escribe el motivo real en stderr. Sin arrastrarlo
+            # hasta acá, el backoffice devuelve un 422 que dice sólo "no se pudo
+            # iniciar" y el `port is already allocated` queda enterrado en un log
+            # del host que nadie va a mirar.
+            detalle = [ln.strip() for ln in (r.stderr or r.stdout or "").splitlines() if ln.strip()]
+            for linea in detalle:
+                log(linea)
+            motivo = detalle[-1] if detalle else ""
+            raise ClienteError(
+                "No se pudo iniciar el contenedor." + (f" {motivo}" if motivo else "")
+            )
 
-    # — aplicar plan inicial (tras esperar a que la instancia cree su DB) —
-    db_path = data_dir / cfg.db_filename
-    if _esperar_db_lista(db_path):
-        plans.aplicar_plan_en_db(str(db_path), plan)
-        log(f"[OK] Plan '{plan}' aplicado.")
-    else:
-        log("[WARN] La DB no estuvo lista a tiempo; aplicá el plan desde el backoffice.")
-
-    # — proxy NPM (opcional) —
-    proxy_ok = None
-    if domain and setup_npm and npm_available():
-        npm = client_from_config()
-        if npm:
-            try:
-                _setup_npm_proxy(npm, domain, port)
-                proxy_ok = True
-            except Exception as e:  # noqa: BLE001
-                log(f"[ERROR] NPM: {e}")
-                proxy_ok = False
+        # — aplicar plan inicial (tras esperar a que la instancia cree su DB) —
+        db_path = data_dir / cfg.db_filename
+        if _esperar_db_lista(db_path):
+            plans.aplicar_plan_en_db(str(db_path), plan)
+            log(f"[OK] Plan '{plan}' aplicado.")
         else:
-            log("[INFO] NPM no configurado; configurá el proxy manualmente.")
+            log("[WARN] La DB no estuvo lista a tiempo; aplicá el plan desde el backoffice.")
 
-    return {
-        "nombre": nombre, "slug": slug, "domain": domain, "port": port,
-        "container": container, "admin_user": admin_user,
-        "admin_password": admin_password, "plan": plan, "proxy_ok": proxy_ok,
-        "dir": str(client_dir),
-    }
+        # — proxy NPM (opcional) —
+        proxy_ok = None
+        if domain and setup_npm and npm_available():
+            npm = client_from_config()
+            if npm:
+                try:
+                    _setup_npm_proxy(npm, domain, port)
+                    proxy_ok = True
+                except Exception as e:  # noqa: BLE001
+                    log(f"[ERROR] NPM: {e}")
+                    proxy_ok = False
+            else:
+                log("[INFO] NPM no configurado; configurá el proxy manualmente.")
+
+        return {
+            "nombre": nombre, "slug": slug, "domain": domain, "port": port,
+            "container": container, "admin_user": admin_user,
+            "admin_password": admin_password, "plan": plan, "proxy_ok": proxy_ok,
+            "dir": str(client_dir),
+        }
+    except Exception:
+        # `Exception` y no `BaseException` a propósito: un Ctrl-C durante los
+        # 25s que espera la DB llega con el contenedor ya arriba y sano, y
+        # borrarlo ahí sería peor que dejarlo.
+        _rollback_alta(client_dir, log)
+        raise
 
 
 def main():
