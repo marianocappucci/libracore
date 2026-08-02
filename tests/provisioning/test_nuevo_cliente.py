@@ -244,6 +244,162 @@ def test_build_image_falla_corta_el_alta(cfg, monkeypatch):
         nc.build_image()
 
 
+# ── puertos del host ───────────────────────────────────────────────────────────
+
+def _fake_docker_host(monkeypatch, ps_ports: str = "", port_bindings: str = "",
+                      ids: str = "abc123\n"):
+    """Doble de los tres comandos que consulta `used_ports()`."""
+    def fake_run(args, **kwargs):
+        if args[:3] == ["docker", "ps", "-aq"]:
+            out = ids
+        elif args[:2] == ["docker", "inspect"]:
+            out = port_bindings
+        elif args[:3] == ["docker", "ps", "-a"]:
+            out = ps_ports
+        else:
+            out = ""
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(nc.subprocess, "run", fake_run)
+
+
+def test_used_ports_cuenta_puertos_publicados_contra_cualquier_puerto_interno(monkeypatch):
+    """Regresión del 2026-08-02: el alta eligió 8079, que `restolibra-web`
+    publicaba contra el puerto **80** del contenedor y no contra el 8000, así
+    que el filtro viejo (`:(\\d+)->8000`) no lo veía. `docker compose up` murió
+    con `port is already allocated`."""
+    _fake_docker_host(monkeypatch, ps_ports=(
+        "0.0.0.0:8078->8000/tcp, [::]:8078->8000/tcp\n"
+        "0.0.0.0:8079->80/tcp, [::]:8079->80/tcp\n"
+    ))
+    assert nc.used_ports() == {8078, 8079}
+
+
+def test_used_ports_incluye_contenedores_de_otros_productos_parados(monkeypatch):
+    """Un contenedor parado no publica nada en la columna PORTS, pero se queda
+    con el puerto apenas alguien lo arranca — sale de `HostConfig.PortBindings`."""
+    _fake_docker_host(monkeypatch, ps_ports="", port_bindings="8084 8085 \n")
+    assert nc.used_ports() == {8084, 8085}
+
+
+def test_used_ports_expande_rangos(monkeypatch):
+    _fake_docker_host(monkeypatch, ps_ports="0.0.0.0:80-81->80-81/tcp\n")
+    assert nc.used_ports() == {80, 81}
+
+
+def test_used_ports_sin_docker_no_explota(monkeypatch):
+    def fake_run(args, **kwargs):
+        raise OSError("docker: command not found")
+
+    monkeypatch.setattr(nc.subprocess, "run", fake_run)
+    assert nc.used_ports() == set()
+
+
+def test_next_port_saltea_el_puerto_de_otro_producto(cfg, monkeypatch):
+    """El caso real: base_port 8071, los propios ocupan hasta 8078 y 8079 es de
+    otro producto. El puerto elegido tiene que ser 8080, no 8079."""
+    monkeypatch.setattr(nc, "used_ports", lambda: set(range(8071, 8079)) | {8079})
+    assert nc.next_port(nc.used_ports()) != 8079
+
+
+# ── rollback de un alta fallida ────────────────────────────────────────────────
+
+def _falla_el_up(monkeypatch, stderr: str):
+    """Hace fallar sólo el `docker compose up`; el resto de docker sigue OK."""
+    ejecutados = []
+
+    def fake_run(args, **kwargs):
+        ejecutados.append(list(args))
+        if args[:3] == ["docker", "compose", "up"]:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr=stderr)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(nc.subprocess, "run", fake_run)
+    return ejecutados
+
+
+def test_alta_fallida_borra_el_directorio(cfg, monkeypatch):
+    """Sin esto queda un cliente en el inventario del backoffice sin contenedor
+    detrás, y el slug tomado para el reintento."""
+    _falla_el_up(monkeypatch, "Bind for 0.0.0.0:8079 failed: port is already allocated")
+
+    with pytest.raises(nc.ClienteError):
+        nc.crear_cliente(nombre="Cliente Seis", slug="cliente-seis", setup_npm=False)
+
+    assert not (cfg.clientes_dir / "cliente-seis").exists()
+
+
+def test_alta_fallida_baja_el_contenedor_antes_de_borrar(cfg, monkeypatch):
+    """Un `up` que falla al publicar el puerto deja el contenedor *creado*.
+    Borrar sólo el directorio lo filtraría, con el nombre del slug puesto."""
+    ejecutados = _falla_el_up(monkeypatch, "port is already allocated")
+
+    with pytest.raises(nc.ClienteError):
+        nc.crear_cliente(nombre="Cliente Siete", slug="cliente-siete", setup_npm=False)
+
+    assert ["docker", "compose", "down", "-v"] in ejecutados
+    idx_up = ejecutados.index(["docker", "compose", "up", "-d"])
+    assert ejecutados.index(["docker", "compose", "down", "-v"]) > idx_up
+
+
+def test_alta_fallida_reporta_el_motivo_real_de_docker(cfg, monkeypatch):
+    """El 422 del backoffice decía sólo "no se pudo iniciar el contenedor"; el
+    motivo quedaba en un log del host."""
+    _falla_el_up(monkeypatch, "Error response from daemon: ...\n"
+                              "Bind for 0.0.0.0:8079 failed: port is already allocated\n")
+
+    with pytest.raises(nc.ClienteError) as exc:
+        nc.crear_cliente(nombre="Cliente Ocho", slug="cliente-ocho", setup_npm=False)
+
+    assert "port is already allocated" in str(exc.value)
+
+
+def test_alta_fallida_libera_el_slug_para_reintentar(cfg, monkeypatch):
+    """Tras el rollback, reintentar con el mismo slug tiene que funcionar en vez
+    de chocar contra "ya existe un cliente con slug"."""
+    _falla_el_up(monkeypatch, "port is already allocated")
+    with pytest.raises(nc.ClienteError):
+        nc.crear_cliente(nombre="Cliente Nueve", slug="cliente-nueve", setup_npm=False)
+
+    # segundo intento, esta vez con docker sano
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(nc.subprocess, "run", fake_run)
+    info = nc.crear_cliente(nombre="Cliente Nueve", slug="cliente-nueve", setup_npm=False)
+    assert info["slug"] == "cliente-nueve"
+
+
+def test_alta_fallida_por_el_plan_tambien_hace_rollback(cfg, fake_plans, monkeypatch):
+    """El rollback no es sólo del `up`: cualquier paso posterior que reviente
+    deja igual un cliente a medio crear."""
+    monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: True)
+
+    def explota(db_path, plan):
+        raise RuntimeError("la DB está corrupta")
+
+    fake_plans.aplicar_plan_en_db = explota
+
+    with pytest.raises(RuntimeError):
+        nc.crear_cliente(nombre="Cliente Diez", slug="cliente-diez", setup_npm=False)
+
+    assert not (cfg.clientes_dir / "cliente-diez").exists()
+
+
+def test_alta_exitosa_no_borra_nada(cfg):
+    nc.crear_cliente(nombre="Cliente Once", slug="cliente-once", setup_npm=False)
+    assert (cfg.clientes_dir / "cliente-once" / "cliente.json").exists()
+
+
+def test_slug_duplicado_no_borra_el_cliente_existente(cfg):
+    """El rollback arranca *después* de la validación de slug — si arrancara
+    antes, un alta duplicada borraría al cliente que ya estaba."""
+    nc.crear_cliente(nombre="Cliente Doce", slug="cliente-doce", setup_npm=False)
+    with pytest.raises(nc.ClienteError):
+        nc.crear_cliente(nombre="Otro", slug="cliente-doce", setup_npm=False)
+    assert (cfg.clientes_dir / "cliente-doce" / "cliente.json").exists()
+
+
 def test_crear_cliente_proxy_existente_no_falla(cfg, monkeypatch):
     class FakeNPMError(Exception):
         pass
