@@ -16,7 +16,8 @@ módulo — `TicketPDF`, `cfg_ticket()`, `recortar_a_contenido()`,
 import os
 import json
 import base64
-from fpdf import FPDF
+from fpdf import FPDF  # noqa: F401  (lo usa _TextoSeguroPDF)
+from .pdf_generator import _TextoSeguroPDF
 
 from libracore import config_manager
 
@@ -62,7 +63,9 @@ _TIPO_FACTURA = {
 
 # ── PDF base ───────────────────────────────────────────────────────────────────
 
-class TicketPDF(FPDF):
+# Misma base que los comprobantes: un caracter fuera de cp1252 no puede
+# tumbar la impresion de un ticket. Ver .
+class TicketPDF(_TextoSeguroPDF):
     def __init__(self, ancho_mm: int, fuente_size: int):
         # Márgenes laterales 2 mm; altura de página dinámica (se extiende sola)
         super().__init__(orientation="P", unit="mm", format=(ancho_mm, 2000))
