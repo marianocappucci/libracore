@@ -35,11 +35,11 @@ para poder probarla sin base y para que cada producto pase las suyas.
 """
 import datetime
 
-# Las dos grafías que conviven en la base: la vieja con espacio, que escriben
-# los movimientos de la emisión, y la del selector actual. El motor las
-# compara en minúsculas dentro de sus SQL (`LOWER(...) IN (...)`); acá se
-# mantiene el mismo criterio.
-MEDIOS_CUENTA_CORRIENTE = frozenset({"cuenta corriente", "cuenta_corriente"})
+# Las dos grafías que conviven en la base viven en `db.caja`, que es de donde
+# salen también los fragmentos SQL que las consultan. Se importan en vez de
+# copiarse: tener dos listas del mismo criterio es cómo se llega a que una
+# consulta cuente un movimiento como deuda y otra no.
+from libracore.db.caja import MEDIOS_CUENTA_CORRIENTE  # noqa: E402
 
 CONDICION_CUENTA_CORRIENTE = "Cuenta Corriente"
 

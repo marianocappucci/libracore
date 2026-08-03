@@ -8,6 +8,7 @@ ver wiki/entities/libracore.md).
 import json
 import sqlite3
 
+from libracore.db.caja import sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 
@@ -102,7 +103,7 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
     if q:
         conds.append("(CAST(f.numero AS TEXT) LIKE ? OR f.cliente_razon LIKE ? OR f.observaciones LIKE ?)")
         params += [f"%{q}%", f"%{q}%", f"%{q}%"]
-    _cc_excl = "AND LOWER(cm.medio_pago) NOT IN ('cuenta corriente','cuenta_corriente')"
+    _cc_excl = f"AND {sql_no_es_cuenta_corriente('cm.medio_pago')}"
     if solo_sin_cobrar:
         conds.append("f.cae != '' AND f.cae IS NOT NULL AND f.cae != 'PENDIENTE'")
         conds.append(f"""
