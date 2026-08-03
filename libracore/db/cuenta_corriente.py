@@ -33,6 +33,7 @@ import sqlite3
 import contextlib
 from dataclasses import dataclass
 
+from libracore.db.caja import sql_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 _TIPO_LABEL = {
@@ -76,12 +77,12 @@ def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> fl
         """, (cliente_id,)).fetchone()[0]
         debitos_factura = 0.0
         if cuit:
-            debitos_factura = conn.execute("""
+            debitos_factura = conn.execute(f"""
                 SELECT COALESCE(SUM(cm.monto), 0)
                 FROM caja_movimientos cm
                 JOIN facturas f ON cm.factura_id = f.id
                 WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
-                  AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
+                  AND {sql_es_cuenta_corriente('cm.medio_pago')}
             """, (cuit,)).fetchone()[0]
         debitos_directos = conn.execute(
             "SELECT COALESCE(SUM(monto), 0) FROM cc_debitos WHERE cliente_id = ?",
@@ -118,14 +119,14 @@ def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE)
             })
 
         if cuit:
-            rows = conn.execute("""
+            rows = conn.execute(f"""
                 SELECT cm.fecha, f.tipo AS ftipo, f.punto_venta, f.numero,
                        cm.monto, f.id AS factura_id, cm.referencia, u.nombre AS usuario_nombre
                 FROM caja_movimientos cm
                 JOIN facturas f ON cm.factura_id = f.id
                 LEFT JOIN usuarios u ON u.id = cm.usuario_id
                 WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
-                  AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
+                  AND {sql_es_cuenta_corriente('cm.medio_pago')}
             """, (cuit,)).fetchall()
             for r in rows:
                 lbl = _TIPO_LABEL.get(r["ftipo"], "COMP")
@@ -269,7 +270,7 @@ def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[d
                 JOIN facturas f ON cm.factura_id = f.id
                 JOIN clients c ON c.cuit_dni = f.cliente_cuit
                 WHERE cm.tipo = 'ingreso'
-                  AND LOWER(cm.medio_pago) IN ('cuenta corriente','cuenta_corriente')
+                  AND {sql_es_cuenta_corriente('cm.medio_pago')}
                 GROUP BY c.id
             ),
             dd AS (

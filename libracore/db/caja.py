@@ -19,6 +19,42 @@ MEDIOS_PAGO_LABELS = {
     "cuenta_corriente": "Cuenta corriente",
 }
 
+# --- La cuenta corriente como medio -------------------------------------
+#
+# No es un medio de cobro: es la marca de que la venta o el comprobante se
+# hicieron a crédito. Ver `libracore.cobros` para el porqué completo.
+#
+# Ese criterio se consulta desde SIETE lugares del SQL de este motor —tres acá,
+# tres en `cuenta_corriente.py` y uno en `facturas.py`—, y hasta el 2026-08-03
+# el literal estaba escrito a mano en los siete. Un octavo lugar, el `frozenset`
+# de `cobros.py`, tenía su propia copia.
+#
+# Las dos grafías son las que conviven en la base: la vieja con espacio, que
+# escriben los movimientos de la emisión, y la del selector actual. **No sacar
+# ninguna de las dos**: hay movimientos históricos con cada una, y perder una
+# cambiaría saldos ya calculados.
+MEDIO_CUENTA_CORRIENTE = "cuenta_corriente"
+MEDIOS_CUENTA_CORRIENTE = ("cuenta corriente", "cuenta_corriente")
+
+# Se arma una sola vez y se interpola: son valores fijos de este módulo, nunca
+# entrada de usuario. Va como texto y no como parámetros porque estos fragmentos
+# se concatenan dentro de consultas que ya llevan sus propios `?` posicionales,
+# y sumar parámetros ahí obligaría a que cada caller los ordene bien --
+# exactamente el tipo de detalle que hace que una consulta de saldos falle en
+# silencio.
+_LISTA_CC = ",".join(f"'{m}'" for m in MEDIOS_CUENTA_CORRIENTE)
+
+
+def sql_es_cuenta_corriente(columna: str = "medio_pago") -> str:
+    """Fragmento SQL: el movimiento ES una marca de cuenta corriente (deuda)."""
+    return f"LOWER({columna}) IN ({_LISTA_CC})"
+
+
+def sql_no_es_cuenta_corriente(columna: str = "medio_pago") -> str:
+    """Fragmento SQL: el movimiento NO es cuenta corriente, o sea que es plata
+    de verdad y cuenta como cobrado."""
+    return f"LOWER({columna}) NOT IN ({_LISTA_CC})"
+
 
 def get_all_cajas() -> list[dict]:
     with get_connection() as conn:
@@ -149,7 +185,7 @@ def get_caja_resumen(desde=None, hasta=None, caja_id=None):
     así que no debe inflar (ni, en la reversión, desinflar) el resumen de
     caja. Mismo criterio que ya usa `get_facturas_filtradas` para saber si
     una factura está "cobrada" (ver `_cc_excl` ahí)."""
-    _cc_excl = "LOWER(medio_pago) NOT IN ('cuenta corriente','cuenta_corriente')"
+    _cc_excl = sql_no_es_cuenta_corriente()
     with get_connection() as conn:
         where, params = [_cc_excl], []
         if desde and hasta:
@@ -185,7 +221,7 @@ def get_cobro_factura(factura_id):
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM caja_movimientos WHERE factura_id=? AND tipo='ingreso'"
-            " AND LOWER(medio_pago) NOT IN ('cuenta corriente','cuenta_corriente')"
+            f" AND {sql_no_es_cuenta_corriente()}"
             " ORDER BY id DESC LIMIT 1",
             (factura_id,),
         ).fetchone()
@@ -197,7 +233,7 @@ def get_cobros_factura(factura_id) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM caja_movimientos WHERE factura_id=? AND tipo='ingreso'"
-            " AND LOWER(medio_pago) NOT IN ('cuenta corriente','cuenta_corriente')"
+            f" AND {sql_no_es_cuenta_corriente()}"
             " ORDER BY id",
             (factura_id,),
         ).fetchall()
