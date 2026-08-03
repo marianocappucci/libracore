@@ -101,6 +101,22 @@ def test_crear_cliente_genera_compose_con_datos_del_producto(cfg):
     assert meta["plan"] == "basico"
 
 
+def test_el_proyecto_de_compose_lleva_el_prefijo_del_producto(cfg):
+    """Sin `name:`, Compose usa el nombre del DIRECTORIO como proyecto — o sea
+    el slug—, y dos productos con una instancia del mismo slug caen en el mismo
+    proyecto. Ahi cada uno ve a los contenedores del otro como huerfanos, y un
+    `docker compose --remove-orphans` se los lleva puestos.
+
+    Paso de verdad: el 2026-08-02 quedaron cuatro instancias `prueba` de
+    productos distintos compartiendo `project=prueba`."""
+    nc.crear_cliente(nombre="Prueba", slug="prueba", setup_npm=False)
+    compose_text = (cfg.clientes_dir / "prueba" / "docker-compose.yml").read_text()
+    assert compose_text.startswith("name: testprod-prueba\n"), compose_text[:80]
+    # El slug solo NO alcanza como nombre de proyecto: es justamente lo que
+    # colisiona entre productos.
+    assert "\nname: prueba\n" not in compose_text
+
+
 def test_crear_cliente_pinea_version_y_nunca_latest(cfg):
     """El compose de un cliente nuevo nace con una versión concreta: si
     naciera en `:latest`, el próximo build de otro cliente lo movería."""
