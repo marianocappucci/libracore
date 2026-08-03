@@ -299,7 +299,19 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         log(f"[OK] Imagen para este cliente: {image_ref}")
 
         # — docker-compose.yml —
+        #
+        # `name:` explícito y no el default de Compose, que es el nombre del
+        # DIRECTORIO del compose — o sea el slug. Dos productos con una
+        # instancia del mismo slug quedaban en el mismo proyecto, y ahí Compose
+        # trata a la del otro producto como contenedor huérfano: cualquier
+        # `docker compose --remove-orphans` corrido desde uno se lleva puestas
+        # las del resto. Pasó de verdad: el 2026-08-02 quedaron cuatro
+        # instancias `prueba` (restolibra, ventalibra, medlibra, gestiolibra)
+        # compartiendo `project=prueba`. Con el prefijo del producto, el
+        # proyecto es único aunque el slug se repita.
         compose = f"""\
+name: {cfg.container_prefix}-{slug}
+
 services:
   {cfg.container_prefix}:
     image: {image_ref}
