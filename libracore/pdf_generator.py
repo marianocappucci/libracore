@@ -1,9 +1,95 @@
 import os
 import json
 import base64
+import unicodedata
 from fpdf import FPDF  # fpdf2 >= 2.8
 from fpdf.enums import RenderStyle as _RS, Corner as _Cor
 from . import config_manager
+
+
+class _TextoSeguroPDF(FPDF):
+    """Base de todos los PDF de LibraCore: **ningún carácter puede tumbar la
+    generación**.
+
+    Los 14 tipos estándar de PostScript (Helvetica y compañía, los que usamos)
+    no son Unicode. fpdf2 los codifica en **latin-1** por defecto y, ante un
+    carácter que no entra, **levanta `FPDFUnicodeEncodingException`**: el
+    endpoint devuelve 500 y el comprobante no se puede descargar. Es un fallo
+    de datos, no de código, y aparece con caracteres que cualquiera tipea sin
+    pensarlo — guión largo, comillas tipográficas, puntos suspensivos.
+
+    > Pasó de verdad: en `libradesk-dev` el nombre de empresa era
+    > `"Compulibra — Soporte IT"`, de ahí salían las iniciales `"C—"` del
+    > recuadro del encabezado, y **todo** PDF de presupuesto daba 500
+    > (2026-08-03).
+
+    Se arregla en dos capas, y las dos hacen falta:
+
+    1. **`core_fonts_encoding = "cp1252"`**. El PDF ya declara
+       `/Encoding /WinAnsiEncoding` para las fuentes core —lo emite fpdf2 en
+       `output.py`— y WinAnsi *es* cp1252. O sea que latin-1 era la
+       codificación equivocada para lo que el archivo ya declaraba: con cp1252
+       el guión largo, las comillas curvas, los puntos suspensivos y el € se
+       **dibujan bien**, no se reemplazan por nada.
+    2. **`normalize_text` que translitera en vez de romper.** cp1252 sigue
+       siendo un byte por carácter, así que algo afuera siempre puede llegar
+       (una ñ vietnamita pegada de un mail, un emoji). Eso se degrada al ASCII
+       más parecido, y lo que no tenga equivalente cae en `?`. Un PDF con un
+       `?` es un problema menor; un 500 deja al usuario sin comprobante.
+    """
+
+    # Reemplazos donde `unicodedata` no ayuda: no son variantes acentuadas de
+    # una letra, así que la descomposición NFKD los deja igual.
+    _EQUIVALENTES = {
+        "€": "EUR",  # €  (sí entra en cp1252, esto es para el resto)
+        "™": "(TM)",
+        "≤": "<=",
+        "≥": ">=",
+        "≠": "!=",
+        "≈": "~",
+        "×": "x",
+        "→": "->",
+        "←": "<-",
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.core_fonts_encoding = "cp1252"
+
+    def normalize_text(self, text: str) -> str:
+        try:
+            return super().normalize_text(text)
+        except Exception:
+            # `except Exception` a propósito: la excepción de fpdf2 cambió de
+            # nombre y de módulo entre versiones, y este método no puede
+            # fallar por perseguir un import.
+            return super().normalize_text(self._a_cp1252(text))
+
+    @classmethod
+    def _a_cp1252(cls, text: str) -> str:
+        salida = []
+        for ch in text:
+            try:
+                ch.encode("cp1252")
+                salida.append(ch)
+                continue
+            except UnicodeEncodeError:
+                pass
+            reemplazo = cls._EQUIVALENTES.get(ch)
+            if reemplazo is None:
+                # NFKD parte "ā" en "a" + diacrítico; nos quedamos con lo que
+                # sea ASCII imprimible.
+                plano = "".join(
+                    c for c in unicodedata.normalize("NFKD", ch)
+                    if not unicodedata.combining(c)
+                )
+                try:
+                    plano.encode("cp1252")
+                    reemplazo = plano
+                except UnicodeEncodeError:
+                    reemplazo = ""
+            salida.append(reemplazo or "?")
+        return "".join(salida)
 
 
 def _ar(value, decimals=2):
@@ -707,7 +793,7 @@ def _draw_factura_footer(pdf, factura, empresa):
 
 # ── Clases PDF ────────────────────────────────────────────────────────────────
 
-class FacturaPDF(FPDF):
+class FacturaPDF(_TextoSeguroPDF):
     def __init__(self, factura):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.factura = factura
@@ -737,7 +823,7 @@ class FacturaPDF(FPDF):
         _draw_factura_footer(self, self.factura, self._emp or _empresa())
 
 
-class RemitoPDF(FPDF):
+class RemitoPDF(_TextoSeguroPDF):
     def __init__(self, remito):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.remito = remito
@@ -758,7 +844,7 @@ class RemitoPDF(FPDF):
         pass
 
 
-class PresupuestoPDF(FPDF):
+class PresupuestoPDF(_TextoSeguroPDF):
     def __init__(self, presupuesto):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.presupuesto = presupuesto
@@ -1141,7 +1227,7 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
 
 # ── Resumen de cuenta corriente ──────────────────────────────────────────────
 
-class ResumenCCPDF(FPDF):
+class ResumenCCPDF(_TextoSeguroPDF):
     def __init__(self, cliente, periodo):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.cliente = cliente
