@@ -78,13 +78,99 @@ def test_plans_requiere_configuracion_previa():
         provisioning._plans()
 
 
-def test_check_venv_sync_sin_requirements_txt_no_avisa(tmp_path):
+def test_check_venv_sync_sin_ningun_archivo_no_avisa(tmp_path):
+    """Sin requirements.txt NI pyproject.toml no hay pin que leer."""
     assert provisioning.check_venv_sync(tmp_path) is None
 
 
 def test_check_venv_sync_sin_pin_de_libracore_no_avisa(tmp_path):
     (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
     assert provisioning.check_venv_sync(tmp_path) is None
+
+
+# ── El pin declarado en pyproject.toml (PEP 621) ────────────────────────────
+#
+# Cuatro de los cinco productos del VPS ya no tienen requirements.txt. Mientras
+# `_pin_declarado` leyó sólo ese archivo, `check_venv_sync` devolvía None en
+# todos y no avisaba nunca: el 2026-08-04 los cinco `.venv-scripts` estaban en
+# 1.5.0, contra pines de 1.2.0 a 1.8.0, y la guarda callada. Ver
+# wiki/entities/libracore.md, "Los .venv-scripts al día".
+
+# Recorte fiel del pyproject.toml real de Contalibra: el comentario que nombra
+# al motor va JUSTO ARRIBA del pin, y es lo que hace que no alcance con buscar
+# la palabra "libracore" en el archivo.
+PYPROJECT_REAL = '''\
+[project]
+name = "contalibra"
+dependencies = [
+    # libracore provee facturacion/caja/ARCA y la base donde vive `usuarios`.
+    # El auth SALIO de aca el 2026-07-30 y ahora lo da libraauth.
+    "libracore @ git+https://github.com/marianocappucci/libracore.git@v1.8.0",
+    "libraauth @ git+https://github.com/marianocappucci/libraauth.git@v0.7.0",
+    "fastapi",
+]
+'''
+
+
+def test_pin_se_lee_de_pyproject_cuando_no_hay_requirements(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
+    assert provisioning._pin_declarado(tmp_path) == "1.8.0"
+
+
+def test_check_venv_sync_avisa_con_pin_solo_en_pyproject(tmp_path, monkeypatch):
+    """El caso que estuvo roto: producto sin requirements.txt y venv atrasado."""
+    import libracore
+    monkeypatch.setattr(libracore, "__version__", "1.5.0")
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
+
+    aviso = provisioning.check_venv_sync(tmp_path)
+    assert aviso is not None, "sin requirements.txt la guarda volvio a callarse"
+    assert "1.5.0" in aviso
+    assert "1.8.0" in aviso
+
+
+def test_check_venv_sync_no_avisa_con_pyproject_al_dia(tmp_path, monkeypatch):
+    import libracore
+    monkeypatch.setattr(libracore, "__version__", "1.8.0")
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
+    assert provisioning.check_venv_sync(tmp_path) is None
+
+
+def test_un_pyproject_que_solo_NOMBRA_libracore_no_cuenta_como_pin(tmp_path):
+    """Un comentario, o una mención en la descripción, no es una dependencia.
+    Sin esto la guarda inventaría un pin y avisaría de un desfasaje falso."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\n'
+        'description = "Producto que consume libracore v9.9.9 como motor"\n'
+        'dependencies = ["fastapi"]\n',
+        encoding="utf-8",
+    )
+    assert provisioning._pin_declarado(tmp_path) is None
+    assert provisioning.check_venv_sync(tmp_path) is None
+
+
+def test_requirements_txt_tiene_prioridad_sobre_pyproject(tmp_path):
+    """Restolibra tiene los dos archivos. El pin del formato clásico manda,
+    que es el comportamiento que ya existía y no se cambia."""
+    (tmp_path / "requirements.txt").write_text(
+        "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v1.4.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
+    assert provisioning._pin_declarado(tmp_path) == "1.4.0"
+
+
+def test_requirements_sin_pin_cae_al_pyproject(tmp_path):
+    """El caso exacto de Restolibra: requirements.txt existe, pero su única
+    línea con "libracore" es un comentario. Antes eso bastaba para que la
+    función devolviera None y no mirara el pyproject."""
+    (tmp_path / "requirements.txt").write_text(
+        "# libracore sigue proveyendo facturacion/caja/ARCA -- y la base\n"
+        "fastapi\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
+    assert provisioning._pin_declarado(tmp_path) == "1.8.0"
 
 
 def test_check_venv_sync_version_coincide_no_avisa(tmp_path, monkeypatch):
