@@ -114,7 +114,7 @@ dependencies = [
 
 def test_pin_se_lee_de_pyproject_cuando_no_hay_requirements(tmp_path):
     (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
-    assert provisioning._pin_declarado(tmp_path) == "1.8.0"
+    assert provisioning._pin_declarado(tmp_path) == ("1.8.0", "pyproject.toml")
 
 
 def test_check_venv_sync_avisa_con_pin_solo_en_pyproject(tmp_path, monkeypatch):
@@ -149,28 +149,45 @@ def test_un_pyproject_que_solo_NOMBRA_libracore_no_cuenta_como_pin(tmp_path):
     assert provisioning.check_venv_sync(tmp_path) is None
 
 
-def test_requirements_txt_tiene_prioridad_sobre_pyproject(tmp_path):
-    """Restolibra tiene los dos archivos. El pin del formato clásico manda,
-    que es el comportamiento que ya existía y no se cambia."""
+def test_con_los_dos_archivos_manda_pyproject(tmp_path):
+    """El caso REAL de Restolibra, y la razón por la que el orden importa.
+
+    Tiene los dos archivos declarando libracore con pines **distintos**:
+    `pyproject.toml` en v1.4.0 y un `requirements.txt` en v1.2.0 que ya no
+    consume nadie. Su Dockerfile hace `pip install .`, así que lo que entra
+    a la imagen es el de `pyproject` — y su contenedor corre 1.4.0. Con la
+    prioridad al revés, la guarda comparaba contra el pin muerto: probado el
+    2026-08-04, devolvía 1.2.0 para un producto que corre 1.4.0.
+    """
+    (tmp_path / "requirements.txt").write_text(
+        "# libracore sigue proveyendo facturacion/caja/ARCA -- y la base\n"
+        "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v1.2.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
+    assert provisioning._pin_declarado(tmp_path) == ("1.8.0", "pyproject.toml")
+
+
+def test_sin_pyproject_cae_a_requirements(tmp_path):
+    """El formato clásico sigue soportado para cualquier repo que no haya
+    migrado a PEP 621."""
     (tmp_path / "requirements.txt").write_text(
         "libracore @ git+ssh://git@github.com/marianocappucci/libracore.git@v1.4.0\n",
         encoding="utf-8",
     )
-    (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
-    assert provisioning._pin_declarado(tmp_path) == "1.4.0"
+    assert provisioning._pin_declarado(tmp_path) == ("1.4.0", "requirements.txt")
 
 
-def test_requirements_sin_pin_cae_al_pyproject(tmp_path):
-    """El caso exacto de Restolibra: requirements.txt existe, pero su única
-    línea con "libracore" es un comentario. Antes eso bastaba para que la
-    función devolviera None y no mirara el pyproject."""
-    (tmp_path / "requirements.txt").write_text(
-        "# libracore sigue proveyendo facturacion/caja/ARCA -- y la base\n"
-        "fastapi\n",
-        encoding="utf-8",
-    )
+def test_el_aviso_nombra_el_archivo_que_hay_que_editar(tmp_path, monkeypatch):
+    """Mandar a corregir `requirements.txt` a un producto que ya no lo tiene
+    es mandar a editar un archivo inexistente."""
+    import libracore
+    monkeypatch.setattr(libracore, "__version__", "1.5.0")
     (tmp_path / "pyproject.toml").write_text(PYPROJECT_REAL, encoding="utf-8")
-    assert provisioning._pin_declarado(tmp_path) == "1.8.0"
+
+    aviso = provisioning.check_venv_sync(tmp_path)
+    assert "pyproject.toml de este producto pinea" in aviso
+    assert "requirements.txt" not in aviso
 
 
 def test_check_venv_sync_version_coincide_no_avisa(tmp_path, monkeypatch):
