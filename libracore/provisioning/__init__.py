@@ -19,6 +19,7 @@ LibraCore) se resuelven en tiempo de ejecución vía imports diferidos, mismo
 patrón que `libracore.admin.services::_plans()/_pa()/_nc()`.
 """
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -155,17 +156,50 @@ def docker_build_ssh_args(repo_root: Path) -> list[str]:
     return args
 
 
-def _pin_de_requirements(repo_root: Path) -> str | None:
-    """Extrae la versión pineada de `libracore @ git+ssh://...@vX.Y.Z` en
-    requirements.txt del producto, o None si no está o no tiene ese
-    formato."""
+def _pin_declarado(repo_root: Path) -> str | None:
+    """Extrae la versión pineada de `libracore @ git+…@vX.Y.Z` del producto,
+    mirando **requirements.txt y pyproject.toml** — o None si no está
+    declarada en ninguno, o no tiene ese formato.
+
+    Los dos archivos, no uno: Contalibra, Gestiolibra, MedLibra y VentaLibra
+    ya no tienen `requirements.txt` (migraron a PEP 621), y en Restolibra el
+    archivo existe pero su única línea con "libracore" es un comentario.
+    Mientras esto leyó sólo `requirements.txt` devolvía None en los cinco y
+    `check_venv_sync` no avisaba **nunca**: el 2026-08-04 se lo ejecutó a
+    mano sobre `/root/contalibra`, con el venv tres versiones desalineado, y
+    devolvió None. La guarda no fallaba —miraba un archivo que ya no
+    existe—, que es peor: no dice "todo bien", no dice nada, y nada se lee
+    igual que todo bien.
+
+    Es el **mismo** bug que `_depende_de()` ya tenía arreglado unas líneas
+    más arriba (ver su docstring: leyendo sólo requirements.txt no detectaba
+    la dependencia real de VentaLibra). Aquel arreglo no se propagó hasta
+    acá. Si aparece un tercer lugar que resuelva dependencias declaradas,
+    tiene que mirar los dos archivos también.
+
+    Se renombró de `_pin_de_requirements`: el nombre viejo describía
+    justamente la mitad que faltaba.
+    """
     req_file = repo_root / "requirements.txt"
-    if not req_file.exists():
-        return None
-    for line in req_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line.startswith("libracore") and "@v" in line:
-            return line.rsplit("@v", 1)[1].strip()
+    if req_file.exists():
+        for line in req_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("libracore") and "@v" in line:
+                return line.rsplit("@v", 1)[1].strip()
+
+    # En pyproject el pin es un elemento de lista: viene entre comillas y
+    # con coma final (`"libracore @ git+https://…@v1.8.0",`), así que no
+    # sirve el `rsplit` de arriba. Exigir `@ git+` es lo que evita agarrar
+    # los comentarios que nombran al motor — en estos pyproject hay varios,
+    # justo encima de la línea del pin.
+    pyproject = repo_root / "pyproject.toml"
+    if pyproject.exists():
+        m = re.search(
+            r"""libracore\s*@\s*git\+\S+?@v([0-9][^"'\s,]*)""",
+            pyproject.read_text(encoding="utf-8"),
+        )
+        if m:
+            return m.group(1)
     return None
 
 
@@ -200,24 +234,27 @@ def url_instalacion_libracore(version: str) -> str:
 def check_venv_sync(repo_root: Path) -> str | None:
     """Compara la versión de `libracore` instalada en ESTE venv (el que
     corre `panel_admin.py`/`nuevo_cliente.py` en el host) contra el pin
-    real de `requirements.txt` del producto — son dos lugares
-    independientes: `requirements.txt` fija qué versión se instala
-    *dentro* de la imagen Docker en cada build, este venv es aparte y
-    solo se actualiza con un `pip install --upgrade` manual (ver
-    ONBOARDING_CLIENTES.md). Si un bump de `requirements.txt` no se
+    real del producto —`requirements.txt` o `pyproject.toml`, ver
+    `_pin_declarado`— son dos lugares independientes: el pin fija qué
+    versión se instala *dentro* de la imagen Docker en cada build, este
+    venv es aparte y solo se actualiza con un `pip install --upgrade`
+    manual (ver ONBOARDING_CLIENTES.md). Si un bump del pin no se
     replica acá, `panel_admin.py` sigue corriendo con lógica de
     provisioning vieja sin que nada lo avise — incidente real detectado
     2026-07-27 (ver wiki/entities/libracore.md, sección v0.23.0):
     `.venv-scripts` quedó 8 versiones atrás, enmascarado por caché de
-    Docker hasta el primer build en frío real.
+    Docker hasta el primer build en frío real. Y volvió a pasar: el
+    2026-08-04 los cinco venv del VPS estaban en 1.5.0 contra pines de
+    1.2.0 a 1.8.0, sin que esta función avisara nada — leía sólo
+    `requirements.txt`, que cuatro productos ya no tienen.
 
     Devuelve un mensaje de advertencia si difieren, o None si coinciden
-    o no se puede determinar el pin (repo sin requirements.txt, o sin
-    dependencia de libracore ahí). No aborta nada — es una advertencia
+    o no se puede determinar el pin (producto que no declara libracore
+    en ninguno de los dos archivos). No aborta nada — es una advertencia
     para que la lea quien corre el comando, no un chequeo bloqueante."""
     import libracore
 
-    pin = _pin_de_requirements(repo_root)
+    pin = _pin_declarado(repo_root)
     if pin is None:
         return None
     installed = libracore.__version__.split("+")[0]  # sin sufijo local de hatch-vcs
