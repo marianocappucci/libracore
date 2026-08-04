@@ -176,11 +176,15 @@ _RIGHT_W = _RX - _RIGHT_X              # 66
 
 # Voucher box
 _LETTER_W  = 22
-_LETTER_RH = 20
-_META_RH   = 5.5
+_LETTER_RH = 15
+_META_RH   = 4.6
 _CR        = 3.5   # border-radius
 
 # Cards
+# Alto de renglon dentro de las tarjetas Emisor/Cliente. Bajado de 6 a 4.8 el
+# 2026-08-03: las dos tarjetas ocupaban 65 mm de la primera carilla — mas que
+# el membrete — y eran el bloque que menos items dejaba entrar.
+_CARD_ROW_H = 4.8
 _CARD_GAP = 10
 _CARD_W   = int((_CW - _CARD_GAP) / 2)  # 82
 
@@ -318,7 +322,7 @@ def _draw_header_block(pdf, letra, titulo, codigo, info_fields, empresa):
     y0 = _LX   # top margin 18 mm
 
     # Calcular altura del voucher box primero (para que el logo sea proporcional)
-    meta_h = len(info_fields) * _META_RH + 5
+    meta_h = len(info_fields) * _META_RH + 4
     vh     = _LETTER_RH + meta_h
 
     # ── Izquierda: logo + título ──────────────────────────────────────────
@@ -335,7 +339,12 @@ def _draw_header_block(pdf, letra, titulo, codigo, info_fields, empresa):
         # Cuadrado teal con iniciales
         pdf.set_fill_color(*_ACCENT)
         _rrect(pdf, _LX, y0, logo_sz, logo_sz, r=2.5, style="F")
-        ini = "".join(w[0].upper() for w in empresa.get("nombre","?").split()[:2]) or "?"
+        # Iniciales de las dos primeras palabras QUE EMPIECEN CON LETRA O
+        # DIGITO. Sin el filtro, "Compulibra — Soporte IT" da "C—", porque la
+        # raya cuenta como palabra y el cuadrito del logo termina mostrando un
+        # guion donde va una inicial. Lo mismo con "Perez & Asoc." -> "P&".
+        _palabras = [w for w in empresa.get("nombre", "").split() if w[:1].isalnum()]
+        ini = "".join(w[0].upper() for w in _palabras[:2]) or "?"
         pdf.set_font("Helvetica", "B", 7)
         pdf.set_text_color(*_WHITE)
         pdf.set_xy(_LX, y0 + 3.5)
@@ -415,17 +424,17 @@ def _draw_header_block(pdf, letra, titulo, codigo, info_fields, empresa):
             pdf.line(vx + 3, ry + _META_RH, vx + vw - 3, ry + _META_RH)
 
     # Línea separadora del header (2 px, tinta oscura)
-    sep_y = vy + vh + 5
+    sep_y = vy + vh + 3.5
     pdf.set_draw_color(*_INK)
     pdf.set_line_width(0.7)
     pdf.line(_LX, sep_y, _RX, sep_y)
     pdf.set_text_color(*_INK)
-    return sep_y + 5
+    return sep_y + 4
 
 
 # ── Cards EMISOR / CLIENTE ────────────────────────────────────────────────────
 
-def _card_field_lines(pdf, val_w, val_str, row_h=6):
+def _card_field_lines(pdf, val_w, val_str, row_h=_CARD_ROW_H):
     """Número exacto de líneas que ocupará val_str en multi_cell."""
     if not val_str:
         return 0
@@ -434,11 +443,11 @@ def _card_field_lines(pdf, val_w, val_str, row_h=6):
     return max(1, len(lines))
 
 
-def _measure_card_h(pdf, w, fields, row_h=6):
+def _measure_card_h(pdf, w, fields, row_h=_CARD_ROW_H):
     lbl_w = w * 0.42
     val_w = w - lbl_w - 8
     total = sum(_card_field_lines(pdf, val_w, str(v), row_h) for _, v in fields if v)
-    return 13 + total * row_h + 4
+    return 10 + total * row_h + 3
 
 
 def _draw_card(pdf, x, y, w, h, title, fields):
@@ -455,10 +464,10 @@ def _draw_card(pdf, x, y, w, h, title, fields):
     # Línea bajo el encabezado
     pdf.set_draw_color(*_LINE)
     pdf.set_line_width(0.2)
-    pdf.line(x + 2, y + 11, x + w - 2, y + 11)
+    pdf.line(x + 2, y + 8.5, x + w - 2, y + 8.5)
 
-    fy    = y + 13
-    row_h = 6
+    fy    = y + 10
+    row_h = _CARD_ROW_H
     lbl_w = w * 0.42
     val_w = w - lbl_w - 8
 
@@ -472,7 +481,10 @@ def _draw_card(pdf, x, y, w, h, title, fields):
         pdf.set_xy(x + 4, fy)
         pdf.set_font("Helvetica", "", 7.5)
         pdf.set_text_color(*_MUTED)
-        pdf.cell(lbl_w, h_row, lbl, align="L", ln=False)
+        # Alto de UN renglon, no el del campo entero: centrar sobre el alto
+        # completo dejaba la etiqueta al lado de la SEGUNDA linea del valor y
+        # la primera sin rotular ("Domicilio" terminaba rotulando la ciudad).
+        pdf.cell(lbl_w, row_h, lbl, align="L", ln=False)
 
         pdf.set_xy(x + 4 + lbl_w, fy)
         pdf.set_font("Helvetica", "B", 7.5)
@@ -506,7 +518,7 @@ def _draw_emisor_cliente(pdf, empresa, client_fields):
     _draw_card(pdf, _LX + _CARD_W + _CARD_GAP,   y, _CARD_W, box_h, "Cliente", cliente_fields)
 
     pdf.set_text_color(*_INK)
-    pdf.set_y(y + box_h + 6)
+    pdf.set_y(y + box_h + 4)
 
 
 # ── Tabla de ítems ────────────────────────────────────────────────────────────
@@ -626,9 +638,9 @@ def _draw_items_table(pdf, items, show_iva_col=False, show_prices=True):
 def _draw_totals_and_notes(pdf, sub, iva_amount, otros, total, tax_pct,
                            observations=None, condicion_venta=None):
     y     = pdf.get_y()
-    row_h = 8
+    row_h = 6.5
     tot_h = row_h * 4
-    box_h = max(tot_h, 32)
+    box_h = max(tot_h, 26)
 
     # Caja de notas (accent-soft, sin borde)
     pdf.set_fill_color(*_ACCENT_SOFT)
@@ -682,7 +694,7 @@ def _draw_totals_and_notes(pdf, sub, iva_amount, otros, total, tax_pct,
         pdf.set_xy(tx + lw, vy); pdf.cell(_TOTALS_W - lw - 4, 5, val, align="R", ln=False)
 
     pdf.set_text_color(*_INK)
-    pdf.set_y(y + box_h + 6)
+    pdf.set_y(y + box_h + 4)
 
 
 # ── Marca no fiscal (borde punteado) ─────────────────────────────────────────
@@ -896,9 +908,19 @@ def generate_pdf(remito, output_dir=None):
     if remito.get("observations"):
         obs_w = _RX - _LX
         pdf.ln(3)
+        texto_obs = str(remito["observations"])[:400]
+        # El alto sale del texto, no de un 28 fijo. Con el fijo pasaban dos
+        # cosas: una observacion de un renglon dejaba media caja vacia, y —lo
+        # que se veia mal de verdad— el cursor quedaba donde termino el TEXTO
+        # y no donde termina la CAJA, asi que el aviso de "no valido como
+        # factura", que se ancla al pie, se dibujaba **encima** del recuadro.
+        # Solo se notaba con la hoja llena, o sea desde que entran mas items.
+        pdf.set_font("Helvetica", "", 7.5)
+        lineas_obs = pdf.multi_cell(obs_w - 8, 4.5, texto_obs, split_only=True)
+        obs_h = 4 + 5 + max(1, len(lineas_obs)) * 4.5 + 4
         y_obs = pdf.get_y()
         pdf.set_fill_color(*_ACCENT_SOFT)
-        _rrect(pdf, _LX, y_obs, obs_w, 28, style="F")
+        _rrect(pdf, _LX, y_obs, obs_w, obs_h, style="F")
         pdf.set_xy(_LX + 4, y_obs + 4)
         pdf.set_font("Helvetica", "B", 8)
         pdf.set_text_color(*_ACCENT_DARK)
@@ -906,7 +928,8 @@ def generate_pdf(remito, output_dir=None):
         pdf.set_x(_LX + 4)
         pdf.set_font("Helvetica", "", 7.5)
         pdf.set_text_color(*_INK)
-        pdf.multi_cell(obs_w - 8, 4.5, str(remito["observations"])[:400])
+        pdf.multi_cell(obs_w - 8, 4.5, texto_obs)
+        pdf.set_y(y_obs + obs_h)
         pdf.ln(2)
 
     # Anclar aviso al pie (aviso 18mm + margen 22mm)
@@ -946,7 +969,7 @@ def generate_pdf_presupuesto(presupuesto, output_dir=None):
     pct = round(presupuesto.get("tax_rate", 0) * 100)
 
     # Anclar totales + aviso al pie (totales 38mm + aviso 18mm + footer 14mm + margen)
-    _BOTTOM_BLOCK_H = 80
+    _BOTTOM_BLOCK_H = 68
     target_y = pdf.h - _BOTTOM_BLOCK_H
     if pdf.get_y() > target_y:
         pdf.add_page()
@@ -1013,7 +1036,7 @@ def generate_pdf_factura(factura, output_dir=None):
         tax_pct = 0
 
     # Anclar totales al pie: siempre arriba del footer, sin importar cuántos ítems haya
-    _TOTALS_SECTION_H = 38   # box 32mm + gap 6mm
+    _TOTALS_SECTION_H = 30   # box 26mm + gap 4mm
     target_y = pdf.h - 44 - _TOTALS_SECTION_H
     if pdf.get_y() > target_y:
         pdf.add_page()

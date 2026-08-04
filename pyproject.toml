@@ -27,6 +27,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    # Solo para tests: leer de vuelta el texto y las POSICIONES de los PDF que
+    # genera `pdf_generator`. Sin esto lo unico verificable es la firma
+    # `%PDF-`, que un comprobante con la maqueta rota pasa igual — y la
+    # maqueta es justo lo que hay que fijar (cuantos items entran en una hoja,
+    # donde cae cada etiqueta).
+    "pypdf>=5.0",
     "pytest-cov>=6",
     "ruff>=0.13",
     "pytest>=8.0",
