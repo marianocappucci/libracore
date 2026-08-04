@@ -156,10 +156,23 @@ def docker_build_ssh_args(repo_root: Path) -> list[str]:
     return args
 
 
-def _pin_declarado(repo_root: Path) -> str | None:
-    """Extrae la versión pineada de `libracore @ git+…@vX.Y.Z` del producto,
-    mirando **requirements.txt y pyproject.toml** — o None si no está
-    declarada en ninguno, o no tiene ese formato.
+def _pin_declarado(repo_root: Path) -> tuple[str, str] | None:
+    """Devuelve `(version, archivo)` del pin `libracore @ git+…@vX.Y.Z` del
+    producto, mirando **pyproject.toml y requirements.txt** — o None si no
+    está declarado en ninguno, o no tiene ese formato.
+
+    Devuelve también el archivo porque el aviso tiene que nombrar el que hay
+    que editar de verdad: decir "requirements.txt" a un producto que ya no lo
+    tiene manda a corregir un archivo inexistente.
+
+    **`pyproject.toml` primero**, y no al revés, aunque el formato clásico sea
+    el más viejo: el `Dockerfile` de estos productos hace `pip install .`, o
+    sea que la versión que termina dentro de la imagen es la de `pyproject`.
+    Restolibra tiene los dos archivos **con pines distintos** — `pyproject`
+    en `v1.4.0` y un `requirements.txt` en `v1.2.0` que ya no consume nadie —
+    y su contenedor corre `1.4.0`. Leyendo primero `requirements.txt` la
+    guarda comparaba contra un pin muerto: probado el 2026-08-04, daba
+    `1.2.0` para un producto que corre `1.4.0`.
 
     Los dos archivos, no uno: Contalibra, Gestiolibra, MedLibra y VentaLibra
     ya no tienen `requirements.txt` (migraron a PEP 621), y en Restolibra el
@@ -180,18 +193,10 @@ def _pin_declarado(repo_root: Path) -> str | None:
     Se renombró de `_pin_de_requirements`: el nombre viejo describía
     justamente la mitad que faltaba.
     """
-    req_file = repo_root / "requirements.txt"
-    if req_file.exists():
-        for line in req_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("libracore") and "@v" in line:
-                return line.rsplit("@v", 1)[1].strip()
-
     # En pyproject el pin es un elemento de lista: viene entre comillas y
-    # con coma final (`"libracore @ git+https://…@v1.8.0",`), así que no
-    # sirve el `rsplit` de arriba. Exigir `@ git+` es lo que evita agarrar
-    # los comentarios que nombran al motor — en estos pyproject hay varios,
-    # justo encima de la línea del pin.
+    # con coma final (`"libracore @ git+https://…@v1.8.0",`). Exigir
+    # `@ git+` es lo que evita agarrar los comentarios que nombran al motor
+    # — en estos pyproject hay varios, justo encima de la línea del pin.
     pyproject = repo_root / "pyproject.toml"
     if pyproject.exists():
         m = re.search(
@@ -199,7 +204,14 @@ def _pin_declarado(repo_root: Path) -> str | None:
             pyproject.read_text(encoding="utf-8"),
         )
         if m:
-            return m.group(1)
+            return m.group(1), "pyproject.toml"
+
+    req_file = repo_root / "requirements.txt"
+    if req_file.exists():
+        for line in req_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("libracore") and "@v" in line:
+                return line.rsplit("@v", 1)[1].strip(), "requirements.txt"
     return None
 
 
@@ -254,15 +266,16 @@ def check_venv_sync(repo_root: Path) -> str | None:
     para que la lea quien corre el comando, no un chequeo bloqueante."""
     import libracore
 
-    pin = _pin_declarado(repo_root)
-    if pin is None:
+    declarado = _pin_declarado(repo_root)
+    if declarado is None:
         return None
+    pin, archivo = declarado
     installed = libracore.__version__.split("+")[0]  # sin sufijo local de hatch-vcs
     if installed == pin:
         return None
     return (
         f"[ADVERTENCIA] Este venv tiene libracore=={installed} instalado, "
-        f"pero requirements.txt de este producto pinea v{pin}. "
+        f"pero {archivo} de este producto pinea v{pin}. "
         "panel_admin.py puede estar corriendo logica de provisioning vieja "
         "(el problema real detectado el 2026-07-27, ver wiki/entities/libracore.md). "
         "Actualizar con:\n"
