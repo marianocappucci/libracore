@@ -220,17 +220,43 @@ def _validar(contenido: bytes, instancia: Instancia) -> zipfile.ZipFile:
     return z
 
 
-def restaurar_backup(instancia: Instancia, contenido: bytes, backups_dir) -> dict:
+def restaurar_backup(
+    instancia: Instancia,
+    contenido: bytes,
+    backups_dir,
+    cerrar_conexiones=None,
+    reabrir_conexiones=None,
+) -> dict:
     """Reemplaza las bases y los directorios de la instancia por los del ZIP.
 
     **Antes de tocar nada hace un backup del estado actual**, y no en un
     `try/except` que se lo trague: si esa copia falla, el restore no arranca.
     Restaurar es la operacion mas destructiva que el cliente puede disparar
     solo desde una pantalla, y sin red no se hace.
+
+    🔴 **`cerrar_conexiones` / `reabrir_conexiones` no son opcionales en la
+    practica, aunque la firma los deje pasar.** Reemplazar el archivo mientras
+    el proceso lo tiene abierto **no hace nada visible**: en Linux el descriptor
+    sigue apuntando al inodo viejo, asi que la app sigue sirviendo la base
+    ANTERIOR hasta que alguien reinicie el contenedor. El endpoint devuelve
+    `ok`, la pantalla dice que salio bien, y los datos son los de antes.
+
+    Lo encontro un test de LibraDesk que restauraba y despues preguntaba por
+    los clientes: seguian los de despues del backup.
+
+    El producto pasa lo que corresponda a su capa de datos — `engine.dispose`
+    en los que usan SQLAlchemy, cerrar y reabrir la conexion en los que usan
+    sqlite3 crudo.
     """
     z = _validar(contenido, instancia)
 
     previo = crear_backup(instancia, backups_dir, motivo="antes_restore")
+
+    # Antes de mover: suelta los descriptores. En Linux evita el inodo
+    # huerfano; en Windows es directamente la unica forma de reemplazar el
+    # archivo.
+    if cerrar_conexiones is not None:
+        cerrar_conexiones()
 
     restauradas = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -278,6 +304,12 @@ def restaurar_backup(instancia: Instancia, contenido: bytes, backups_dir) -> dic
             if carpeta.exists():
                 shutil.rmtree(carpeta)
             shutil.move(str(entrante), str(carpeta))
+
+    # Despues de mover: el pool vuelve a abrir contra el archivo nuevo. Va
+    # fuera del `with` del temporal pero dentro del flujo normal — si esto no
+    # corre, el restore no tuvo efecto para el proceso en curso.
+    if reabrir_conexiones is not None:
+        reabrir_conexiones()
 
     return {
         "ok": True,
