@@ -157,12 +157,20 @@ def build_backup_router(
     backups_dir,
     *,
     prefix: str = "/api/config",
+    cerrar_conexiones=None,
+    reabrir_conexiones=None,
 ) -> APIRouter:
     """La pestana "Datos / Backup": listar, bajar, subir y restaurar.
 
     `instancia` acepta un callable para el producto que arma sus rutas recien
     en `create_app()` (los tests montan varias apps en el mismo proceso, con
     un `tmp_path` distinto cada una).
+
+    🔴 **Pasar `cerrar_conexiones`/`reabrir_conexiones`.** Sin ellos el restore
+    devuelve `ok` y **no tiene efecto** hasta que alguien reinicie el
+    contenedor: el proceso sigue con el archivo viejo abierto. Ver el docstring
+    de `respaldo.restaurar_backup`. En los productos con SQLAlchemy alcanza con
+    pasar `engine.dispose` en los dos.
     """
     router = APIRouter(prefix=prefix, tags=["config"])
     _resolver = instancia if callable(instancia) else (lambda: instancia)
@@ -202,7 +210,11 @@ def build_backup_router(
     @router.post("/restore")
     async def restaurar(backup_file: UploadFile = File(...)):
         try:
-            return restaurar_backup(_resolver(), await backup_file.read(), backups_dir)
+            return restaurar_backup(
+                _resolver(), await backup_file.read(), backups_dir,
+                cerrar_conexiones=cerrar_conexiones,
+                reabrir_conexiones=reabrir_conexiones,
+            )
         except BackupInvalido as exc:
             # 422 y no 500: el archivo se leyo perfecto, lo que no sirve es su
             # contenido. Y el mensaje va tal cual a la pantalla.

@@ -237,6 +237,35 @@ def test_restaurar_un_backup_valido(client, app):
     conn.close()
 
 
+def test_el_router_pasa_los_hooks_de_conexion_al_restore(tmp_path, monkeypatch):
+    """🔴 Que el router no se los coma. Sin ellos el restore devuelve `ok` y no
+    tiene efecto hasta que se reinicie el contenedor — ver
+    `test_respaldo.py::test_las_conexiones_se_cierran_antes_y_se_reabren_despues`.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import libracore.config_router as cr
+    importlib.reload(cr)
+
+    import sqlite3
+    base = tmp_path / "producto.db"
+    sqlite3.connect(str(base)).close()
+    inst = Instancia(nombre="producto", bases=[base])
+    llamados = []
+
+    app = FastAPI()
+    app.include_router(cr.build_backup_router(
+        inst, tmp_path / "bk",
+        cerrar_conexiones=lambda: llamados.append("cerrar"),
+        reabrir_conexiones=lambda: llamados.append("reabrir"),
+    ))
+    c = TestClient(app)
+    contenido = c.get("/api/config/backup-ahora").content
+
+    assert c.post("/api/config/restore",
+                  files={"backup_file": ("b.zip", contenido, "application/zip")}).status_code == 200
+    assert llamados == ["cerrar", "reabrir"]
+
+
 def test_un_backup_invalido_devuelve_422_con_un_mensaje_legible(client):
     """422 y no 500: el archivo se leyo perfecto, lo que no sirve es su
     contenido. Y el mensaje va tal cual a la pantalla, asi que tiene que decir
