@@ -162,6 +162,7 @@ _ACCENT_SOFT = (230, 241, 242)   # --accent-soft:  #e6f1f2
 _ACCENT_DARK = (23,  75,  79)    # notes text:     #174b4f
 _WHITE       = (255, 255, 255)
 _WARNING     = (150, 66,  25)    # --warning:      #964219
+_WARNING_SOFT= (250, 235, 227)   # fondo del mismo tono, para franjas
 
 # ── Layout A4 18 mm márgenes ─────────────────────────────────────────────────
 _LX = 18        # margen izquierdo
@@ -1071,29 +1072,95 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
               fecha, cliente_razon, cliente_cuit, total, …)
     cobros  – lista de dicts de caja_movimientos (fecha, medio_pago,
               referencia, monto)
+
+    **Firma histórica: el recibo que sale por acá no tiene número**, porque se
+    arma en el momento y no queda registrado en ningún lado. Se conserva para
+    no romper a los productos que todavía la llaman; lo que hay que usar es
+    `generate_pdf_recibo_doc()`, que renderiza un recibo ya emitido y
+    numerado (ver `libracore.recibos`).
     """
+    es_venta  = factura.get("_es_venta", False)
+    if es_venta:
+        ref_line = f"Venta N\xb0 {factura.get('_venta_numero', factura.get('numero', ''))}"
+    else:
+        pv          = str(factura.get("punto_venta", 0)).zfill(4)
+        num         = str(factura.get("numero", 0)).zfill(8)
+        tipo_nombre = _TIPO_NOMBRE_DOC.get(int(factura.get("tipo", 11)), "Comprobante")
+        ref_line    = f"{tipo_nombre} {pv}-{num}"
+
+    fecha_fac     = (factura.get("fecha") or "")[:10]
+    total_cobrado = sum(float(c.get("monto", 0)) for c in cobros)
+    parcial       = total_cobrado < float(factura.get("total", 0)) - 0.005
+    concepto      = "Pago parcial de" if parcial else "Cancelación de"
+    concepto     += f" {ref_line} del {_fmt_fecha(fecha_fac)}"
+
+    return _render_recibo({
+        "numero_label":      "",
+        "ref_line":          ref_line,
+        "fecha":             fecha_fac,
+        "cliente_razon":     factura.get("cliente_razon") or "Consumidor Final",
+        "cliente_cuit":      factura.get("cliente_cuit") or "",
+        "cliente_domicilio": factura.get("cliente_domicilio") or "",
+        "concepto":          concepto,
+        "pagos":             cobros,
+        "total":             total_cobrado,
+        "anulado":           False,
+        "anulado_motivo":    "",
+    })
+
+
+def generate_pdf_recibo_doc(recibo: dict) -> bytes:
+    """Renderiza un recibo **ya emitido** — una fila de la tabla `recibos`, tal
+    como la devuelve `libracore.db.recibos.get_recibo()`.
+
+    Ésta es la entrada buena: el papel sale del registro guardado, así que
+    reimprimirlo devuelve exactamente el mismo documento aunque después se
+    hayan cobrado otras cuotas de la misma factura. Y lleva el número arriba,
+    que es lo que lo vuelve citable.
+    """
+    pv  = str(recibo.get("punto_venta") or 1).zfill(4)
+    num = str(recibo.get("numero") or 0).zfill(8)
+    return _render_recibo({
+        "numero_label":      f"{pv}-{num}",
+        "ref_line":          recibo.get("concepto") or "",
+        "fecha":             (recibo.get("fecha") or "")[:10],
+        "cliente_razon":     recibo.get("cliente_razon") or "Consumidor Final",
+        "cliente_cuit":      recibo.get("cliente_cuit") or "",
+        "cliente_domicilio": recibo.get("cliente_domicilio") or "",
+        "concepto":          recibo.get("concepto") or "",
+        "pagos":             recibo.get("pagos") or [],
+        "total":             float(recibo.get("total") or 0),
+        "anulado":           bool(recibo.get("anulado")),
+        "anulado_motivo":    recibo.get("anulado_motivo") or "",
+    })
+
+
+def _render_recibo(d: dict) -> bytes:
+    """Maqueta única de los dos recibos. La diferencia entre el viejo y el
+    documento son los datos, no el papel: así el cliente que ya vio uno
+    reconoce el otro."""
     emp = _empresa()
-    pdf = FPDF(format="A4", unit="mm")
+    # `_TextoSeguroPDF` y no `FPDF` pelado: hasta acá el recibo era el último
+    # comprobante del módulo que instanciaba FPDF directamente, así que se
+    # quedó afuera del arreglo de cp1252 de v1.7.0 y un carácter fuera de esa
+    # codificación en la razón social lo tumbaba con un 500. Mismo agujero que
+    # tenía `TicketPDF`, tapado por el mismo camino.
+    pdf = _TextoSeguroPDF(format="A4", unit="mm")
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
     lx, rx, cw = _LX, _RX, _CW
 
-    # Calcular ref_line y fecha antes de dibujar el header
-    es_venta  = factura.get("_es_venta", False)
-    fecha_fac = _fmt_fecha((factura.get("fecha") or "")[:10])
-    if es_venta:
-        ref_line     = f"Venta N\xb0 {factura.get('_venta_numero', factura.get('numero', ''))}"
-    else:
-        pv           = str(factura.get("punto_venta", 0)).zfill(4)
-        num          = str(factura.get("numero", 0)).zfill(8)
-        tipo_nombre  = _TIPO_NOMBRE_DOC.get(int(factura.get("tipo", 11)), "Comprobante")
-        ref_line     = f"{tipo_nombre} {pv}-{num}"
+    fecha_fac = _fmt_fecha(d["fecha"])
+    ref_line  = d["ref_line"]
+    cobros    = d["pagos"]
 
-    info_fields = [
-        ("Comprobante:", ref_line),
-        ("Emisi\xf3n:",  fecha_fac),
-    ]
+    info_fields = []
+    if d["numero_label"]:
+        info_fields.append(("Recibo N\xb0:", d["numero_label"]))
+    if ref_line:
+        info_fields.append(("Comprobante:", ref_line))
+    info_fields.append(("Emisi\xf3n:", fecha_fac))
 
     # ── Encabezado estilo factura ─────────────────────────────────────────────
     sep_y = _draw_header_block(pdf, "R", "Recibo", "", info_fields, emp)
@@ -1129,14 +1196,14 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
         pdf.multi_cell(val_w, row_h, str(val), align="L", new_x="LEFT", new_y="NEXT")
         fy += n * row_h
 
-    _field("Razón social", factura.get("cliente_razon") or "Consumidor Final")
-    _field("CUIT / DNI",   factura.get("cliente_cuit") or "")
-    _field("Domicilio",    factura.get("cliente_domicilio") or "")
+    _field("Razón social", d["cliente_razon"])
+    _field("CUIT / DNI",   d["cliente_cuit"])
+    _field("Domicilio",    d["cliente_domicilio"])
 
     fy += 4
 
     # ── Monto destacado ───────────────────────────────────────────────────────
-    total_cobrado = sum(float(c.get("monto", 0)) for c in cobros)
+    total_cobrado = d["total"]
     pdf.set_fill_color(*_ACCENT_SOFT)
     _rrect(pdf, lx, fy, cw, 16, r=3, style="F")
 
@@ -1153,10 +1220,6 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
     fy += 22
 
     # ── En concepto de ────────────────────────────────────────────────────────
-    parcial = total_cobrado < float(factura.get("total", 0)) - 0.005
-    concepto = "Pago parcial de" if parcial else "Cancelación de"
-    concepto += f" {ref_line.replace('De: ', '')} del {fecha_fac}"
-
     pdf.set_font("Helvetica", "", 8)
     pdf.set_text_color(*_MUTED)
     pdf.set_xy(lx, fy)
@@ -1164,8 +1227,22 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
     pdf.set_font("Helvetica", "B", 8)
     pdf.set_text_color(*_INK)
     pdf.set_xy(lx + 25, fy)
-    pdf.multi_cell(cw - 25, 5, concepto, align="L")
+    pdf.multi_cell(cw - 25, 5, d["concepto"], align="L")
     fy = pdf.get_y() + 6
+
+    # ── Anulado ───────────────────────────────────────────────────────────────
+    # Franja en vez de marca de agua: el recibo anulado se sigue pudiendo
+    # imprimir (el número está consumido y alguien puede pedir ver cuál era),
+    # pero tiene que ser imposible confundirlo con uno vigente de un vistazo.
+    if d["anulado"]:
+        pdf.set_fill_color(*_WARNING_SOFT)
+        _rrect(pdf, lx, fy, cw, 10, r=3, style="F")
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(*_WARNING)
+        pdf.set_xy(lx + 4, fy + 2)
+        motivo = d["anulado_motivo"]
+        pdf.cell(cw - 8, 6, f"ANULADO{f' — {motivo}' if motivo else ''}")
+        fy += 14
 
     # ── Detalle de cobros ─────────────────────────────────────────────────────
     if cobros:

@@ -1,5 +1,5 @@
 """
-Schema componible del motor de datos: las 29 tablas core compartidas por
+Schema componible del motor de datos: las 32 tablas core compartidas por
 todos los productos (Contalibra, Restolibra y, a futuro, Citalibra). Cada
 producto llama `init_core_schema(conn)` al principio de su propio
 `init_db()`, y después agrega sus propias tablas de extensión (ej. el
@@ -420,6 +420,47 @@ def init_core_schema(conn: sqlite3.Connection):
             automatico   INTEGER NOT NULL DEFAULT 1,
             created_at   TEXT DEFAULT (datetime('now'))
         );
+
+        -- El comprobante de que se recibió plata. Hasta acá el recibo era un
+        -- PDF que `pdf_generator.generate_pdf_recibo()` armaba en el momento a
+        -- partir de los cobros vigentes: sin número, sin registro y **distinto
+        -- cada vez que se lo pedía**, porque un cobro posterior sobre la misma
+        -- factura cambiaba el papel que el cliente ya se había llevado. Esta
+        -- tabla lo convierte en documento.
+        --
+        -- `pagos` es un snapshot JSON, no un JOIN: es justamente lo que hace
+        -- que reimprimirlo devuelva el mismo papel. Mismo criterio que
+        -- `facturas.items`. Cada entrada guarda además el `caja_movimiento_id`
+        -- que la originó, que es como `libracore.recibos` sabe qué cobros ya
+        -- están cubiertos y no los mete en un segundo recibo.
+        --
+        -- No es fiscal: no lleva CAE ni pasa por ARCA, así que la numeración es
+        -- interna y `punto_venta` la elige el producto (default 1). Un recibo
+        -- no se borra nunca — se anula, igual que una factura.
+        CREATE TABLE IF NOT EXISTS recibos (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            punto_venta       INTEGER NOT NULL DEFAULT 1,
+            numero            INTEGER NOT NULL,
+            fecha             TEXT NOT NULL,
+            cliente_id        INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+            cliente_razon     TEXT NOT NULL,
+            cliente_cuit      TEXT DEFAULT '',
+            cliente_domicilio TEXT DEFAULT '',
+            -- 'factura' | 'venta' | 'cc_pago': qué operación se está recibiendo.
+            origen_tipo       TEXT NOT NULL,
+            origen_id         INTEGER,
+            -- Lo que dice el "en concepto de" del PDF. Se guarda armado porque
+            -- depende del origen, y el origen puede anularse después.
+            concepto          TEXT DEFAULT '',
+            total             REAL NOT NULL,
+            pagos             TEXT NOT NULL DEFAULT '[]',
+            observaciones     TEXT DEFAULT '',
+            anulado           INTEGER NOT NULL DEFAULT 0,
+            anulado_motivo    TEXT DEFAULT '',
+            anulado_at        TEXT DEFAULT '',
+            usuario_id        INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+            created_at        TEXT DEFAULT (datetime('now'))
+        );
     """)
 
     # Migraciones defensivas (columnas agregadas después del CREATE original en
@@ -587,6 +628,15 @@ def init_core_schema(conn: sqlite3.Connection):
             ON clients(external_ref) WHERE external_ref IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_cc_resumenes_cliente ON cc_resumenes_enviados(cliente_id, fecha);
         CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id);
+        CREATE INDEX IF NOT EXISTS idx_recibos_cliente ON recibos(cliente_id, fecha);
+        -- Buscar por origen es la consulta caliente del módulo: es la que
+        -- responde "¿esta factura/venta/pago ya tiene recibo?" antes de emitir.
+        CREATE INDEX IF NOT EXISTS idx_recibos_origen ON recibos(origen_tipo, origen_id);
+        -- La numeración no puede repetirse. A diferencia de facturas, esta tabla
+        -- nace con el índice puesto (no hay instancias previas con duplicados
+        -- posibles), así que va acá y no en el bloque defensivo de abajo.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_recibos_numero_unico
+            ON recibos(punto_venta, numero);
     """)
 
     # UNIQUE aparte (no en el executescript de arriba): si por algún motivo ya
