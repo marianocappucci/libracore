@@ -206,6 +206,32 @@ def test_el_restore_guarda_primero_el_estado_actual(instancia, tmp_path):
     )
 
 
+def test_las_conexiones_se_cierran_antes_y_se_reabren_despues(instancia, tmp_path):
+    """🔴 Sin esto el restore devuelve `ok` y **no tiene efecto**.
+
+    Reemplazar el archivo mientras el proceso lo tiene abierto no hace nada
+    visible: en Linux el descriptor sigue apuntando al inodo viejo, asi que la
+    app sigue sirviendo la base ANTERIOR hasta que alguien reinicie el
+    contenedor. La pantalla dice que salio bien y los datos son los de antes.
+
+    Lo encontro un test de LibraDesk que restauraba y despues preguntaba por
+    los clientes: seguian los de despues del backup.
+
+    El orden importa: cerrar **antes** de mover (en Windows es la unica forma
+    de reemplazar el archivo) y reabrir **despues**.
+    """
+    contenido = crear_backup(instancia, tmp_path / "backups").read_bytes()
+    orden = []
+
+    restaurar_backup(
+        instancia, contenido, tmp_path / "backups",
+        cerrar_conexiones=lambda: orden.append("cerrar"),
+        reabrir_conexiones=lambda: orden.append("reabrir"),
+    )
+
+    assert orden == ["cerrar", "reabrir"]
+
+
 def test_el_backup_de_otro_producto_se_rechaza(instancia, tmp_path):
     """Los nombres de archivo de la familia se parecen
     (`medlibra_libracore.db`, `gestiolibra_libracore.db`). Sin este chequeo,
