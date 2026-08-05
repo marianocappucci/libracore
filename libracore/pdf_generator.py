@@ -178,6 +178,10 @@ _RIGHT_W = _RX - _RIGHT_X              # 66
 # Voucher box
 _LETTER_W  = 22
 _LETTER_RH = 15
+# Cuanto crece la fila de la letra cuando el titulo necesita dos renglones, y
+# cuanto separa a los dos. Es el mismo numero a proposito: la segunda linea
+# ocupa exactamente lo que la fila creció, asi que la caja no queda holgada.
+_TITULO_LH = 4.4
 _META_RH   = 4.6
 _CR        = 3.5   # border-radius
 
@@ -322,9 +326,30 @@ def _dashed_line(pdf, x1, y1, x2, y2, dash=2.5, gap=1.5):
 def _draw_header_block(pdf, letra, titulo, codigo, info_fields, empresa):
     y0 = _LX   # top margin 18 mm
 
+    # ── El titulo puede necesitar dos lineas ──────────────────────────────
+    #
+    # Se dibujaba con un `cell()`, que NO envuelve: un titulo mas ancho que su
+    # celda se sale del recuadro y queda pisando el borde. Con los titulos
+    # cortos de facturacion (Factura, Remito, Presupuesto: 10-18 mm de 38) no
+    # se notaba; lo destapo LibraDesk con "Comprobante de recepcion de equipo",
+    # que mide 55,8 mm y se pasaba 17,8.
+    #
+    # La fila de la letra CRECE solo si hace falta, asi que un titulo de una
+    # linea produce exactamente el mismo PDF que antes — que es lo que permite
+    # publicar esto sin revisar los comprobantes de los otros cinco productos.
+    titulo_txt = (titulo or "").title()
+    _ancho_titulo = _RIGHT_W - _LETTER_W - 6
+    pdf.set_font("Helvetica", "B", 8.5)
+    # Dos lineas como maximo: una tercera no entra sin empujar las filas meta,
+    # y un titulo tan largo es un problema de redaccion, no de maqueta.
+    titulo_lineas = _wrap_text(pdf, titulo_txt, _ancho_titulo)[:2] or [""]
+    # Con `codigo` la segunda linea chocaria contra el, asi que ahi la fila
+    # crece igual y el codigo baja con ella.
+    letter_rh = _LETTER_RH + (_TITULO_LH if len(titulo_lineas) > 1 else 0)
+
     # Calcular altura del voucher box primero (para que el logo sea proporcional)
     meta_h = len(info_fields) * _META_RH + 4
-    vh     = _LETTER_RH + meta_h
+    vh     = letter_rh + meta_h
 
     # ── Izquierda: logo + título ──────────────────────────────────────────
     logo_path = empresa.get("logo_path", "")
@@ -374,25 +399,29 @@ def _draw_header_block(pdf, letra, titulo, codigo, info_fields, empresa):
 
     # Celda de letra (fondo oscuro) — solo esquina visual sup-izq redondeada
     pdf.set_fill_color(*_INK)
-    _rrect(pdf, vx, vy, _LETTER_W, _LETTER_RH, corners=_C_TL, style="F")
+    _rrect(pdf, vx, vy, _LETTER_W, letter_rh, corners=_C_TL, style="F")
 
     # Letra
     pdf.set_font("Helvetica", "B", 26)
     pdf.set_text_color(*_WHITE)
     pdf.set_xy(vx, vy + 1)
-    pdf.cell(_LETTER_W, _LETTER_RH - 2, letra, align="C", ln=False)
+    pdf.cell(_LETTER_W, letter_rh - 2, letra, align="C", ln=False)
 
     # Tipo + código en fila de letra (lado derecho)
     tx2 = vx + _LETTER_W + 3
     tw2 = vw - _LETTER_W - 6
     pdf.set_text_color(*_INK)
     pdf.set_font("Helvetica", "B", 8.5)
-    pdf.set_xy(tx2, vy + 4)
-    pdf.cell(tw2, 6, titulo.title(), ln=False)
+    # Con una sola linea arranca en vy+4, igual que siempre; con dos sube para
+    # que el par quede centrado en la fila y no pegado al borde de arriba.
+    ty = vy + 4 if len(titulo_lineas) == 1 else vy + 2.5
+    for i, linea in enumerate(titulo_lineas):
+        pdf.set_xy(tx2, ty + i * _TITULO_LH)
+        pdf.cell(tw2, 6, linea, ln=False)
     if codigo:
         pdf.set_font("Helvetica", "", 7)
         pdf.set_text_color(*_MUTED)
-        pdf.set_xy(tx2, vy + 11)
+        pdf.set_xy(tx2, vy + 11 + (letter_rh - _LETTER_RH))
         pdf.cell(tw2, 5, f"Código {codigo} · Original", ln=False)
 
     # Borde exterior redondeado (tinta oscura, sobre todo lo anterior)
@@ -404,13 +433,13 @@ def _draw_header_block(pdf, letra, titulo, codigo, info_fields, empresa):
     pdf.set_draw_color(*_LINE)
     pdf.set_line_width(0.3)
     # Línea horizontal (fila letra / filas meta)
-    pdf.line(vx + 1, vy + _LETTER_RH, vx + vw - 1, vy + _LETTER_RH)
+    pdf.line(vx + 1, vy + letter_rh, vx + vw - 1, vy + letter_rh)
     # Línea vertical en fila letra (celda letra | datos tipo)
-    pdf.line(vx + _LETTER_W, vy + 1, vx + _LETTER_W, vy + _LETTER_RH - 1)
+    pdf.line(vx + _LETTER_W, vy + 1, vx + _LETTER_W, vy + letter_rh - 1)
 
     # Filas meta (PV / N° / Fecha)
     for i, (lbl, val) in enumerate(info_fields):
-        ry = vy + _LETTER_RH + 2.5 + i * _META_RH
+        ry = vy + letter_rh + 2.5 + i * _META_RH
         pdf.set_font("Helvetica", "", 7)
         pdf.set_text_color(*_MUTED)
         pdf.set_xy(vx + 3, ry)
