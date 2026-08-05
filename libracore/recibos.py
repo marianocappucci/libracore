@@ -217,7 +217,8 @@ def emitir_recibo_venta(venta_id: int, punto_venta: int = 1, usuario_id=None,
 
 def emitir_recibo_factura(factura_id: int, punto_venta: int = 1, usuario_id=None,
                           observaciones: str = "", get_factura=None,
-                          get_cobros_factura=None, tipo_label=None) -> dict:
+                          get_cobros_factura=None, tipo_label=None,
+                          resolver_cliente=None) -> dict:
     """El recibo de los cobros de una factura.
 
     A diferencia de los otros dos orígenes, **acumula**: una factura se puede
@@ -234,6 +235,8 @@ def emitir_recibo_factura(factura_id: int, punto_venta: int = 1, usuario_id=None
         from libracore.db.facturas import get_factura
     if get_cobros_factura is None:
         from libracore.db.caja import get_cobros_factura
+    if resolver_cliente is None:
+        from libracore.db.clients import get_client_by_cuit as resolver_cliente
 
     factura = get_factura(factura_id)
     if not factura:
@@ -267,6 +270,15 @@ def emitir_recibo_factura(factura_id: int, punto_venta: int = 1, usuario_id=None
     referencia = f"{tipo_label} {pv_fac}-{num_fac}"
     concepto = f"{'Pago parcial' if parcial else 'Cancelacion'} de {referencia}"
 
+    # Las facturas no tienen FK al cliente: se emiten a un CUIT y una razón
+    # social sueltas, y la cuenta corriente los reencuentra por CUIT (mismo
+    # criterio que `libracore.cobros`). Sin resolverlo acá, el recibo quedaría
+    # con `cliente_id` en NULL y no aparecería al filtrar el historial de ese
+    # cliente. Si el comprobante se emitió a un nombre libre, no hay a quién
+    # apuntar y el recibo igual se emite — el CUIT y la razón social van
+    # guardados en la fila.
+    cliente = resolver_cliente(factura.get("cliente_cuit"))
+
     return _emitir(
         fecha=_hoy(),
         cliente_razon=factura.get("cliente_razon"),
@@ -276,7 +288,7 @@ def emitir_recibo_factura(factura_id: int, punto_venta: int = 1, usuario_id=None
         pagos=pagos,
         concepto=concepto,
         punto_venta=punto_venta,
-        cliente_id=None,
+        cliente_id=cliente["id"] if cliente else None,
         cliente_cuit=factura.get("cliente_cuit"),
         cliente_domicilio=factura.get("cliente_domicilio"),
         observaciones=observaciones,

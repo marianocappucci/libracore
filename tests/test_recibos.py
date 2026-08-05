@@ -215,6 +215,24 @@ def test_anular_el_recibo_devuelve_sus_cobros_al_pozo(conn):
     assert segundo["total"] == 40000.0
 
 
+def test_el_recibo_de_factura_encuentra_al_cliente_por_cuit(conn):
+    """Las facturas no tienen FK al cliente — se emiten a un CUIT suelto. Si el
+    recibo no lo resolviera, quedaría en NULL y el historial del cliente no lo
+    mostraria."""
+    recibo = _emitir_factura([_mov(1, 40000.0)])
+    assert recibo["cliente_id"] == 17
+    assert [r["id"] for r in db_recibos.get_recibos(cliente_id=17)] == [recibo["id"]]
+
+
+def test_una_factura_a_nombre_libre_igual_emite_su_recibo(conn):
+    """Sin cliente en el padrón no hay a quién apuntar, pero el CUIT y la razón
+    social quedan guardados en la fila y el papel sale igual."""
+    suelta = {**FACTURA, "id": 90, "cliente_cuit": "", "cliente_razon": "Juan Perez"}
+    recibo = _emitir_factura([_mov(1, 40000.0)], factura=suelta)
+    assert recibo["cliente_id"] is None
+    assert recibo["cliente_razon"] == "Juan Perez"
+
+
 def test_los_recibos_de_facturas_distintas_no_se_pisan(conn):
     otra = {**FACTURA, "id": 44, "numero": 44}
     a = _emitir_factura([_mov(1, 40000.0)])
