@@ -310,6 +310,22 @@ def create_cc_pago(cliente_id: int, monto: float, fecha: str, concepto: str,
         return cur.lastrowid
 
 
+def get_cc_pago(pago_id: int) -> dict | None:
+    """Un pago a cuenta, con el nombre del cliente resuelto.
+
+    Existe para `libracore.recibos`: el recibo de cobranza se arma desde el
+    pago, y necesita el cliente además del monto."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT p.*, c.name AS cliente_nombre, c.cuit_dni AS cliente_cuit, "
+            "       c.address AS cliente_domicilio "
+            "FROM cc_pagos p LEFT JOIN clients c ON c.id = p.cliente_id "
+            "WHERE p.id = ?",
+            (pago_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def delete_cc_pago(pago_id: int):
     with get_connection() as conn:
         conn.execute("DELETE FROM cc_pagos WHERE id=?", (pago_id,))
