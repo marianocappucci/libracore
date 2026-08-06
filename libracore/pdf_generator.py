@@ -553,7 +553,21 @@ def _draw_emisor_cliente(pdf, empresa, client_fields):
 
 # ── Tabla de ítems ────────────────────────────────────────────────────────────
 
-def _draw_items_table(pdf, items, show_iva_col=False, show_prices=True):
+def _draw_items_table(pdf, items, show_iva_col=False, show_prices=True,
+                      iva_incluido=False, tax_rate=0):
+    """Tabla de items del comprobante.
+
+    `iva_incluido=True` **suma el IVA de cada linea al precio unitario y al
+    importe que se imprimen**. Es el comprobante de quien no discrimina
+    (Consumidor Final, Monotributista): no computa credito fiscal, asi que el
+    desglose no le sirve y ver un neto le hace parecer que el precio es otro.
+    La alicuota de cada linea sale de `iva_pct`; `tax_rate` (fraccion) es el
+    default de las lineas que no la traen, o sea los comprobantes guardados
+    antes de que existiera la alicuota por item.
+
+    Los importes del diccionario **no se tocan**: el que manda es el que
+    calculo el backend, y lo unico que cambia es como se presentan.
+    """
     if not show_prices:
         widths  = [154, 20]
         headers = ["DESCRIPCIÓN", "CANTIDAD"]
@@ -600,6 +614,11 @@ def _draw_items_table(pdf, items, show_iva_col=False, show_prices=True):
         qty   = item.get("qty", 1)
         price = item.get("unit_price", 0)
         sub   = item.get("subtotal", 0)
+        if iva_incluido:
+            pct = item.get("iva_pct")
+            factor = 1 + (tax_rate if pct is None else pct / 100)
+            price = price * factor
+            sub = sub * factor
         desc_w = widths[0] - 4
 
         # Calcular líneas reales para determinar la altura de la fila
@@ -666,10 +685,17 @@ def _draw_items_table(pdf, items, show_iva_col=False, show_prices=True):
 # ── Totales + Notas ───────────────────────────────────────────────────────────
 
 def _draw_totals_and_notes(pdf, sub, iva_amount, otros, total, tax_pct,
-                           observations=None, condicion_venta=None):
+                           observations=None, condicion_venta=None,
+                           discriminar=True):
+    """Caja de notas + caja de totales.
+
+    `discriminar=False` colapsa el desglose a una linea de aviso y el total.
+    El **alto de la caja no cambia**: las filas se reparten el mismo espacio,
+    asi que el comprobante que discrimina —los cuatro renglones de siempre—
+    sale identico a como salia antes de 2026-08-05.
+    """
     y     = pdf.get_y()
-    row_h = 6.5
-    tot_h = row_h * 4
+    tot_h = 26
     box_h = max(tot_h, 26)
 
     # Caja de notas (accent-soft, sin borde)
@@ -696,12 +722,24 @@ def _draw_totals_and_notes(pdf, sub, iva_amount, otros, total, tax_pct,
     # lineas que no la usan; se muestra el monto sin porcentaje, y el detalle
     # por linea queda en la tabla de items (`show_iva_col=True`).
     etiqueta_iva = "IVA" if tax_pct is None else f"IVA {tax_pct:.0f}%"
-    rows_data = [
-        ("Subtotal",              "$ " + _ar(sub),        False),
-        (etiqueta_iva,            "$ " + _ar(iva_amount), False),
-        ("Otros tributos",        "$ " + _ar(otros),      False),
-        ("Total",                 "$ " + _ar(total),       True),
-    ]
+    if discriminar:
+        rows_data = [
+            ("Subtotal",              "$ " + _ar(sub),        False),
+            (etiqueta_iva,            "$ " + _ar(iva_amount), False),
+            ("Otros tributos",        "$ " + _ar(otros),      False),
+            ("Total",                 "$ " + _ar(total),       True),
+        ]
+    else:
+        # Sin desglose. El monto del IVA no se omite por conveniencia: quien no
+        # computa credito fiscal no tiene que hacer nada con el, y mostrarselo
+        # aparte le hace comparar el neto contra el precio final de otro
+        # presupuesto que si lo incluye.
+        rows_data = [
+            ("IVA incluido en los precios", "",                False),
+            ("Otros tributos",              "$ " + _ar(otros), False),
+            ("Total",                       "$ " + _ar(total),  True),
+        ]
+    row_h = tot_h / len(rows_data)
 
     pdf.set_fill_color(*_WHITE)
     pdf.set_draw_color(*_LINE)
@@ -978,7 +1016,15 @@ def generate_pdf(remito, output_dir=None):
     return os.path.abspath(filepath)
 
 
-def generate_pdf_presupuesto(presupuesto, output_dir=None):
+def generate_pdf_presupuesto(presupuesto, output_dir=None, discriminar=True):
+    """`discriminar=False` saca el desglose de IVA y muestra los precios ya
+    con el impuesto adentro.
+
+    Lo decide la condicion frente al IVA del **receptor**, que es la unica
+    consecuencia de esa condicion que aplica a un presupuesto (el tipo de
+    comprobante A/B/C no aplica: esto no es una factura). El default es `True`
+    para que los productos que todavia no la modelan salgan como siempre.
+    """
     os.makedirs(output_dir or PRESUPUESTOS_PDF_DIR, exist_ok=True)
     safe = presupuesto["number"].replace("/", "-")
     filepath = os.path.join(output_dir or PRESUPUESTOS_PDF_DIR,
@@ -1007,7 +1053,14 @@ def generate_pdf_presupuesto(presupuesto, output_dir=None):
         for i in presupuesto["items"]
     }
     mezcla = len(alicuotas) > 1
-    _draw_items_table(pdf, presupuesto["items"], show_iva_col=mezcla)
+    # Sin desglose, la columna de IVA por linea sobra: el porcentaje ya esta
+    # adentro del precio y ponerlo al lado invita a sumarlo dos veces.
+    _draw_items_table(
+        pdf, presupuesto["items"],
+        show_iva_col=mezcla and discriminar,
+        iva_incluido=not discriminar,
+        tax_rate=presupuesto.get("tax_rate", 0) or 0,
+    )
 
     sub = presupuesto.get("subtotal", 0)
     tax = presupuesto.get("tax_amount", 0)
@@ -1023,7 +1076,8 @@ def generate_pdf_presupuesto(presupuesto, output_dir=None):
     pdf.set_y(target_y)
 
     _draw_totals_and_notes(pdf, sub, tax, 0, tot, pct,
-                           presupuesto.get("observations", ""))
+                           presupuesto.get("observations", ""),
+                           discriminar=discriminar)
     _draw_no_fiscal_notice(
         pdf, "Para presupuesto/proforma: Documento no válido como factura")
     pdf.output(filepath)
