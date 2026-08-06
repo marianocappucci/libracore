@@ -691,9 +691,14 @@ def _draw_totals_and_notes(pdf, sub, iva_amount, otros, total, tax_pct,
 
     # Caja de totales (borde _LINE, redondeada)
     tx = _LX + _NOTES_W + _SUM_GAP
+    # `tax_pct=None` = el comprobante mezcla alicuotas y no hay UN porcentaje
+    # que lo describa. Escribir cualquiera seria declarar mal el IVA de las
+    # lineas que no la usan; se muestra el monto sin porcentaje, y el detalle
+    # por linea queda en la tabla de items (`show_iva_col=True`).
+    etiqueta_iva = "IVA" if tax_pct is None else f"IVA {tax_pct:.0f}%"
     rows_data = [
         ("Subtotal",              "$ " + _ar(sub),        False),
-        (f"IVA {tax_pct:.0f}%",  "$ " + _ar(iva_amount), False),
+        (etiqueta_iva,            "$ " + _ar(iva_amount), False),
         ("Otros tributos",        "$ " + _ar(otros),      False),
         ("Total",                 "$ " + _ar(total),       True),
     ]
@@ -991,12 +996,23 @@ def generate_pdf_presupuesto(presupuesto, output_dir=None):
         ("Teléfono",  presupuesto.get("client_phone", "")),
     ]
     _draw_emisor_cliente(pdf, emp, client_fields)
-    _draw_items_table(pdf, presupuesto["items"], show_iva_col=False)
+
+    # Un presupuesto puede mezclar alicuotas cuando cada linea trae la suya
+    # (LibraDesk desde 2026-08-05). Si las mezcla, se muestra la columna de IVA
+    # por linea y el total va sin porcentaje; si todas coinciden —el caso de
+    # siempre, y el unico de Contalibra/Restolibra hoy— el comprobante sale
+    # **identico** a como salia antes.
+    alicuotas = {
+        round(float(i.get("tax_rate", presupuesto.get("tax_rate", 0)) or 0), 4)
+        for i in presupuesto["items"]
+    }
+    mezcla = len(alicuotas) > 1
+    _draw_items_table(pdf, presupuesto["items"], show_iva_col=mezcla)
 
     sub = presupuesto.get("subtotal", 0)
     tax = presupuesto.get("tax_amount", 0)
     tot = presupuesto.get("total", 0)
-    pct = round(presupuesto.get("tax_rate", 0) * 100)
+    pct = None if mezcla else round(presupuesto.get("tax_rate", 0) * 100)
 
     # Anclar totales + aviso al pie (totales 38mm + aviso 18mm + footer 14mm + margen)
     _BOTTOM_BLOCK_H = 68
