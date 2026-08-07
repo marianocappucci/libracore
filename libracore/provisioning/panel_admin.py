@@ -188,6 +188,110 @@ def versiones_disponibles() -> list[str]:
     return sorted({t for t in tags if t not in ("latest", "<none>")}, reverse=True)
 
 
+# ── poda de imágenes de deploy ────────────────────────────────────────────────
+
+# Tags de deploy que se conservan además del que corre. Dos alcanzan para
+# volver atrás; el tercero es margen para cuando el rollback también falla.
+IMAGE_RETENTION = 3
+
+_TAG_DEPLOY = re.compile(r"^v\d{4}\.\d{2}\.\d{2}-\d{4}$")
+
+
+def _es_tag_de_deploy(tag: str) -> bool:
+    """Si el tag lo acuñó `deploy_version()` (`vYYYY.MM.DD-HHMM`).
+
+    Los que no matchean se pusieron a mano —hitos de migración y puntos de
+    rollback: `p7`, `pre-p8-cutover-rollback`, `pre-recibos-20260805-074659`—
+    y la poda **no los toca**. Nadie los va a volver a generar: son el
+    artefacto de un corte que ya pasó."""
+    return bool(_TAG_DEPLOY.match(tag))
+
+
+def _ids_de_imagen_en_uso() -> set[str]:
+    """IDs de imagen que referencia algún contenedor, corriendo **o parado**.
+
+    Un contenedor parado también retiene su imagen: si se la borráramos, un
+    cliente pausado o suspendido se quedaría sin con qué arrancar."""
+    r = docker("ps", "-a", "--format", "{{.Image}}", capture=True)
+    if r.returncode != 0:
+        return set()
+    ids = set()
+    for ref in {l.strip() for l in r.stdout.splitlines() if l.strip()}:
+        iid = image_id(ref)
+        if iid:
+            ids.add(iid)
+    return ids
+
+
+def podar_imagenes_viejas(keep: int = IMAGE_RETENTION, *, dry_run: bool = False,
+                          log=print) -> tuple[list[str], list[str]]:
+    """Borra los tags de deploy viejos del producto activo. Devuelve
+    `(borrados, conservados)`; con `dry_run` devuelve `(candidatos, conservados)`
+    sin tocar nada.
+
+    Existe porque **nada los borraba**: `deploy_version()` acuña un tag nuevo
+    por deploy y ninguno se retiraba nunca. Medido en el VPS el 2026-08-07:
+    24 tags de contalibra y 21 de restolibra, de 566 MB a 1 GB cada uno, con
+    el disco al 75% — de los 75 GB usados, 63 eran imágenes y build cache.
+
+    Conserva:
+      - `latest`, que `build_image_tagged()` sigue moviendo a propósito;
+      - los tags que no acuñó `deploy_version()` (hitos y rollbacks a mano);
+      - los `keep` más nuevos;
+      - los pineados en el compose de cualquier cliente, **aunque el cliente
+        esté parado** — es justo el caso en que el pin es lo único que queda;
+      - los que referencia algún contenedor.
+
+    Usa `docker rmi` **sin** `-f`: si algo quedó reteniendo la imagen, Docker
+    se niega y se reporta como conservada, en vez de romper por la fuerza."""
+    cfg = get_config()
+    pineados = {ref for ref in
+                (leer_image_pineada(c["slug"]) for c in load_clients()) if ref}
+    en_uso = _ids_de_imagen_en_uso()
+
+    conservados: list[str] = []
+    candidatos: list[str] = []
+    recientes = 0
+    for tag in versiones_disponibles():      # ya viene del más nuevo al más viejo
+        ref = cfg.image_ref(tag)
+        if not _es_tag_de_deploy(tag):
+            conservados.append(f"{ref} (tag a mano: hito o rollback)")
+        elif recientes < keep:
+            recientes += 1
+            conservados.append(f"{ref} (entre los {keep} más nuevos)")
+        elif ref in pineados:
+            conservados.append(f"{ref} (pineado en el compose de un cliente)")
+        elif (iid := image_id(ref)) and iid in en_uso:
+            conservados.append(f"{ref} (en uso por un contenedor)")
+        else:
+            candidatos.append(ref)
+
+    if dry_run:
+        return candidatos, conservados
+
+    borrados: list[str] = []
+    for ref in candidatos:
+        if docker("rmi", ref, capture=True).returncode == 0:
+            borrados.append(ref)
+        else:
+            conservados.append(f"{ref} (Docker se negó a borrarla)")
+    return borrados, conservados
+
+
+def cmd_podar_imagenes(keep: int = IMAGE_RETENTION, dry_run: bool = False):
+    """Poda manual, para recuperar espacio sin esperar al próximo deploy."""
+    candidatos, conservados = podar_imagenes_viejas(keep, dry_run=dry_run)
+    for c in conservados:
+        print(f"  conserva  {c}")
+    if not candidatos:
+        print(f"[OK] Nada que podar (se conservan los {keep} tags más nuevos).")
+        return
+    verbo = "Se borrarían" if dry_run else "Borrados"
+    for ref in candidatos:
+        print(f"  {'(simulacro)' if dry_run else 'borrado'}   {ref}")
+    print(f"[OK] {verbo} {len(candidatos)} tag/s de deploy.")
+
+
 # ── display ───────────────────────────────────────────────────────────────────
 
 STATUS_COLOR = {
@@ -514,6 +618,14 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None):
             continue
         _guardar_meta(slug, version_desplegada=version,
                       version_anterior=anterior, desplegado_at=datetime.now().isoformat(timespec="seconds"))
+
+    # Se poda al final y nunca antes: si el deploy falló, la imagen vieja es
+    # justo a la que hay que poder volver.
+    borrados, _ = podar_imagenes_viejas()
+    if borrados:
+        print(f"[OK] Poda: {len(borrados)} tag/s de deploy viejos borrados "
+              f"(se conservan los {IMAGE_RETENTION} más nuevos, los pineados "
+              "y los de rollback).")
     print("[OK] Actualización completa.")
 
 
@@ -960,6 +1072,7 @@ def cli():
         "restore-db":   lambda: cmd_restore_db(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py restore-db <slug> [archivo.db]"),
         "actualizar":  lambda: cmd_actualizar([slug] if slug else None),
         "versiones":   lambda: cmd_versiones(),
+        "podar-imagenes": lambda: cmd_podar_imagenes(dry_run=(slug == "--dry-run")),
         "rollback":    lambda: cmd_rollback(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py rollback <slug> [version]"),
         "eliminar":    lambda: cmd_eliminar(slug) if slug else print("Uso: panel_admin.py eliminar <slug>"),
         "npm-listar":  lambda: cmd_npm_listar(),
@@ -977,7 +1090,7 @@ def cli():
     else:
         print(f"Comando desconocido: {cmd}")
         print("Comandos: listar | info | start | stop | restart | logs | backup | actualizar | eliminar")
-        print("Versión:  versiones | rollback <slug> [version]")
+        print("Versión:  versiones | rollback <slug> [version] | podar-imagenes [--dry-run]")
         print("DB:       list-backups <slug> | restore-db <slug> [archivo.db]")
         print("Servicio: activar <slug> | pausar <slug> | suspender <slug> | estado <slug>")
         print("NPM:      npm-listar | npm-crear <slug> | npm-eliminar <slug>")
