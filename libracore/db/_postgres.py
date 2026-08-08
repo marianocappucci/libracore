@@ -19,9 +19,42 @@ _SQLITE_MASTER_RE = re.compile(
 )
 
 
+def _replace_qmarks(sql: str) -> str:
+    """Replace qmark parameters without touching comments or SQL literals."""
+    out = []
+    i = 0
+    quote = None
+    while i < len(sql):
+        if quote:
+            out.append(sql[i])
+            if sql[i] == quote:
+                if i + 1 < len(sql) and sql[i + 1] == quote:
+                    out.append(sql[i + 1])
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            end = len(sql) if end < 0 else end
+            out.append(sql[i:end])
+            i = end
+            continue
+        if sql[i] in ("'", '"'):
+            quote = sql[i]
+            out.append(sql[i])
+        elif sql[i] == "?":
+            out.append("%s")
+        else:
+            out.append(sql[i])
+        i += 1
+    return "".join(out)
+
+
 def _paramstyle(sql: str) -> str:
     """Translate the qmark SQL used by LibraCore to psycopg's format style."""
-    sql = sql.replace("?", "%s")
+    sql = _replace_qmarks(sql)
     sql = re.sub(r"\bdatetime\('now'(?:\s*,\s*'localtime')?\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*%s\)", "CURRENT_TIMESTAMP + %s::interval", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bdate\('now'\)", "CURRENT_DATE", sql, flags=re.IGNORECASE)

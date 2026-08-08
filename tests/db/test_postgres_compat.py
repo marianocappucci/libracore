@@ -80,3 +80,9 @@ def test_declaracion_fk_fuera_de_orden_se_difiere():
 def test_sqlite_round_translation():
     sql = _paramstyle("SELECT ROUND(SUM(total), 2) FROM ventas")
     assert "ROUND(CAST(SUM(total) AS NUMERIC), 2)" in sql
+
+
+def test_qmark_en_comentario_no_se_convierte_en_placeholder():
+    sql = _paramstyle("-- ¿esta consulta?\nCREATE INDEX idx ON tabla(id)")
+    assert "¿esta consulta?" in sql
+    assert "%s" not in sql
