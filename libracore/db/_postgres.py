@@ -25,6 +25,10 @@ def _paramstyle(sql: str) -> str:
     sql = re.sub(r"\bdatetime\('now'(?:\s*,\s*'localtime')?\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*%s\)", "CURRENT_TIMESTAMP + %s::interval", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bCAST\(([^()]+)\s+AS\s+REAL\)", r"CAST(\1 AS DOUBLE PRECISION)", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "BIGSERIAL PRIMARY KEY", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bAUTOINCREMENT\b", "", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bREAL\b", "DOUBLE PRECISION", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bBLOB\b", "BYTEA", sql, flags=re.IGNORECASE)
     return sql
 
 

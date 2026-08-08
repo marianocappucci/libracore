@@ -34,3 +34,10 @@ def test_sqlite_dialect_translation():
         "SELECT datetime('now', 'localtime', ?)"
     )
     assert "DOUBLE PRECISION" in _paramstyle("SELECT CAST(value AS REAL)")
+    ddl = _paramstyle(
+        "CREATE TABLE probe (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, payload BLOB, created_at TEXT DEFAULT (datetime('now')))"
+    )
+    assert "BIGSERIAL PRIMARY KEY" in ddl
+    assert "DOUBLE PRECISION" in ddl
+    assert "BYTEA" in ddl
+    assert "CURRENT_TIMESTAMP" in ddl
