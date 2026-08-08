@@ -109,14 +109,26 @@ def get_reporte_caja_medios(desde: str = "", hasta: str = "", caja_id: int = 0) 
 
 def get_reporte_stock_bajo() -> list[dict]:
     """Productos con stock actual por debajo del mínimo."""
+    # El HAVING repite la expresión del SELECT en vez de usar el alias
+    # `stock_actual`: SQLite resuelve alias en HAVING y PostgreSQL no. Tiene
+    # que repetirla ENTERA, con el ROUND incluido — comparar el valor sin
+    # redondear cambia el resultado en el rango [mínimo-0.0005, mínimo), donde
+    # un producto que redondea justo al mínimo pasaría a figurar como stock
+    # bajo. Medido barriendo 17 cantidades alrededor del borde: sin el ROUND
+    # aparecían 3 productos de más.
+    #
+    # El ORDER BY repite la expresión por el mismo motivo, y esto es más
+    # sutil: PostgreSQL sí acepta un alias de salida en ORDER BY, pero sólo
+    # **pelado**. Dentro de una expresión (`p.stock_minimo - stock_actual`) no
+    # es visible y falla con *"column stock_actual does not exist"*.
     sql = """
         SELECT p.id, p.nombre, p.codigo, p.stock_minimo,
                ROUND(COALESCE(SUM(ms.cantidad), 0), 3) AS stock_actual
         FROM productos p
         LEFT JOIN movimientos_stock ms ON ms.producto_id = p.id
         GROUP BY p.id
-        HAVING COALESCE(SUM(ms.cantidad), 0) < p.stock_minimo
-        ORDER BY (p.stock_minimo - stock_actual) DESC
+        HAVING ROUND(COALESCE(SUM(ms.cantidad), 0), 3) < p.stock_minimo
+        ORDER BY (p.stock_minimo - ROUND(COALESCE(SUM(ms.cantidad), 0), 3)) DESC
     """
     with get_connection() as conn:
         return [dict(r) for r in conn.execute(sql).fetchall()]

@@ -52,12 +52,119 @@ def _replace_qmarks(sql: str) -> str:
     return "".join(out)
 
 
+def _argumentos_de_nivel_uno(texto: str) -> tuple[list[str], str] | None:
+    """Parte la lista de argumentos de una llamada, respetando el anidamiento.
+
+    `texto` es lo que va DESPUÉS del paréntesis de apertura. Devuelve los
+    argumentos de primer nivel y el resto de la cadena, o `None` si el
+    paréntesis nunca cierra (SQL truncado: mejor no tocar nada).
+    """
+    profundidad = 0
+    comilla = None
+    args: list[str] = []
+    actual: list[str] = []
+    for i, ch in enumerate(texto):
+        if comilla:
+            actual.append(ch)
+            if ch == comilla:
+                comilla = None
+            continue
+        if ch in ("'", '"'):
+            comilla = ch
+            actual.append(ch)
+        elif ch == "(":
+            profundidad += 1
+            actual.append(ch)
+        elif ch == ")":
+            if profundidad == 0:
+                args.append("".join(actual))
+                return [a.strip() for a in args], texto[i + 1:]
+            profundidad -= 1
+            actual.append(ch)
+        elif ch == "," and profundidad == 0:
+            args.append("".join(actual))
+            actual = []
+        else:
+            actual.append(ch)
+    return None
+
+
+def _castear_round(sql: str) -> str:
+    """`ROUND(x, n)` sobre `double precision` no existe en PostgreSQL.
+
+    Sólo hay `round(numeric, integer)` y `round(double precision)` de un
+    argumento, así que la forma de dos argumentos hay que castearla. La versión
+    anterior de esta traducción era una regex que exigía literalmente
+    `ROUND(SUM(...), n)`, y la consulta real del reporte de stock bajo es
+    `ROUND(COALESCE(SUM(ms.cantidad), 0), 3)` — no matcheaba, pasaba entera al
+    motor y reventaba con *"function round(double precision, integer) does not
+    exist"*. Por eso ahora se parsean los paréntesis en vez de adivinar la
+    forma: cualquier expresión como primer argumento queda cubierta.
+    """
+    out = []
+    i = 0
+    bajo = sql.lower()
+    while i < len(sql):
+        if bajo.startswith("round(", i) and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")):
+            partido = _argumentos_de_nivel_uno(sql[i + len("round("):])
+            if partido is not None:
+                args, resto = partido
+                if len(args) == 2:
+                    # El primer argumento puede traer otro ROUND adentro.
+                    out.append(f"ROUND(CAST({_castear_round(args[0])} AS NUMERIC), {args[1]})")
+                    sql = resto
+                    bajo = sql.lower()
+                    i = 0
+                    continue
+        out.append(sql[i])
+        i += 1
+    return "".join(out)
+
+
 def _paramstyle(sql: str) -> str:
     """Translate the qmark SQL used by LibraCore to psycopg's format style."""
     sql = _replace_qmarks(sql)
-    sql = re.sub(r"\bdatetime\('now'(?:\s*,\s*'localtime')?\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
-    sql = re.sub(r"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*%s\)", "CURRENT_TIMESTAMP + %s::interval", sql, flags=re.IGNORECASE)
-    sql = re.sub(r"\bdate\('now'\)", "CURRENT_DATE", sql, flags=re.IGNORECASE)
+    # `datetime('now')` en SQLite devuelve TEXTO con formato fijo
+    # 'YYYY-MM-DD HH:MM:SS', y así queda guardado en las 30 columnas
+    # `created_at TEXT DEFAULT (datetime('now'))` del schema. `CURRENT_TIMESTAMP`
+    # a secas, castrado a texto por la columna TEXT, escribe
+    # '2026-08-08 23:45:24.986262+00' — con microsegundos y offset de zona. Es
+    # el mismo dato pero NO el mismo string, y esa diferencia sale por dos
+    # lados: cualquier `strptime(...)` sobre la columna, y la comparación
+    # lexicográfica de rangos de fecha, que es como este motor filtra.
+    # Se emite el formato de SQLite, byte por byte.
+    #
+    # `AT TIME ZONE 'UTC'` no es decorativo: `datetime('now')` de SQLite es
+    # UTC, y `CURRENT_TIMESTAMP` de PostgreSQL depende del `TimeZone` de la
+    # sesión. Sin fijarlo, un sidecar con TZ local guardaría tres horas
+    # corridas respecto de lo que guardaba la misma base en SQLite.
+    _FORMATO = "'YYYY-MM-DD HH24:MI:SS'"
+    sql = re.sub(
+        r"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*%s\)",
+        f"to_char(LOCALTIMESTAMP + %s::interval, {_FORMATO})",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdatetime\('now'\s*,\s*'localtime'\)",
+        f"to_char(LOCALTIMESTAMP, {_FORMATO})",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdatetime\('now'\)",
+        f"to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', {_FORMATO})",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    # `date('now')` devuelve TEXTO en SQLite, y las fechas de este motor se
+    # guardan como TEXT ISO ('YYYY-MM-DD'), así que las comparaciones son
+    # lexicográficas — que para ISO coincide con el orden cronológico. Traducir
+    # a `CURRENT_DATE` a secas rompía eso: `valid_until < CURRENT_DATE` es
+    # `text < date` y PostgreSQL no tiene ese operador. Se traduce a texto para
+    # que la comparación siga siendo la misma que en SQLite, sin depender de
+    # que todos los valores guardados sean fechas válidas.
+    sql = re.sub(r"\bdate\('now'\)", "to_char(CURRENT_DATE, 'YYYY-MM-DD')", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bdate\(([^()]+)\)", r"CAST(\1 AS DATE)", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bgroup_concat\(([^,()]+),\s*(['\"][^'\"]*['\"])\)", r"string_agg(\1, \2)", sql, flags=re.IGNORECASE)
     sql = re.sub(
@@ -73,12 +180,7 @@ def _paramstyle(sql: str) -> str:
         flags=re.IGNORECASE,
     )
     sql = re.sub(r"->>\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'", r"->> '\1'", sql)
-    sql = re.sub(
-        r"\bROUND\(SUM\((.*?)\),\s*([0-9]+)\)",
-        r"ROUND(CAST(SUM(\1) AS NUMERIC), \2)",
-        sql,
-        flags=re.IGNORECASE,
-    )
+    sql = _castear_round(sql)
     sql = re.sub(
         r"\bjson_each\(([^()]+)\)\s+([A-Za-z_][A-Za-z0-9_]*)",
         r"jsonb_array_elements(\1::jsonb) AS \2(value)",
@@ -104,7 +206,22 @@ def _paramstyle(sql: str) -> str:
 
 
 class Row:
-    """A row addressable by both integer position and column name."""
+    """A row addressable by both integer position and column name.
+
+    Emula `sqlite3.Row`, y la parte que menos se ve es la que más se usa:
+    `dict(fila)`. `dict()` acepta un objeto como mapping si tiene `keys()` y
+    `__getitem__`; sin `keys()` cae al camino de iterable-de-pares, encuentra
+    valores sueltos y muere con *"cannot convert dictionary update sequence
+    element #0 to a sequence"*.
+
+    No es un detalle: `return [dict(r) for r in rows]` es **el** patrón de
+    retorno de esta capa —95 llamados en 20 módulos de `libracore/db/`—, así
+    que sin este método casi toda lectura del motor falla contra PostgreSQL.
+    Lo encontró la verificación del piloto LibraDesk el 2026-08-09, ejecutando
+    las lecturas de `remitos_presupuestos` **con filas sembradas**: 5 de 7
+    funciones fallaban. Con las tablas vacías pasaban todas, porque `dict()`
+    nunca llegaba a ejecutarse.
+    """
 
     def __init__(self, values: tuple, columns: tuple[str, ...]):
         self._values = values
@@ -114,6 +231,15 @@ class Row:
         if isinstance(key, int):
             return self._values[key]
         return self._values[self._columns.index(key)]
+
+    def keys(self) -> list[str]:
+        """Los nombres de columna, como `sqlite3.Row.keys()`."""
+        return list(self._columns)
+
+    # Sin `__contains__` a propósito: `sqlite3.Row` tampoco lo define, así que
+    # `x in fila` itera VALORES en los dos backends. Definirlo sobre los
+    # nombres de columna haría que la misma expresión signifique cosas
+    # distintas según el motor.
 
     def __iter__(self) -> Iterator:
         return iter(self._values)

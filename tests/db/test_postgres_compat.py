@@ -29,10 +29,26 @@ def test_postgres_compatibility_when_configured():
 
 
 def test_sqlite_dialect_translation():
-    assert "CURRENT_TIMESTAMP" in _paramstyle("SELECT datetime('now')")
-    assert "CURRENT_TIMESTAMP + %s::interval" in _paramstyle(
-        "SELECT datetime('now', 'localtime', ?)"
+    # Las tres formas de `datetime('now')` tienen que producir TEXTO con el
+    # formato exacto de SQLite ('YYYY-MM-DD HH:MM:SS'), no un timestamp: las 30
+    # columnas `created_at` del schema son TEXT y hay codigo que las parsea.
+    # `CURRENT_TIMESTAMP` a secas escribia microsegundos y offset de zona.
+    assert _paramstyle("SELECT datetime('now')") == (
+        "SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
     )
+    assert _paramstyle("SELECT datetime('now', 'localtime')") == (
+        "SELECT to_char(LOCALTIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')"
+    )
+    assert _paramstyle("SELECT datetime('now', 'localtime', ?)") == (
+        "SELECT to_char(LOCALTIMESTAMP + %s::interval, 'YYYY-MM-DD HH24:MI:SS')"
+    )
+    # Contraprueba de lo que se rompio: ninguna de las tres puede dejar un
+    # timestamp crudo, que es lo que metia los microsegundos.
+    for forma in ("datetime('now')", "datetime('now', 'localtime')"):
+        traducida = _paramstyle(f"SELECT {forma}")
+        assert "to_char(" in traducida
+        assert not traducida.endswith("CURRENT_TIMESTAMP")
+
     assert "DOUBLE PRECISION" in _paramstyle("SELECT CAST(value AS REAL)")
     ddl = _paramstyle(
         "CREATE TABLE probe (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, payload BLOB, created_at TEXT DEFAULT (datetime('now')))"
@@ -40,7 +56,25 @@ def test_sqlite_dialect_translation():
     assert "BIGSERIAL PRIMARY KEY" in ddl
     assert "DOUBLE PRECISION" in ddl
     assert "BYTEA" in ddl
-    assert "CURRENT_TIMESTAMP" in ddl
+    assert "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')" in ddl
+
+
+def test_round_de_dos_argumentos_castea_cualquier_expresion():
+    """🔴 `round(double precision, integer)` no existe en PostgreSQL.
+
+    La traduccion anterior era una regex que exigia literalmente
+    `ROUND(SUM(...), n)`. La consulta real del reporte de stock bajo es
+    `ROUND(COALESCE(SUM(...), 0), 3)` y no matcheaba: pasaba entera al motor y
+    reventaba. Se cubren las dos formas y el anidamiento.
+    """
+    assert _paramstyle("SELECT ROUND(SUM(x), 2)") == "SELECT ROUND(CAST(SUM(x) AS NUMERIC), 2)"
+    assert _paramstyle("SELECT ROUND(COALESCE(SUM(x), 0), 3)") == (
+        "SELECT ROUND(CAST(COALESCE(SUM(x), 0) AS NUMERIC), 3)"
+    )
+    # Un solo argumento sí existe en PostgreSQL: no se toca.
+    assert _paramstyle("SELECT ROUND(x)") == "SELECT ROUND(x)"
+    # Y no se confunde con un identificador que termina en "round".
+    assert _paramstyle("SELECT background(x, 2)") == "SELECT background(x, 2)"
 
 
 def test_sqlite_reporting_translation():
@@ -51,7 +85,9 @@ def test_sqlite_reporting_translation():
     assert "to_char(cast(fecha AS date), 'YYYY-MM')" in sql
     assert "lpad(cast(punto_venta AS text), 4, '0')" in sql
     assert "string_agg(medio, '|')" in sql
-    assert "CURRENT_DATE" in sql
+    # `date('now')` va a TEXTO, no a `CURRENT_DATE`: se compara contra columnas
+    # TEXT ISO y `text < date` no tiene operador en PostgreSQL.
+    assert "to_char(CURRENT_DATE, 'YYYY-MM-DD')" in sql
 
 
 def test_sqlite_json_each_translation():
