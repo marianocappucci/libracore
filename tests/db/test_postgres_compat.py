@@ -62,6 +62,16 @@ def test_sqlite_json_each_translation():
     assert "jsonb_array_elements(v.items::jsonb) AS ji(value)" in sql
 
 
+def test_declaracion_fk_fuera_de_orden_se_difiere():
+    sql = _paramstyle(
+        "CREATE TABLE caja_movimientos (turno_id INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL)"
+    )
+    assert "REFERENCES turnos_caja" not in sql
+    assert "REFERENCES ventas" not in _paramstyle(
+        "CREATE TABLE movimientos_stock (venta_id INTEGER REFERENCES ventas(id) ON DELETE SET NULL)"
+    )
+
+
 def test_sqlite_round_translation():
     sql = _paramstyle("SELECT ROUND(SUM(total), 2) FROM ventas")
     assert "ROUND(CAST(SUM(total) AS NUMERIC), 2)" in sql

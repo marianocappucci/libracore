@@ -57,6 +57,15 @@ def _paramstyle(sql: str) -> str:
     sql = re.sub(r"\bAUTOINCREMENT\b", "", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bREAL\b", "DOUBLE PRECISION", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bBLOB\b", "BYTEA", sql, flags=re.IGNORECASE)
+    # SQLite acepta declarar una FK hacia una tabla que todavía no fue creada;
+    # PostgreSQL no. `schema.py` agrega esta constraint después de crear todas
+    # las tablas, sólo en el backend PostgreSQL.
+    sql = re.sub(
+        r"\s+REFERENCES\s+(?:turnos_caja|ventas)\(id\)\s+ON\s+DELETE\s+SET\s+NULL",
+        "",
+        sql,
+        flags=re.IGNORECASE,
+    )
     return sql
 
 

@@ -85,6 +85,11 @@ def get_connection():
     return conn
 
 
+def is_postgres() -> bool:
+    """Indica si el backend configurado es PostgreSQL."""
+    return _database_url is not None
+
+
 # Hook opcional para comportamiento receta-aware de `descontar_stock_venta`
 # (ver libracore.db.stock). None = comportamiento simple (Contalibra: siempre
 # descuenta el producto vendido). Un producto con recetas (Restolibra) inyecta
