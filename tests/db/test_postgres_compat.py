@@ -3,6 +3,7 @@ import os
 import pytest
 
 from libracore.db import core
+from libracore.db._postgres import _paramstyle
 
 
 def test_sqlite_configuration_stays_unchanged(tmp_path):
@@ -25,3 +26,11 @@ def test_postgres_compatibility_when_configured():
         cursor = conn.execute("INSERT INTO probe (value) VALUES (?)", ("postgres",))
         assert cursor.lastrowid == 1
         assert conn.execute("SELECT * FROM probe WHERE id=?", (1,)).fetchone()["value"] == "postgres"
+
+
+def test_sqlite_dialect_translation():
+    assert "CURRENT_TIMESTAMP" in _paramstyle("SELECT datetime('now')")
+    assert "CURRENT_TIMESTAMP + %s::interval" in _paramstyle(
+        "SELECT datetime('now', 'localtime', ?)"
+    )
+    assert "DOUBLE PRECISION" in _paramstyle("SELECT CAST(value AS REAL)")

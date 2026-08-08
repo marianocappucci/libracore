@@ -4,20 +4,26 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Sequence
+from typing import TYPE_CHECKING, Any
 
-from psycopg import Connection
-from psycopg.rows import tuple_row
+if TYPE_CHECKING:
+    from psycopg import Connection
 
 
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+", re.IGNORECASE)
 _INSERT_IGNORE_RE = re.compile(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+", re.IGNORECASE)
 _TABLE_INFO_RE = re.compile(r"^\s*PRAGMA\s+table_info\s*\(\s*([\w]+)\s*\)\s*;?\s*$", re.IGNORECASE)
+_SQLITE_MASTER_RE = re.compile(
+    r"^\s*SELECT\s+1\s+FROM\s+sqlite_master\s+WHERE\s+type\s*=\s*'table'\s+AND\s+name\s*=\s*(['\"]?)([\w]+)\1\s*;?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _paramstyle(sql: str) -> str:
     """Translate the qmark SQL used by LibraCore to psycopg's format style."""
     sql = sql.replace("?", "%s")
-    sql = re.sub(r"\bdatetime\('now'(?:,'localtime')?\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bdatetime\('now'(?:\s*,\s*'localtime')?\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*%s\)", "CURRENT_TIMESTAMP + %s::interval", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bCAST\(([^()]+)\s+AS\s+REAL\)", r"CAST(\1 AS DOUBLE PRECISION)", sql, flags=re.IGNORECASE)
     return sql
 
@@ -44,6 +50,8 @@ class Row:
 class Cursor:
     def __init__(self, connection: "ConnectionWrapper"):
         self._connection = connection
+        from psycopg.rows import tuple_row
+
         self._cursor = connection._connection.cursor(row_factory=tuple_row)
         self._lastrowid = None
 
@@ -68,6 +76,13 @@ class Cursor:
             )
             params = (table,)
         else:
+            sqlite_master = _SQLITE_MASTER_RE.match(sql)
+            if sqlite_master:
+                sql = (
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = %s"
+                )
+                params = (sqlite_master.group(2),)
             ignore_insert = bool(_INSERT_IGNORE_RE.match(sql))
             if ignore_insert:
                 sql = _INSERT_IGNORE_RE.sub("INSERT INTO ", sql, count=1)
@@ -105,7 +120,7 @@ class Cursor:
 
 
 class ConnectionWrapper:
-    def __init__(self, connection: Connection):
+    def __init__(self, connection: Any):
         self._connection = connection
 
     def execute(self, sql: str, params: Sequence | None = None):
