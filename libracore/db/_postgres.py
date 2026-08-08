@@ -10,11 +10,16 @@ from psycopg.rows import tuple_row
 
 
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+", re.IGNORECASE)
+_INSERT_IGNORE_RE = re.compile(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+", re.IGNORECASE)
+_TABLE_INFO_RE = re.compile(r"^\s*PRAGMA\s+table_info\s*\(\s*([\w]+)\s*\)\s*;?\s*$", re.IGNORECASE)
 
 
 def _paramstyle(sql: str) -> str:
     """Translate the qmark SQL used by LibraCore to psycopg's format style."""
-    return sql.replace("?", "%s")
+    sql = sql.replace("?", "%s")
+    sql = re.sub(r"\bdatetime\('now'(?:,'localtime')?\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bCAST\(([^()]+)\s+AS\s+REAL\)", r"CAST(\1 AS DOUBLE PRECISION)", sql, flags=re.IGNORECASE)
+    return sql
 
 
 class Row:
@@ -51,7 +56,24 @@ class Cursor:
         return self._cursor.description
 
     def execute(self, sql: str, params: Sequence | None = None):
-        sql = _paramstyle(sql)
+        table_info = _TABLE_INFO_RE.match(sql)
+        if table_info:
+            table = table_info.group(1)
+            sql = (
+                "SELECT ordinal_position - 1 AS cid, column_name AS name, "
+                "data_type AS type, CASE WHEN is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull, "
+                "column_default AS dflt_value, CASE WHEN column_name = 'id' THEN 1 ELSE 0 END AS pk "
+                "FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s "
+                "ORDER BY ordinal_position"
+            )
+            params = (table,)
+        else:
+            ignore_insert = bool(_INSERT_IGNORE_RE.match(sql))
+            if ignore_insert:
+                sql = _INSERT_IGNORE_RE.sub("INSERT INTO ", sql, count=1)
+            sql = _paramstyle(sql)
+            if ignore_insert:
+                sql = f"{sql.rstrip().rstrip(';')} ON CONFLICT DO NOTHING"
         if _INSERT_RE.match(sql) and " returning " not in sql.lower():
             sql = f"{sql.rstrip().rstrip(';')} RETURNING id"
             self._cursor.execute(sql, params or ())
