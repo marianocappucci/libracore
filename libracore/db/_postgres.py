@@ -40,6 +40,12 @@ def _paramstyle(sql: str) -> str:
         flags=re.IGNORECASE,
     )
     sql = re.sub(r"->>\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'", r"->> '\1'", sql)
+    sql = re.sub(
+        r"\bjson_each\(([^()]+)\)\s+([A-Za-z_][A-Za-z0-9_]*)",
+        r"jsonb_array_elements(\1::jsonb) AS \2(value)",
+        sql,
+        flags=re.IGNORECASE,
+    )
     sql = re.sub(r"\bCAST\(([^()]+)\s+AS\s+REAL\)", r"CAST(\1 AS DOUBLE PRECISION)", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "BIGSERIAL PRIMARY KEY", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bAUTOINCREMENT\b", "", sql, flags=re.IGNORECASE)

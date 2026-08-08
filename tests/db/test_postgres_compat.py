@@ -52,3 +52,11 @@ def test_sqlite_reporting_translation():
     assert "lpad(cast(punto_venta AS text), 4, '0')" in sql
     assert "string_agg(medio, '|')" in sql
     assert "CURRENT_DATE" in sql
+
+
+def test_sqlite_json_each_translation():
+    sql = _paramstyle(
+        "SELECT ji.value->>'$.nombre' FROM ventas v, json_each(v.items) ji"
+    )
+    assert "ji.value->> 'nombre'" in sql
+    assert "jsonb_array_elements(v.items::jsonb) AS ji(value)" in sql
