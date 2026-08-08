@@ -41,6 +41,12 @@ def _paramstyle(sql: str) -> str:
     )
     sql = re.sub(r"->>\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'", r"->> '\1'", sql)
     sql = re.sub(
+        r"\bROUND\(SUM\((.*?)\),\s*([0-9]+)\)",
+        r"ROUND(CAST(SUM(\1) AS NUMERIC), \2)",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
         r"\bjson_each\(([^()]+)\)\s+([A-Za-z_][A-Za-z0-9_]*)",
         r"jsonb_array_elements(\1::jsonb) AS \2(value)",
         sql,

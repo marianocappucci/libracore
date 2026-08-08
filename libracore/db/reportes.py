@@ -115,7 +115,7 @@ def get_reporte_stock_bajo() -> list[dict]:
         FROM productos p
         LEFT JOIN movimientos_stock ms ON ms.producto_id = p.id
         GROUP BY p.id
-        HAVING stock_actual < p.stock_minimo
+        HAVING COALESCE(SUM(ms.cantidad), 0) < p.stock_minimo
         ORDER BY (p.stock_minimo - stock_actual) DESC
     """
     with get_connection() as conn:

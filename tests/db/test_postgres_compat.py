@@ -60,3 +60,8 @@ def test_sqlite_json_each_translation():
     )
     assert "ji.value->> 'nombre'" in sql
     assert "jsonb_array_elements(v.items::jsonb) AS ji(value)" in sql
+
+
+def test_sqlite_round_translation():
+    sql = _paramstyle("SELECT ROUND(SUM(total), 2) FROM ventas")
+    assert "ROUND(CAST(SUM(total) AS NUMERIC), 2)" in sql
