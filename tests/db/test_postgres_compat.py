@@ -41,3 +41,14 @@ def test_sqlite_dialect_translation():
     assert "DOUBLE PRECISION" in ddl
     assert "BYTEA" in ddl
     assert "CURRENT_TIMESTAMP" in ddl
+
+
+def test_sqlite_reporting_translation():
+    sql = _paramstyle(
+        "SELECT strftime('%Y-%m', fecha), printf('%04d', punto_venta), "
+        "GROUP_CONCAT(medio, '|'), date('now') FROM caja"
+    )
+    assert "to_char(cast(fecha AS date), 'YYYY-MM')" in sql
+    assert "lpad(cast(punto_venta AS text), 4, '0')" in sql
+    assert "string_agg(medio, '|')" in sql
+    assert "CURRENT_DATE" in sql

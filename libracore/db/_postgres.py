@@ -24,6 +24,22 @@ def _paramstyle(sql: str) -> str:
     sql = sql.replace("?", "%s")
     sql = re.sub(r"\bdatetime\('now'(?:\s*,\s*'localtime')?\)", "CURRENT_TIMESTAMP", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*%s\)", "CURRENT_TIMESTAMP + %s::interval", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bdate\('now'\)", "CURRENT_DATE", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bdate\(([^()]+)\)", r"CAST(\1 AS DATE)", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bgroup_concat\(([^,()]+),\s*(['\"][^'\"]*['\"])\)", r"string_agg(\1, \2)", sql, flags=re.IGNORECASE)
+    sql = re.sub(
+        r"\bprintf\('%0([0-9]+)d',\s*([^()]+)\)",
+        r"lpad(cast(\2 AS text), \1, '0')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bstrftime\('%Y-%m',\s*([^()]+)\)",
+        r"to_char(cast(\1 AS date), 'YYYY-MM')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(r"->>\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'", r"->> '\1'", sql)
     sql = re.sub(r"\bCAST\(([^()]+)\s+AS\s+REAL\)", r"CAST(\1 AS DOUBLE PRECISION)", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "BIGSERIAL PRIMARY KEY", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bAUTOINCREMENT\b", "", sql, flags=re.IGNORECASE)
