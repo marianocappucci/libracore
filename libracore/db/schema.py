@@ -461,6 +461,69 @@ def init_core_schema(conn: sqlite3.Connection):
             usuario_id        INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
             created_at        TEXT DEFAULT (datetime('now'))
         );
+
+        -- La bandeja de lo que **otro producto de la familia** dejó para
+        -- facturar acá: cuotas de un contrato de alquiler, un ticket cobrable,
+        -- un remito. Nace del puente LibraDesk → Contalibra (ver
+        -- wiki/analyses/libradesk-contalibra-puente-facturacion.md).
+        --
+        -- 🔴 **Existe porque no hay facturas en borrador.** `create_factura()`
+        -- se llama con un número ya tomado de ARCA y termina con un CAE: no
+        -- hay un estado previo donde algo espere a que una persona lo mire. Si
+        -- el productor escribiera directo en `facturas`, cada ítem que mande
+        -- consumiría numeración fiscal antes de que nadie lo apruebe, y los
+        -- rechazados dejarían huecos en la secuencia. Esta tabla es ese estado
+        -- previo, y **no tiene numeración a propósito**.
+        --
+        -- `origen_id` es TEXT y no INTEGER porque es un id de **otro sistema**:
+        -- la bandeja no puede suponer su forma. `origen_producto` está desde el
+        -- día uno aunque hoy haya un solo productor — es de la familia, no de
+        -- un producto.
+        --
+        -- `items` es JSON con la misma forma que `facturas.items`, para que
+        -- facturar un pendiente sea un prefill y no una traducción.
+        CREATE TABLE IF NOT EXISTS comprobantes_pendientes (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            origen_producto   TEXT NOT NULL,
+            origen_instancia  TEXT NOT NULL DEFAULT '',
+            -- 'cuota_contrato' | 'incidencia' | 'remito' | 'presupuesto'
+            origen_tipo       TEXT NOT NULL,
+            origen_id         TEXT NOT NULL,
+            cliente_id        INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+            cliente_cuit      TEXT DEFAULT '',
+            cliente_razon     TEXT NOT NULL,
+            cliente_domicilio TEXT DEFAULT '',
+            fecha_sugerida    TEXT DEFAULT '',
+            -- Las fechas de servicio del período que se está cobrando. Importan
+            -- en los alquileres, donde la factura de agosto se emite en
+            -- septiembre y el período tiene que decir agosto.
+            periodo_desde     TEXT DEFAULT '',
+            periodo_hasta     TEXT DEFAULT '',
+            concepto          TEXT DEFAULT '',
+            condicion_venta   TEXT DEFAULT '',
+            observaciones     TEXT DEFAULT '',
+            items             TEXT NOT NULL DEFAULT '[]',
+            -- Derivado de `items` por `libracore.db.comprobantes_pendientes`,
+            -- nunca recibido del productor: un solo escritor, sin deriva.
+            total             REAL NOT NULL DEFAULT 0,
+            estado            TEXT NOT NULL DEFAULT 'pendiente',
+            factura_id        INTEGER REFERENCES facturas(id) ON DELETE SET NULL,
+            motivo_descarte   TEXT DEFAULT '',
+            resuelto_at       TEXT DEFAULT '',
+            resuelto_por      TEXT DEFAULT '',
+            created_at        TEXT DEFAULT (datetime('now'))
+        );
+
+        -- 🔴 **La constraint que hace seguro el reenvío.** El modo de falla
+        -- normal entre dos contenedores es el corte a mitad de camino, y la
+        -- reacción normal es reintentar. Sin este UNIQUE el reintento duplica
+        -- el comprobante y el cliente recibe la misma cuota dos veces.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_comprobantes_pendientes_origen
+            ON comprobantes_pendientes(origen_producto, origen_instancia,
+                                       origen_tipo, origen_id);
+        -- La consulta caliente: la bandeja abre en los pendientes.
+        CREATE INDEX IF NOT EXISTS idx_comprobantes_pendientes_estado
+            ON comprobantes_pendientes(estado, created_at);
     """)
 
     # Migraciones defensivas (columnas agregadas después del CREATE original en
