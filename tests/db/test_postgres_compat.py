@@ -70,6 +70,11 @@ def test_declaracion_fk_fuera_de_orden_se_difiere():
     assert "REFERENCES ventas" not in _paramstyle(
         "CREATE TABLE movimientos_stock (venta_id INTEGER REFERENCES ventas(id) ON DELETE SET NULL)"
     )
+    alter = _paramstyle(
+        "ALTER TABLE caja_movimientos ADD CONSTRAINT fk FOREIGN KEY (turno_id) "
+        "REFERENCES turnos_caja(id) ON DELETE SET NULL"
+    )
+    assert "REFERENCES turnos_caja" in alter
 
 
 def test_sqlite_round_translation():

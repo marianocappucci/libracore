@@ -60,12 +60,13 @@ def _paramstyle(sql: str) -> str:
     # SQLite acepta declarar una FK hacia una tabla que todavía no fue creada;
     # PostgreSQL no. `schema.py` agrega esta constraint después de crear todas
     # las tablas, sólo en el backend PostgreSQL.
-    sql = re.sub(
-        r"\s+REFERENCES\s+(?:turnos_caja|ventas)\(id\)\s+ON\s+DELETE\s+SET\s+NULL",
-        "",
-        sql,
-        flags=re.IGNORECASE,
-    )
+    if re.match(r"\s*CREATE\s+TABLE", sql, flags=re.IGNORECASE):
+        sql = re.sub(
+            r"\s+REFERENCES\s+(?:turnos_caja|ventas)\(id\)\s+ON\s+DELETE\s+SET\s+NULL",
+            "",
+            sql,
+            flags=re.IGNORECASE,
+        )
     return sql
 
 
