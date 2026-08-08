@@ -38,6 +38,7 @@ _lock = threading.Lock()
 _db_path: str | None = None
 _timeout: int = 5
 _extra_pragmas: tuple[str, ...] = ()
+_database_url: str | None = None
 
 
 def configure(db_path: str, *, timeout: int = 5, extra_pragmas: tuple[str, ...] = ()):
@@ -49,19 +50,30 @@ def configure(db_path: str, *, timeout: int = 5, extra_pragmas: tuple[str, ...] 
     Contalibra el default de sqlite3 — se preserva la diferencia real que ya
     tenía cada producto, no se unifica). `extra_pragmas`: PRAGMAs adicionales
     que un producto necesite correr en cada conexión nueva."""
-    global _db_path, _timeout, _extra_pragmas
+    global _db_path, _database_url, _timeout, _extra_pragmas
     with _lock:
         _db_path = db_path
+        _database_url = db_path if "://" in db_path else None
         _timeout = timeout
         _extra_pragmas = tuple(extra_pragmas)
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection():
     if _db_path is None:
         raise RuntimeError(
             "libracore.db.core no está configurado — llamar "
             "libracore.db.core.configure(db_path=...) al arrancar la app."
         )
+    if _database_url:
+        if not _database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+            raise ValueError(f"URL de base no soportada: {_database_url!r}")
+        from psycopg import connect
+
+        from ._postgres import ConnectionWrapper
+
+        url = _database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        return ConnectionWrapper(connect(url, connect_timeout=_timeout))
+
     conn = sqlite3.connect(_db_path, timeout=_timeout)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")

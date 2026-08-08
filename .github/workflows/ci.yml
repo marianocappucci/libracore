@@ -18,6 +18,22 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: libracore
+          POSTGRES_USER: libracore
+          POSTGRES_PASSWORD: libracore-ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U libracore -d libracore"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      LIBRACORE_POSTGRES_URL: postgresql://libracore:libracore-ci@localhost:5432/libracore
     steps:
       - uses: actions/checkout@v4
         with:
