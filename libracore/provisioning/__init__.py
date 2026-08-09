@@ -459,8 +459,10 @@ def le_email_from_config():
 
 
 def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: str) -> None:
-    """Escribe el estado de módulos (habilitado + plan) directo en la tabla
-    `modulos` de la base SQLite de un cliente (`clientes/<slug>/data/*.db`).
+    """Escribe el estado de módulos (habilitado + plan) en la tabla `modulos`
+    de la base de un cliente (`clientes/<slug>/data/*.db`, o su base
+    PostgreSQL).
+
     Idempotente (INSERT OR IGNORE + UPDATE), funciona igual sobre una base
     recién migrada o una existente. Requiere que la tabla `modulos` ya
     exista (la crea la migración propia de cada vertical). Extraído
@@ -469,12 +471,32 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
     nombre de la variable — ver
     wiki/analyses/auditoria-duplicacion-familia-libra.md. La definición del
     plan en sí (`PLANES`/`PLAN_MODULOS`/precios) sigue viviendo en el
-    `plans.py` de cada producto — es catálogo propio, no código."""
-    import sqlite3
-    con = sqlite3.connect(db_path)
+    `plans.py` de cada producto — es catálogo propio, no código.
+
+    🔴 **`db_path` puede ser una ruta SQLite o una URL PostgreSQL** desde el
+    2026-08-09. Antes esto hacía `sqlite3.connect(db_path)` a secas: contra una
+    instancia PostgreSQL creaba un archivo vacío al lado y moría con `no such
+    table: modulos`, así que **el plan no se aplicaba** y la instancia quedaba
+    con los módulos como vinieran. Lo encontró la suite de LibraDesk corriendo
+    contra PostgreSQL.
+
+    Va por `libracore.db.core.conectar()`, que abre contra cualquiera de los
+    dos motores y **no toca el estado global** del proceso — importante porque
+    esto lo llama el provisioning sobre la instancia de OTRO cliente, no sobre
+    la propia.
+    """
+    from ..db.core import conectar
+
+    con = conectar(str(db_path))
     try:
         for m in sorted(all_modules):
-            on = 1 if m in active_modules else 0
+            # 🔴 `bool`, no `1`/`0`. `modulos.habilitado` es BOOLEAN y
+            # PostgreSQL no acepta un entero ahi: *"column habilitado is of
+            # type boolean but expression is of type smallint"*. SQLite se lo
+            # traga porque no tiene booleano nativo, asi que el defecto era
+            # invisible. Es la misma forma de fallar que el `BOOLEAN DEFAULT 1`
+            # de las migraciones de LibraDesk.
+            on = m in active_modules
             con.execute(
                 "INSERT OR IGNORE INTO modulos (modulo, habilitado, plan) VALUES (?,?,?)",
                 (m, on, plan),

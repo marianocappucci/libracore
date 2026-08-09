@@ -248,6 +248,16 @@ class Row:
         return len(self._values)
 
 
+_TABLA_INSERT_RE = re.compile(
+    r"^\s*INSERT\s+(?:OR\s+\w+\s+)?INTO\s+[\"']?([\w.]+)[\"']?", re.IGNORECASE
+)
+
+
+def _tabla_del_insert(sql: str) -> str | None:
+    m = _TABLA_INSERT_RE.match(sql)
+    return m.group(1).split(".")[-1] if m else None
+
+
 class Cursor:
     def __init__(self, connection: "ConnectionWrapper"):
         self._connection = connection
@@ -290,7 +300,17 @@ class Cursor:
             sql = _paramstyle(sql)
             if ignore_insert:
                 sql = f"{sql.rstrip().rstrip(';')} ON CONFLICT DO NOTHING"
-        if _INSERT_RE.match(sql) and " returning " not in sql.lower():
+        if (
+            _INSERT_RE.match(sql)
+            and " returning " not in sql.lower()
+            and self._connection._tiene_id(_tabla_del_insert(sql))
+        ):
+            # `RETURNING id` es como se emula `lastrowid`, pero **no todas las
+            # tablas tienen `id`**: `modulos` tiene `modulo` como clave. Antes
+            # se agregaba a ciegas y el INSERT moria con *"column id does not
+            # exist"* — o sea que aplicar un plan de modulos era imposible
+            # contra PostgreSQL. Lo encontro la suite de LibraDesk el
+            # 2026-08-09.
             sql = f"{sql.rstrip().rstrip(';')} RETURNING id"
             self._cursor.execute(sql, params or ())
             row = self._cursor.fetchone()
@@ -323,6 +343,35 @@ class Cursor:
 class ConnectionWrapper:
     def __init__(self, connection: Any):
         self._connection = connection
+        self._con_id: dict[str | None, bool] = {}
+
+    def _tiene_id(self, tabla: str | None) -> bool:
+        """Si esa tabla tiene una columna `id`, para decidir si vale el
+        `RETURNING id` que emula `lastrowid`.
+
+        Se consulta al catalogo una vez por tabla y por conexion, y se
+        cachea: un `apply_plan_modules` hace un INSERT por modulo y no tiene
+        sentido preguntar lo mismo diez veces. La cache vive en la conexion,
+        asi que un cambio de schema entre conexiones se ve igual.
+        """
+        if tabla is None:
+            return False
+        if tabla not in self._con_id:
+            with self._connection.cursor() as cur:
+                # `to_regclass` + `pg_attribute` y no `information_schema`:
+                # aquel filtra por `table_schema` y una TEMP TABLE vive en
+                # `pg_temp_N`, asi que quedaba fuera y el `lastrowid` volvia
+                # None. `to_regclass` resuelve por `search_path`, que incluye
+                # el schema temporal. Lo agarro el test de compatibilidad que
+                # ya existia, que usa justamente una temporal.
+                cur.execute(
+                    "SELECT 1 FROM pg_attribute "
+                    "WHERE attrelid = to_regclass(%s) AND attname = 'id' "
+                    "AND attnum > 0 AND NOT attisdropped",
+                    (tabla,),
+                )
+                self._con_id[tabla] = cur.fetchone() is not None
+        return self._con_id[tabla]
 
     def execute(self, sql: str, params: Sequence | None = None):
         return self.cursor().execute(sql, params)
