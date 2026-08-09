@@ -113,6 +113,45 @@ def test_declaracion_fk_fuera_de_orden_se_difiere():
     assert "REFERENCES turnos_caja" in alter
 
 
+def test_solo_se_difieren_las_dos_fks_que_van_fuera_de_orden():
+    """🔴 Regresión: una FK diferida que nadie vuelve a agregar es una FK perdida.
+
+    El diferimiento se hacía por nombre de tabla referenciada, así que
+    `REFERENCES turnos_caja(id) ON DELETE SET NULL` desaparecía de **cualquier**
+    `CREATE TABLE`. Tres tablas no lo necesitaban —`turnos_caja` ya existe
+    cuando se crean— y a ninguna se la volvía a poner: `ventas` en LibraCore, y
+    `venta_links` en Contalibra y en Restolibra quedaban sin integridad
+    referencial en PostgreSQL, y con ella en SQLite. Lo encontró el volcado de
+    `schema_dump.py` al diffear los dos motores (42 FKs contra 41).
+
+    Este test es la contraparte barata del gate de `test_schema_congelado.py`:
+    no necesita un PostgreSQL levantado, así que se pone rojo en cualquier
+    corrida.
+    """
+    ventas = _paramstyle(
+        "CREATE TABLE IF NOT EXISTS ventas (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "turno_id INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL)"
+    )
+    assert "REFERENCES turnos_caja(id) ON DELETE SET NULL" in ventas
+
+    venta_links = _paramstyle(
+        "CREATE TABLE IF NOT EXISTS venta_links (\n"
+        "    venta_id INTEGER PRIMARY KEY REFERENCES sales(id) ON DELETE CASCADE,\n"
+        "    turno_id INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL\n)"
+    )
+    assert "REFERENCES turnos_caja(id) ON DELETE SET NULL" in venta_links
+
+    # Y la que sí va fuera de orden se sigue difiriendo escrita como la escribe
+    # el schema —una columna por línea—, no sólo en el renglón único de arriba.
+    multilinea = _paramstyle(
+        "CREATE TABLE IF NOT EXISTS caja_movimientos (\n"
+        "    id       INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        "    turno_id INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL\n)"
+    )
+    assert "REFERENCES turnos_caja" not in multilinea
+    assert "turno_id INTEGER" in multilinea
+
+
 def test_sqlite_round_translation():
     sql = _paramstyle("SELECT ROUND(SUM(total), 2) FROM ventas")
     assert "ROUND(CAST(SUM(total) AS NUMERIC), 2)" in sql
