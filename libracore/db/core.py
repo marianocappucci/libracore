@@ -58,31 +58,58 @@ def configure(db_path: str, *, timeout: int = 5, extra_pragmas: tuple[str, ...] 
         _extra_pragmas = tuple(extra_pragmas)
 
 
+def es_url_postgres(destino: str) -> bool:
+    """Si ese string es una URL PostgreSQL y no una ruta de archivo.
+
+    Mismo criterio en un solo lugar. Los productos y los scripts de
+    provisioning reciben "la base" como un string que puede ser cualquiera de
+    las dos cosas, y cada uno decidiendo por su cuenta es como aparecieron los
+    defectos del backup (que trataba el nombre de la base como una ruta) y del
+    plan de modulos.
+    """
+    return destino.startswith(("postgresql://", "postgresql+psycopg://"))
+
+
+def conectar(destino: str, *, timeout: int = 5, extra_pragmas: tuple[str, ...] = ()):
+    """Una conexion contra `destino`, sea una ruta SQLite o una URL PostgreSQL.
+
+    **Sin estado global**: no lee ni escribe la configuracion del proceso. Es
+    lo que necesita cualquier codigo que trabaje sobre una instancia que no es
+    la suya —el provisioning, el panel de admin, los scripts de backup—, que
+    hasta el 2026-08-09 abria `sqlite3.connect()` por su cuenta y por lo tanto
+    **no funcionaba contra una instancia PostgreSQL**.
+
+    `get_connection()` delega aca: la logica de abrir es una sola.
+    """
+    if es_url_postgres(destino):
+        from psycopg import connect
+
+        from ._postgres import ConnectionWrapper
+
+        url = destino.replace("postgresql+psycopg://", "postgresql://", 1)
+        return ConnectionWrapper(connect(url, connect_timeout=timeout))
+
+    if "://" in destino:
+        raise ValueError(f"URL de base no soportada: {destino!r}")
+
+    conn = sqlite3.connect(destino, timeout=timeout)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 15000")
+    for pragma in extra_pragmas:
+        conn.execute(pragma)
+    return conn
+
+
 def get_connection():
     if _db_path is None:
         raise RuntimeError(
             "libracore.db.core no está configurado — llamar "
             "libracore.db.core.configure(db_path=...) al arrancar la app."
         )
-    if _database_url:
-        if not _database_url.startswith(("postgresql://", "postgresql+psycopg://")):
-            raise ValueError(f"URL de base no soportada: {_database_url!r}")
-        from psycopg import connect
-
-        from ._postgres import ConnectionWrapper
-
-        url = _database_url.replace("postgresql+psycopg://", "postgresql://", 1)
-        return ConnectionWrapper(connect(url, connect_timeout=_timeout))
-
-    conn = sqlite3.connect(_db_path, timeout=_timeout)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 15000")
-    for pragma in _extra_pragmas:
-        conn.execute(pragma)
-    return conn
+    return conectar(_db_path, timeout=_timeout, extra_pragmas=_extra_pragmas)
 
 
 def is_postgres() -> bool:
