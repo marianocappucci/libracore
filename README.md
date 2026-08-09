@@ -42,6 +42,35 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## Migraciones de schema
+
+El schema del core lo construye `init_core_schema()`, y desde la revision
+`0001_baseline` esa funcion esta **congelada**: todo cambio de schema posterior
+va como revision de Alembic, no como linea agregada ahi. El congelamiento lo
+sostiene `tests/db/test_schema_congelado.py`, que compara el resultado de la
+funcion contra una fixture por motor.
+
+Las migraciones **no viajan en el wheel de pip**. La forma reproducible de
+aplicarlas contra la base de un consumidor es clonar el tag que ese consumidor
+pinea y correr el script:
+
+```
+LIBRACORE_REF=v1.19.0 DATABASE_URL=postgresql://user:pass@host/db \
+  ./scripts/run_migrations.sh
+```
+
+`DATABASE_URL` acepta tambien la **ruta del archivo SQLite** de la instancia.
+Se puede correr contra una instancia que ya existe: la baseline llama a
+`init_core_schema()`, que es idempotente, asi que hace lo mismo que un arranque
+de la app y ademas registra la version. Backup antes igual — es una operacion
+de schema.
+
+Alembic y SQLAlchemy **no son dependencias de runtime**: viven en el extra
+`migrations`, que el script instala y que `[dev]` arrastra para los tests.
+
+> `alembic revision --autogenerate` **no sirve en este repo**: no hay modelos
+> SQLAlchemy de los que generar. Las revisiones se escriben a mano.
+
 ## Versionado
 
 Semver via tags de Git (`vX.Y.Z`), version derivada automaticamente del tag
