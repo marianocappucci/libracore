@@ -309,11 +309,22 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         # instancias `prueba` (restolibra, ventalibra, medlibra, gestiolibra)
         # compartiendo `project=prueba`. Con el prefijo del producto, el
         # proyecto es único aunque el slug se repita.
+        #
+        # La CLAVE DEL SERVICIO es `{prefijo}-{slug}` y no el prefijo a secas
+        # por el mismo motivo, pero con una consecuencia peor: Compose la
+        # convierte en ALIAS DE RED, y `stack-net` es compartida por los seis
+        # productos. Con el prefijo a secas, la segunda instancia de un producto
+        # reclama el mismo alias que la primera y el DNS interno las alterna por
+        # round-robin. No es hipotético: el 2026-08-06
+        # `sistema.contalibra.com.ar` —producción de un cliente— sirvió a ratos
+        # el auto-login de la demo, justamente por esto. Aquella vez se
+        # renombraron los composes afectados a mano y esta plantilla quedó sin
+        # tocar, así que cada instancia nueva reintroducía el defecto.
         compose = f"""\
 name: {cfg.container_prefix}-{slug}
 
 services:
-  {cfg.container_prefix}:
+  {container}:
     image: {image_ref}
     container_name: {container}
     restart: unless-stopped
