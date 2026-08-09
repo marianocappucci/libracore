@@ -117,6 +117,48 @@ def test_el_proyecto_de_compose_lleva_el_prefijo_del_producto(cfg):
     assert "\nname: prueba\n" not in compose_text
 
 
+def _claves_de_servicio(cfg, slug: str) -> list[str]:
+    """Las claves del bloque `services:` de un compose de instancia.
+
+    Sin PyYAML a proposito: no esta declarado en las dependencias de dev, asi
+    que en CI puede no estar. El corte va del `services:` hasta la proxima
+    clave de primer nivel (`networks:`, `volumes:`), que es lo que evita
+    confundir `  stack-net:` con un servicio.
+    """
+    texto = (cfg.clientes_dir / slug / "docker-compose.yml").read_text()
+    bloque = re.split(r"^services:$", texto, flags=re.MULTILINE)[1]
+    bloque = re.split(r"^[a-z]", bloque, flags=re.MULTILINE)[0]
+    return re.findall(r"^  ([a-z0-9][a-z0-9._-]*):$", bloque, flags=re.MULTILINE)
+
+
+def test_dos_instancias_del_mismo_producto_no_comparten_clave_de_servicio(cfg):
+    """Compose convierte la clave del servicio en ALIAS DE RED, y `stack-net`
+    la comparten los seis productos. Con el prefijo del producto a secas, la
+    segunda instancia reclama el mismo alias que la primera y el DNS interno
+    las alterna por round-robin — sintoma intermitente, asi que un chequeo que
+    da bien no descarta nada.
+
+    Paso de verdad: el 2026-08-06 `sistema.contalibra.com.ar` —produccion de un
+    cliente— sirvio a ratos el auto-login de la demo. Aquella vez se
+    renombraron los composes afectados a mano y la plantilla quedo sin tocar,
+    asi que cada instancia nueva reintroducia el defecto."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
+
+    uno = _claves_de_servicio(cfg, "cliente-uno")
+    dos = _claves_de_servicio(cfg, "cliente-dos")
+
+    # La asercion que vale es la del prefijo AUSENTE: `testprod` a secas es el
+    # alias que colisiona, y es lo unico que cambia si la plantilla se rompe.
+    # Que las dos claves sean distintas entre si tambien lo detecta, pero
+    # pasaria igual con cualquier otro esquema de nombres.
+    assert "testprod" not in uno, uno
+    assert "testprod" not in dos, dos
+    assert uno == ["testprod-cliente-uno"], uno
+    assert dos == ["testprod-cliente-dos"], dos
+    assert set(uno).isdisjoint(dos)
+
+
 def test_crear_cliente_pinea_version_y_nunca_latest(cfg):
     """El compose de un cliente nuevo nace con una versión concreta: si
     naciera en `:latest`, el próximo build de otro cliente lo movería."""

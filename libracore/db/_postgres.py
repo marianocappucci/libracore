@@ -192,13 +192,53 @@ def _paramstyle(sql: str) -> str:
     sql = re.sub(r"\bAUTOINCREMENT\b", "", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bREAL\b", "DOUBLE PRECISION", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bBLOB\b", "BYTEA", sql, flags=re.IGNORECASE)
-    # SQLite acepta declarar una FK hacia una tabla que todavía no fue creada;
-    # PostgreSQL no. `schema.py` agrega esta constraint después de crear todas
-    # las tablas, sólo en el backend PostgreSQL.
-    if re.match(r"\s*CREATE\s+TABLE", sql, flags=re.IGNORECASE):
+    sql = _diferir_fks_hacia_adelante(sql)
+    return sql
+
+
+# SQLite acepta declarar una FK hacia una tabla que todavía no fue creada;
+# PostgreSQL no. Estas dos son las únicas del schema que lo hacen, y
+# `schema.py` las vuelve a agregar como constraint con nombre después de crear
+# todas las tablas, sólo en el backend PostgreSQL.
+#
+# 🔴 La lista es por (tabla, columna) y no por tabla referenciada, que es como
+# estaba antes: `REFERENCES turnos_caja(id) ON DELETE SET NULL` matcheaba en
+# CUALQUIER `CREATE TABLE`, incluidas tres que no lo necesitaban porque
+# `turnos_caja` ya existe cuando se crean — `ventas` acá, y `venta_links` en
+# Contalibra y en Restolibra. A esas tres se les sacaba la FK y nadie se la
+# volvía a poner: en PostgreSQL quedaban sin integridad referencial, y en
+# SQLite con ella. Lo encontró el volcado de `schema_dump.py` al diffear los
+# dos motores (42 FKs contra 41).
+_FKS_DIFERIDAS = (
+    ("caja_movimientos", "turno_id"),
+    ("movimientos_stock", "venta_id"),
+)
+
+_CREATE_TABLE_RE = re.compile(
+    r"\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+
+def _diferir_fks_hacia_adelante(sql: str) -> str:
+    """Saca del `CREATE TABLE` sólo las FKs que apuntan a una tabla que todavía
+    no existe.
+
+    La coincidencia es **columna + su cláusula**, no el nombre de la tabla
+    referenciada suelto: así no depende de cómo esté formateado el DDL (el
+    schema declara una columna por línea, pero los tests lo escriben en una
+    sola) y no puede alcanzar a la columna de al lado.
+    """
+    match = _CREATE_TABLE_RE.match(sql)
+    if not match:
+        return sql
+
+    tabla = match.group(1).lower()
+    for columna in (c for t, c in _FKS_DIFERIDAS if t == tabla):
         sql = re.sub(
-            r"\s+REFERENCES\s+(?:turnos_caja|ventas)\(id\)\s+ON\s+DELETE\s+SET\s+NULL",
-            "",
+            rf"(\b{columna}\s+[A-Za-z0-9_ ]*?)"
+            r"\s+REFERENCES\s+[A-Za-z_][A-Za-z0-9_]*\(id\)\s+ON\s+DELETE\s+SET\s+NULL",
+            r"\1",
             sql,
             flags=re.IGNORECASE,
         )
