@@ -1,0 +1,483 @@
+# motor: sqlite
+
+## tablas (367)
+arca_config|activo|INTEGER||1
+arca_config|alias|TEXT||
+arca_config|ambiente|TEXT||'homologacion'
+arca_config|certificado_path|TEXT|NN|
+arca_config|clave_path|TEXT|NN|
+arca_config|created_at|TEXT||datetime('now')
+arca_config|cuit|TEXT|NN|
+arca_config|empresa|TEXT|NN|
+arca_config|id|INTEGER||
+arca_config|punto_venta|INTEGER|NN|
+arca_config|updated_at|TEXT||datetime('now')
+auth_log|detalle|TEXT||
+auth_log|evento|TEXT|NN|
+auth_log|id|INTEGER||
+auth_log|ip|TEXT||
+auth_log|ts|TEXT|NN|datetime('now','localtime')
+auth_log|username|TEXT|NN|
+caja_movimientos|caja_id|INTEGER||
+caja_movimientos|concepto|TEXT|NN|
+caja_movimientos|created_at|TEXT||datetime('now')
+caja_movimientos|factura_id|INTEGER||
+caja_movimientos|fecha|TEXT|NN|
+caja_movimientos|id|INTEGER||
+caja_movimientos|medio_pago|TEXT||''
+caja_movimientos|monto|REAL|NN|
+caja_movimientos|referencia|TEXT||''
+caja_movimientos|tipo|TEXT|NN|
+caja_movimientos|turno_id|INTEGER||
+caja_movimientos|usuario_id|INTEGER||
+cajas|activo|INTEGER|NN|1
+cajas|created_at|TEXT||datetime('now')
+cajas|descripcion|TEXT||''
+cajas|es_default|INTEGER|NN|0
+cajas|id|INTEGER||
+cajas|medios_pago|TEXT|NN|'[]'
+cajas|nombre|TEXT|NN|
+categorias_egreso|id|INTEGER||
+categorias_egreso|nombre|TEXT|NN|
+categorias_producto|id|INTEGER||
+categorias_producto|nombre|TEXT|NN|
+cc_debitos|cliente_id|INTEGER|NN|
+cc_debitos|concepto|TEXT||''
+cc_debitos|created_at|TEXT||datetime('now')
+cc_debitos|fecha|TEXT|NN|
+cc_debitos|id|INTEGER||
+cc_debitos|monto|REAL|NN|
+cc_debitos|referencia|TEXT||''
+cc_debitos|usuario_id|INTEGER||
+cc_pagos|caja_id|INTEGER||
+cc_pagos|cliente_id|INTEGER|NN|
+cc_pagos|concepto|TEXT||''
+cc_pagos|created_at|TEXT||datetime('now')
+cc_pagos|fecha|TEXT|NN|
+cc_pagos|id|INTEGER||
+cc_pagos|medio_pago|TEXT||'efectivo'
+cc_pagos|monto|REAL|NN|
+cc_pagos|referencia|TEXT||''
+cc_pagos|usuario_id|INTEGER||
+cc_resumenes_enviados|automatico|INTEGER|NN|1
+cc_resumenes_enviados|cliente_id|INTEGER|NN|
+cc_resumenes_enviados|created_at|TEXT||datetime('now')
+cc_resumenes_enviados|detalle|TEXT||''
+cc_resumenes_enviados|email|TEXT||''
+cc_resumenes_enviados|estado|TEXT|NN|'ok'
+cc_resumenes_enviados|fecha|TEXT|NN|
+cc_resumenes_enviados|id|INTEGER||
+cc_resumenes_enviados|periodo_desde|TEXT|NN|
+cc_resumenes_enviados|periodo_hasta|TEXT|NN|
+cc_resumenes_enviados|saldo|REAL|NN|0
+clients|activo|INTEGER||1
+clients|address|TEXT||
+clients|auto_facturar|INTEGER|NN|0
+clients|cc_resumen_auto|INTEGER|NN|0
+clients|cc_resumen_frecuencia|TEXT|NN|'mensual'
+clients|cc_resumen_ultimo_envio|TEXT||''
+clients|created_at|TEXT||datetime('now')
+clients|cuit_dni|TEXT||
+clients|email|TEXT||
+clients|external_ref|TEXT||
+clients|id|INTEGER||
+clients|iva_condition|TEXT||''
+clients|name|TEXT|NN|
+clients|phone|TEXT||
+comprobantes_pendientes|cliente_cuit|TEXT||''
+comprobantes_pendientes|cliente_domicilio|TEXT||''
+comprobantes_pendientes|cliente_id|INTEGER||
+comprobantes_pendientes|cliente_razon|TEXT|NN|
+comprobantes_pendientes|concepto|TEXT||''
+comprobantes_pendientes|condicion_venta|TEXT||''
+comprobantes_pendientes|created_at|TEXT||datetime('now')
+comprobantes_pendientes|estado|TEXT|NN|'pendiente'
+comprobantes_pendientes|factura_id|INTEGER||
+comprobantes_pendientes|fecha_sugerida|TEXT||''
+comprobantes_pendientes|id|INTEGER||
+comprobantes_pendientes|items|TEXT|NN|'[]'
+comprobantes_pendientes|motivo_descarte|TEXT||''
+comprobantes_pendientes|observaciones|TEXT||''
+comprobantes_pendientes|origen_id|TEXT|NN|
+comprobantes_pendientes|origen_instancia|TEXT|NN|''
+comprobantes_pendientes|origen_producto|TEXT|NN|
+comprobantes_pendientes|origen_tipo|TEXT|NN|
+comprobantes_pendientes|periodo_desde|TEXT||''
+comprobantes_pendientes|periodo_hasta|TEXT||''
+comprobantes_pendientes|resuelto_at|TEXT||''
+comprobantes_pendientes|resuelto_por|TEXT||''
+comprobantes_pendientes|total|REAL|NN|0
+cuentas_tesoreria|activa|INTEGER|NN|1
+cuentas_tesoreria|banco|TEXT||''
+cuentas_tesoreria|created_at|TEXT||datetime('now')
+cuentas_tesoreria|descripcion|TEXT||''
+cuentas_tesoreria|id|INTEGER||
+cuentas_tesoreria|nombre|TEXT|NN|
+cuentas_tesoreria|numero|TEXT||''
+cuentas_tesoreria|orden|INTEGER|NN|0
+cuentas_tesoreria|saldo_inicial|REAL|NN|0
+cuentas_tesoreria|tipo|TEXT|NN|'banco'
+depositos|activo|INTEGER|NN|1
+depositos|created_at|TEXT||datetime('now')
+depositos|descripcion|TEXT||''
+depositos|es_default|INTEGER|NN|0
+depositos|id|INTEGER||
+depositos|nombre|TEXT|NN|
+egresos_pagos|caja_id|INTEGER||
+egresos_pagos|created_at|TEXT||datetime('now')
+egresos_pagos|egreso_id|INTEGER|NN|
+egresos_pagos|fecha|TEXT|NN|
+egresos_pagos|id|INTEGER||
+egresos_pagos|medio_pago|TEXT||''
+egresos_pagos|monto|REAL|NN|
+egresos_pagos|referencia|TEXT||''
+egresos_pagos|usuario_id|INTEGER||
+egresos|categoria|TEXT||''
+egresos|concepto|TEXT|NN|
+egresos|created_at|TEXT||datetime('now')
+egresos|estado|TEXT|NN|'pendiente'
+egresos|fecha|TEXT|NN|
+egresos|id|INTEGER||
+egresos|iva_monto|REAL|NN|0
+egresos|iva_pct|REAL|NN|0
+egresos|monto_neto|REAL|NN|0
+egresos|numero|TEXT||''
+egresos|observaciones|TEXT||''
+egresos|proveedor_id|INTEGER||
+egresos|proveedor_nombre|TEXT|NN|''
+egresos|tipo_comprobante|TEXT|NN|'otro'
+egresos|total|REAL|NN|
+egresos|usuario_id|INTEGER||
+facturacion_alias|activo|INTEGER|NN|1
+facturacion_alias|cliente_id|INTEGER|NN|
+facturacion_alias|created_at|TEXT||datetime('now')
+facturacion_alias|id|INTEGER||
+facturacion_alias|tipo|TEXT|NN|
+facturacion_alias|valor|TEXT|NN|
+facturas|cae_vto|TEXT||
+facturas|cae|TEXT||
+facturas|cbte_asoc_nro|INTEGER||0
+facturas|cbte_asoc_pv|INTEGER||0
+facturas|cbte_asoc_tipo|INTEGER||0
+facturas|cliente_cuit|TEXT||
+facturas|cliente_domicilio|TEXT||''
+facturas|cliente_iva_cond|INTEGER||
+facturas|cliente_razon|TEXT||
+facturas|concepto|INTEGER|NN|1
+facturas|condicion_venta|TEXT||''
+facturas|created_at|TEXT||datetime('now')
+facturas|fch_serv_desde|TEXT||''
+facturas|fch_serv_hasta|TEXT||''
+facturas|fch_vto_pago|TEXT||''
+facturas|fecha|TEXT|NN|
+facturas|id|INTEGER||
+facturas|items|TEXT|NN|
+facturas|iva_amount|REAL|NN|
+facturas|numero|INTEGER|NN|
+facturas|observaciones|TEXT||
+facturas|pdf_path|TEXT||
+facturas|punto_venta|INTEGER|NN|
+facturas|subtotal|REAL|NN|
+facturas|tipo|INTEGER|NN|
+facturas|total|REAL|NN|
+facturas|usuario_id|INTEGER||
+lista_precio_items|lista_id|INTEGER|NN|
+lista_precio_items|precio|REAL|NN|0
+lista_precio_items|producto_id|INTEGER|NN|
+listas_precio|activa|INTEGER|NN|1
+listas_precio|created_at|TEXT||datetime('now')
+listas_precio|descripcion|TEXT||''
+listas_precio|es_default|INTEGER|NN|0
+listas_precio|id|INTEGER||
+listas_precio|nombre|TEXT|NN|
+modulos|habilitado|INTEGER|NN|1
+modulos|id|INTEGER||
+modulos|modulo|TEXT|NN|
+modulos|plan|TEXT|NN|'estandar'
+movimientos_stock|cantidad|REAL|NN|
+movimientos_stock|created_at|TEXT||datetime('now')
+movimientos_stock|deposito_id|INTEGER||
+movimientos_stock|fecha|TEXT|NN|
+movimientos_stock|id|INTEGER||
+movimientos_stock|producto_id|INTEGER|NN|
+movimientos_stock|referencia|TEXT||''
+movimientos_stock|tipo|TEXT|NN|
+movimientos_stock|usuario_id|INTEGER||
+movimientos_stock|venta_id|INTEGER||
+movimientos_tesoreria|concepto|TEXT|NN|''
+movimientos_tesoreria|created_at|TEXT||datetime('now')
+movimientos_tesoreria|cuenta_destino_id|INTEGER||
+movimientos_tesoreria|cuenta_id|INTEGER|NN|
+movimientos_tesoreria|fecha|TEXT|NN|
+movimientos_tesoreria|id|INTEGER||
+movimientos_tesoreria|monto|REAL|NN|
+movimientos_tesoreria|referencia|TEXT||''
+movimientos_tesoreria|tipo|TEXT|NN|
+movimientos_tesoreria|transferencia_id|INTEGER||
+movimientos_tesoreria|usuario_id|INTEGER||
+mp_movimientos|created_at|TEXT||datetime('now')
+mp_movimientos|descripcion|TEXT||
+mp_movimientos|estado_factura|TEXT||'pendiente'
+mp_movimientos|factura_id|INTEGER||
+mp_movimientos|fecha|TEXT||
+mp_movimientos|id|INTEGER||
+mp_movimientos|monto|REAL||
+mp_movimientos|mp_movement_id|TEXT|NN|
+mp_movimientos|origen_banco|TEXT||
+mp_movimientos|origen_cbu|TEXT||
+mp_movimientos|origen_nombre|TEXT||
+mp_movimientos|payer_email|TEXT||
+mp_movimientos|payer_id_number|TEXT||
+mp_movimientos|payer_id_type|TEXT||
+mp_movimientos|payer_name|TEXT||
+mp_movimientos|tipo|TEXT||
+mp_pagos|created_at|TEXT||datetime('now')
+mp_pagos|descripcion_mp|TEXT||NULL
+mp_pagos|estado_factura|TEXT||NULL
+mp_pagos|factura_id|INTEGER||
+mp_pagos|id|INTEGER||
+mp_pagos|monto|REAL||
+mp_pagos|mp_payment_id|TEXT|NN|
+mp_pagos|payer_email|TEXT||
+mp_pagos|payer_id_number|TEXT||NULL
+mp_pagos|payer_id_type|TEXT||NULL
+mp_pagos|payer_name|TEXT||
+mp_pagos|payment_method|TEXT||NULL
+mp_pagos|payment_type|TEXT||NULL
+mp_pagos|status|TEXT||
+presupuestos|client_address|TEXT||
+presupuestos|client_cuit|TEXT||
+presupuestos|client_email|TEXT||
+presupuestos|client_id|INTEGER||
+presupuestos|client_name|TEXT|NN|
+presupuestos|client_phone|TEXT||
+presupuestos|created_at|TEXT||datetime('now')
+presupuestos|date|TEXT|NN|
+presupuestos|id|INTEGER||
+presupuestos|items|TEXT|NN|
+presupuestos|number|TEXT|NN|
+presupuestos|observations|TEXT||
+presupuestos|pdf_path|TEXT||
+presupuestos|remito_id|INTEGER||
+presupuestos|status|TEXT|NN|'pendiente'
+presupuestos|subtotal|REAL|NN|
+presupuestos|tax_amount|REAL|NN|
+presupuestos|tax_rate|REAL|NN|0.21
+presupuestos|total|REAL|NN|
+presupuestos|usuario_id|INTEGER||
+presupuestos|valid_until|TEXT|NN|
+productos|activo|INTEGER|NN|1
+productos|categoria|TEXT||''
+productos|codigo|TEXT||
+productos|created_at|TEXT||datetime('now')
+productos|descripcion|TEXT||''
+productos|estacion|TEXT||''
+productos|id|INTEGER||
+productos|nombre|TEXT|NN|
+productos|precio_costo|REAL|NN|0
+productos|precio_venta|REAL|NN|0
+productos|stock_minimo|REAL|NN|0
+productos|tipo|TEXT|NN|'producto'
+productos|unidad|TEXT|NN|'u'
+productos|vendible|INTEGER|NN|1
+proveedores|address|TEXT||''
+proveedores|created_at|TEXT||datetime('now')
+proveedores|cuit_dni|TEXT||''
+proveedores|email|TEXT||''
+proveedores|id|INTEGER||
+proveedores|iva_condition|TEXT||''
+proveedores|nombre|TEXT|NN|
+proveedores|phone|TEXT||''
+recibos|anulado_at|TEXT||''
+recibos|anulado_motivo|TEXT||''
+recibos|anulado|INTEGER|NN|0
+recibos|cliente_cuit|TEXT||''
+recibos|cliente_domicilio|TEXT||''
+recibos|cliente_id|INTEGER||
+recibos|cliente_razon|TEXT|NN|
+recibos|concepto|TEXT||''
+recibos|created_at|TEXT||datetime('now')
+recibos|fecha|TEXT|NN|
+recibos|id|INTEGER||
+recibos|numero|INTEGER|NN|
+recibos|observaciones|TEXT||''
+recibos|origen_id|INTEGER||
+recibos|origen_tipo|TEXT|NN|
+recibos|pagos|TEXT|NN|'[]'
+recibos|punto_venta|INTEGER|NN|1
+recibos|total|REAL|NN|
+recibos|usuario_id|INTEGER||
+remitos|client_address|TEXT||
+remitos|client_cuit|TEXT||
+remitos|client_email|TEXT||
+remitos|client_id|INTEGER||
+remitos|client_name|TEXT|NN|
+remitos|client_phone|TEXT||
+remitos|created_at|TEXT||datetime('now')
+remitos|date|TEXT|NN|
+remitos|id|INTEGER||
+remitos|items|TEXT|NN|
+remitos|number|TEXT|NN|
+remitos|observations|TEXT||
+remitos|pdf_path|TEXT||
+remitos|subtotal|REAL|NN|
+remitos|tax_amount|REAL|NN|
+remitos|tax_rate|REAL|NN|0.21
+remitos|total|REAL|NN|
+remitos|usuario_id|INTEGER||
+turnos_caja|apertura|TEXT|NN|
+turnos_caja|caja_id|INTEGER||
+turnos_caja|cierre|TEXT||
+turnos_caja|created_at|TEXT||datetime('now')
+turnos_caja|estado|TEXT|NN|'abierto'
+turnos_caja|id|INTEGER||
+turnos_caja|monto_declarado_cierre|REAL||
+turnos_caja|monto_esperado_cierre|REAL||
+turnos_caja|monto_inicial|REAL|NN|0
+turnos_caja|notas|TEXT||''
+turnos_caja|usuario_id|INTEGER|NN|
+usuarios|activo|INTEGER|NN|1
+usuarios|created_at|TEXT||datetime('now')
+usuarios|email|TEXT||''
+usuarios|id|INTEGER||
+usuarios|nombre|TEXT|NN|
+usuarios|password_hash|TEXT|NN|
+usuarios|role|TEXT|NN|'operador'
+usuarios|username|TEXT|NN|
+ventas_pagos|created_at|TEXT||datetime('now')
+ventas_pagos|id|INTEGER||
+ventas_pagos|medio|TEXT|NN|
+ventas_pagos|monto|REAL|NN|
+ventas_pagos|referencia|TEXT||''
+ventas_pagos|venta_id|INTEGER|NN|
+ventas|cliente_id|INTEGER||
+ventas|cliente_nombre|TEXT||''
+ventas|created_at|TEXT||datetime('now')
+ventas|descuento|REAL|NN|0
+ventas|estado|TEXT|NN|'cobrada'
+ventas|factura_id|INTEGER||
+ventas|fecha|TEXT|NN|
+ventas|id|INTEGER||
+ventas|items|TEXT|NN|
+ventas|mp_order_id|TEXT||''
+ventas|mp_payment_id|TEXT||''
+ventas|numero|TEXT|NN|
+ventas|observaciones|TEXT||''
+ventas|remito_id|INTEGER||
+ventas|subtotal|REAL|NN|0
+ventas|total|REAL|NN|0
+ventas|turno_id|INTEGER||
+ventas|usuario_id|INTEGER||
+
+## claves primarias (33)
+arca_config|id
+auth_log|id
+caja_movimientos|id
+cajas|id
+categorias_egreso|id
+categorias_producto|id
+cc_debitos|id
+cc_pagos|id
+cc_resumenes_enviados|id
+clients|id
+comprobantes_pendientes|id
+cuentas_tesoreria|id
+depositos|id
+egresos_pagos|id
+egresos|id
+facturacion_alias|id
+facturas|id
+lista_precio_items|lista_id,producto_id
+listas_precio|id
+modulos|id
+movimientos_stock|id
+movimientos_tesoreria|id
+mp_movimientos|id
+mp_pagos|id
+presupuestos|id
+productos|id
+proveedores|id
+recibos|id
+remitos|id
+turnos_caja|id
+usuarios|id
+ventas_pagos|id
+ventas|id
+
+## claves foráneas (42)
+caja_movimientos|caja_id|cajas|id|SET NULL|NO ACTION
+caja_movimientos|turno_id|turnos_caja|id|SET NULL|NO ACTION
+caja_movimientos|usuario_id|usuarios|id|SET NULL|NO ACTION
+cc_debitos|cliente_id|clients|id|CASCADE|NO ACTION
+cc_debitos|usuario_id|usuarios|id|SET NULL|NO ACTION
+cc_pagos|caja_id|cajas|id|SET NULL|NO ACTION
+cc_pagos|cliente_id|clients|id|CASCADE|NO ACTION
+cc_pagos|usuario_id|usuarios|id|SET NULL|NO ACTION
+cc_resumenes_enviados|cliente_id|clients|id|CASCADE|NO ACTION
+comprobantes_pendientes|cliente_id|clients|id|SET NULL|NO ACTION
+comprobantes_pendientes|factura_id|facturas|id|SET NULL|NO ACTION
+egresos_pagos|caja_id|cajas|id|SET NULL|NO ACTION
+egresos_pagos|egreso_id|egresos|id|CASCADE|NO ACTION
+egresos_pagos|usuario_id|usuarios|id|SET NULL|NO ACTION
+egresos|proveedor_id|proveedores|id|SET NULL|NO ACTION
+egresos|usuario_id|usuarios|id|SET NULL|NO ACTION
+facturacion_alias|cliente_id|clients|id|CASCADE|NO ACTION
+facturas|usuario_id|usuarios|id|SET NULL|NO ACTION
+lista_precio_items|lista_id|listas_precio|id|CASCADE|NO ACTION
+lista_precio_items|producto_id|productos|id|CASCADE|NO ACTION
+movimientos_stock|deposito_id|depositos|id|SET NULL|NO ACTION
+movimientos_stock|producto_id|productos|id|CASCADE|NO ACTION
+movimientos_stock|usuario_id|usuarios|id|SET NULL|NO ACTION
+movimientos_stock|venta_id|ventas|id|SET NULL|NO ACTION
+movimientos_tesoreria|cuenta_destino_id|cuentas_tesoreria|id|SET NULL|NO ACTION
+movimientos_tesoreria|cuenta_id|cuentas_tesoreria|id|CASCADE|NO ACTION
+movimientos_tesoreria|usuario_id|usuarios|id|SET NULL|NO ACTION
+presupuestos|client_id|clients|id|SET NULL|NO ACTION
+presupuestos|remito_id|remitos|id|NO ACTION|NO ACTION
+presupuestos|usuario_id|usuarios|id|SET NULL|NO ACTION
+recibos|cliente_id|clients|id|SET NULL|NO ACTION
+recibos|usuario_id|usuarios|id|SET NULL|NO ACTION
+remitos|client_id|clients|id|SET NULL|NO ACTION
+remitos|usuario_id|usuarios|id|SET NULL|NO ACTION
+turnos_caja|caja_id|cajas|id|SET NULL|NO ACTION
+turnos_caja|usuario_id|usuarios|id|NO ACTION|NO ACTION
+ventas_pagos|venta_id|ventas|id|CASCADE|NO ACTION
+ventas|cliente_id|clients|id|SET NULL|NO ACTION
+ventas|factura_id|facturas|id|SET NULL|NO ACTION
+ventas|remito_id|remitos|id|SET NULL|NO ACTION
+ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
+ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
+
+## índices (30)
+arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
+caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
+categorias_egreso|sqlite_autoindex_categorias_egreso_1|UNIQUE implícito (nombre)
+categorias_producto|sqlite_autoindex_categorias_producto_1|UNIQUE implícito (nombre)
+cc_debitos|idx_cc_debitos_cliente|CREATE INDEX idx_cc_debitos_cliente ON cc_debitos(cliente_id)
+cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referencia ON cc_debitos(referencia) WHERE referencia != ''
+cc_pagos|idx_cc_pagos_cliente|CREATE INDEX idx_cc_pagos_cliente ON cc_pagos(cliente_id)
+cc_resumenes_enviados|idx_cc_resumenes_cliente|CREATE INDEX idx_cc_resumenes_cliente ON cc_resumenes_enviados(cliente_id, fecha)
+clients|idx_clients_cuit_norm|CREATE INDEX idx_clients_cuit_norm ON clients(REPLACE(cuit_dni, '-', ''))
+clients|idx_clients_external_ref|CREATE UNIQUE INDEX idx_clients_external_ref ON clients(external_ref) WHERE external_ref IS NOT NULL
+comprobantes_pendientes|idx_comprobantes_pendientes_estado|CREATE INDEX idx_comprobantes_pendientes_estado ON comprobantes_pendientes(estado, created_at)
+comprobantes_pendientes|idx_comprobantes_pendientes_origen|CREATE UNIQUE INDEX idx_comprobantes_pendientes_origen ON comprobantes_pendientes(origen_producto, origen_instancia, origen_tipo, origen_id)
+facturacion_alias|sqlite_autoindex_facturacion_alias_1|UNIQUE implícito (tipo,valor)
+facturas|idx_facturas_cliente_cuit|CREATE INDEX idx_facturas_cliente_cuit ON facturas(cliente_cuit)
+facturas|idx_facturas_fecha|CREATE INDEX idx_facturas_fecha ON facturas(fecha)
+facturas|idx_facturas_numero_unico|CREATE UNIQUE INDEX idx_facturas_numero_unico ON facturas(tipo, punto_venta, numero)
+lista_precio_items|sqlite_autoindex_lista_precio_items_1|UNIQUE implícito (lista_id,producto_id)
+modulos|sqlite_autoindex_modulos_1|UNIQUE implícito (modulo)
+movimientos_stock|idx_movimientos_stock_producto|CREATE INDEX idx_movimientos_stock_producto ON movimientos_stock(producto_id)
+mp_movimientos|sqlite_autoindex_mp_movimientos_1|UNIQUE implícito (mp_movement_id)
+mp_pagos|sqlite_autoindex_mp_pagos_1|UNIQUE implícito (mp_payment_id)
+presupuestos|sqlite_autoindex_presupuestos_1|UNIQUE implícito (number)
+productos|sqlite_autoindex_productos_1|UNIQUE implícito (codigo)
+recibos|idx_recibos_cliente|CREATE INDEX idx_recibos_cliente ON recibos(cliente_id, fecha)
+recibos|idx_recibos_numero_unico|CREATE UNIQUE INDEX idx_recibos_numero_unico ON recibos(punto_venta, numero)
+recibos|idx_recibos_origen|CREATE INDEX idx_recibos_origen ON recibos(origen_tipo, origen_id)
+remitos|sqlite_autoindex_remitos_1|UNIQUE implícito (number)
+usuarios|sqlite_autoindex_usuarios_1|UNIQUE implícito (username)
+ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON ventas(fecha)
+ventas|sqlite_autoindex_ventas_1|UNIQUE implícito (numero)
+
+## checks (0)

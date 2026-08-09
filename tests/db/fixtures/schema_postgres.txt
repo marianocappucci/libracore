@@ -1,0 +1,518 @@
+# motor: postgresql
+
+## tablas (367)
+arca_config|activo|integer||1
+arca_config|alias|text||
+arca_config|ambiente|text||'homologacion'::text
+arca_config|certificado_path|text|NN|
+arca_config|clave_path|text|NN|
+arca_config|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+arca_config|cuit|text|NN|
+arca_config|empresa|text|NN|
+arca_config|id|bigint|NN|nextval('arca_config_id_seq'::regclass)
+arca_config|punto_venta|integer|NN|
+arca_config|updated_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+auth_log|detalle|text||
+auth_log|evento|text|NN|
+auth_log|id|bigint|NN|nextval('auth_log_id_seq'::regclass)
+auth_log|ip|text||
+auth_log|ts|text|NN|to_char(LOCALTIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'::text)
+auth_log|username|text|NN|
+caja_movimientos|caja_id|integer||
+caja_movimientos|concepto|text|NN|
+caja_movimientos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+caja_movimientos|factura_id|integer||
+caja_movimientos|fecha|text|NN|
+caja_movimientos|id|bigint|NN|nextval('caja_movimientos_id_seq'::regclass)
+caja_movimientos|medio_pago|text||''::text
+caja_movimientos|monto|double precision|NN|
+caja_movimientos|referencia|text||''::text
+caja_movimientos|tipo|text|NN|
+caja_movimientos|turno_id|integer||
+caja_movimientos|usuario_id|integer||
+cajas|activo|integer|NN|1
+cajas|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+cajas|descripcion|text||''::text
+cajas|es_default|integer|NN|0
+cajas|id|bigint|NN|nextval('cajas_id_seq'::regclass)
+cajas|medios_pago|text|NN|'[]'::text
+cajas|nombre|text|NN|
+categorias_egreso|id|bigint|NN|nextval('categorias_egreso_id_seq'::regclass)
+categorias_egreso|nombre|text|NN|
+categorias_producto|id|bigint|NN|nextval('categorias_producto_id_seq'::regclass)
+categorias_producto|nombre|text|NN|
+cc_debitos|cliente_id|integer|NN|
+cc_debitos|concepto|text||''::text
+cc_debitos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+cc_debitos|fecha|text|NN|
+cc_debitos|id|bigint|NN|nextval('cc_debitos_id_seq'::regclass)
+cc_debitos|monto|double precision|NN|
+cc_debitos|referencia|text||''::text
+cc_debitos|usuario_id|integer||
+cc_pagos|caja_id|integer||
+cc_pagos|cliente_id|integer|NN|
+cc_pagos|concepto|text||''::text
+cc_pagos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+cc_pagos|fecha|text|NN|
+cc_pagos|id|bigint|NN|nextval('cc_pagos_id_seq'::regclass)
+cc_pagos|medio_pago|text||'efectivo'::text
+cc_pagos|monto|double precision|NN|
+cc_pagos|referencia|text||''::text
+cc_pagos|usuario_id|integer||
+cc_resumenes_enviados|automatico|integer|NN|1
+cc_resumenes_enviados|cliente_id|integer|NN|
+cc_resumenes_enviados|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+cc_resumenes_enviados|detalle|text||''::text
+cc_resumenes_enviados|email|text||''::text
+cc_resumenes_enviados|estado|text|NN|'ok'::text
+cc_resumenes_enviados|fecha|text|NN|
+cc_resumenes_enviados|id|bigint|NN|nextval('cc_resumenes_enviados_id_seq'::regclass)
+cc_resumenes_enviados|periodo_desde|text|NN|
+cc_resumenes_enviados|periodo_hasta|text|NN|
+cc_resumenes_enviados|saldo|double precision|NN|0
+clients|activo|integer||1
+clients|address|text||
+clients|auto_facturar|integer|NN|0
+clients|cc_resumen_auto|integer|NN|0
+clients|cc_resumen_frecuencia|text|NN|'mensual'::text
+clients|cc_resumen_ultimo_envio|text||''::text
+clients|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+clients|cuit_dni|text||
+clients|email|text||
+clients|external_ref|text||
+clients|id|bigint|NN|nextval('clients_id_seq'::regclass)
+clients|iva_condition|text||''::text
+clients|name|text|NN|
+clients|phone|text||
+comprobantes_pendientes|cliente_cuit|text||''::text
+comprobantes_pendientes|cliente_domicilio|text||''::text
+comprobantes_pendientes|cliente_id|integer||
+comprobantes_pendientes|cliente_razon|text|NN|
+comprobantes_pendientes|concepto|text||''::text
+comprobantes_pendientes|condicion_venta|text||''::text
+comprobantes_pendientes|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+comprobantes_pendientes|estado|text|NN|'pendiente'::text
+comprobantes_pendientes|factura_id|integer||
+comprobantes_pendientes|fecha_sugerida|text||''::text
+comprobantes_pendientes|id|bigint|NN|nextval('comprobantes_pendientes_id_seq'::regclass)
+comprobantes_pendientes|items|text|NN|'[]'::text
+comprobantes_pendientes|motivo_descarte|text||''::text
+comprobantes_pendientes|observaciones|text||''::text
+comprobantes_pendientes|origen_id|text|NN|
+comprobantes_pendientes|origen_instancia|text|NN|''::text
+comprobantes_pendientes|origen_producto|text|NN|
+comprobantes_pendientes|origen_tipo|text|NN|
+comprobantes_pendientes|periodo_desde|text||''::text
+comprobantes_pendientes|periodo_hasta|text||''::text
+comprobantes_pendientes|resuelto_at|text||''::text
+comprobantes_pendientes|resuelto_por|text||''::text
+comprobantes_pendientes|total|double precision|NN|0
+cuentas_tesoreria|activa|integer|NN|1
+cuentas_tesoreria|banco|text||''::text
+cuentas_tesoreria|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+cuentas_tesoreria|descripcion|text||''::text
+cuentas_tesoreria|id|bigint|NN|nextval('cuentas_tesoreria_id_seq'::regclass)
+cuentas_tesoreria|nombre|text|NN|
+cuentas_tesoreria|numero|text||''::text
+cuentas_tesoreria|orden|integer|NN|0
+cuentas_tesoreria|saldo_inicial|double precision|NN|0
+cuentas_tesoreria|tipo|text|NN|'banco'::text
+depositos|activo|integer|NN|1
+depositos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+depositos|descripcion|text||''::text
+depositos|es_default|integer|NN|0
+depositos|id|bigint|NN|nextval('depositos_id_seq'::regclass)
+depositos|nombre|text|NN|
+egresos_pagos|caja_id|integer||
+egresos_pagos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+egresos_pagos|egreso_id|integer|NN|
+egresos_pagos|fecha|text|NN|
+egresos_pagos|id|bigint|NN|nextval('egresos_pagos_id_seq'::regclass)
+egresos_pagos|medio_pago|text||''::text
+egresos_pagos|monto|double precision|NN|
+egresos_pagos|referencia|text||''::text
+egresos_pagos|usuario_id|integer||
+egresos|categoria|text||''::text
+egresos|concepto|text|NN|
+egresos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+egresos|estado|text|NN|'pendiente'::text
+egresos|fecha|text|NN|
+egresos|id|bigint|NN|nextval('egresos_id_seq'::regclass)
+egresos|iva_monto|double precision|NN|0
+egresos|iva_pct|double precision|NN|0
+egresos|monto_neto|double precision|NN|0
+egresos|numero|text||''::text
+egresos|observaciones|text||''::text
+egresos|proveedor_id|integer||
+egresos|proveedor_nombre|text|NN|''::text
+egresos|tipo_comprobante|text|NN|'otro'::text
+egresos|total|double precision|NN|
+egresos|usuario_id|integer||
+facturacion_alias|activo|integer|NN|1
+facturacion_alias|cliente_id|integer|NN|
+facturacion_alias|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+facturacion_alias|id|bigint|NN|nextval('facturacion_alias_id_seq'::regclass)
+facturacion_alias|tipo|text|NN|
+facturacion_alias|valor|text|NN|
+facturas|cae_vto|text||
+facturas|cae|text||
+facturas|cbte_asoc_nro|integer||0
+facturas|cbte_asoc_pv|integer||0
+facturas|cbte_asoc_tipo|integer||0
+facturas|cliente_cuit|text||
+facturas|cliente_domicilio|text||''::text
+facturas|cliente_iva_cond|integer||
+facturas|cliente_razon|text||
+facturas|concepto|integer|NN|1
+facturas|condicion_venta|text||''::text
+facturas|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+facturas|fch_serv_desde|text||''::text
+facturas|fch_serv_hasta|text||''::text
+facturas|fch_vto_pago|text||''::text
+facturas|fecha|text|NN|
+facturas|id|bigint|NN|nextval('facturas_id_seq'::regclass)
+facturas|items|text|NN|
+facturas|iva_amount|double precision|NN|
+facturas|numero|integer|NN|
+facturas|observaciones|text||
+facturas|pdf_path|text||
+facturas|punto_venta|integer|NN|
+facturas|subtotal|double precision|NN|
+facturas|tipo|integer|NN|
+facturas|total|double precision|NN|
+facturas|usuario_id|integer||
+lista_precio_items|lista_id|integer|NN|
+lista_precio_items|precio|double precision|NN|0
+lista_precio_items|producto_id|integer|NN|
+listas_precio|activa|integer|NN|1
+listas_precio|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+listas_precio|descripcion|text||''::text
+listas_precio|es_default|integer|NN|0
+listas_precio|id|bigint|NN|nextval('listas_precio_id_seq'::regclass)
+listas_precio|nombre|text|NN|
+modulos|habilitado|integer|NN|1
+modulos|id|bigint|NN|nextval('modulos_id_seq'::regclass)
+modulos|modulo|text|NN|
+modulos|plan|text|NN|'estandar'::text
+movimientos_stock|cantidad|double precision|NN|
+movimientos_stock|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+movimientos_stock|deposito_id|integer||
+movimientos_stock|fecha|text|NN|
+movimientos_stock|id|bigint|NN|nextval('movimientos_stock_id_seq'::regclass)
+movimientos_stock|producto_id|integer|NN|
+movimientos_stock|referencia|text||''::text
+movimientos_stock|tipo|text|NN|
+movimientos_stock|usuario_id|integer||
+movimientos_stock|venta_id|integer||
+movimientos_tesoreria|concepto|text|NN|''::text
+movimientos_tesoreria|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+movimientos_tesoreria|cuenta_destino_id|integer||
+movimientos_tesoreria|cuenta_id|integer|NN|
+movimientos_tesoreria|fecha|text|NN|
+movimientos_tesoreria|id|bigint|NN|nextval('movimientos_tesoreria_id_seq'::regclass)
+movimientos_tesoreria|monto|double precision|NN|
+movimientos_tesoreria|referencia|text||''::text
+movimientos_tesoreria|tipo|text|NN|
+movimientos_tesoreria|transferencia_id|integer||
+movimientos_tesoreria|usuario_id|integer||
+mp_movimientos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+mp_movimientos|descripcion|text||
+mp_movimientos|estado_factura|text||'pendiente'::text
+mp_movimientos|factura_id|integer||
+mp_movimientos|fecha|text||
+mp_movimientos|id|bigint|NN|nextval('mp_movimientos_id_seq'::regclass)
+mp_movimientos|monto|double precision||
+mp_movimientos|mp_movement_id|text|NN|
+mp_movimientos|origen_banco|text||
+mp_movimientos|origen_cbu|text||
+mp_movimientos|origen_nombre|text||
+mp_movimientos|payer_email|text||
+mp_movimientos|payer_id_number|text||
+mp_movimientos|payer_id_type|text||
+mp_movimientos|payer_name|text||
+mp_movimientos|tipo|text||
+mp_pagos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+mp_pagos|descripcion_mp|text||
+mp_pagos|estado_factura|text||
+mp_pagos|factura_id|integer||
+mp_pagos|id|bigint|NN|nextval('mp_pagos_id_seq'::regclass)
+mp_pagos|monto|double precision||
+mp_pagos|mp_payment_id|text|NN|
+mp_pagos|payer_email|text||
+mp_pagos|payer_id_number|text||
+mp_pagos|payer_id_type|text||
+mp_pagos|payer_name|text||
+mp_pagos|payment_method|text||
+mp_pagos|payment_type|text||
+mp_pagos|status|text||
+presupuestos|client_address|text||
+presupuestos|client_cuit|text||
+presupuestos|client_email|text||
+presupuestos|client_id|integer||
+presupuestos|client_name|text|NN|
+presupuestos|client_phone|text||
+presupuestos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+presupuestos|date|text|NN|
+presupuestos|id|bigint|NN|nextval('presupuestos_id_seq'::regclass)
+presupuestos|items|text|NN|
+presupuestos|number|text|NN|
+presupuestos|observations|text||
+presupuestos|pdf_path|text||
+presupuestos|remito_id|integer||
+presupuestos|status|text|NN|'pendiente'::text
+presupuestos|subtotal|double precision|NN|
+presupuestos|tax_amount|double precision|NN|
+presupuestos|tax_rate|double precision|NN|0.21
+presupuestos|total|double precision|NN|
+presupuestos|usuario_id|integer||
+presupuestos|valid_until|text|NN|
+productos|activo|integer|NN|1
+productos|categoria|text||''::text
+productos|codigo|text||
+productos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+productos|descripcion|text||''::text
+productos|estacion|text||''::text
+productos|id|bigint|NN|nextval('productos_id_seq'::regclass)
+productos|nombre|text|NN|
+productos|precio_costo|double precision|NN|0
+productos|precio_venta|double precision|NN|0
+productos|stock_minimo|double precision|NN|0
+productos|tipo|text|NN|'producto'::text
+productos|unidad|text|NN|'u'::text
+productos|vendible|integer|NN|1
+proveedores|address|text||''::text
+proveedores|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+proveedores|cuit_dni|text||''::text
+proveedores|email|text||''::text
+proveedores|id|bigint|NN|nextval('proveedores_id_seq'::regclass)
+proveedores|iva_condition|text||''::text
+proveedores|nombre|text|NN|
+proveedores|phone|text||''::text
+recibos|anulado_at|text||''::text
+recibos|anulado_motivo|text||''::text
+recibos|anulado|integer|NN|0
+recibos|cliente_cuit|text||''::text
+recibos|cliente_domicilio|text||''::text
+recibos|cliente_id|integer||
+recibos|cliente_razon|text|NN|
+recibos|concepto|text||''::text
+recibos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+recibos|fecha|text|NN|
+recibos|id|bigint|NN|nextval('recibos_id_seq'::regclass)
+recibos|numero|integer|NN|
+recibos|observaciones|text||''::text
+recibos|origen_id|integer||
+recibos|origen_tipo|text|NN|
+recibos|pagos|text|NN|'[]'::text
+recibos|punto_venta|integer|NN|1
+recibos|total|double precision|NN|
+recibos|usuario_id|integer||
+remitos|client_address|text||
+remitos|client_cuit|text||
+remitos|client_email|text||
+remitos|client_id|integer||
+remitos|client_name|text|NN|
+remitos|client_phone|text||
+remitos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+remitos|date|text|NN|
+remitos|id|bigint|NN|nextval('remitos_id_seq'::regclass)
+remitos|items|text|NN|
+remitos|number|text|NN|
+remitos|observations|text||
+remitos|pdf_path|text||
+remitos|subtotal|double precision|NN|
+remitos|tax_amount|double precision|NN|
+remitos|tax_rate|double precision|NN|0.21
+remitos|total|double precision|NN|
+remitos|usuario_id|integer||
+turnos_caja|apertura|text|NN|
+turnos_caja|caja_id|integer||
+turnos_caja|cierre|text||
+turnos_caja|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+turnos_caja|estado|text|NN|'abierto'::text
+turnos_caja|id|bigint|NN|nextval('turnos_caja_id_seq'::regclass)
+turnos_caja|monto_declarado_cierre|double precision||
+turnos_caja|monto_esperado_cierre|double precision||
+turnos_caja|monto_inicial|double precision|NN|0
+turnos_caja|notas|text||''::text
+turnos_caja|usuario_id|integer|NN|
+usuarios|activo|integer|NN|1
+usuarios|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+usuarios|email|text||''::text
+usuarios|id|bigint|NN|nextval('usuarios_id_seq'::regclass)
+usuarios|nombre|text|NN|
+usuarios|password_hash|text|NN|
+usuarios|role|text|NN|'operador'::text
+usuarios|username|text|NN|
+ventas_pagos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+ventas_pagos|id|bigint|NN|nextval('ventas_pagos_id_seq'::regclass)
+ventas_pagos|medio|text|NN|
+ventas_pagos|monto|double precision|NN|
+ventas_pagos|referencia|text||''::text
+ventas_pagos|venta_id|integer|NN|
+ventas|cliente_id|integer||
+ventas|cliente_nombre|text||''::text
+ventas|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
+ventas|descuento|double precision|NN|0
+ventas|estado|text|NN|'cobrada'::text
+ventas|factura_id|integer||
+ventas|fecha|text|NN|
+ventas|id|bigint|NN|nextval('ventas_id_seq'::regclass)
+ventas|items|text|NN|
+ventas|mp_order_id|text||''::text
+ventas|mp_payment_id|text||''::text
+ventas|numero|text|NN|
+ventas|observaciones|text||''::text
+ventas|remito_id|integer||
+ventas|subtotal|double precision|NN|0
+ventas|total|double precision|NN|0
+ventas|turno_id|integer||
+ventas|usuario_id|integer||
+
+## claves primarias (33)
+arca_config|PRIMARY KEY (id)
+auth_log|PRIMARY KEY (id)
+caja_movimientos|PRIMARY KEY (id)
+cajas|PRIMARY KEY (id)
+categorias_egreso|PRIMARY KEY (id)
+categorias_producto|PRIMARY KEY (id)
+cc_debitos|PRIMARY KEY (id)
+cc_pagos|PRIMARY KEY (id)
+cc_resumenes_enviados|PRIMARY KEY (id)
+clients|PRIMARY KEY (id)
+comprobantes_pendientes|PRIMARY KEY (id)
+cuentas_tesoreria|PRIMARY KEY (id)
+depositos|PRIMARY KEY (id)
+egresos_pagos|PRIMARY KEY (id)
+egresos|PRIMARY KEY (id)
+facturacion_alias|PRIMARY KEY (id)
+facturas|PRIMARY KEY (id)
+lista_precio_items|PRIMARY KEY (lista_id, producto_id)
+listas_precio|PRIMARY KEY (id)
+modulos|PRIMARY KEY (id)
+movimientos_stock|PRIMARY KEY (id)
+movimientos_tesoreria|PRIMARY KEY (id)
+mp_movimientos|PRIMARY KEY (id)
+mp_pagos|PRIMARY KEY (id)
+presupuestos|PRIMARY KEY (id)
+productos|PRIMARY KEY (id)
+proveedores|PRIMARY KEY (id)
+recibos|PRIMARY KEY (id)
+remitos|PRIMARY KEY (id)
+turnos_caja|PRIMARY KEY (id)
+usuarios|PRIMARY KEY (id)
+ventas_pagos|PRIMARY KEY (id)
+ventas|PRIMARY KEY (id)
+
+## claves foráneas (42)
+caja_movimientos|caja_movimientos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
+caja_movimientos|caja_movimientos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+caja_movimientos|fk_caja_movimientos_turno|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
+cc_debitos|cc_debitos_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
+cc_debitos|cc_debitos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+cc_pagos|cc_pagos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
+cc_pagos|cc_pagos_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
+cc_pagos|cc_pagos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+cc_resumenes_enviados|cc_resumenes_enviados_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
+comprobantes_pendientes|comprobantes_pendientes_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE SET NULL
+comprobantes_pendientes|comprobantes_pendientes_factura_id_fkey|FOREIGN KEY (factura_id) REFERENCES facturas(id) ON DELETE SET NULL
+egresos_pagos|egresos_pagos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
+egresos_pagos|egresos_pagos_egreso_id_fkey|FOREIGN KEY (egreso_id) REFERENCES egresos(id) ON DELETE CASCADE
+egresos_pagos|egresos_pagos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+egresos|egresos_proveedor_id_fkey|FOREIGN KEY (proveedor_id) REFERENCES proveedores(id) ON DELETE SET NULL
+egresos|egresos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+facturacion_alias|facturacion_alias_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
+facturas|facturas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+lista_precio_items|lista_precio_items_lista_id_fkey|FOREIGN KEY (lista_id) REFERENCES listas_precio(id) ON DELETE CASCADE
+lista_precio_items|lista_precio_items_producto_id_fkey|FOREIGN KEY (producto_id) REFERENCES productos(id) ON DELETE CASCADE
+movimientos_stock|fk_movimientos_stock_venta|FOREIGN KEY (venta_id) REFERENCES ventas(id) ON DELETE SET NULL
+movimientos_stock|movimientos_stock_deposito_id_fkey|FOREIGN KEY (deposito_id) REFERENCES depositos(id) ON DELETE SET NULL
+movimientos_stock|movimientos_stock_producto_id_fkey|FOREIGN KEY (producto_id) REFERENCES productos(id) ON DELETE CASCADE
+movimientos_stock|movimientos_stock_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+movimientos_tesoreria|movimientos_tesoreria_cuenta_destino_id_fkey|FOREIGN KEY (cuenta_destino_id) REFERENCES cuentas_tesoreria(id) ON DELETE SET NULL
+movimientos_tesoreria|movimientos_tesoreria_cuenta_id_fkey|FOREIGN KEY (cuenta_id) REFERENCES cuentas_tesoreria(id) ON DELETE CASCADE
+movimientos_tesoreria|movimientos_tesoreria_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+presupuestos|presupuestos_client_id_fkey|FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
+presupuestos|presupuestos_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id)
+presupuestos|presupuestos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+recibos|recibos_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE SET NULL
+recibos|recibos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+remitos|remitos_client_id_fkey|FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
+remitos|remitos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+turnos_caja|turnos_caja_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
+turnos_caja|turnos_caja_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+ventas_pagos|ventas_pagos_venta_id_fkey|FOREIGN KEY (venta_id) REFERENCES ventas(id) ON DELETE CASCADE
+ventas|ventas_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE SET NULL
+ventas|ventas_factura_id_fkey|FOREIGN KEY (factura_id) REFERENCES facturas(id) ON DELETE SET NULL
+ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON DELETE SET NULL
+ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
+ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+
+## índices (62)
+arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
+arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
+auth_log|auth_log_pkey|CREATE UNIQUE INDEX auth_log_pkey ON public.auth_log USING btree (id)
+caja_movimientos|caja_movimientos_pkey|CREATE UNIQUE INDEX caja_movimientos_pkey ON public.caja_movimientos USING btree (id)
+caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON public.caja_movimientos USING btree (fecha)
+cajas|cajas_pkey|CREATE UNIQUE INDEX cajas_pkey ON public.cajas USING btree (id)
+categorias_egreso|categorias_egreso_nombre_key|CREATE UNIQUE INDEX categorias_egreso_nombre_key ON public.categorias_egreso USING btree (nombre)
+categorias_egreso|categorias_egreso_pkey|CREATE UNIQUE INDEX categorias_egreso_pkey ON public.categorias_egreso USING btree (id)
+categorias_producto|categorias_producto_nombre_key|CREATE UNIQUE INDEX categorias_producto_nombre_key ON public.categorias_producto USING btree (nombre)
+categorias_producto|categorias_producto_pkey|CREATE UNIQUE INDEX categorias_producto_pkey ON public.categorias_producto USING btree (id)
+cc_debitos|cc_debitos_pkey|CREATE UNIQUE INDEX cc_debitos_pkey ON public.cc_debitos USING btree (id)
+cc_debitos|idx_cc_debitos_cliente|CREATE INDEX idx_cc_debitos_cliente ON public.cc_debitos USING btree (cliente_id)
+cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referencia ON public.cc_debitos USING btree (referencia) WHERE (referencia <> ''::text)
+cc_pagos|cc_pagos_pkey|CREATE UNIQUE INDEX cc_pagos_pkey ON public.cc_pagos USING btree (id)
+cc_pagos|idx_cc_pagos_cliente|CREATE INDEX idx_cc_pagos_cliente ON public.cc_pagos USING btree (cliente_id)
+cc_resumenes_enviados|cc_resumenes_enviados_pkey|CREATE UNIQUE INDEX cc_resumenes_enviados_pkey ON public.cc_resumenes_enviados USING btree (id)
+cc_resumenes_enviados|idx_cc_resumenes_cliente|CREATE INDEX idx_cc_resumenes_cliente ON public.cc_resumenes_enviados USING btree (cliente_id, fecha)
+clients|clients_pkey|CREATE UNIQUE INDEX clients_pkey ON public.clients USING btree (id)
+clients|idx_clients_cuit_norm|CREATE INDEX idx_clients_cuit_norm ON public.clients USING btree (replace(cuit_dni, '-'::text, ''::text))
+clients|idx_clients_external_ref|CREATE UNIQUE INDEX idx_clients_external_ref ON public.clients USING btree (external_ref) WHERE (external_ref IS NOT NULL)
+comprobantes_pendientes|comprobantes_pendientes_pkey|CREATE UNIQUE INDEX comprobantes_pendientes_pkey ON public.comprobantes_pendientes USING btree (id)
+comprobantes_pendientes|idx_comprobantes_pendientes_estado|CREATE INDEX idx_comprobantes_pendientes_estado ON public.comprobantes_pendientes USING btree (estado, created_at)
+comprobantes_pendientes|idx_comprobantes_pendientes_origen|CREATE UNIQUE INDEX idx_comprobantes_pendientes_origen ON public.comprobantes_pendientes USING btree (origen_producto, origen_instancia, origen_tipo, origen_id)
+cuentas_tesoreria|cuentas_tesoreria_pkey|CREATE UNIQUE INDEX cuentas_tesoreria_pkey ON public.cuentas_tesoreria USING btree (id)
+depositos|depositos_pkey|CREATE UNIQUE INDEX depositos_pkey ON public.depositos USING btree (id)
+egresos_pagos|egresos_pagos_pkey|CREATE UNIQUE INDEX egresos_pagos_pkey ON public.egresos_pagos USING btree (id)
+egresos|egresos_pkey|CREATE UNIQUE INDEX egresos_pkey ON public.egresos USING btree (id)
+facturacion_alias|facturacion_alias_pkey|CREATE UNIQUE INDEX facturacion_alias_pkey ON public.facturacion_alias USING btree (id)
+facturacion_alias|facturacion_alias_tipo_valor_key|CREATE UNIQUE INDEX facturacion_alias_tipo_valor_key ON public.facturacion_alias USING btree (tipo, valor)
+facturas|facturas_pkey|CREATE UNIQUE INDEX facturas_pkey ON public.facturas USING btree (id)
+facturas|idx_facturas_cliente_cuit|CREATE INDEX idx_facturas_cliente_cuit ON public.facturas USING btree (cliente_cuit)
+facturas|idx_facturas_fecha|CREATE INDEX idx_facturas_fecha ON public.facturas USING btree (fecha)
+facturas|idx_facturas_numero_unico|CREATE UNIQUE INDEX idx_facturas_numero_unico ON public.facturas USING btree (tipo, punto_venta, numero)
+lista_precio_items|lista_precio_items_pkey|CREATE UNIQUE INDEX lista_precio_items_pkey ON public.lista_precio_items USING btree (lista_id, producto_id)
+listas_precio|listas_precio_pkey|CREATE UNIQUE INDEX listas_precio_pkey ON public.listas_precio USING btree (id)
+modulos|modulos_modulo_key|CREATE UNIQUE INDEX modulos_modulo_key ON public.modulos USING btree (modulo)
+modulos|modulos_pkey|CREATE UNIQUE INDEX modulos_pkey ON public.modulos USING btree (id)
+movimientos_stock|idx_movimientos_stock_producto|CREATE INDEX idx_movimientos_stock_producto ON public.movimientos_stock USING btree (producto_id)
+movimientos_stock|movimientos_stock_pkey|CREATE UNIQUE INDEX movimientos_stock_pkey ON public.movimientos_stock USING btree (id)
+movimientos_tesoreria|movimientos_tesoreria_pkey|CREATE UNIQUE INDEX movimientos_tesoreria_pkey ON public.movimientos_tesoreria USING btree (id)
+mp_movimientos|mp_movimientos_mp_movement_id_key|CREATE UNIQUE INDEX mp_movimientos_mp_movement_id_key ON public.mp_movimientos USING btree (mp_movement_id)
+mp_movimientos|mp_movimientos_pkey|CREATE UNIQUE INDEX mp_movimientos_pkey ON public.mp_movimientos USING btree (id)
+mp_pagos|mp_pagos_mp_payment_id_key|CREATE UNIQUE INDEX mp_pagos_mp_payment_id_key ON public.mp_pagos USING btree (mp_payment_id)
+mp_pagos|mp_pagos_pkey|CREATE UNIQUE INDEX mp_pagos_pkey ON public.mp_pagos USING btree (id)
+presupuestos|presupuestos_number_key|CREATE UNIQUE INDEX presupuestos_number_key ON public.presupuestos USING btree (number)
+presupuestos|presupuestos_pkey|CREATE UNIQUE INDEX presupuestos_pkey ON public.presupuestos USING btree (id)
+productos|productos_codigo_key|CREATE UNIQUE INDEX productos_codigo_key ON public.productos USING btree (codigo)
+productos|productos_pkey|CREATE UNIQUE INDEX productos_pkey ON public.productos USING btree (id)
+proveedores|proveedores_pkey|CREATE UNIQUE INDEX proveedores_pkey ON public.proveedores USING btree (id)
+recibos|idx_recibos_cliente|CREATE INDEX idx_recibos_cliente ON public.recibos USING btree (cliente_id, fecha)
+recibos|idx_recibos_numero_unico|CREATE UNIQUE INDEX idx_recibos_numero_unico ON public.recibos USING btree (punto_venta, numero)
+recibos|idx_recibos_origen|CREATE INDEX idx_recibos_origen ON public.recibos USING btree (origen_tipo, origen_id)
+recibos|recibos_pkey|CREATE UNIQUE INDEX recibos_pkey ON public.recibos USING btree (id)
+remitos|remitos_number_key|CREATE UNIQUE INDEX remitos_number_key ON public.remitos USING btree (number)
+remitos|remitos_pkey|CREATE UNIQUE INDEX remitos_pkey ON public.remitos USING btree (id)
+turnos_caja|turnos_caja_pkey|CREATE UNIQUE INDEX turnos_caja_pkey ON public.turnos_caja USING btree (id)
+usuarios|usuarios_pkey|CREATE UNIQUE INDEX usuarios_pkey ON public.usuarios USING btree (id)
+usuarios|usuarios_username_key|CREATE UNIQUE INDEX usuarios_username_key ON public.usuarios USING btree (username)
+ventas_pagos|ventas_pagos_pkey|CREATE UNIQUE INDEX ventas_pagos_pkey ON public.ventas_pagos USING btree (id)
+ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON public.ventas USING btree (fecha)
+ventas|ventas_numero_key|CREATE UNIQUE INDEX ventas_numero_key ON public.ventas USING btree (numero)
+ventas|ventas_pkey|CREATE UNIQUE INDEX ventas_pkey ON public.ventas USING btree (id)
+
+## checks (3)
+clients|clients_cc_resumen_frecuencia_check|CHECK ((cc_resumen_frecuencia = ANY (ARRAY['semanal'::text, 'quincenal'::text, 'mensual'::text])))
+facturacion_alias|facturacion_alias_tipo_check|CHECK ((tipo = ANY (ARRAY['cuit'::text, 'email'::text])))
+productos|productos_tipo_check|CHECK ((tipo = ANY (ARRAY['producto'::text, 'servicio'::text])))
