@@ -38,6 +38,17 @@ dev = [
     "ruff>=0.13",
     "pytest>=8.0",
     "httpx>=0.27",
+    # La cadena de Alembic se ejercita en la suite (tests/db/test_migraciones.py),
+    # asi que el extra de abajo hace falta tambien para correr los tests.
+    "libracore[migrations]",
+]
+
+# NO son dependencias de runtime: LibraCore no importa SQLAlchemy en ningun
+# lado de la app. Las necesita solo la cadena de migraciones, que corre en el
+# pipeline de deploy (scripts/run_migrations.sh).
+migrations = [
+    "alembic>=1.13,<2",
+    "SQLAlchemy>=2.0,<3",
 ]
 
 [tool.hatch.version]
