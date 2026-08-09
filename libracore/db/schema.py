@@ -20,6 +20,8 @@ wiki/entities/libracore.md.
 """
 import sqlite3
 
+from .core import is_postgres
+
 
 def init_core_schema(conn: sqlite3.Connection):
     conn.executescript("""
@@ -525,6 +527,24 @@ def init_core_schema(conn: sqlite3.Connection):
         CREATE INDEX IF NOT EXISTS idx_comprobantes_pendientes_estado
             ON comprobantes_pendientes(estado, created_at);
     """)
+
+    if is_postgres():
+        # SQLite permite declarar FKs hacia tablas que aparecen más adelante;
+        # PostgreSQL exige que la tabla referenciada ya exista. El adaptador
+        # omite estas dos FKs durante el script y las agrega acá.
+        for constraint, table, column in (
+            ("fk_caja_movimientos_turno", "caja_movimientos", "turno_id"),
+            ("fk_movimientos_stock_venta", "movimientos_stock", "venta_id"),
+        ):
+            constraint_exists = conn.execute(
+                "SELECT 1 FROM pg_constraint WHERE conname=?", (constraint,)
+            ).fetchone()
+            if not constraint_exists:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD CONSTRAINT {constraint} "
+                    f"FOREIGN KEY ({column}) REFERENCES "
+                    f"{'turnos_caja' if table == 'caja_movimientos' else 'ventas'}(id) ON DELETE SET NULL"
+                )
 
     # Migraciones defensivas (columnas agregadas después del CREATE original en
     # instancias ya existentes) — se mantienen por compatibilidad con bases de
