@@ -1,0 +1,360 @@
+"""Small DB-API compatibility layer used while LibraCore becomes dual-backend."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterator, Sequence
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from psycopg import Connection
+
+
+_INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+", re.IGNORECASE)
+_INSERT_IGNORE_RE = re.compile(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+", re.IGNORECASE)
+_TABLE_INFO_RE = re.compile(r"^\s*PRAGMA\s+table_info\s*\(\s*([\w]+)\s*\)\s*;?\s*$", re.IGNORECASE)
+_SQLITE_MASTER_RE = re.compile(
+    r"^\s*SELECT\s+1\s+FROM\s+sqlite_master\s+WHERE\s+type\s*=\s*'table'\s+AND\s+name\s*=\s*(['\"]?)([\w]+)\1\s*;?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _replace_qmarks(sql: str) -> str:
+    """Replace qmark parameters without touching comments or SQL literals."""
+    out = []
+    i = 0
+    quote = None
+    while i < len(sql):
+        if quote:
+            out.append(sql[i])
+            if sql[i] == quote:
+                if i + 1 < len(sql) and sql[i + 1] == quote:
+                    out.append(sql[i + 1])
+                    i += 2
+                    continue
+                quote = None
+            i += 1
+            continue
+        if sql.startswith("--", i):
+            end = sql.find("\n", i)
+            end = len(sql) if end < 0 else end
+            out.append(sql[i:end])
+            i = end
+            continue
+        if sql[i] in ("'", '"'):
+            quote = sql[i]
+            out.append(sql[i])
+        elif sql[i] == "?":
+            out.append("%s")
+        else:
+            out.append(sql[i])
+        i += 1
+    return "".join(out)
+
+
+def _argumentos_de_nivel_uno(texto: str) -> tuple[list[str], str] | None:
+    """Parte la lista de argumentos de una llamada, respetando el anidamiento.
+
+    `texto` es lo que va DESPUÉS del paréntesis de apertura. Devuelve los
+    argumentos de primer nivel y el resto de la cadena, o `None` si el
+    paréntesis nunca cierra (SQL truncado: mejor no tocar nada).
+    """
+    profundidad = 0
+    comilla = None
+    args: list[str] = []
+    actual: list[str] = []
+    for i, ch in enumerate(texto):
+        if comilla:
+            actual.append(ch)
+            if ch == comilla:
+                comilla = None
+            continue
+        if ch in ("'", '"'):
+            comilla = ch
+            actual.append(ch)
+        elif ch == "(":
+            profundidad += 1
+            actual.append(ch)
+        elif ch == ")":
+            if profundidad == 0:
+                args.append("".join(actual))
+                return [a.strip() for a in args], texto[i + 1:]
+            profundidad -= 1
+            actual.append(ch)
+        elif ch == "," and profundidad == 0:
+            args.append("".join(actual))
+            actual = []
+        else:
+            actual.append(ch)
+    return None
+
+
+def _castear_round(sql: str) -> str:
+    """`ROUND(x, n)` sobre `double precision` no existe en PostgreSQL.
+
+    Sólo hay `round(numeric, integer)` y `round(double precision)` de un
+    argumento, así que la forma de dos argumentos hay que castearla. La versión
+    anterior de esta traducción era una regex que exigía literalmente
+    `ROUND(SUM(...), n)`, y la consulta real del reporte de stock bajo es
+    `ROUND(COALESCE(SUM(ms.cantidad), 0), 3)` — no matcheaba, pasaba entera al
+    motor y reventaba con *"function round(double precision, integer) does not
+    exist"*. Por eso ahora se parsean los paréntesis en vez de adivinar la
+    forma: cualquier expresión como primer argumento queda cubierta.
+    """
+    out = []
+    i = 0
+    bajo = sql.lower()
+    while i < len(sql):
+        if bajo.startswith("round(", i) and (i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == "_")):
+            partido = _argumentos_de_nivel_uno(sql[i + len("round("):])
+            if partido is not None:
+                args, resto = partido
+                if len(args) == 2:
+                    # El primer argumento puede traer otro ROUND adentro.
+                    out.append(f"ROUND(CAST({_castear_round(args[0])} AS NUMERIC), {args[1]})")
+                    sql = resto
+                    bajo = sql.lower()
+                    i = 0
+                    continue
+        out.append(sql[i])
+        i += 1
+    return "".join(out)
+
+
+def _paramstyle(sql: str) -> str:
+    """Translate the qmark SQL used by LibraCore to psycopg's format style."""
+    sql = _replace_qmarks(sql)
+    # `datetime('now')` en SQLite devuelve TEXTO con formato fijo
+    # 'YYYY-MM-DD HH:MM:SS', y así queda guardado en las 30 columnas
+    # `created_at TEXT DEFAULT (datetime('now'))` del schema. `CURRENT_TIMESTAMP`
+    # a secas, castrado a texto por la columna TEXT, escribe
+    # '2026-08-08 23:45:24.986262+00' — con microsegundos y offset de zona. Es
+    # el mismo dato pero NO el mismo string, y esa diferencia sale por dos
+    # lados: cualquier `strptime(...)` sobre la columna, y la comparación
+    # lexicográfica de rangos de fecha, que es como este motor filtra.
+    # Se emite el formato de SQLite, byte por byte.
+    #
+    # `AT TIME ZONE 'UTC'` no es decorativo: `datetime('now')` de SQLite es
+    # UTC, y `CURRENT_TIMESTAMP` de PostgreSQL depende del `TimeZone` de la
+    # sesión. Sin fijarlo, un sidecar con TZ local guardaría tres horas
+    # corridas respecto de lo que guardaba la misma base en SQLite.
+    _FORMATO = "'YYYY-MM-DD HH24:MI:SS'"
+    sql = re.sub(
+        r"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*%s\)",
+        f"to_char(LOCALTIMESTAMP + %s::interval, {_FORMATO})",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdatetime\('now'\s*,\s*'localtime'\)",
+        f"to_char(LOCALTIMESTAMP, {_FORMATO})",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdatetime\('now'\)",
+        f"to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', {_FORMATO})",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    # `date('now')` devuelve TEXTO en SQLite, y las fechas de este motor se
+    # guardan como TEXT ISO ('YYYY-MM-DD'), así que las comparaciones son
+    # lexicográficas — que para ISO coincide con el orden cronológico. Traducir
+    # a `CURRENT_DATE` a secas rompía eso: `valid_until < CURRENT_DATE` es
+    # `text < date` y PostgreSQL no tiene ese operador. Se traduce a texto para
+    # que la comparación siga siendo la misma que en SQLite, sin depender de
+    # que todos los valores guardados sean fechas válidas.
+    sql = re.sub(r"\bdate\('now'\)", "to_char(CURRENT_DATE, 'YYYY-MM-DD')", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bdate\(([^()]+)\)", r"CAST(\1 AS DATE)", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bgroup_concat\(([^,()]+),\s*(['\"][^'\"]*['\"])\)", r"string_agg(\1, \2)", sql, flags=re.IGNORECASE)
+    sql = re.sub(
+        r"\bprintf\('%0([0-9]+)d',\s*([^()]+)\)",
+        r"lpad(cast(\2 AS text), \1, '0')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bstrftime\('%Y-%m',\s*([^()]+)\)",
+        r"to_char(cast(\1 AS date), 'YYYY-MM')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(r"->>\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'", r"->> '\1'", sql)
+    sql = _castear_round(sql)
+    sql = re.sub(
+        r"\bjson_each\(([^()]+)\)\s+([A-Za-z_][A-Za-z0-9_]*)",
+        r"jsonb_array_elements(\1::jsonb) AS \2(value)",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(r"\bCAST\(([^()]+)\s+AS\s+REAL\)", r"CAST(\1 AS DOUBLE PRECISION)", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "BIGSERIAL PRIMARY KEY", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bAUTOINCREMENT\b", "", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bREAL\b", "DOUBLE PRECISION", sql, flags=re.IGNORECASE)
+    sql = re.sub(r"\bBLOB\b", "BYTEA", sql, flags=re.IGNORECASE)
+    # SQLite acepta declarar una FK hacia una tabla que todavía no fue creada;
+    # PostgreSQL no. `schema.py` agrega esta constraint después de crear todas
+    # las tablas, sólo en el backend PostgreSQL.
+    if re.match(r"\s*CREATE\s+TABLE", sql, flags=re.IGNORECASE):
+        sql = re.sub(
+            r"\s+REFERENCES\s+(?:turnos_caja|ventas)\(id\)\s+ON\s+DELETE\s+SET\s+NULL",
+            "",
+            sql,
+            flags=re.IGNORECASE,
+        )
+    return sql
+
+
+class Row:
+    """A row addressable by both integer position and column name.
+
+    Emula `sqlite3.Row`, y la parte que menos se ve es la que más se usa:
+    `dict(fila)`. `dict()` acepta un objeto como mapping si tiene `keys()` y
+    `__getitem__`; sin `keys()` cae al camino de iterable-de-pares, encuentra
+    valores sueltos y muere con *"cannot convert dictionary update sequence
+    element #0 to a sequence"*.
+
+    No es un detalle: `return [dict(r) for r in rows]` es **el** patrón de
+    retorno de esta capa —95 llamados en 20 módulos de `libracore/db/`—, así
+    que sin este método casi toda lectura del motor falla contra PostgreSQL.
+    Lo encontró la verificación del piloto LibraDesk el 2026-08-09, ejecutando
+    las lecturas de `remitos_presupuestos` **con filas sembradas**: 5 de 7
+    funciones fallaban. Con las tablas vacías pasaban todas, porque `dict()`
+    nunca llegaba a ejecutarse.
+    """
+
+    def __init__(self, values: tuple, columns: tuple[str, ...]):
+        self._values = values
+        self._columns = columns
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._values[self._columns.index(key)]
+
+    def keys(self) -> list[str]:
+        """Los nombres de columna, como `sqlite3.Row.keys()`."""
+        return list(self._columns)
+
+    # Sin `__contains__` a propósito: `sqlite3.Row` tampoco lo define, así que
+    # `x in fila` itera VALORES en los dos backends. Definirlo sobre los
+    # nombres de columna haría que la misma expresión signifique cosas
+    # distintas según el motor.
+
+    def __iter__(self) -> Iterator:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+
+class Cursor:
+    def __init__(self, connection: "ConnectionWrapper"):
+        self._connection = connection
+        from psycopg.rows import tuple_row
+
+        self._cursor = connection._connection.cursor(row_factory=tuple_row)
+        self._lastrowid = None
+
+    @property
+    def lastrowid(self):
+        return self._lastrowid
+
+    @property
+    def description(self):
+        return self._cursor.description
+
+    def execute(self, sql: str, params: Sequence | None = None):
+        table_info = _TABLE_INFO_RE.match(sql)
+        if table_info:
+            table = table_info.group(1)
+            sql = (
+                "SELECT ordinal_position - 1 AS cid, column_name AS name, "
+                "data_type AS type, CASE WHEN is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull, "
+                "column_default AS dflt_value, CASE WHEN column_name = 'id' THEN 1 ELSE 0 END AS pk "
+                "FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s "
+                "ORDER BY ordinal_position"
+            )
+            params = (table,)
+        else:
+            sqlite_master = _SQLITE_MASTER_RE.match(sql)
+            if sqlite_master:
+                sql = (
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = %s"
+                )
+                params = (sqlite_master.group(2),)
+            ignore_insert = bool(_INSERT_IGNORE_RE.match(sql))
+            if ignore_insert:
+                sql = _INSERT_IGNORE_RE.sub("INSERT INTO ", sql, count=1)
+            sql = _paramstyle(sql)
+            if ignore_insert:
+                sql = f"{sql.rstrip().rstrip(';')} ON CONFLICT DO NOTHING"
+        if _INSERT_RE.match(sql) and " returning " not in sql.lower():
+            sql = f"{sql.rstrip().rstrip(';')} RETURNING id"
+            self._cursor.execute(sql, params or ())
+            row = self._cursor.fetchone()
+            self._lastrowid = row[0] if row else None
+        else:
+            self._cursor.execute(sql, params or ())
+        return self
+
+    def executemany(self, sql: str, params):
+        self._cursor.executemany(_paramstyle(sql), params)
+        return self
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        return self._row(row)
+
+    def fetchall(self):
+        return [self._row(row) for row in self._cursor.fetchall()]
+
+    def close(self):
+        self._cursor.close()
+
+    def _row(self, row):
+        if row is None:
+            return None
+        columns = tuple(column.name for column in self._cursor.description)
+        return Row(row, columns)
+
+
+class ConnectionWrapper:
+    def __init__(self, connection: Any):
+        self._connection = connection
+
+    def execute(self, sql: str, params: Sequence | None = None):
+        return self.cursor().execute(sql, params)
+
+    def executemany(self, sql: str, params):
+        return self.cursor().executemany(sql, params)
+
+    def executescript(self, script: str):
+        for statement in script.split(";"):
+            statement = statement.strip()
+            if statement and not statement.upper().startswith("PRAGMA "):
+                self.execute(statement)
+        return self
+
+    def cursor(self):
+        return Cursor(self)
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type:
+            self.rollback()
+        else:
+            self.commit()
+        self.close()

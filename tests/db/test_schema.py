@@ -1,4 +1,5 @@
 import sqlite3
+import os
 import pytest
 
 from libracore.db import core
@@ -106,3 +107,21 @@ def test_upgrade_de_tabla_existente_sin_columnas_nuevas(tmp_path):
     assert "stock_minimo" in cols
     conn.close()
     core._db_path = None
+
+
+def test_schema_completo_postgres_cuando_esta_configurado():
+    """Gate de CI: el schema canónico debe poder nacer en PostgreSQL."""
+    url = os.environ.get("LIBRACORE_POSTGRES_URL")
+    if not url:
+        pytest.skip("LIBRACORE_POSTGRES_URL no configurada")
+
+    core.configure(url)
+    with core.get_connection() as conn:
+        init_core_schema(conn)
+        tablas = {
+            row[0]
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
+            ).fetchall()
+        }
+        assert {"clients", "facturas", "productos", "usuarios", "cajas"} <= tablas

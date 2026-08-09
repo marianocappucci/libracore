@@ -80,7 +80,7 @@ def get_stock_por_deposito(deposito_id: int) -> list[dict]:
             LEFT JOIN movimientos_stock m ON m.producto_id = p.id AND m.deposito_id = ?
             WHERE p.activo = 1 AND p.tipo = 'producto'
             GROUP BY p.id
-            HAVING stock_actual != 0 OR p.stock_minimo > 0
+            HAVING COALESCE(SUM(m.cantidad), 0) != 0 OR p.stock_minimo > 0
             ORDER BY p.nombre
         """, (deposito_id,)).fetchall()
     return [dict(r) for r in rows]
