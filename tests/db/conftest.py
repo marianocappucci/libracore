@@ -24,8 +24,11 @@ def crear_usuario():
     def _crear(username, role="operador"):
         with core.get_connection() as conn:
             cur = conn.execute(
+                # `TRUE` y no `1`: `usuarios.activo` es BOOLEAN desde que se
+                # alineo con el modelo de libraauth, y PostgreSQL no acepta un
+                # entero ahi. SQLite entiende las dos.
                 "INSERT INTO usuarios (username, nombre, email, password_hash, role, activo) "
-                "VALUES (?, ?, '', 'sin-hash-real--este-test-no-autentica', ?, 1)",
+                "VALUES (?, ?, '', 'sin-hash-real--este-test-no-autentica', ?, TRUE)",
                 (username, username.title(), role),
             )
             conn.commit()
