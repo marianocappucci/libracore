@@ -183,7 +183,33 @@ def init_core_schema(conn: sqlite3.Connection):
             email         TEXT DEFAULT '',
             password_hash TEXT NOT NULL,
             role          TEXT NOT NULL DEFAULT 'operador',
-            activo        INTEGER NOT NULL DEFAULT 1,
+            -- 🔴 BOOLEAN, y es la unica columna `activo` del core que lo es.
+            -- `usuarios` es la unica tabla que declaran DOS motores: esta y el
+            -- modelo SQLAlchemy de libraauth, que la mapea a `Boolean`. En
+            -- SQLite el desacuerdo no se nota -- el tipo declarado no se
+            -- aplica --, pero en PostgreSQL gana el que crea la tabla primero y
+            -- el otro escribe encima: medido el 2026-08-09, VentaLibra contra
+            -- PostgreSQL daba 224 rojos, todos *"column activo is of type
+            -- integer but expression is of type boolean"*.
+            --
+            -- Se alinea ESTE lado y no el modelo porque las tres instancias
+            -- PostgreSQL vivas (las de LibraDesk, una de cliente) ya la tienen
+            -- `boolean`: asi no se toca ninguna base en produccion. Al reves
+            -- habria que ALTERarlas.
+            --
+            -- `DEFAULT TRUE` y no `DEFAULT 1` porque PostgreSQL no acepta un
+            -- entero como default de un booleano. SQLite entiende las dos y
+            -- guarda 1 igual (verificado, no supuesto).
+            --
+            -- ⚠️ Sin punto y coma en estos comentarios, ni siquiera entre
+            -- comillas: el `executescript()` del adaptador PostgreSQL parte el
+            -- script por ese caracter y cortaria la sentencia al medio. Se
+            -- descubrio escribiendo este mismo bloque, dos veces.
+            --
+            -- Las instancias SQLite que ya existen conservan su `INTEGER`
+            -- declarado. Es inocuo -- SQLite no aplica el tipo, y libraauth ya
+            -- les escribe True/False hoy -- y no vale un rebuild de tabla.
+            activo        BOOLEAN NOT NULL DEFAULT TRUE,
             created_at    TEXT DEFAULT (datetime('now'))
         );
 

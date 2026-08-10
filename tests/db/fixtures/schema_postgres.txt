@@ -336,7 +336,7 @@ turnos_caja|monto_esperado_cierre|double precision||
 turnos_caja|monto_inicial|double precision|NN|0
 turnos_caja|notas|text||''::text
 turnos_caja|usuario_id|integer|NN|
-usuarios|activo|integer|NN|1
+usuarios|activo|boolean|NN|true
 usuarios|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)
 usuarios|email|text||''::text
 usuarios|id|bigint|NN|nextval('usuarios_id_seq'::regclass)
