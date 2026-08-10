@@ -298,6 +298,54 @@ def _tabla_del_insert(sql: str) -> str | None:
     return m.group(1).split(".")[-1] if m else None
 
 
+_PRAGMA_RE = re.compile(r"^\s*PRAGMA\s+(\w+)\s*(?:=\s*([^;]+))?\s*;?\s*$", re.IGNORECASE)
+
+# Un PRAGMA es una directiva de SQLite: PostgreSQL ni siquiera lo parsea. El
+# `executescript()` de este adaptador ya los saltea desde siempre; un
+# `execute()` directo, en cambio, le llegaba crudo a psycopg y moria con
+# *"syntax error at or near PRAGMA"*. Eso hacia que `init_schema()` de
+# LibraCommerce no pudiera crear NI UNA tabla contra PostgreSQL: su primera
+# linea es `PRAGMA foreign_keys = ON`.
+#
+# Se ignoran los que en PostgreSQL son un no-op **porque el motor ya hace eso**
+# o porque no tienen equivalente y no cambian el resultado:
+_PRAGMAS_IGNORABLES = {
+    "foreign_keys",      # ver abajo: solo el ON
+    "journal_mode",      # WAL es de SQLite
+    "synchronous",
+    "busy_timeout",      # el timeout de PostgreSQL se configura en la conexion
+    "temp_store",
+    "cache_size",
+    "encoding",
+    "optimize",
+}
+
+
+def _revisar_pragma(nombre: str, valor: str) -> None:
+    """Decide si ese PRAGMA se puede ignorar o hay que frenar.
+
+    🔴 `foreign_keys = OFF` **no es ignorable**. No es una preferencia: es la
+    forma de decir "voy a hacer algo que viola la integridad referencial" —el
+    rebuild de 12 pasos de SQLite, por ejemplo—. Tragarselo en PostgreSQL
+    dejaria a ese codigo creyendo que las FK estan apagadas mientras el motor
+    las sigue aplicando, y el error saldria mucho despues y en otro lado.
+    Mejor fallar acá, con el motivo escrito.
+    """
+    if nombre == "foreign_keys" and valor in ("off", "0", "false"):
+        raise NotImplementedError(
+            "PRAGMA foreign_keys = OFF no tiene equivalente en PostgreSQL y no "
+            "se puede ignorar: el codigo que lo pide cuenta con que las FK "
+            "quedan apagadas. Reescribi esa operacion para que no las necesite "
+            "apagadas, o hacela solo en el backend SQLite."
+        )
+    if nombre not in _PRAGMAS_IGNORABLES:
+        raise NotImplementedError(
+            f"PRAGMA {nombre} no esta contemplado en el backend PostgreSQL. Si "
+            "es un no-op alla, agregalo a _PRAGMAS_IGNORABLES; si cambia el "
+            "comportamiento, hay que traducirlo."
+        )
+
+
 class Cursor:
     def __init__(self, connection: "ConnectionWrapper"):
         self._connection = connection
@@ -305,6 +353,7 @@ class Cursor:
 
         self._cursor = connection._connection.cursor(row_factory=tuple_row)
         self._lastrowid = None
+        self._pragma_ignorada = False
 
     @property
     def lastrowid(self):
@@ -315,6 +364,13 @@ class Cursor:
         return self._cursor.description
 
     def execute(self, sql: str, params: Sequence | None = None):
+        self._pragma_ignorada = False
+        pragma = _PRAGMA_RE.match(sql)
+        if pragma and not _TABLE_INFO_RE.match(sql):
+            _revisar_pragma(pragma.group(1).lower(), (pragma.group(2) or "").strip().lower())
+            self._pragma_ignorada = True
+            return self
+
         table_info = _TABLE_INFO_RE.match(sql)
         if table_info:
             table = table_info.group(1)
@@ -364,10 +420,14 @@ class Cursor:
         return self
 
     def fetchone(self):
+        if self._pragma_ignorada:
+            return None
         row = self._cursor.fetchone()
         return self._row(row)
 
     def fetchall(self):
+        if self._pragma_ignorada:
+            return []
         return [self._row(row) for row in self._cursor.fetchall()]
 
     def close(self):
