@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from decimal import Decimal
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -11,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from psycopg import Connection
 
+
+#: Marcador interno para los `?` mientras dura la traduccion. Un caracter que
+#: no puede aparecer en SQL escrito a mano, para que nada lo confunda con texto.
+_MARCA = "\x00"
 
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+", re.IGNORECASE)
 _INSERT_IGNORE_RE = re.compile(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+", re.IGNORECASE)
@@ -47,7 +52,7 @@ def _replace_qmarks(sql: str) -> str:
             quote = sql[i]
             out.append(sql[i])
         elif sql[i] == "?":
-            out.append("%s")
+            out.append(_MARCA)
         else:
             out.append(sql[i])
         i += 1
@@ -113,7 +118,22 @@ def _castear_round(sql: str) -> str:
                 args, resto = partido
                 if len(args) == 2:
                     # El primer argumento puede traer otro ROUND adentro.
-                    out.append(f"ROUND(CAST({_castear_round(args[0])} AS NUMERIC), {args[1]})")
+                    #
+                    # 🔴 Y el resultado vuelve a `double precision`. Sin eso,
+                    # `ROUND` devuelve NUMERIC, psycopg lo entrega como
+                    # `decimal.Decimal`, y el codigo de la familia --que hace
+                    # aritmetica con `float` porque en SQLite estas columnas son
+                    # REAL-- muere con *unsupported operand type(s) for *:
+                    # 'float' and 'decimal.Decimal'*. Lo encontro la suite de
+                    # Restolibra el 2026-08-10, y lejos de la consulta: en el
+                    # calculo del costo de una receta.
+                    #
+                    # El NUMERIC lo introduce ESTA traduccion, asi que le toca a
+                    # ella deshacerlo y devolver el mismo tipo que SQLite.
+                    out.append(
+                        f"CAST(ROUND(CAST({_castear_round(args[0])} AS NUMERIC), "
+                        f"{args[1]}) AS DOUBLE PRECISION)"
+                    )
                     sql = resto
                     bajo = sql.lower()
                     i = 0
@@ -142,8 +162,8 @@ def _paramstyle(sql: str) -> str:
     # corridas respecto de lo que guardaba la misma base en SQLite.
     _FORMATO = "'YYYY-MM-DD HH24:MI:SS'"
     sql = re.sub(
-        r"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*%s\)",
-        f"to_char(LOCALTIMESTAMP + %s::interval, {_FORMATO})",
+        rf"\bdatetime\('now'\s*,\s*'localtime'\s*,\s*{_MARCA}\)",
+        f"to_char(LOCALTIMESTAMP + {_MARCA}::interval, {_FORMATO})",
         sql,
         flags=re.IGNORECASE,
     )
@@ -195,7 +215,31 @@ def _paramstyle(sql: str) -> str:
     sql = re.sub(r"\bREAL\b", "DOUBLE PRECISION", sql, flags=re.IGNORECASE)
     sql = re.sub(r"\bBLOB\b", "BYTEA", sql, flags=re.IGNORECASE)
     sql = _diferir_fks_hacia_adelante(sql)
-    return sql
+    return _escapar_porcentajes(sql)
+
+
+def _escapar_porcentajes(sql: str) -> str:
+    """Duplica los `%` LITERALES, que psycopg leeria como marcadores.
+
+    🔴 psycopg usa `%s`, asi que escanea la consulta entera buscando `%`. Un
+    porcentaje escrito en el SQL --`LIKE 'sqlite_%'`, `LIKE '%_old'`-- lo lee
+    como el comienzo de un marcador y falla con *the query has N placeholders
+    but M parameters were passed*, o con *only '%s', '%b', '%t' are allowed as
+    placeholders*. El error **no nombra el `%`**: habla de cuantos parametros
+    faltan, asi que se lee como un bug del llamador. Lo encontro la suite de
+    Restolibra el 2026-08-10, en el seed de la demo.
+
+    Va AL FINAL de la traduccion y no al principio: adelantado, las regex que
+    buscan `%Y-%m` y compania ya no encontrarian nada, porque el `%` seria `%%`.
+
+    Los marcadores que genero esta capa viajan como un centinela --no como
+    `%s`-- justamente para poder distinguirlos: asi se duplican TODOS los `%`
+    del SQL y recien despues se ponen los marcadores de verdad. Sin eso,
+    `strftime('%s', ...)` --la forma epoch de SQLite, que esta en el codigo de
+    Restolibra-- se contaba como marcador y la consulta fallaba diciendo que
+    faltaban parametros.
+    """
+    return sql.replace("%", "%%").replace(_MARCA, "%s")
 
 
 # SQLite acepta declarar una FK hacia una tabla que todavía no fue creada;
@@ -438,6 +482,11 @@ class Cursor:
             self._pragma_ignorada = True
             return self
 
+        # ⚠️ Esta rama arma su SQL y lo ejecuta DIRECTO, sin pasar por
+        # `_paramstyle`: por eso su marcador es un `%s` de verdad y no el
+        # centinela. La rama de `sqlite_master`, mas abajo, si pasa por la
+        # traduccion y por eso usa `_MARCA`. La asimetria es real y molesta:
+        # si algun dia las dos pasan por el mismo camino, unificar.
         table_info = _TABLE_INFO_RE.match(sql)
         if table_info:
             table = table_info.group(1)
@@ -454,7 +503,7 @@ class Cursor:
             if sqlite_master:
                 sql = (
                     "SELECT 1 FROM information_schema.tables "
-                    "WHERE table_schema = 'public' AND table_name = %s"
+                    "WHERE table_schema = 'public' AND table_name = " + _MARCA
                 )
                 params = (sqlite_master.group(2),)
             ignore_insert = bool(_INSERT_IGNORE_RE.match(sql))
@@ -525,7 +574,35 @@ class Cursor:
         if row is None:
             return None
         columns = tuple(column.name for column in self._cursor.description)
-        return Row(row, columns)
+        return Row(tuple(_como_en_sqlite(v) for v in row), columns)
+
+
+def _como_en_sqlite(valor):
+    """Los `NUMERIC` de PostgreSQL vuelven como `float`, igual que en SQLite.
+
+    🔴 **Por que, y por que es una decision y no un detalle.** LibraCommerce
+    declara 19 columnas de dinero y cantidades como `NUMERIC`
+    (`sale_items.unit_price`, `catalog_items.default_cost`, …). SQLite las
+    devuelve como `float` porque no tiene decimal nativo; psycopg las devuelve
+    como `decimal.Decimal`. Y todo el codigo de la familia hace aritmetica con
+    `float`, asi que cualquier multiplicacion mixta muere con *unsupported
+    operand type(s) for *: 'float' and 'decimal.Decimal'* -- lejos de la
+    consulta, en el calculo. Lo encontro la suite de Restolibra el 2026-08-10,
+    en el costo de una receta.
+
+    Se elige `float` y no `Decimal` porque la premisa de esta capa es que **los
+    dos motores se comporten igual**, y hoy el comportamiento real de toda la
+    familia --en las 12 instancias vivas-- es `float`. Devolver `Decimal` solo
+    contra PostgreSQL haria que el mismo calculo diera distinto segun el motor,
+    que es peor que la imprecision.
+
+    > Si algun dia la familia quiere aritmetica decimal de verdad para dinero,
+    > es una migracion deliberada de los DOS motores, no un efecto lateral de
+    > cambiar de base.
+    """
+    if isinstance(valor, Decimal):
+        return float(valor)
+    return valor
 
 
 class ConnectionWrapper:
