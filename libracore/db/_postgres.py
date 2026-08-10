@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -346,6 +348,55 @@ def _revisar_pragma(nombre: str, valor: str) -> None:
         )
 
 
+# Los productos atrapan las excepciones de `sqlite3` -- 23 lugares entre los
+# seis productos y los dos motores, 20 de ellos `IntegrityError`. Contra
+# PostgreSQL psycopg tira SU jerarquia, asi que ninguno de esos `except`
+# atrapaba nada: el error subia crudo hasta el usuario. Medido en VentaLibra el
+# 2026-08-10: 12 de sus 16 rojos eran un `UniqueViolation` que el producto creia
+# estar manejando.
+#
+# Las dos jerarquias son la misma de la DB-API (PEP 249) y comparten los
+# nombres, asi que la traduccion es por nombre de clase y no una tabla a mano.
+@contextmanager
+def _errores_como_sqlite3():
+    """Convierte los errores de psycopg en su equivalente de `sqlite3`.
+
+    Se traduce en el adaptador y no en cada producto por el mismo motivo que el
+    resto de esta capa: es una sola diferencia de dialecto y arreglarla aca la
+    cierra para los seis consumidores a la vez.
+
+    ⚠️ **Lo que esto NO arregla**: en PostgreSQL un error **aborta la
+    transaccion**, y en SQLite no. Un `except IntegrityError` que despues sigue
+    usando la misma conexion funciona en SQLite y contra PostgreSQL se encuentra
+    con *"current transaction is aborted"*. Eso es una diferencia de
+    comportamiento, no de nombres, y hay que mirarla caso por caso.
+    """
+    import psycopg
+
+    try:
+        yield
+    except psycopg.Error as e:
+        raise _equivalente_sqlite3(type(e))(str(e)) from e
+
+
+def _equivalente_sqlite3(clase: type) -> type:
+    """La clase de `sqlite3` que le corresponde a una excepcion de psycopg.
+
+    Se sube por la jerarquia hasta encontrar un nombre que las dos compartan.
+    Hace falta porque psycopg nombra sus clases concretas por SQLSTATE
+    --`UniqueViolation`, `NotNullViolation`, `ForeignKeyViolation`--, y esos
+    nombres no existen en `sqlite3`; el que comparten es el de la DB-API que
+    tienen de padre (`IntegrityError`). Mirar solo el nombre de la clase
+    concreta hacia caer todo a `DatabaseError`, que es justo lo que ningun
+    producto atrapa.
+    """
+    for ancestro in clase.__mro__:
+        equivalente = getattr(sqlite3, ancestro.__name__, None)
+        if isinstance(equivalente, type) and issubclass(equivalente, Exception):
+            return equivalente
+    return sqlite3.DatabaseError
+
+
 class Cursor:
     def __init__(self, connection: "ConnectionWrapper"):
         self._connection = connection
@@ -408,15 +459,18 @@ class Cursor:
             # contra PostgreSQL. Lo encontro la suite de LibraDesk el
             # 2026-08-09.
             sql = f"{sql.rstrip().rstrip(';')} RETURNING id"
-            self._cursor.execute(sql, params or ())
-            row = self._cursor.fetchone()
+            with _errores_como_sqlite3():
+                self._cursor.execute(sql, params or ())
+                row = self._cursor.fetchone()
             self._lastrowid = row[0] if row else None
         else:
-            self._cursor.execute(sql, params or ())
+            with _errores_como_sqlite3():
+                self._cursor.execute(sql, params or ())
         return self
 
     def executemany(self, sql: str, params):
-        self._cursor.executemany(_paramstyle(sql), params)
+        with _errores_como_sqlite3():
+            self._cursor.executemany(_paramstyle(sql), params)
         return self
 
     def fetchone(self):
