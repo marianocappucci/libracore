@@ -395,6 +395,35 @@ def _purge_backups_viejos(bdir: Path, patron: str, dias: int = BACKUP_RETENTION_
             f.unlink()
 
 
+def _url_postgres_del_contenedor(c: dict) -> str | None:
+    """La URL PostgreSQL de una instancia, leida del entorno de su contenedor.
+
+    Es la unica fuente confiable: el compose de cada cliente vive solo en el
+    VPS y puede nombrar la variable de distintas formas segun el producto
+    (`DATABASE_URL`, `<PRODUCTO>_DATABASE_URL`, `<PRODUCTO>_DB_PATH`). Se
+    busca por el VALOR -- que empiece con el esquema-- y no por el nombre.
+
+    Devuelve la primera que aparece. Los productos con dos bases (Gestiolibra,
+    MedLibra) necesitan las dos, y eso lo resuelve el backup de la app, que
+    recibe una `Instancia` armada por el propio producto; este camino es el del
+    cron, que solo conoce el contenedor.
+    """
+    import subprocess
+
+    r = subprocess.run(
+        ["docker", "inspect", c["container"],
+         "--format", "{{range .Config.Env}}{{println .}}{{end}}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    for linea in r.stdout.splitlines():
+        _, _, valor = linea.partition("=")
+        if valor.startswith(("postgresql://", "postgres://", "postgresql+psycopg://")):
+            return valor.replace("postgresql+psycopg://", "postgresql://", 1)
+    return None
+
+
 def cmd_backup(slug: str, quiet: bool = False):
     """Backup completo del directorio data (tar.gz) + copia WAL-safe de la DB
     (vía la API de backup online de sqlite3, no un copy2 crudo del archivo —
@@ -425,11 +454,30 @@ def cmd_backup(slug: str, quiet: bool = False):
     _p(f"[OK] Backup tar.gz: {out_file}  ({size_mb:.1f} MB)")
     _purge_backups_viejos(cfg.clientes_dir, f"{slug}_backup_*.tar.gz")
 
-    # Copia WAL-safe de la DB, vía sqlite3.Connection.backup() (Online Backup
-    # API de SQLite) en vez de shutil.copy2 crudo del archivo.
+    # --- La base -----------------------------------------------------------
+    #
+    # 🔴 Hasta el 2026-08-10 esto era `if db_src.exists():` y nada mas. Con la
+    # instancia migrada a PostgreSQL ese archivo NO existe, asi que el `if` se
+    # saltaba la base **en silencio**: el cron nocturno dejaba un `tar.gz` con
+    # los logos y los adjuntos, sin datos, y escribia `[OK]`. Un backup que
+    # miente es peor que un backup que falta, y este corre todas las noches
+    # sobre instancias de clientes.
+    #
+    # Ahora hay tres caminos y ninguno es silencioso: PostgreSQL -> `pg_dump`,
+    # archivo SQLite -> copia WAL-safe, y **nada de eso -> error**.
     db_src = data_dir / cfg.db_filename
-    if db_src.exists():
-        bdir   = _backups_dir(c)
+    bdir = _backups_dir(c)
+    url_postgres = _url_postgres_del_contenedor(c)
+    if url_postgres:
+        from ..respaldo import _dump_postgres
+
+        db_dst = bdir / f"{cfg.container_prefix}_{ts}.dump"
+        _dump_postgres(url_postgres, db_dst)
+        _p(f"[OK] Dump PostgreSQL: {db_dst}  ({db_dst.stat().st_size/1_048_576:.1f} MB)")
+        _purge_backups_viejos(bdir, f"{cfg.container_prefix}_*.dump")
+    elif db_src.exists():
+        # Copia WAL-safe de la DB, vía sqlite3.Connection.backup() (Online
+        # Backup API de SQLite) en vez de shutil.copy2 crudo del archivo.
         db_dst = bdir / f"{cfg.container_prefix}_{ts}.db"
         src_conn = sqlite3.connect(str(db_src))
         dst_conn = sqlite3.connect(str(db_dst))
@@ -441,6 +489,10 @@ def cmd_backup(slug: str, quiet: bool = False):
             dst_conn.close()
         _p(f"[OK] Copia DB (WAL-safe): {db_dst}  ({db_dst.stat().st_size/1_048_576:.1f} MB)")
         _purge_backups_viejos(bdir, f"{cfg.container_prefix}_*.db")
+    else:
+        print(f"[ERROR] {slug}: no hay base que respaldar. No existe "
+              f"{db_src} y el contenedor no declara una URL PostgreSQL. "
+              f"El tar.gz quedo hecho pero **no tiene la base**.")
 
 
 def cmd_backup_all():

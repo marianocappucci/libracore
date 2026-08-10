@@ -4,6 +4,7 @@ Tests de libracore.provisioning.panel_admin. Docker/subprocess se mockean
 sys.modules, mismo patrón que tests/admin/test_services.py.
 """
 import json
+from pathlib import Path
 import subprocess
 import sys
 import types
@@ -480,3 +481,87 @@ def test_cmd_rollback_revierte_el_pin_si_falla_el_arranque(cfg, monkeypatch, cap
 
     assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.05.05-1200"
     assert "repineado" in capsys.readouterr().out
+
+
+# ── El backup del cron cuando la instancia esta en PostgreSQL ─────────────
+#
+# 🔴 El defecto: `cmd_backup` hacia `if db_src.exists()` y nada mas. Con la
+# instancia migrada ese archivo no existe, asi que la base se saltaba **en
+# silencio** -- el cron nocturno dejaba un tar.gz con los logos y los adjuntos,
+# sin datos, y escribia `[OK]`. Un backup que miente es peor que uno que falta,
+# y este corre todas las noches sobre instancias de clientes.
+
+def test_sin_base_y_sin_url_avisa_en_vez_de_callarse(cfg, capsys, monkeypatch):
+    """El caso que estaba mudo. Se prueba lo que el defecto NO hacia: decirlo."""
+    cdir = _mkclient(cfg, "vacio")
+    (cdir / "data" / cfg.db_filename).unlink()
+    monkeypatch.setattr(pa, "_url_postgres_del_contenedor", lambda c: None)
+
+    pa.cmd_backup("vacio")
+
+    salida = capsys.readouterr().out
+    assert "ERROR" in salida, salida
+    assert "no tiene la base" in salida, salida
+
+
+def test_con_url_de_postgres_hace_el_dump(cfg, capsys, monkeypatch):
+    """Con la instancia en PostgreSQL se llama a `pg_dump`, no se saltea."""
+    cdir = _mkclient(cfg, "migrado")
+    (cdir / "data" / cfg.db_filename).unlink()
+    monkeypatch.setattr(
+        pa, "_url_postgres_del_contenedor",
+        lambda c: "postgresql://u:p@host:5432/base",
+    )
+
+    dumps = []
+
+    def falso_dump(url, destino):
+        dumps.append((url, Path(destino).name))
+        Path(destino).write_bytes(b"PGDMP" + b"0" * 100)
+
+    monkeypatch.setattr("libracore.respaldo._dump_postgres", falso_dump)
+
+    pa.cmd_backup("migrado")
+
+    assert len(dumps) == 1, "no se llamo a pg_dump"
+    url, nombre = dumps[0]
+    assert url == "postgresql://u:p@host:5432/base"
+    assert nombre.endswith(".dump"), nombre
+    assert "Dump PostgreSQL" in capsys.readouterr().out
+
+
+def test_con_archivo_sqlite_sigue_haciendo_la_copia_wal_safe(cfg, capsys, monkeypatch):
+    """El contrapeso: el camino de siempre no se rompe. Sin esto, borrar la
+    rama SQLite entera tambien pasaria los dos tests de arriba."""
+    # Sin `db_content`: un archivo vacio es una base SQLite valida y vacia.
+    # Con bytes inventados, `Connection.backup()` tira "file is not a
+    # database" -- fallaba el test, no el codigo.
+    _mkclient(cfg, "clasico")
+    monkeypatch.setattr(pa, "_url_postgres_del_contenedor", lambda c: None)
+
+    pa.cmd_backup("clasico")
+
+    salida = capsys.readouterr().out
+    assert "WAL-safe" in salida, salida
+    copias = list((cfg.clientes_dir / "clasico" / "backups").glob("*.db"))
+    assert len(copias) == 1, copias
+
+
+def test_la_url_se_busca_por_el_valor_y_no_por_el_nombre(cfg, monkeypatch):
+    """Cada producto nombra su variable distinto (`DATABASE_URL`,
+    `<PRODUCTO>_DB_PATH`...), asi que se busca por el esquema del valor. Y el
+    `postgresql+psycopg://` de SQLAlchemy se normaliza: `pg_dump` no lo
+    entiende."""
+    import subprocess as sp
+
+    _mkclient(cfg, "raro")
+    monkeypatch.setattr(
+        pa.subprocess if hasattr(pa, "subprocess") else sp, "run",
+        lambda *a, **k: sp.CompletedProcess(
+            a, 0,
+            stdout="PATH=/usr/bin\nRAROLIBRA_DB_PATH=postgresql+psycopg://u:p@h:5432/b\n",
+            stderr="",
+        ),
+    )
+    url = pa._url_postgres_del_contenedor({"container": "testprod-raro"})
+    assert url == "postgresql://u:p@h:5432/b", url
