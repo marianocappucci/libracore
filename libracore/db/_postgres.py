@@ -414,6 +414,22 @@ class Cursor:
     def description(self):
         return self._cursor.description
 
+    @property
+    def rowcount(self):
+        """Cuantas filas toco el ultimo UPDATE/DELETE.
+
+        Es DB-API estandar y `sqlite3` lo tiene, asi que los productos lo usan
+        para distinguir "no habia nada que borrar" de "se borro". Sin esto,
+        contra PostgreSQL el request moria con *'Cursor' object has no attribute
+        'rowcount'*. Lo encontro la suite de Contalibra el 2026-08-10.
+
+        Con un PRAGMA ignorado no hubo consulta: se devuelve -1, que es lo que
+        la DB-API define para "no aplica".
+        """
+        if self._pragma_ignorada:
+            return -1
+        return self._cursor.rowcount
+
     def execute(self, sql: str, params: Sequence | None = None):
         self._pragma_ignorada = False
         pragma = _PRAGMA_RE.match(sql)
@@ -483,6 +499,24 @@ class Cursor:
         if self._pragma_ignorada:
             return []
         return [self._row(row) for row in self._cursor.fetchall()]
+
+    def fetchmany(self, size=None):
+        if self._pragma_ignorada:
+            return []
+        filas = self._cursor.fetchmany(size) if size else self._cursor.fetchmany()
+        return [self._row(row) for row in filas]
+
+    def __iter__(self):
+        """Un cursor de `sqlite3` se puede recorrer directo, y el codigo de la
+        familia lo hace: `for fila in conn.execute(...)`.
+
+        Sin esto, contra PostgreSQL eso muere con *'Cursor' object is not
+        iterable* -- lejos del `execute`, en el `for`. Lo encontro la suite de
+        Contalibra el 2026-08-10, en `libracore.db.clients`.
+        """
+        if self._pragma_ignorada:
+            return iter(())
+        return (self._row(row) for row in self._cursor)
 
     def close(self):
         self._cursor.close()
