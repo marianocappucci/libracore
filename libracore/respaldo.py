@@ -95,10 +95,25 @@ class Instancia:
     bases: list[Path] = field(default_factory=list)
     directorios: list[Path] = field(default_factory=list)
     postgres_url: str | None = None
+    #: Bases PostgreSQL **adicionales**. Media familia tiene mas de una: en
+    #: [[gestiolibra]] y [[medlibra]] el dominio y LibraCore no pueden compartir
+    #: schema —los dos declaran una tabla `clients` con `id` de tipos
+    #: incompatibles— asi que al cortar quedan como dos bases en el mismo
+    #: servidor, igual que eran dos archivos. Un backup que traiga una sola no
+    #: se puede restaurar: o volves el dominio y te quedan usuarios de otro
+    #: momento, o al reves.
+    postgres_extra: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         self.bases = [Path(b) for b in self.bases]
         self.directorios = [Path(d) for d in self.directorios]
+        # Antes que la de "sin ninguna base": las dos aplican a una instancia
+        # que solo trae `postgres_extra`, y este mensaje dice que arreglar.
+        if self.postgres_extra and not self.postgres_url:
+            raise ValueError(
+                "postgres_extra sin postgres_url: la principal es la que da el "
+                "nombre del dump y la que se restaura primero"
+            )
         if not self.bases and not self.postgres_url:
             raise ValueError("una instancia sin ninguna base no se puede respaldar")
         if self.bases and self.postgres_url:
@@ -113,14 +128,34 @@ class Instancia:
 
     @property
     def nombre_dump(self) -> str:
-        """Como se llama la base dentro del ZIP cuando la instancia es PostgreSQL."""
+        """Como se llama la base principal dentro del ZIP."""
         return f"{self.nombre}.dump"
+
+    @property
+    def dumps(self) -> list[tuple[str, str]]:
+        """`(url, nombre en el ZIP)` por cada base PostgreSQL de la instancia.
+
+        La principal conserva `{nombre}.dump` **a proposito**: es como se llaman
+        las bases dentro de los backups que ya existen, y cambiarlo dejaria sin
+        restaurar los ZIP que ya bajaron los clientes. Las adicionales se
+        nombran por su base, que es lo unico que las distingue.
+        """
+        if not self.postgres_url:
+            return []
+        salida = [(self.postgres_url, self.nombre_dump)]
+        for url in self.postgres_extra:
+            # Por el nombre de la BASE y no `{nombre}_{base}`: los nombres de
+            # base son unicos en el servidor, y `medlibra_medlibra_core.dump`
+            # no le dice nada a nadie.
+            base = url.rstrip("/").rsplit("/", 1)[-1].split("?")[0]
+            salida.append((url, f"{base}.dump"))
+        return salida
 
     @property
     def nombres_en_zip(self) -> set[str]:
         """Los nombres que `bases/` tiene que traer para ESTA instancia."""
         if self.postgres_url:
-            return {self.nombre_dump}
+            return {nombre for _, nombre in self.dumps}
         return {b.name for b in self.bases}
 
 
@@ -233,13 +268,13 @@ def crear_backup(instancia: Instancia, destino_dir, motivo: str = "manual") -> P
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
-            if instancia.postgres_url:
-                # Sin `if copia.exists()`: en PostgreSQL no hay caso legitimo
-                # de "todavia no existe". Si el dump no salio, el backup falla
-                # en vez de producir un ZIP sin base.
-                copia = tmp / instancia.nombre_dump
-                _dump_postgres(instancia.postgres_url, copia)
-                z.write(copia, f"bases/{instancia.nombre_dump}")
+            # Sin `if copia.exists()`: en PostgreSQL no hay caso legitimo de
+            # "todavia no existe". Si un dump no salio, el backup falla en vez
+            # de producir un ZIP al que le falta una base.
+            for url, nombre_en_zip in instancia.dumps:
+                copia = tmp / nombre_en_zip
+                _dump_postgres(url, copia)
+                z.write(copia, f"bases/{nombre_en_zip}")
             for base in instancia.bases:
                 copia = tmp / base.name
                 _copiar_base(base, copia)
@@ -389,23 +424,27 @@ def restaurar_backup(
         tmp = Path(tmp)
         z.extractall(tmp)
 
-        if instancia.postgres_url:
-            entrante = tmp / "bases" / instancia.nombre_dump
-            # Mismo orden que en el camino SQLite: **validar antes de tocar
-            # nada**. `pg_restore --list` lee el indice del dump sin ejecutar
-            # una sola sentencia, asi que es el equivalente exacto del
+        # Mismo orden que en el camino SQLite: **validar TODOS antes de tocar
+        # el primero**. Con dos bases eso importa mas todavia: dejarlas de
+        # momentos distintos es peor que no restaurar.
+        for url, nombre_en_zip in instancia.dumps:
+            entrante = tmp / "bases" / nombre_en_zip
+            # `pg_restore --list` lee el indice del dump sin ejecutar una sola
+            # sentencia, asi que es el equivalente exacto del
             # `PRAGMA integrity_check`: si el archivo esta cortado o no es un
             # dump, se sabe ahora y no a mitad del restore.
             with open(entrante, "rb") as f:
                 if f.read(len(_MAGIC_PGDUMP)) != _MAGIC_PGDUMP:
                     raise BackupInvalido(
-                        f"{instancia.nombre_dump} no es un dump de PostgreSQL valido."
+                        f"{nombre_en_zip} no es un dump de PostgreSQL valido."
                     )
             _correr_pg(
-                "pg_restore", ["--list", str(entrante)], instancia.postgres_url,
+                "pg_restore", ["--list", str(entrante)], url,
                 "leer el dump del backup",
             )
 
+        for url, nombre_en_zip in instancia.dumps:
+            entrante = tmp / "bases" / nombre_en_zip
             # `--clean --if-exists` borra cada objeto del dump antes de
             # recrearlo. NO es lo mismo que reemplazar el archivo en SQLite:
             # una tabla que exista en la base y no en el dump sobrevive. Se
@@ -416,10 +455,10 @@ def restaurar_backup(
                 "pg_restore",
                 ["--clean", "--if-exists", "--no-owner", "--no-privileges",
                  "--single-transaction", str(entrante)],
-                instancia.postgres_url,
+                url,
                 "restaurar la base PostgreSQL",
             )
-            restauradas.append(instancia.nombre_dump)
+            restauradas.append(nombre_en_zip)
 
         # Se validan TODAS las bases antes de pisar la primera: a mitad de
         # camino la instancia queda mezclada y no hay vuelta atras automatica.
