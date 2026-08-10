@@ -229,11 +229,41 @@ def contar_login_fallidos_recientes(ip: str, minutos: int = 15) -> int:
     sobre `auth_log`, sin tabla ni estado nuevo."""
     if not ip:
         return 0
+
+    # 🔴 El corte de la ventana se calcula distinto segun el motor, y no es un
+    # capricho: `auth_log.ts` NO tiene el mismo tipo en todos los productos.
+    #
+    # Donde la tabla la crea ESTE DDL la columna es TEXT, y ahi lo correcto es
+    # comparar lexicograficamente contra el texto de `datetime('now',
+    # 'localtime')` -- que es justo lo que emite el adaptador. Pero donde la
+    # crea el modelo de libraauth (porque `db_usuarios` se importa antes de que
+    # corra este DDL) la columna es `timestamp`, y `timestamp >= text` no existe
+    # en PostgreSQL. Era el error que trababa las suites de Contalibra y
+    # Restolibra: 266 y 122 apariciones, la mayoria de sus rojos, el 2026-08-10.
+    #
+    # Pasando un `datetime` de Python la comparacion es timestamp contra
+    # timestamp y anda con la columna de cualquiera de los dos tipos -- si es
+    # TEXT, PostgreSQL castea. `datetime.now()` es hora local, igual que
+    # `LOCALTIMESTAMP` y que el `datetime('now','localtime')` de SQLite.
+    #
+    # En SQLite la consulta queda como estaba: `sqlite3` no adapta objetos
+    # `datetime` desde Python 3.12, y alla la columna siempre es TEXT.
+    from . import core
+
     with get_connection() as conn:
-        row = conn.execute(
-            """SELECT COUNT(*) FROM auth_log
-               WHERE evento='login_fallido' AND ip=?
-                 AND ts >= datetime('now', 'localtime', ?)""",
-            (ip, f"-{int(minutos)} minutes"),
-        ).fetchone()
+        if core.is_postgres():
+            from datetime import datetime as _dt, timedelta as _td
+
+            row = conn.execute(
+                """SELECT COUNT(*) FROM auth_log
+                   WHERE evento='login_fallido' AND ip=? AND ts >= ?""",
+                (ip, _dt.now() - _td(minutes=int(minutos))),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """SELECT COUNT(*) FROM auth_log
+                   WHERE evento='login_fallido' AND ip=?
+                     AND ts >= datetime('now', 'localtime', ?)""",
+                (ip, f"-{int(minutos)} minutes"),
+            ).fetchone()
     return int(row[0])
