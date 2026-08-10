@@ -336,7 +336,7 @@ turnos_caja|monto_esperado_cierre|REAL||
 turnos_caja|monto_inicial|REAL|NN|0
 turnos_caja|notas|TEXT||''
 turnos_caja|usuario_id|INTEGER|NN|
-usuarios|activo|INTEGER|NN|1
+usuarios|activo|BOOLEAN|NN|TRUE
 usuarios|created_at|TEXT||datetime('now')
 usuarios|email|TEXT||''
 usuarios|id|INTEGER||
