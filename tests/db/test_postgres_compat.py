@@ -67,9 +67,11 @@ def test_round_de_dos_argumentos_castea_cualquier_expresion():
     `ROUND(COALESCE(SUM(...), 0), 3)` y no matcheaba: pasaba entera al motor y
     reventaba. Se cubren las dos formas y el anidamiento.
     """
-    assert _paramstyle("SELECT ROUND(SUM(x), 2)") == "SELECT ROUND(CAST(SUM(x) AS NUMERIC), 2)"
+    assert _paramstyle("SELECT ROUND(SUM(x), 2)") == (
+        "SELECT CAST(ROUND(CAST(SUM(x) AS NUMERIC), 2) AS DOUBLE PRECISION)"
+    )
     assert _paramstyle("SELECT ROUND(COALESCE(SUM(x), 0), 3)") == (
-        "SELECT ROUND(CAST(COALESCE(SUM(x), 0) AS NUMERIC), 3)"
+        "SELECT CAST(ROUND(CAST(COALESCE(SUM(x), 0) AS NUMERIC), 3) AS DOUBLE PRECISION)"
     )
     # Un solo argumento sí existe en PostgreSQL: no se toca.
     assert _paramstyle("SELECT ROUND(x)") == "SELECT ROUND(x)"
@@ -154,7 +156,7 @@ def test_solo_se_difieren_las_dos_fks_que_van_fuera_de_orden():
 
 def test_sqlite_round_translation():
     sql = _paramstyle("SELECT ROUND(SUM(total), 2) FROM ventas")
-    assert "ROUND(CAST(SUM(total) AS NUMERIC), 2)" in sql
+    assert "CAST(ROUND(CAST(SUM(total) AS NUMERIC), 2) AS DOUBLE PRECISION)" in sql
 
 
 def test_qmark_en_comentario_no_se_convierte_en_placeholder():
