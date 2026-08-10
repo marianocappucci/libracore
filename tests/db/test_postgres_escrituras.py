@@ -88,10 +88,17 @@ def test_un_entero_en_una_columna_boolean_no_pasa(conn):
     PostgreSQL o el driver empezaran a aceptarlo, este test se pone rojo y
     avisa que la conversión de allá dejó de ser necesaria — mejor eso que
     descubrirlo por un `habilitado` mal escrito.
-    """
-    import psycopg
 
-    with pytest.raises(psycopg.errors.DatatypeMismatch):
+    Desde el 2026-08-10 el adaptador **traduce** los errores de psycopg a su
+    equivalente de `sqlite3`, porque es el nombre que atrapan los productos. Lo
+    que llega acá es `sqlite3.ProgrammingError` y ya no
+    `psycopg.errors.DatatypeMismatch`: el rechazo es el mismo, cambió el nombre
+    con el que se presenta. El mensaje original de PostgreSQL sigue estando, que
+    es lo que hace diagnosticable el rojo — por eso el `match`.
+    """
+    import sqlite3
+
+    with pytest.raises(sqlite3.ProgrammingError, match="is of type boolean"):
         conn.execute(
             "INSERT INTO modulos (modulo, habilitado, plan) VALUES (?,?,?)",
             ("agenda", 1, "basico"),
