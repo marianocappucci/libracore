@@ -143,6 +143,43 @@ def _castear_round(sql: str) -> str:
     return "".join(out)
 
 
+#: Los formatos de `strftime` que usa la familia, y su equivalente en
+#: PostgreSQL. Estaba resuelto solo `%Y-%m`, y los otros pasaban crudos al motor
+#: y morian con *function strftime(unknown, text) does not exist*.
+_FORMATOS_STRFTIME = {
+    "%Y": "to_char(cast({x} AS date), 'YYYY')",
+    "%Y-%m": "to_char(cast({x} AS date), 'YYYY-MM')",
+    "%Y-%m-%d": "to_char(cast({x} AS date), 'YYYY-MM-DD')",
+    # 🔴 `%s` es el segundero desde epoch, y es el que se usa para restar dos
+    # horarios: la reserva de una mesa comprueba que dos horas no esten a menos
+    # de N segundos. `EXTRACT(EPOCH ...)` da lo mismo, y el `::timestamp` es
+    # necesario porque en esta familia las fechas viajan como texto.
+    "%s": "EXTRACT(EPOCH FROM cast({x} AS timestamp))",
+}
+
+
+def _traducir_strftime(sql: str) -> str:
+    """`strftime(fmt, x)` a su equivalente de PostgreSQL.
+
+    Un formato no contemplado se deja pasar **tal cual**, para que falle en el
+    motor con su nombre a la vista, en vez de traducirse a cualquier cosa: un
+    formato mal traducido daria un numero o una fecha equivocada, y eso no se
+    nota hasta mucho despues.
+    """
+    def reemplazo(m: re.Match) -> str:
+        plantilla = _FORMATOS_STRFTIME.get(m.group(1))
+        if plantilla is None:
+            return m.group(0)
+        return plantilla.format(x=m.group(2).strip())
+
+    return re.sub(
+        r"\bstrftime\('([^']+)',\s*([^()]+)\)",
+        reemplazo,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
 def _paramstyle(sql: str) -> str:
     """Translate the qmark SQL used by LibraCore to psycopg's format style."""
     sql = _replace_qmarks(sql)
@@ -195,12 +232,7 @@ def _paramstyle(sql: str) -> str:
         sql,
         flags=re.IGNORECASE,
     )
-    sql = re.sub(
-        r"\bstrftime\('%Y-%m',\s*([^()]+)\)",
-        r"to_char(cast(\1 AS date), 'YYYY-MM')",
-        sql,
-        flags=re.IGNORECASE,
-    )
+    sql = _traducir_strftime(sql)
     sql = re.sub(r"->>\s*'\$\.([A-Za-z_][A-Za-z0-9_]*)'", r"->> '\1'", sql)
     sql = _castear_round(sql)
     sql = re.sub(
