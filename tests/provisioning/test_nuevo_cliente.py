@@ -48,6 +48,10 @@ def fake_docker(monkeypatch):
 
     monkeypatch.setattr(nc.subprocess, "run", fake_run)
     monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: False)
+    # El camino PostgreSQL espera por `docker exec` hasta 90s: sin stubear,
+    # cada test del sidecar cuesta un minuto y medio y la suite parece colgada.
+    monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: False)
+    monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", lambda *a, **k: False)
     return calls
 
 
@@ -633,19 +637,34 @@ def test_con_una_sola_base_no_se_monta_init(cfg_pg):
     assert "docker-entrypoint-initdb.d" not in _compose(cfg_pg)
 
 
-def test_el_plan_se_aplica_contra_la_PRIMERA_base(cfg_pg_dos_bases, fake_plans, monkeypatch):
+def test_el_plan_se_aplica_contra_la_PRIMERA_base(cfg_pg_dos_bases, monkeypatch):
     """Medido el 2026-08-11: en los productos con dos bases, `modulos` existe en
     las DOS y la que tiene filas es la del dominio, que es la primera. Aplicar
     el plan contra la de LibraCore escribiria en una tabla que el producto no
-    lee — y no fallaria."""
-    monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: True)
+    lee — y no fallaria.
+
+    Se comprueba sobre el `docker exec`, que es por donde va el plan contra
+    PostgreSQL: desde el host la URL no resuelve."""
+    ejecutados = []
+
+    def fake_run(args, **kwargs):
+        ejecutados.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="1" if "psql" in args else "", stderr="")
+
+    monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", _ESPERA_REAL)
+    monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", _APLICAR_REAL)
+    monkeypatch.setattr(nc.subprocess, "run", fake_run)
     nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
-    assert len(fake_plans.aplicar_plan_calls) == 1
-    destino, plan = fake_plans.aplicar_plan_calls[0]
-    assert destino.startswith("postgresql://")
-    assert destino.endswith("/testprod"), f"tiene que ser la de dominio, no la de core: {destino}"
-    assert plan == "basico"
+    # la espera pregunta por la base de DOMINIO, no por la de core
+    psql = [a for a in ejecutados if "psql" in a][0]
+    assert "testprod" in psql and "testprod_core" not in " ".join(psql), psql
+
+    plan = [a for a in ejecutados if "python3" in a and "-c" in a][0]
+    codigo = plan[-1]
+    assert "DATABASE_URL" in codigo
+    assert "LIBRACORE" not in codigo, f"tiene que ser la de dominio, no la de core: {codigo}"
+    assert "'basico'" in codigo
 
 
 def test_el_volumen_de_la_base_se_declara(cfg_pg):
@@ -729,3 +748,53 @@ def test_con_un_prefijo_REAL_el_compose_trae_el_nombre_viejo_y_el_nuevo(
 
     # ventalibra tiene UNA sola base: las dos variables van al mismo destino
     assert pares["VENTALIBRA_DATABASE_URL"] == pares["VENTALIBRA_LIBRACORE_DATABASE_URL"]
+
+
+# Capturadas ANTES de que ningun fixture las reemplace: el `fake_docker` las
+# stubea para que la suite no espere 90s por test, y este test necesita las de
+# verdad para poder mirar los `docker exec` que emiten.
+_ESPERA_REAL = nc._esperar_tabla_en_sidecar
+_APLICAR_REAL = nc._aplicar_plan_en_contenedor
+
+
+def test_contra_postgres_la_espera_y_el_plan_van_por_docker_exec(cfg_pg, monkeypatch):
+    """🔴 El sidecar no publica puerto y su nombre es un alias de la red de
+    Docker: desde el host NO resuelve. Hecho desde el host, la espera se agota
+    siempre y el alta reporta que la base no estuvo lista sobre una instancia
+    sana -- medido con un alta real el 2026-08-11, con 59 tablas ya creadas.
+    """
+    ejecutados = []
+
+    def fake_run(args, **kwargs):
+        ejecutados.append(args)
+        salida = "1" if "psql" in args else ""
+        return subprocess.CompletedProcess(args, 0, stdout=salida, stderr="")
+
+    monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", _ESPERA_REAL)
+    monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", _APLICAR_REAL)
+    monkeypatch.setattr(nc.subprocess, "run", fake_run)
+    nc.crear_cliente(nombre="Uno", slug="uno", setup_npm=False)
+
+    psql = [a for a in ejecutados if "psql" in a]
+    assert psql, "la espera tiene que preguntar por la tabla DENTRO del sidecar"
+    assert psql[0][:3] == ["docker", "exec", "testprod-uno-postgres"]
+    assert "modulos" in " ".join(psql[0])
+
+    plan = [a for a in ejecutados if "python3" in a and "-c" in a]
+    assert plan, "el plan tiene que aplicarse DENTRO del contenedor de la app"
+    assert plan[0][:3] == ["docker", "exec", "testprod-uno"]
+
+    # y la URL NO puede ir por linea de comando: la leeria cualquiera en un `ps`
+    codigo = plan[0][-1]
+    assert "postgresql://" not in codigo, "la URL con la contrasena no va en el comando"
+    assert "TESTPROD_DATABASE_URL" in codigo, "se pasa el NOMBRE de la variable"
+
+
+def test_sin_postgres_el_plan_se_aplica_como_siempre(cfg, fake_plans, monkeypatch):
+    """El camino SQLite no cambia: sigue yendo por `plans.aplicar_plan_en_db`
+    con una ruta de archivo."""
+    monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: True)
+    nc.crear_cliente(nombre="Uno", slug="uno", setup_npm=False)
+    assert len(fake_plans.aplicar_plan_calls) == 1
+    destino, _ = fake_plans.aplicar_plan_calls[0]
+    assert destino.endswith("testprod.db")
