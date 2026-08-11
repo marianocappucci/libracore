@@ -494,7 +494,7 @@ def cfg_pg(tmp_path, fake_plans, fake_docker):
         product_name="TESTPROD", image_name="testprod:latest",
         container_prefix="testprod", db_filename="testprod.db",
         repo_root=repo_root, base_port=9000,
-        db_urls=(("TESTPROD_DATABASE_URL", "testprod"),),
+        postgres=True,
     )
     return provisioning.get_config()
 
@@ -508,8 +508,7 @@ def cfg_pg_dos_bases(tmp_path, fake_plans, fake_docker):
         product_name="TESTPROD", image_name="testprod:latest",
         container_prefix="testprod", db_filename="testprod.db",
         repo_root=repo_root, base_port=9000,
-        db_urls=(("DATABASE_URL", "testprod"),
-                 ("TESTPROD_LIBRACORE_DB_PATH", "testprod_core")),
+        postgres=True, base_core_separada=True,
     )
     return provisioning.get_config()
 
@@ -518,7 +517,7 @@ def _compose(cfg, slug="cliente-uno"):
     return (cfg.clientes_dir / slug / "docker-compose.yml").read_text()
 
 
-def test_sin_db_urls_la_instancia_sigue_naciendo_en_sqlite(cfg):
+def test_sin_postgres_la_instancia_sigue_naciendo_en_sqlite(cfg):
     """El producto que no declara `db_urls` no cambia en nada — es lo que
     permite migrarlos de a uno sin romper a los demas."""
     nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
@@ -533,6 +532,7 @@ def test_la_instancia_nueva_nace_con_su_sidecar(cfg_pg):
     assert "testprod-cliente-uno-postgres:" in texto
     assert "image: postgres:16-alpine" in texto
     assert "TESTPROD_DATABASE_URL=postgresql://testprod:" in texto
+    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql://testprod:" in texto
     assert "@testprod-cliente-uno-postgres:5432/testprod" in texto
 
 
@@ -618,7 +618,8 @@ def test_dos_bases_se_crean_con_un_init_montado(cfg_pg_dos_bases):
     assert "./postgres-init:/docker-entrypoint-initdb.d:ro" in vols
 
     texto = (d / "docker-compose.yml").read_text()
-    assert "DATABASE_URL=postgresql://testprod:" in texto
+    assert "TESTPROD_DATABASE_URL=postgresql://testprod:" in texto
+    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql://testprod:" in texto
     assert "/testprod\n" in texto or "/testprod\r\n" in texto
     assert "/testprod_core" in texto
 

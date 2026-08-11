@@ -295,31 +295,22 @@ class ProductConfig:
 
     # — PostgreSQL de las instancias NUEVAS —
     #
-    # Pares `(variable de entorno, nombre de base)`. Con esto, `crear_cliente()`
-    # le genera a la instancia su propio sidecar PostgreSQL; **vacío significa
-    # que el producto sigue pariendo instancias SQLite**, que es como estaba
-    # todo hasta el 2026-08-11.
+    # `postgres=True` hace que `crear_cliente()` le genere a la instancia su
+    # propio sidecar. **False significa que el producto sigue pariendo
+    # instancias SQLite**, que es como estaba todo hasta el 2026-08-11, así que
+    # los seis se migran de a uno sin romper a los demás.
+    postgres: bool = False
+
+    # `True` sólo donde LibraCore necesita su PROPIA base (Gestiolibra y
+    # MedLibra). No es preferencia: LibraCore y LibraGenda declaran los dos una
+    # tabla `clients` con `id` de tipos incompatibles, así que en un solo schema
+    # el segundo `CREATE TABLE IF NOT EXISTS` no hace nada y después PostgreSQL
+    # rechaza las nueve FK que apuntan a `clients(id)`. Dos bases es la
+    # traducción fiel de los dos archivos SQLite que había antes.
     #
-    # 🔴 **La PRIMERA es contra la que se aplica el plan.** Medido, no supuesto:
-    # en Gestiolibra y MedLibra la tabla `modulos` existe en las DOS bases, pero
-    # la que tiene filas es la del **dominio** (`gestiolibra`/`medlibra`); la de
-    # LibraCore (`*_core`) la crea su DDL y queda vacía. Aplicar el plan contra
-    # la segunda escribiría en una tabla que el producto no lee, y la instancia
-    # nueva quedaría con los módulos como vinieran — sin fallar.
-    #
-    # Por qué son dos bases y no dos schemas en Gestiolibra/MedLibra: LibraCore
-    # y LibraGenda declaran los dos una tabla `clients` con `id` de tipos
-    # incompatibles, así que en un solo schema el segundo `CREATE TABLE IF NOT
-    # EXISTS` no hace nada y después PostgreSQL rechaza las nueve FK que
-    # apuntan a `clients(id)`. Dos bases es la traducción fiel de los dos
-    # archivos SQLite que había antes.
-    #
-    # Ej. Contalibra:  (("CONTALIBRA_DATABASE_URL", "contalibra"),)
-    # Ej. Gestiolibra: (("DATABASE_URL", "gestiolibra"),
-    #                   ("GESTIOLIBRA_LIBRACORE_DB_PATH", "gestiolibra_core"))
-    # Ej. VentaLibra:  dos variables apuntando a la MISMA base, porque ahí
-    #                  LibraCommerce y LibraCore sí conviven en un schema.
-    db_urls: tuple[tuple[str, str], ...] = ()
+    # Donde es `False` las dos variables apuntan a la MISMA base — que es lo que
+    # pasa en VentaLibra, donde LibraCommerce y LibraCore sí conviven.
+    base_core_separada: bool = False
 
     # La imagen del sidecar. **Alpine no es un detalle**: musl no implementa
     # locales, así que ordena por bytes igual que el `BINARY` de SQLite. Con la
@@ -329,7 +320,36 @@ class ProductConfig:
 
     @property
     def usa_postgres(self) -> bool:
-        return bool(self.db_urls)
+        return bool(self.postgres)
+
+    @property
+    def db_urls(self) -> tuple[tuple[str, str], ...]:
+        """Pares `(variable de entorno, nombre de base)` de esta instancia.
+
+        **Derivados del prefijo, no declarados por cada producto**: hasta el
+        2026-08-11 había cuatro convenciones entre seis productos —dos de ellas
+        con `_DB_PATH` en el nombre y una URL adentro— y cada alta nueva elegía
+        de cuál copiar. Los nombres salen de `libracore.db.url_de_instancia`,
+        que es también quien los lee del lado de la app: **un solo lugar define
+        cómo se llaman**, así que no pueden volver a divergir.
+
+        🔴 **La PRIMERA es contra la que se aplica el plan.** Medido, no
+        supuesto: en los productos con dos bases la tabla `modulos` existe en
+        las DOS y la que tiene filas es la del dominio; la de LibraCore la crea
+        su DDL y queda vacía. Aplicar el plan contra la segunda escribiría en
+        una tabla que el producto no lee — sin fallar.
+        """
+        if not self.postgres:
+            return ()
+        from ..db.url_de_instancia import nombre_normalizado
+
+        p = self.container_prefix
+        base_dominio = p
+        base_core = f"{p}_core" if self.base_core_separada else p
+        return (
+            (nombre_normalizado(p), base_dominio),
+            (nombre_normalizado(p, core=True), base_core),
+        )
 
     @property
     def bases_postgres(self) -> tuple[str, ...]:
@@ -444,15 +464,18 @@ _cfg: ProductConfig | None = None
 
 def configure(*, product_name: str, image_name: str, container_prefix: str,
               db_filename: str, repo_root, base_port: int = 8071,
-              docs_auth_secret: str = "", db_urls=(),
+              docs_auth_secret: str = "", postgres: bool = False,
+              base_core_separada: bool = False,
               postgres_image: str = "postgres:16-alpine"):
     """Configura el producto activo. Llamar una sola vez, al principio de
     `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto.
 
-    `db_urls` es lo que hace que una instancia nueva nazca sobre PostgreSQL —
-    ver `ProductConfig.db_urls`. Sin ese argumento el comportamiento es el de
-    siempre (SQLite), así que un producto que todavía no lo pase sigue
-    funcionando igual.
+    `postgres=True` es lo que hace que una instancia nueva nazca sobre
+    PostgreSQL. Sin ese argumento el comportamiento es el de siempre (SQLite),
+    así que un producto que todavía no lo pase sigue funcionando igual.
+
+    **Los nombres de las variables no se pasan**: salen del prefijo, vía
+    `libracore.db.url_de_instancia` — ver `ProductConfig.db_urls`.
     """
     global _cfg
     with _lock:
@@ -462,7 +485,7 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
             container_prefix=container_prefix, db_filename=db_filename,
             repo_root=repo_root, base_port=base_port,
             docs_auth_secret=docs_auth_secret,
-            db_urls=tuple((str(k), str(v)) for k, v in db_urls),
+            postgres=postgres, base_core_separada=base_core_separada,
             postgres_image=postgres_image,
         )
         for p in (repo_root, repo_root / "scripts"):
