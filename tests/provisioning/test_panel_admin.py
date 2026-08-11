@@ -517,9 +517,13 @@ def test_con_url_de_postgres_hace_el_dump(cfg, capsys, monkeypatch):
 
     def falso_dump(url, destino):
         dumps.append((url, Path(destino).name))
+        Path(destino).parent.mkdir(parents=True, exist_ok=True)
         Path(destino).write_bytes(b"PGDMP" + b"0" * 100)
 
-    monkeypatch.setattr("libracore.respaldo._dump_postgres", falso_dump)
+    # Por `_dump_postgres_por_docker` y no por `respaldo._dump_postgres`: desde
+    # el host no se puede dumpear -- el sidecar no publica puerto y su nombre es
+    # un alias de la red de Docker -- asi que el dump va por `docker exec`.
+    monkeypatch.setattr(pa, "_dump_postgres_por_docker", falso_dump)
 
     pa.cmd_backup("migrado")
 
@@ -565,3 +569,90 @@ def test_la_url_se_busca_por_el_valor_y_no_por_el_nombre(cfg, monkeypatch):
     )
     url = pa._url_postgres_del_contenedor({"container": "testprod-raro"})
     assert url == "postgresql://u:p@h:5432/b", url
+
+
+# ── El dump del cron corre DENTRO del sidecar ─────────────────────────────
+#
+# 🔴 Desde el host no se puede: el sidecar no publica puerto -- a proposito -- y
+# su nombre es un alias de la red de Docker, asi que `pg_dump` desde afuera
+# muere con *"could not translate host name"*. Medido el 2026-08-10 con la demo
+# de Contalibra, que ademas dejo un `.dump` de 0 bytes al fallar.
+
+def test_el_dump_se_hace_adentro_del_sidecar(cfg, tmp_path, monkeypatch):
+    """El nombre del sidecar sale de la URL, y `pg_dump` va por `docker exec`."""
+    llamadas = []
+
+    def fake_docker(*args, capture=False, cwd=None):
+        llamadas.append(args)
+        if args[0] == "cp":
+            Path(args[2]).write_bytes(b"PGDMP" + b"0" * 100)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pa, "docker", fake_docker)
+    destino = tmp_path / "salida.dump"
+
+    pa._dump_postgres_por_docker(
+        "postgresql://u:clave@midemo-postgres:5432/labase", destino)
+
+    ejecuciones = [a for a in llamadas if a[0] == "exec"]
+    assert ejecuciones, llamadas
+    assert ejecuciones[0][1] == "midemo-postgres", "no uso el sidecar de la URL"
+    assert "pg_dump" in ejecuciones[0][-1]
+    assert "labase" in ejecuciones[0][-1]
+    assert destino.exists() and destino.stat().st_size > 0
+
+
+def test_la_clave_no_viaja_por_la_linea_de_comandos(cfg, tmp_path, monkeypatch):
+    """`pg_dump` usa las variables del propio sidecar. Si la clave fuera un
+    argumento quedaria en el `ps` del host y en el log del cron."""
+    llamadas = []
+
+    def fake_docker(*args, capture=False, cwd=None):
+        llamadas.append(args)
+        if args[0] == "cp":
+            Path(args[2]).write_bytes(b"PGDMP" + b"0" * 100)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pa, "docker", fake_docker)
+    pa._dump_postgres_por_docker(
+        "postgresql://u:una-clave-secreta@midemo-postgres:5432/labase",
+        tmp_path / "x.dump")
+
+    todo = " ".join(" ".join(str(x) for x in a) for a in llamadas)
+    assert "una-clave-secreta" not in todo, todo
+
+
+def test_un_dump_vacio_no_se_guarda(cfg, tmp_path, monkeypatch):
+    """🔴 El primer intento dejo un `.dump` de 0 bytes al fallar. Un archivo con
+    nombre de backup y sin nada adentro es peor que ningun archivo: la rotacion
+    lo cuenta y alguien puede creer que tiene una copia."""
+    def fake_docker(*args, capture=False, cwd=None):
+        if args[0] == "cp":
+            Path(args[2]).write_bytes(b"")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pa, "docker", fake_docker)
+    destino = tmp_path / "vacio.dump"
+
+    from libracore.respaldo import BackupInvalido
+    with pytest.raises(BackupInvalido, match="vacio"):
+        pa._dump_postgres_por_docker("postgresql://u:p@s-postgres:5432/b", destino)
+
+    assert not destino.exists(), "quedo un archivo de 0 bytes con nombre de backup"
+
+
+def test_si_pg_dump_falla_no_queda_archivo(cfg, tmp_path, monkeypatch):
+    def fake_docker(*args, capture=False, cwd=None):
+        if args[0] == "exec" and "pg_dump" in str(args[-1]):
+            return subprocess.CompletedProcess(args, 1, stdout="",
+                                               stderr="could not translate host name")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pa, "docker", fake_docker)
+    destino = tmp_path / "fallido.dump"
+
+    from libracore.respaldo import BackupInvalido
+    with pytest.raises(BackupInvalido, match="pg_dump"):
+        pa._dump_postgres_por_docker("postgresql://u:p@s-postgres:5432/b", destino)
+
+    assert not destino.exists()
