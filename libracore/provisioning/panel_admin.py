@@ -395,18 +395,22 @@ def _purge_backups_viejos(bdir: Path, patron: str, dias: int = BACKUP_RETENTION_
             f.unlink()
 
 
-def _url_postgres_del_contenedor(c: dict) -> str | None:
-    """La URL PostgreSQL de una instancia, leida del entorno de su contenedor.
+def _urls_postgres_del_contenedor(c: dict) -> list[str]:
+    """**Todas** las bases PostgreSQL de una instancia, leidas de su contenedor.
 
-    Es la unica fuente confiable: el compose de cada cliente vive solo en el
-    VPS y puede nombrar la variable de distintas formas segun el producto
-    (`DATABASE_URL`, `<PRODUCTO>_DATABASE_URL`, `<PRODUCTO>_DB_PATH`). Se
-    busca por el VALOR -- que empiece con el esquema-- y no por el nombre.
+    Es la unica fuente confiable: el compose de cada cliente vive solo en el VPS
+    y puede nombrar la variable de distintas formas segun el producto
+    (`DATABASE_URL`, `<PRODUCTO>_DATABASE_URL`, `<PRODUCTO>_DB_PATH`). Se busca
+    por el VALOR -- que empiece con el esquema-- y no por el nombre.
 
-    Devuelve la primera que aparece. Los productos con dos bases (Gestiolibra,
-    MedLibra) necesitan las dos, y eso lo resuelve el backup de la app, que
-    recibe una `Instancia` armada por el propio producto; este camino es el del
-    cron, que solo conoce el contenedor.
+    🔴 **Devuelve una lista, no la primera.** Gestiolibra y MedLibra tienen DOS
+    bases: el dominio y LibraCore no pueden compartir schema porque los dos
+    declaran una tabla `clients` con `id` de tipos incompatibles. Con la version
+    anterior, que devolvia la primera, el backup del cron se llevaba una sola
+    mitad -- y un backup con una mitad no se puede restaurar: o volves el
+    dominio y te quedan usuarios de otro momento, o al reves.
+
+    Se deduplica conservando el orden: la principal es la primera que aparece.
     """
     import subprocess
 
@@ -416,12 +420,15 @@ def _url_postgres_del_contenedor(c: dict) -> str | None:
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        return None
+        return []
+    urls: list[str] = []
     for linea in r.stdout.splitlines():
         _, _, valor = linea.partition("=")
         if valor.startswith(("postgresql://", "postgres://", "postgresql+psycopg://")):
-            return valor.replace("postgresql+psycopg://", "postgresql://", 1)
-    return None
+            normal = valor.replace("postgresql+psycopg://", "postgresql://", 1)
+            if normal not in urls:
+                urls.append(normal)
+    return urls
 
 
 def _dump_postgres_por_docker(url: str, destino) -> None:
@@ -520,11 +527,17 @@ def cmd_backup(slug: str, quiet: bool = False):
     # archivo SQLite -> copia WAL-safe, y **nada de eso -> error**.
     db_src = data_dir / cfg.db_filename
     bdir = _backups_dir(c)
-    url_postgres = _url_postgres_del_contenedor(c)
-    if url_postgres:
-        db_dst = bdir / f"{cfg.container_prefix}_{ts}.dump"
-        _dump_postgres_por_docker(url_postgres, db_dst)
-        _p(f"[OK] Dump PostgreSQL: {db_dst}  ({db_dst.stat().st_size/1_048_576:.1f} MB)")
+    urls_postgres = _urls_postgres_del_contenedor(c)
+    if urls_postgres:
+        # Una por base. Gestiolibra y MedLibra tienen dos, y con una sola el
+        # backup no se puede restaurar.
+        for i, url in enumerate(urls_postgres):
+            base = url.rsplit("/", 1)[-1].split("?")[0]
+            sufijo = "" if i == 0 else f"_{base}"
+            db_dst = bdir / f"{cfg.container_prefix}{sufijo}_{ts}.dump"
+            _dump_postgres_por_docker(url, db_dst)
+            _p(f"[OK] Dump PostgreSQL ({base}): {db_dst}  "
+               f"({db_dst.stat().st_size/1_048_576:.1f} MB)")
         _purge_backups_viejos(bdir, f"{cfg.container_prefix}_*.dump")
     elif db_src.exists():
         # Copia WAL-safe de la DB, vía sqlite3.Connection.backup() (Online
