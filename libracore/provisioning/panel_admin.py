@@ -424,6 +424,59 @@ def _url_postgres_del_contenedor(c: dict) -> str | None:
     return None
 
 
+def _dump_postgres_por_docker(url: str, destino) -> None:
+    """`pg_dump` corrido DENTRO del sidecar, y el archivo traido con `docker cp`.
+
+    🔴 **No se puede dumpear desde el host.** El sidecar no publica puerto -- a
+    proposito, publicar 5432 en un VPS es publicarlo a Internet-- y su nombre es
+    un alias de la red de Docker, asi que desde afuera no resuelve:
+    *"could not translate host name ... to address"*. Medido el 2026-08-10 con
+    la demo de Contalibra.
+
+    Ademas el host no tiene por que tener `pg_dump`, y menos con la version
+    correcta; adentro del sidecar es la misma que sirve la base, por definicion.
+
+    **El destino se escribe recien cuando el dump salio bien.** El primer
+    intento dejo un `.dump` de 0 bytes al fallar: un archivo con nombre de
+    backup y sin nada adentro es peor que ningun archivo, porque la rotacion lo
+    cuenta y alguien puede creer que tiene una copia.
+    """
+    import tempfile
+
+    from ..respaldo import BackupInvalido
+
+    sin_usuario = url.split("@", 1)[-1]
+    sidecar = sin_usuario.split(":", 1)[0].split("/", 1)[0]
+    base = url.rsplit("/", 1)[-1].split("?")[0]
+
+    dentro = f"/tmp/backup_{base}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.dump"
+    r = docker(
+        "exec", sidecar, "sh", "-c",
+        f'pg_dump --format=custom --no-owner --no-privileges '
+        f'-U "$POSTGRES_USER" -d "{base}" --file "{dentro}"',
+        capture=True,
+    )
+    if r.returncode != 0:
+        raise BackupInvalido(
+            f"No se pudo hacer el backup de la base PostgreSQL: pg_dump dentro de "
+            f"'{sidecar}' termino con codigo {r.returncode}. {(r.stderr or '').strip()[:300]}"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        provisorio = Path(tmp) / "dump"
+        r = docker("cp", f"{sidecar}:{dentro}", str(provisorio), capture=True)
+        docker("exec", sidecar, "rm", "-f", dentro, capture=True)
+        if r.returncode != 0 or not provisorio.exists():
+            raise BackupInvalido(
+                f"El dump se hizo pero no se pudo traer del contenedor: "
+                f"{(r.stderr or '').strip()[:300]}"
+            )
+        if provisorio.stat().st_size == 0:
+            raise BackupInvalido("El dump salio vacio (0 bytes). No se guarda.")
+        Path(destino).parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(provisorio), str(destino))
+
+
 def cmd_backup(slug: str, quiet: bool = False):
     """Backup completo del directorio data (tar.gz) + copia WAL-safe de la DB
     (vía la API de backup online de sqlite3, no un copy2 crudo del archivo —
@@ -469,10 +522,8 @@ def cmd_backup(slug: str, quiet: bool = False):
     bdir = _backups_dir(c)
     url_postgres = _url_postgres_del_contenedor(c)
     if url_postgres:
-        from ..respaldo import _dump_postgres
-
         db_dst = bdir / f"{cfg.container_prefix}_{ts}.dump"
-        _dump_postgres(url_postgres, db_dst)
+        _dump_postgres_por_docker(url_postgres, db_dst)
         _p(f"[OK] Dump PostgreSQL: {db_dst}  ({db_dst.stat().st_size/1_048_576:.1f} MB)")
         _purge_backups_viejos(bdir, f"{cfg.container_prefix}_*.dump")
     elif db_src.exists():
