@@ -656,3 +656,76 @@ def test_el_volumen_de_la_base_se_declara(cfg_pg):
     assert "testprod-cliente-uno-postgres-data" in doc["volumes"]
     assert "testprod-cliente-uno-postgres-data:/var/lib/postgresql/data" in \
         doc["services"]["testprod-cliente-uno-postgres"]["volumes"]
+
+
+def test_el_compose_escribe_TAMBIEN_el_nombre_historico(cfg_pg_dos_bases):
+    """El fallback del resolvedor cubre "codigo nuevo + compose viejo". Falta el
+    simetrico, y es el que rompe un alta: **compose nuevo + imagen vieja**.
+
+    `crear_cliente` pinea la imagen que exista, asi que en un producto sin
+    reconstruir la app lee el nombre historico, no lo encuentra, cae a su
+    default de SQLite y crea un archivo al lado del PostgreSQL recien nacido.
+    No falla: queda healthy y con la base vacia. Medido con un alta real el
+    2026-08-11.
+    """
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    texto = _compose(cfg_pg_dos_bases)
+
+    # el vigente
+    assert "TESTPROD_DATABASE_URL=postgresql://" in texto
+    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql://" in texto
+
+    doc = yaml.safe_load(texto)
+    env = doc["services"]["testprod-cliente-uno"]["environment"]
+    pares = dict(e.split("=", 1) for e in env if "=" in e)
+
+    # los dos nombres de la MISMA base tienen que traer la MISMA url, o una
+    # imagen vieja y una nueva se conectarian a lugares distintos
+    assert pares["TESTPROD_DATABASE_URL"].endswith("/testprod")
+    assert pares["TESTPROD_LIBRACORE_DATABASE_URL"].endswith("/testprod_core")
+
+
+def test_para_un_producto_sin_historicos_no_se_repiten_variables(cfg_pg):
+    """TESTPROD no tiene nombres historicos registrados, asi que no tiene que
+    aparecer ninguna variable duplicada."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    doc = yaml.safe_load(_compose(cfg_pg))
+    env = doc["services"]["testprod-cliente-uno"]["environment"]
+    claves = [e.split("=", 1)[0] for e in env if "=" in e]
+    assert len(claves) == len(set(claves)), claves
+
+
+def test_con_un_prefijo_REAL_el_compose_trae_el_nombre_viejo_y_el_nuevo(
+        tmp_path, fake_plans, fake_docker):
+    """El test de arriba usa `testprod`, que no tiene historicos registrados:
+    para lo que dice comprobar es vacuo. Este usa `ventalibra`, que si los
+    tiene, y es el producto donde el defecto se encontro con un alta real.
+    """
+    repo_root = tmp_path / "repo"
+    (repo_root / "clientes").mkdir(parents=True)
+    provisioning.configure(
+        product_name="VENTALIBRA", image_name="ventalibra:latest",
+        container_prefix="ventalibra", db_filename="ventalibra.db",
+        repo_root=repo_root, base_port=9000, postgres=True,
+    )
+    cfg = provisioning.get_config()
+    nc.crear_cliente(nombre="Uno", slug="uno", setup_npm=False)
+
+    doc = yaml.safe_load((cfg.clientes_dir / "uno" / "docker-compose.yml").read_text())
+    env = doc["services"]["ventalibra-uno"]["environment"]
+    pares = dict(e.split("=", 1) for e in env if "=" in e)
+
+    # el vigente y el historico, los dos presentes
+    assert "VENTALIBRA_DATABASE_URL" in pares
+    assert "VENTALIBRA_DB_PATH" in pares, \
+        "sin el nombre historico, una imagen vieja cae a SQLite y el sidecar queda vacio"
+    assert "VENTALIBRA_LIBRACORE_DATABASE_URL" in pares
+    assert "VENTALIBRA_LIBRACORE_DB_PATH" in pares
+
+    # y apuntando a la MISMA base, o una imagen vieja y una nueva irian a
+    # lugares distintos
+    assert pares["VENTALIBRA_DATABASE_URL"] == pares["VENTALIBRA_DB_PATH"]
+    assert pares["VENTALIBRA_LIBRACORE_DATABASE_URL"] == pares["VENTALIBRA_LIBRACORE_DB_PATH"]
+
+    # ventalibra tiene UNA sola base: las dos variables van al mismo destino
+    assert pares["VENTALIBRA_DATABASE_URL"] == pares["VENTALIBRA_LIBRACORE_DATABASE_URL"]
