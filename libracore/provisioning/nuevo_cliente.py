@@ -277,10 +277,27 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
     bases = cfg.bases_postgres
     principal = bases[0]
 
-    env_lines = "".join(
-        f"      - {var}=postgresql://{usuario}:{clave}@{sidecar}:5432/{base}\n"
-        for var, base in cfg.db_urls
-    )
+    # 🔴 Se escriben TODOS los nombres aceptados, no sólo el vigente.
+    #
+    # El fallback de `url_de_instancia` cubre "código nuevo leyendo un compose
+    # viejo". Falta el caso simétrico, y es el que rompe un alta: **compose
+    # nuevo con imagen vieja.** `crear_cliente` pinea la imagen que exista, así
+    # que en un producto que todavía no se reconstruyó la app lee el nombre
+    # histórico, no lo encuentra, cae a su default de SQLite y crea un archivo
+    # al lado del PostgreSQL que acaba de nacer vacío. **No falla**: el
+    # contenedor queda healthy y el sidecar sin una tabla.
+    #
+    # Medido el 2026-08-11 con un alta real en VentaLibra, que es exactamente
+    # como se encontró. Los dos nombres apuntan a la misma URL, así que sirven
+    # las dos imágenes; se saca junto con `_HISTORICOS`, en el mismo momento.
+    from ..db.url_de_instancia import nombres_aceptados
+
+    lineas = []
+    for (var, base), core in zip(cfg.db_urls, (False, True)):
+        url = f"postgresql://{usuario}:{clave}@{sidecar}:5432/{base}"
+        for nombre in nombres_aceptados(cfg.container_prefix, core=core):
+            lineas.append(f"      - {nombre}={url}\n")
+    env_lines = "".join(dict.fromkeys(lineas))  # sin repetir, conservando orden
 
     # Las bases extra las crea un init que la imagen corre UNA vez, al
     # inicializar el volumen. Si el volumen ya existe no se ejecuta — para una
