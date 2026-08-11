@@ -202,36 +202,67 @@ def _rollback_alta(client_dir: Path, log) -> None:
         log(f"[ERROR] Rollback incompleto — revisá {client_dir} a mano: {e}")
 
 
+def _esperar_tabla_en_sidecar(sidecar: str, base: str, usuario: str,
+                              timeout: int = 90) -> bool:
+    """Espera a que la app cree la tabla `modulos` DENTRO del sidecar.
+
+    🔴 **No se puede preguntar desde el host.** El sidecar no publica puerto —a
+    propósito— y su nombre es un alias de la red de Docker, así que desde
+    afuera no resuelve. Una espera hecha con `conectar(url)` desde el host no
+    falla: **se agota siempre**, y el alta reporta *"la DB no estuvo lista a
+    tiempo"* sobre una instancia que arrancó perfecta.
+
+    Medido con un alta real el 2026-08-11: 59 tablas creadas en PostgreSQL y la
+    espera igual vencida. Es la misma trampa que documenta
+    `panel_admin._dump_postgres_por_docker`, encontrada por tercera vez.
+
+    Se pregunta por la TABLA y no por `pg_isready`: el sidecar está healthy
+    apenas acepta conexiones, y el schema lo construye la app después.
+    """
+    import time
+
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        r = subprocess.run(
+            ["docker", "exec", sidecar, "psql", "-U", usuario, "-d", base, "-tAc",
+             "select count(*) from information_schema.tables "
+             "where table_schema='public' and table_name='modulos'"],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0 and r.stdout.strip() == "1":
+            return True
+        time.sleep(2)
+    return False
+
+
+def _aplicar_plan_en_contenedor(container: str, variable: str, plan: str) -> bool:
+    """Aplica el plan corriendo el `plans.py` del producto DENTRO del contenedor.
+
+    Mismo motivo que arriba: desde el host la URL no resuelve. Y además la
+    **URL no se pasa por línea de comando** —la leería cualquiera en un `ps`,
+    con la contraseña adentro—: se le pasa el NOMBRE de la variable y el
+    contenedor la lee de su propio entorno.
+    """
+    codigo = (
+        "import sys, os; sys.path.insert(0, '/app'); import plans; "
+        f"plans.aplicar_plan_en_db(os.environ[{variable!r}], {plan!r})"
+    )
+    r = subprocess.run(["docker", "exec", container, "python3", "-c", codigo],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
 def _esperar_db_lista(db_path, timeout: int = 25) -> bool:
     """Espera a que la instancia recién levantada cree su DB y la tabla `modulos`.
 
-    `db_path` puede ser una ruta SQLite o una **URL PostgreSQL**. En el segundo
-    caso no hay archivo que mirar: se pregunta por la tabla, que es lo que de
-    verdad importa —el sidecar puede estar `healthy` con la base vacía, porque
-    el schema lo construye la app al arrancar, no el motor—.
+    Sólo para SQLite: contra PostgreSQL hay que preguntar desde adentro —ver
+    `_esperar_tabla_en_sidecar`—.
     """
     import sqlite3, time
 
-    es_url = str(db_path).startswith(("postgresql://", "postgres://", "postgresql+psycopg://"))
     t0 = time.time()
     while time.time() - t0 < timeout:
-        if es_url:
-            try:
-                from ..db.core import conectar
-
-                con = conectar(str(db_path))
-                try:
-                    fila = con.execute(
-                        "SELECT 1 FROM information_schema.tables "
-                        "WHERE table_schema='public' AND table_name='modulos'"
-                    ).fetchone()
-                finally:
-                    con.close()
-                if fila:
-                    return True
-            except Exception:
-                pass
-        elif Path(db_path).exists():
+        if Path(db_path).exists():
             try:
                 con = sqlite3.connect(str(db_path))
                 row = con.execute(
@@ -533,21 +564,36 @@ services:
 
         # — aplicar plan inicial (tras esperar a que la instancia cree su DB) —
         #
-        # Contra PostgreSQL el destino es una URL y no un archivo, y es la
-        # PRIMERA de `db_urls`: ahí vive el `modulos` que el producto lee. Ver
-        # `ProductConfig.db_urls` — en los productos con dos bases la tabla
-        # existe en las dos y sólo una tiene filas.
+        # 🔴 Contra PostgreSQL las DOS cosas —esperar y aplicar— van por
+        # `docker exec`, no desde el host: el sidecar no publica puerto y su
+        # nombre es un alias de la red de Docker, así que desde afuera no
+        # resuelve. Hecho desde el host, la espera se agota SIEMPRE y el alta
+        # reporta que la base no estuvo lista sobre una instancia sana.
         #
-        # Se espera más contra PostgreSQL: la app tiene que arrancar y
-        # construir el schema *después* de que el sidecar quede healthy, y eso
-        # no entra en los 25 segundos que alcanzaban con un archivo SQLite.
-        destino_plan = pg_url_plan or (data_dir / cfg.db_filename)
-        espera = 90 if cfg.usa_postgres else 25
-        if _esperar_db_lista(destino_plan, timeout=espera):
-            plans.aplicar_plan_en_db(str(destino_plan), plan)
-            log(f"[OK] Plan '{plan}' aplicado.")
+        # El plan va contra la PRIMERA de `db_urls`: ahí vive el `modulos` que
+        # el producto lee. En los productos con dos bases la tabla existe en
+        # las dos y sólo la del dominio tiene filas.
+        if cfg.usa_postgres:
+            variable, base = cfg.db_urls[0]
+            listo = _esperar_tabla_en_sidecar(
+                f"{container}-postgres", base, cfg.container_prefix
+            )
+            if listo and _aplicar_plan_en_contenedor(container, variable, plan):
+                log(f"[OK] Plan '{plan}' aplicado.")
+            elif listo:
+                log("[WARN] La DB está lista pero no se pudo aplicar el plan; "
+                    "aplicalo desde el backoffice.")
+            else:
+                log("[WARN] La DB no estuvo lista a tiempo; aplicá el plan "
+                    "desde el backoffice.")
         else:
-            log("[WARN] La DB no estuvo lista a tiempo; aplicá el plan desde el backoffice.")
+            db_path = data_dir / cfg.db_filename
+            if _esperar_db_lista(db_path):
+                plans.aplicar_plan_en_db(str(db_path), plan)
+                log(f"[OK] Plan '{plan}' aplicado.")
+            else:
+                log("[WARN] La DB no estuvo lista a tiempo; aplicá el plan "
+                    "desde el backoffice.")
 
         # — proxy NPM (opcional) —
         proxy_ok = None
