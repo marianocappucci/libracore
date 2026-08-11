@@ -495,7 +495,7 @@ def test_sin_base_y_sin_url_avisa_en_vez_de_callarse(cfg, capsys, monkeypatch):
     """El caso que estaba mudo. Se prueba lo que el defecto NO hacia: decirlo."""
     cdir = _mkclient(cfg, "vacio")
     (cdir / "data" / cfg.db_filename).unlink()
-    monkeypatch.setattr(pa, "_url_postgres_del_contenedor", lambda c: None)
+    monkeypatch.setattr(pa, "_urls_postgres_del_contenedor", lambda c: [])
 
     pa.cmd_backup("vacio")
 
@@ -509,8 +509,8 @@ def test_con_url_de_postgres_hace_el_dump(cfg, capsys, monkeypatch):
     cdir = _mkclient(cfg, "migrado")
     (cdir / "data" / cfg.db_filename).unlink()
     monkeypatch.setattr(
-        pa, "_url_postgres_del_contenedor",
-        lambda c: "postgresql://u:p@host:5432/base",
+        pa, "_urls_postgres_del_contenedor",
+        lambda c: ["postgresql://u:p@host:5432/base"],
     )
 
     dumps = []
@@ -541,7 +541,7 @@ def test_con_archivo_sqlite_sigue_haciendo_la_copia_wal_safe(cfg, capsys, monkey
     # Con bytes inventados, `Connection.backup()` tira "file is not a
     # database" -- fallaba el test, no el codigo.
     _mkclient(cfg, "clasico")
-    monkeypatch.setattr(pa, "_url_postgres_del_contenedor", lambda c: None)
+    monkeypatch.setattr(pa, "_urls_postgres_del_contenedor", lambda c: [])
 
     pa.cmd_backup("clasico")
 
@@ -567,8 +567,8 @@ def test_la_url_se_busca_por_el_valor_y_no_por_el_nombre(cfg, monkeypatch):
             stderr="",
         ),
     )
-    url = pa._url_postgres_del_contenedor({"container": "testprod-raro"})
-    assert url == "postgresql://u:p@h:5432/b", url
+    urls = pa._urls_postgres_del_contenedor({"container": "testprod-raro"})
+    assert urls == ["postgresql://u:p@h:5432/b"], urls
 
 
 # ── El dump del cron corre DENTRO del sidecar ─────────────────────────────
@@ -656,3 +656,51 @@ def test_si_pg_dump_falla_no_queda_archivo(cfg, tmp_path, monkeypatch):
         pa._dump_postgres_por_docker("postgresql://u:p@s-postgres:5432/b", destino)
 
     assert not destino.exists()
+
+
+def test_una_instancia_de_dos_bases_deja_dos_dumps(cfg, capsys, monkeypatch):
+    """🔴 Gestiolibra y MedLibra tienen DOS bases -- el dominio y LibraCore no
+    pueden compartir schema. Con la version que devolvia solo la primera, el
+    backup se llevaba una mitad, y con una mitad no se puede restaurar: o volves
+    el dominio y te quedan usuarios de otro momento, o al reves."""
+    cdir = _mkclient(cfg, "dosbases")
+    (cdir / "data" / cfg.db_filename).unlink()
+    monkeypatch.setattr(pa, "_urls_postgres_del_contenedor", lambda c: [
+        "postgresql://u:p@side:5432/prod",
+        "postgresql://u:p@side:5432/prod_core",
+    ])
+
+    hechos = []
+
+    def falso_dump(url, destino):
+        hechos.append(Path(destino).name)
+        Path(destino).parent.mkdir(parents=True, exist_ok=True)
+        Path(destino).write_bytes(b"PGDMP" + b"0" * 100)
+
+    monkeypatch.setattr(pa, "_dump_postgres_por_docker", falso_dump)
+
+    pa.cmd_backup("dosbases")
+
+    assert len(hechos) == 2, f"esperaba dos dumps, hubo {hechos}"
+    assert len({*hechos}) == 2, f"los dos dumps se pisaron: {hechos}"
+    assert any("prod_core" in n for n in hechos), hechos
+
+
+def test_las_urls_se_deduplican_conservando_el_orden(cfg, monkeypatch):
+    """VentaLibra apunta sus DOS variables al MISMO schema. Sin deduplicar
+    saldrian dos dumps identicos, y el segundo pisaria al primero."""
+    import subprocess as sp
+
+    _mkclient(cfg, "unasola")
+    monkeypatch.setattr(
+        sp, "run",
+        lambda *a, **k: sp.CompletedProcess(
+            a, 0,
+            stdout=("A_DB=postgresql://u:p@h:5432/x\n"
+                    "B_DB=postgresql+psycopg://u:p@h:5432/x\n"
+                    "C_DB=postgresql://u:p@h:5432/otra\n"),
+            stderr="",
+        ),
+    )
+    urls = pa._urls_postgres_del_contenedor({"container": "testprod-unasola"})
+    assert urls == ["postgresql://u:p@h:5432/x", "postgresql://u:p@h:5432/otra"], urls
