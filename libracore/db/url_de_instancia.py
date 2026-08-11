@@ -59,7 +59,7 @@ def nombres_aceptados(prefijo: str, *, core: bool = False) -> tuple:
 
 
 def url_de_instancia(prefijo: str, *, core: bool = False, default: str = "",
-                     entorno=None) -> str:
+                     requerida: bool = False, entorno=None) -> str:
     """La URL (o ruta) de la base de esta instancia, o `default` si no hay
     ninguna variable puesta.
 
@@ -67,10 +67,24 @@ def url_de_instancia(prefijo: str, *, core: bool = False, default: str = "",
     casi siempre un valor que no se llegó a interpolar, y tomarlo como bueno
     manda a la app a conectarse a la cadena vacía —que falla lejos del origen,
     con un error que no nombra la variable—.
+
+    `requerida=True` reemplaza a los `os.environ["..."]` que había en las apps:
+    sin él, cambiar un acceso por índice —que revienta con `KeyError` y el
+    nombre a la vista— por esta función convertiría un arranque en falta de
+    configuración en una conexión a la cadena vacía. El mensaje **nombra todas
+    las variables aceptadas**, porque durante la transición hay dos y no saber
+    cuál se esperaba es la mitad del problema.
     """
     env = os.environ if entorno is None else entorno
-    for nombre in nombres_aceptados(prefijo, core=core):
+    nombres = nombres_aceptados(prefijo, core=core)
+    for nombre in nombres:
         valor = (env.get(nombre) or "").strip()
         if valor:
             return valor
+    if requerida:
+        raise RuntimeError(
+            f"Falta la URL de la base de {prefijo}: definí "
+            + " o ".join(nombres)
+            + ("" if len(nombres) == 1 else " (el primero es el nombre vigente)")
+        )
     return default
