@@ -539,6 +539,41 @@ def le_email_from_config():
     return npm.le_email_from_config() if npm else None
 
 
+def _como_se_escribe_habilitado(con):
+    """Devuelve la función que convierte el booleano al tipo que la columna
+    `modulos.habilitado` tiene **en esta base**.
+
+    🔴 No es lo mismo en todos los productos, y en PostgreSQL el tipo del
+    parámetro tiene que coincidir: los dos errores son simétricos y los dos
+    frenan el alta.
+
+    | Dónde | Tipo | Qué falla |
+    |---|---|---|
+    | La `modulos` de LibraCore | `BOOLEAN` | pasar `1` → *"column habilitado is of type boolean but expression is of type smallint"* |
+    | La `modulos` propia de VentaLibra | `INTEGER` | pasar `True` → *"column habilitado is of type integer but expression is of type boolean"* |
+
+    VentaLibra declara su propia `modulos` (con `modulo TEXT PK`, sin `id`) y
+    esa gana sobre la del core — está documentado en la página de la migración.
+    En SQLite daba igual, porque el tipado es dinámico: **el defecto aparece
+    recién al dar de alta una instancia PostgreSQL**, y se encontró así, con un
+    alta real el 2026-08-11.
+
+    En SQLite no hay `information_schema`: se cae al booleano de siempre, que es
+    lo que venía andando.
+    """
+    try:
+        fila = con.execute(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name='modulos' AND column_name='habilitado'"
+        ).fetchone()
+    except Exception:
+        return bool
+    if not fila:
+        return bool
+    tipo = str(fila[0]).lower()
+    return int if ("int" in tipo or "numeric" in tipo) else bool
+
+
 def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: str) -> None:
     """Escribe el estado de módulos (habilitado + plan) en la tabla `modulos`
     de la base de un cliente (`clientes/<slug>/data/*.db`, o su base
@@ -570,6 +605,7 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
 
     con = conectar(str(db_path))
     try:
+        convertir = _como_se_escribe_habilitado(con)
         for m in sorted(all_modules):
             # 🔴 `bool`, no `1`/`0`. `modulos.habilitado` es BOOLEAN y
             # PostgreSQL no acepta un entero ahi: *"column habilitado is of
@@ -577,7 +613,7 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
             # traga porque no tiene booleano nativo, asi que el defecto era
             # invisible. Es la misma forma de fallar que el `BOOLEAN DEFAULT 1`
             # de las migraciones de LibraDesk.
-            on = m in active_modules
+            on = convertir(m in active_modules)
             con.execute(
                 "INSERT OR IGNORE INTO modulos (modulo, habilitado, plan) VALUES (?,?,?)",
                 (m, on, plan),
