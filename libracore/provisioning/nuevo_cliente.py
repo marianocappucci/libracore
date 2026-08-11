@@ -202,12 +202,36 @@ def _rollback_alta(client_dir: Path, log) -> None:
         log(f"[ERROR] Rollback incompleto — revisá {client_dir} a mano: {e}")
 
 
-def _esperar_db_lista(db_path: Path, timeout: int = 25) -> bool:
-    """Espera a que la instancia recién levantada cree su DB y la tabla `modulos`."""
+def _esperar_db_lista(db_path, timeout: int = 25) -> bool:
+    """Espera a que la instancia recién levantada cree su DB y la tabla `modulos`.
+
+    `db_path` puede ser una ruta SQLite o una **URL PostgreSQL**. En el segundo
+    caso no hay archivo que mirar: se pregunta por la tabla, que es lo que de
+    verdad importa —el sidecar puede estar `healthy` con la base vacía, porque
+    el schema lo construye la app al arrancar, no el motor—.
+    """
     import sqlite3, time
+
+    es_url = str(db_path).startswith(("postgresql://", "postgres://", "postgresql+psycopg://"))
     t0 = time.time()
     while time.time() - t0 < timeout:
-        if db_path.exists():
+        if es_url:
+            try:
+                from ..db.core import conectar
+
+                con = conectar(str(db_path))
+                try:
+                    fila = con.execute(
+                        "SELECT 1 FROM information_schema.tables "
+                        "WHERE table_schema='public' AND table_name='modulos'"
+                    ).fetchone()
+                finally:
+                    con.close()
+                if fila:
+                    return True
+            except Exception:
+                pass
+        elif Path(db_path).exists():
             try:
                 con = sqlite3.connect(str(db_path))
                 row = con.execute(
@@ -220,6 +244,92 @@ def _esperar_db_lista(db_path: Path, timeout: int = 25) -> bool:
                 pass
         time.sleep(1)
     return False
+
+
+def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
+    """Arma las piezas del compose que le dan un sidecar propio a la instancia.
+
+    Devuelve `(env_lines, servicio_db, volumen, url_del_plan)`, o cuatro vacíos
+    si el producto todavía no declara `db_urls`.
+
+    Dos decisiones que no son de estilo:
+
+    - **El sidecar NO publica puerto.** Publicar 5432 en un VPS es publicarlo a
+      Internet. Se llega sólo desde la red de la instancia.
+    - **El sidecar va SOLO en la red `datos`**, y la app en `datos` + la
+      compartida. Hasta el 2026-08-11 las 15 instancias compartían una red
+      plana y el PostgreSQL de un cliente era alcanzable desde el contenedor de
+      cualquier otro producto: lo único que separaba era la contraseña. La app
+      conserva la red compartida porque el proxy la routea por nombre.
+    """
+    if not cfg.usa_postgres:
+        return "", "", "", None
+
+    import secrets as _secrets
+
+    sidecar = f"{container}-postgres"
+    usuario = cfg.container_prefix
+    # 48 hex, el mismo largo que las que ya están en el parque. `token_hex` y
+    # no `token_urlsafe`: la clave viaja adentro de una URL y `urlsafe` mete
+    # `-`/`_` que son seguros pero también `=` de padding en otros generadores.
+    clave = _secrets.token_hex(24)
+
+    bases = cfg.bases_postgres
+    principal = bases[0]
+
+    env_lines = "".join(
+        f"      - {var}=postgresql://{usuario}:{clave}@{sidecar}:5432/{base}\n"
+        for var, base in cfg.db_urls
+    )
+
+    # Las bases extra las crea un init que la imagen corre UNA vez, al
+    # inicializar el volumen. Si el volumen ya existe no se ejecuta — para una
+    # instancia nueva siempre es la primera vez.
+    monta_init = ""
+    if len(bases) > 1:
+        init_dir = client_dir / "postgres-init"
+        init_dir.mkdir(parents=True, exist_ok=True)
+        cuerpo = "\n".join(
+            f"CREATE DATABASE {b} OWNER {usuario};" for b in bases[1:]
+        )
+        (init_dir / "10-bases-extra.sql").write_text(
+            "-- Bases adicionales de esta instancia.\n"
+            "--\n"
+            "-- Son bases y no schemas porque LibraCore y el motor de dominio\n"
+            "-- declaran los dos una tabla `clients` con `id` de tipos\n"
+            "-- incompatibles: en un solo schema el segundo CREATE TABLE IF NOT\n"
+            "-- EXISTS no hace nada y despues PostgreSQL rechaza las FK.\n"
+            "--\n"
+            "-- La imagen corre esto UNA sola vez, al inicializar el volumen.\n"
+            f"{cuerpo}\n",
+            encoding="utf-8",
+        )
+        monta_init = "      - ./postgres-init:/docker-entrypoint-initdb.d:ro\n"
+
+    servicio_db = f"""
+  {sidecar}:
+    image: {cfg.postgres_image}
+    container_name: {sidecar}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: {principal}
+      POSTGRES_USER: {usuario}
+      POSTGRES_PASSWORD: {clave}
+    volumes:
+      - {sidecar}-data:/var/lib/postgresql/data
+{monta_init}    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {usuario} -d {principal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - datos
+"""
+
+    volumen = f"\nvolumes:\n  {sidecar}-data:\n"
+    url_del_plan = f"postgresql://{usuario}:{clave}@{sidecar}:5432/{cfg.db_urls[0][1]}"
+    return env_lines, servicio_db, volumen, url_del_plan
 
 
 def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
@@ -279,8 +389,20 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
             json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
-        # — detectar red Docker —
-        net_name    = "stack_stack-net"
+        container = f"{cfg.container_prefix}-{slug}"
+
+        # — piezas del sidecar PostgreSQL (vacías si el producto no lo declara) —
+        pg_env, pg_service, pg_volume, pg_url_plan = _bloques_postgres(
+            cfg, slug, container, client_dir
+        )
+
+        # — redes —
+        #
+        # `datos` es de esta instancia y es donde vive su base. La compartida la
+        # necesita SÓLO la app, porque el proxy la routea por nombre de
+        # contenedor; el sidecar no entra ahí — ver `_bloques_postgres`.
+        red_datos = f"{container}-datos"
+        net_name  = "stack_stack-net"
         if network_exists(net_name):
             service_net = "    networks:\n      - stack-net\n"
             top_net     = (f"\nnetworks:\n  stack-net:\n    external: true\n"
@@ -289,8 +411,22 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
             log(f"[WARN] Red '{net_name}' no encontrada — el contenedor usará la red por defecto.")
             service_net = ""
             top_net     = ""
+        if cfg.usa_postgres:
+            # La app necesita las dos. Si la compartida no existe, igual hace
+            # falta declarar la propia o la app no llega a su base.
+            service_net = (service_net or "    networks:\n") + "      - datos\n"
+            top_net     = (top_net or "\nnetworks:\n") + f"  datos:\n    name: {red_datos}\n"
 
-        container = f"{cfg.container_prefix}-{slug}"
+        # La app **no puede arrancar antes que su base**: el schema lo construye
+        # ella al arrancar, y contra un PostgreSQL que todavía no acepta
+        # conexiones se cae y el contenedor entra en loop de reinicio. Por eso
+        # `service_healthy` y no un `depends_on` a secas, que sólo espera a que
+        # el contenedor exista.
+        pg_depends = (
+            f"    depends_on:\n      {container}-postgres:\n"
+            f"        condition: service_healthy\n"
+            if cfg.usa_postgres else ""
+        )
 
         # — versión de imagen — el compose nace pineado a una versión concreta,
         # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
@@ -339,7 +475,7 @@ services:
       start_period: 10s
     ports:
       - "{port}:8000"
-    volumes:
+{pg_depends}    volumes:
       - ./data:/app/data
     environment:
       - DATA_DIR=/app/data
@@ -348,7 +484,7 @@ services:
       - ADMIN_PASSWORD={admin_password}
       - ADMIN_NOMBRE={admin_nombre}
       - DOCS_AUTH_SECRET={cfg.docs_auth_secret}
-{service_net}{top_net}"""
+{pg_env}{service_net}{pg_service}{top_net}{pg_volume}"""
         (client_dir / "docker-compose.yml").write_text(compose)
 
         # — metadata del cliente —
@@ -379,9 +515,19 @@ services:
             )
 
         # — aplicar plan inicial (tras esperar a que la instancia cree su DB) —
-        db_path = data_dir / cfg.db_filename
-        if _esperar_db_lista(db_path):
-            plans.aplicar_plan_en_db(str(db_path), plan)
+        #
+        # Contra PostgreSQL el destino es una URL y no un archivo, y es la
+        # PRIMERA de `db_urls`: ahí vive el `modulos` que el producto lee. Ver
+        # `ProductConfig.db_urls` — en los productos con dos bases la tabla
+        # existe en las dos y sólo una tiene filas.
+        #
+        # Se espera más contra PostgreSQL: la app tiene que arrancar y
+        # construir el schema *después* de que el sidecar quede healthy, y eso
+        # no entra en los 25 segundos que alcanzaban con un archivo SQLite.
+        destino_plan = pg_url_plan or (data_dir / cfg.db_filename)
+        espera = 90 if cfg.usa_postgres else 25
+        if _esperar_db_lista(destino_plan, timeout=espera):
+            plans.aplicar_plan_en_db(str(destino_plan), plan)
             log(f"[OK] Plan '{plan}' aplicado.")
         else:
             log("[WARN] La DB no estuvo lista a tiempo; aplicá el plan desde el backoffice.")
