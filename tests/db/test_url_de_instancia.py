@@ -68,3 +68,24 @@ def test_el_historico_de_un_producto_no_aplica_a_otro():
     """`VENTALIBRA_DB_PATH` en el entorno no tiene que afectar a MedLibra."""
     entorno = {"VENTALIBRA_DB_PATH": "postgresql://ventalibra/x"}
     assert url_de_instancia("medlibra", entorno=entorno, default="d") == "d"
+
+
+def test_requerida_falla_fuerte_y_nombra_las_variables():
+    """Reemplaza a los `os.environ["DATABASE_URL"]` de las apps. Sin esto,
+    cambiar un acceso por indice por esta funcion convertiria un arranque en
+    falta de configuracion en una conexion a la cadena vacia."""
+    with pytest.raises(RuntimeError) as e:
+        url_de_instancia("medlibra", requerida=True, entorno={})
+    mensaje = str(e.value)
+    assert "MEDLIBRA_DATABASE_URL" in mensaje
+    assert "DATABASE_URL" in mensaje  # el historico tambien, que es el que puede estar puesto
+
+
+def test_requerida_no_estorba_cuando_la_variable_esta():
+    assert url_de_instancia("medlibra", requerida=True,
+                            entorno={"MEDLIBRA_DATABASE_URL": "postgresql://x"}) == "postgresql://x"
+
+
+def test_requerida_tambien_rechaza_la_variable_vacia():
+    with pytest.raises(RuntimeError):
+        url_de_instancia("medlibra", requerida=True, entorno={"MEDLIBRA_DATABASE_URL": "   "})
