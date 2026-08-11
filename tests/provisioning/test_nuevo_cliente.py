@@ -12,6 +12,7 @@ import sys
 import types
 
 import pytest
+import yaml
 
 from libracore import provisioning
 from libracore.provisioning import nuevo_cliente as nc
@@ -476,3 +477,181 @@ def test_crear_cliente_proxy_existente_no_falla(cfg, monkeypatch):
     info = nc.crear_cliente(nombre="Cliente Cinco", slug="cliente-cinco",
                             domain="cliente-cinco.test", setup_npm=True)
     assert info["proxy_ok"] is True
+
+
+
+
+# ————————————————————————————————————————————————————————————————
+# El sidecar de las instancias nuevas
+# ————————————————————————————————————————————————————————————————
+
+@pytest.fixture
+def cfg_pg(tmp_path, fake_plans, fake_docker):
+    """Producto con UNA base, como Contalibra/Restolibra/LibraDesk/VentaLibra."""
+    repo_root = tmp_path / "repo"
+    (repo_root / "clientes").mkdir(parents=True)
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=repo_root, base_port=9000,
+        db_urls=(("TESTPROD_DATABASE_URL", "testprod"),),
+    )
+    return provisioning.get_config()
+
+
+@pytest.fixture
+def cfg_pg_dos_bases(tmp_path, fake_plans, fake_docker):
+    """Producto con DOS bases, como Gestiolibra/MedLibra."""
+    repo_root = tmp_path / "repo"
+    (repo_root / "clientes").mkdir(parents=True)
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=repo_root, base_port=9000,
+        db_urls=(("DATABASE_URL", "testprod"),
+                 ("TESTPROD_LIBRACORE_DB_PATH", "testprod_core")),
+    )
+    return provisioning.get_config()
+
+
+def _compose(cfg, slug="cliente-uno"):
+    return (cfg.clientes_dir / slug / "docker-compose.yml").read_text()
+
+
+def test_sin_db_urls_la_instancia_sigue_naciendo_en_sqlite(cfg):
+    """El producto que no declara `db_urls` no cambia en nada — es lo que
+    permite migrarlos de a uno sin romper a los demas."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    texto = _compose(cfg)
+    assert "postgres" not in texto
+    assert "DATABASE_URL" not in texto
+
+
+def test_la_instancia_nueva_nace_con_su_sidecar(cfg_pg):
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    texto = _compose(cfg_pg)
+    assert "testprod-cliente-uno-postgres:" in texto
+    assert "image: postgres:16-alpine" in texto
+    assert "TESTPROD_DATABASE_URL=postgresql://testprod:" in texto
+    assert "@testprod-cliente-uno-postgres:5432/testprod" in texto
+
+
+def test_el_sidecar_no_publica_puerto(cfg_pg):
+    """Publicar 5432 en un VPS es publicarlo a Internet. El unico `ports:` del
+    compose tiene que ser el de la app."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    texto = _compose(cfg_pg)
+    assert texto.count("ports:") == 1
+    assert "5432:" not in texto
+
+
+def test_el_sidecar_queda_fuera_de_la_red_compartida(cfg_pg, monkeypatch):
+    """El corazon del cambio del 2026-08-11: hasta esa fecha las 15 instancias
+    compartian `stack_stack-net` y el PostgreSQL de un cliente era alcanzable
+    desde el contenedor de cualquier otro producto.
+
+    Se comprueba sobre el YAML resuelto, no por substring: `- datos` aparece en
+    los dos servicios y un `assert ... in texto` pasaria igual con el defecto.
+    """
+    monkeypatch.setattr(nc, "network_exists", lambda *a, **k: True)
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    doc = yaml.safe_load(_compose(cfg_pg))
+    app = doc["services"]["testprod-cliente-uno"]
+    base = doc["services"]["testprod-cliente-uno-postgres"]
+
+    assert base["networks"] == ["datos"], "el sidecar NO puede estar en la red compartida"
+    assert set(app["networks"]) == {"stack-net", "datos"}
+    assert doc["networks"]["datos"]["name"] == "testprod-cliente-uno-datos"
+    assert doc["networks"]["stack-net"]["external"] is True
+
+
+def test_la_app_espera_a_que_la_base_este_healthy(cfg_pg):
+    """Sin esto la app arranca contra un PostgreSQL que todavia no acepta
+    conexiones, se cae y el contenedor entra en loop de reinicio. `depends_on`
+    a secas no alcanza: solo espera a que el contenedor exista."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    doc = yaml.safe_load(_compose(cfg_pg))
+    dep = doc["services"]["testprod-cliente-uno"]["depends_on"]
+    assert dep["testprod-cliente-uno-postgres"]["condition"] == "service_healthy"
+
+
+def test_cada_instancia_tiene_su_propia_clave(cfg_pg):
+    """Dos instancias del mismo producto no pueden compartir contrasena: si una
+    se filtra, se filtran las dos."""
+    nc.crear_cliente(nombre="Uno", slug="uno", setup_npm=False)
+    nc.crear_cliente(nombre="Dos", slug="dos", setup_npm=False)
+    claves = []
+    for slug in ("uno", "dos"):
+        doc = yaml.safe_load(_compose(cfg_pg, slug))
+        claves.append(doc["services"][f"testprod-{slug}-postgres"]["environment"]["POSTGRES_PASSWORD"])
+    assert claves[0] != claves[1]
+    assert all(len(c) >= 40 for c in claves), claves
+
+
+def test_la_clave_de_la_base_no_va_a_cliente_json(cfg_pg):
+    """`cliente.json` lo lee el backoffice y sale por su API. La clave de la
+    base vive en el compose, que no se versiona."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    doc = yaml.safe_load(_compose(cfg_pg))
+    clave = doc["services"]["testprod-cliente-uno-postgres"]["environment"]["POSTGRES_PASSWORD"]
+    meta = (cfg_pg.clientes_dir / "cliente-uno" / "cliente.json").read_text()
+    assert clave not in meta
+
+
+def test_dos_bases_se_crean_con_un_init_montado(cfg_pg_dos_bases):
+    """Gestiolibra y MedLibra necesitan DOS bases y no dos schemas: LibraCore y
+    LibraGenda declaran los dos una tabla `clients` con `id` de tipos
+    incompatibles."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    d = cfg_pg_dos_bases.clientes_dir / "cliente-uno"
+    sql = (d / "postgres-init" / "10-bases-extra.sql").read_text()
+
+    assert "CREATE DATABASE testprod_core OWNER testprod;" in sql
+    # la principal la crea la imagen via POSTGRES_DB: crearla nnn el init la
+    # duplicaria y el arranque fallaria
+    assert "CREATE DATABASE testprod " not in sql
+    assert "CREATE DATABASE testprod;" not in sql
+
+    doc = yaml.safe_load((d / "docker-compose.yml").read_text())
+    vols = doc["services"]["testprod-cliente-uno-postgres"]["volumes"]
+    assert "./postgres-init:/docker-entrypoint-initdb.d:ro" in vols
+
+    texto = (d / "docker-compose.yml").read_text()
+    assert "DATABASE_URL=postgresql://testprod:" in texto
+    assert "/testprod\n" in texto or "/testprod\r\n" in texto
+    assert "/testprod_core" in texto
+
+
+def test_con_una_sola_base_no_se_monta_init(cfg_pg):
+    """El init sobra donde hay una sola base, y montar un directorio que no
+    existe rompe el `up`."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    d = cfg_pg.clientes_dir / "cliente-uno"
+    assert not (d / "postgres-init").exists()
+    assert "docker-entrypoint-initdb.d" not in _compose(cfg_pg)
+
+
+def test_el_plan_se_aplica_contra_la_PRIMERA_base(cfg_pg_dos_bases, fake_plans, monkeypatch):
+    """Medido el 2026-08-11: en los productos con dos bases, `modulos` existe en
+    las DOS y la que tiene filas es la del dominio, que es la primera. Aplicar
+    el plan contra la de LibraCore escribiria en una tabla que el producto no
+    lee — y no fallaria."""
+    monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: True)
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    assert len(fake_plans.aplicar_plan_calls) == 1
+    destino, plan = fake_plans.aplicar_plan_calls[0]
+    assert destino.startswith("postgresql://")
+    assert destino.endswith("/testprod"), f"tiene que ser la de dominio, no la de core: {destino}"
+    assert plan == "basico"
+
+
+def test_el_volumen_de_la_base_se_declara(cfg_pg):
+    """Sin el volumen nombrado, Docker crea uno anonimo y un `down -v` del
+    rollback se lleva los datos sin que nadie lo relacione."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    doc = yaml.safe_load(_compose(cfg_pg))
+    assert "testprod-cliente-uno-postgres-data" in doc["volumes"]
+    assert "testprod-cliente-uno-postgres-data:/var/lib/postgresql/data" in \
+        doc["services"]["testprod-cliente-uno-postgres"]["volumes"]

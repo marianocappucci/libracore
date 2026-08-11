@@ -38,6 +38,11 @@ dev = [
     "ruff>=0.13",
     "pytest>=8.0",
     "httpx>=0.27",
+    # Solo para tests: asertar sobre el compose que genera el provisioning por
+    # ESTRUCTURA y no por substring. `- datos` aparece en los dos servicios, asi
+    # que un `assert "- datos" in texto` pasa igual con el sidecar colgado de la
+    # red compartida — que es justo el defecto que estos tests fijan.
+    "PyYAML>=6.0",
     # La cadena de Alembic se ejercita en la suite (tests/db/test_migraciones.py),
     # asi que el extra de abajo hace falta tambien para correr los tests.
     "libracore[migrations]",

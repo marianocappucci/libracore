@@ -293,6 +293,55 @@ class ProductConfig:
     base_port: int = 8071
     docs_auth_secret: str = ""
 
+    # — PostgreSQL de las instancias NUEVAS —
+    #
+    # Pares `(variable de entorno, nombre de base)`. Con esto, `crear_cliente()`
+    # le genera a la instancia su propio sidecar PostgreSQL; **vacío significa
+    # que el producto sigue pariendo instancias SQLite**, que es como estaba
+    # todo hasta el 2026-08-11.
+    #
+    # 🔴 **La PRIMERA es contra la que se aplica el plan.** Medido, no supuesto:
+    # en Gestiolibra y MedLibra la tabla `modulos` existe en las DOS bases, pero
+    # la que tiene filas es la del **dominio** (`gestiolibra`/`medlibra`); la de
+    # LibraCore (`*_core`) la crea su DDL y queda vacía. Aplicar el plan contra
+    # la segunda escribiría en una tabla que el producto no lee, y la instancia
+    # nueva quedaría con los módulos como vinieran — sin fallar.
+    #
+    # Por qué son dos bases y no dos schemas en Gestiolibra/MedLibra: LibraCore
+    # y LibraGenda declaran los dos una tabla `clients` con `id` de tipos
+    # incompatibles, así que en un solo schema el segundo `CREATE TABLE IF NOT
+    # EXISTS` no hace nada y después PostgreSQL rechaza las nueve FK que
+    # apuntan a `clients(id)`. Dos bases es la traducción fiel de los dos
+    # archivos SQLite que había antes.
+    #
+    # Ej. Contalibra:  (("CONTALIBRA_DATABASE_URL", "contalibra"),)
+    # Ej. Gestiolibra: (("DATABASE_URL", "gestiolibra"),
+    #                   ("GESTIOLIBRA_LIBRACORE_DB_PATH", "gestiolibra_core"))
+    # Ej. VentaLibra:  dos variables apuntando a la MISMA base, porque ahí
+    #                  LibraCommerce y LibraCore sí conviven en un schema.
+    db_urls: tuple[tuple[str, str], ...] = ()
+
+    # La imagen del sidecar. **Alpine no es un detalle**: musl no implementa
+    # locales, así que ordena por bytes igual que el `BINARY` de SQLite. Con la
+    # imagen Debian, cada pantalla ordenada por texto cambia de orden sin que
+    # nadie toque una línea. Ver wiki/analyses/migracion-postgresql-familia-libra.md.
+    postgres_image: str = "postgres:16-alpine"
+
+    @property
+    def usa_postgres(self) -> bool:
+        return bool(self.db_urls)
+
+    @property
+    def bases_postgres(self) -> tuple[str, ...]:
+        """Nombres de base distintos, en orden de aparición. La primera es la
+        que crea la imagen vía `POSTGRES_DB`; el resto necesitan un
+        `CREATE DATABASE` en el init."""
+        vistas: list[str] = []
+        for _, base in self.db_urls:
+            if base not in vistas:
+                vistas.append(base)
+        return tuple(vistas)
+
     @property
     def clientes_dir(self) -> Path:
         return self.repo_root / "clientes"
@@ -395,9 +444,16 @@ _cfg: ProductConfig | None = None
 
 def configure(*, product_name: str, image_name: str, container_prefix: str,
               db_filename: str, repo_root, base_port: int = 8071,
-              docs_auth_secret: str = ""):
+              docs_auth_secret: str = "", db_urls=(),
+              postgres_image: str = "postgres:16-alpine"):
     """Configura el producto activo. Llamar una sola vez, al principio de
-    `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto."""
+    `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto.
+
+    `db_urls` es lo que hace que una instancia nueva nazca sobre PostgreSQL —
+    ver `ProductConfig.db_urls`. Sin ese argumento el comportamiento es el de
+    siempre (SQLite), así que un producto que todavía no lo pase sigue
+    funcionando igual.
+    """
     global _cfg
     with _lock:
         repo_root = Path(repo_root)
@@ -406,6 +462,8 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
             container_prefix=container_prefix, db_filename=db_filename,
             repo_root=repo_root, base_port=base_port,
             docs_auth_secret=docs_auth_secret,
+            db_urls=tuple((str(k), str(v)) for k, v in db_urls),
+            postgres_image=postgres_image,
         )
         for p in (repo_root, repo_root / "scripts"):
             sp = str(p)
