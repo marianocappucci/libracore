@@ -165,8 +165,8 @@ def test_el_cae_y_su_vencimiento_salen_impresos():
         _factura(cae="71234567890123", cae_vto="20260807")
     ))
     assert "71234567890123" in texto
-    # El vencimiento viene de ARCA como AAAAMMDD y se imprime dd/mm/aaaa.
-    assert "07/08/2026" in texto
+    # El vencimiento viene de ARCA como AAAAMMDD y se imprime dd-mm-aaaa.
+    assert "07-08-2026" in texto
 
 
 def test_los_items_de_factura_aceptan_json_crudo():
@@ -179,9 +179,9 @@ def test_los_items_de_factura_aceptan_json_crudo():
 
 def test_fmt_fecha_traduce_los_dos_formatos_que_llegan():
     # ISO de la base y AAAAMMDD de ARCA.
-    assert ticket_generator.fmt_fecha("2026-07-28") == "28/07/2026"
-    assert ticket_generator.fmt_fecha("20260807") == "07/08/2026"
-    assert ticket_generator.fmt_fecha("2026-07-28 14:30") == "28/07/2026 14:30"
+    assert ticket_generator.fmt_fecha("2026-07-28") == "28-07-2026"
+    assert ticket_generator.fmt_fecha("20260807") == "07-08-2026"
+    assert ticket_generator.fmt_fecha("2026-07-28 14:30") == "28-07-2026 14:30"
     assert ticket_generator.fmt_fecha("") == ""
 
 

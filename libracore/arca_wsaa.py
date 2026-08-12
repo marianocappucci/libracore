@@ -32,7 +32,7 @@ def validar_archivos(cert_path, key_path):
         ahora = datetime.now(timezone.utc)
         vto = cert.not_valid_after_utc
         if vto < ahora:
-            errores.append(f"Certificado vencido el {vto.strftime('%d/%m/%Y')}")
+            errores.append(f"Certificado vencido el {vto.strftime('%d-%m-%Y')}")
         elif cert.not_valid_before_utc > ahora:
             errores.append("Certificado aún no es válido (fecha de inicio futura)")
     except FileNotFoundError:
@@ -79,7 +79,7 @@ def info_certificado(cert_path):
         return {
             "subject":  cert.subject.rfc4514_string(),
             "issuer":   cert.issuer.rfc4514_string(),
-            "vencimiento": vto.strftime("%d/%m/%Y"),
+            "vencimiento": vto.strftime("%d-%m-%Y"),
             "vencido":  vto < ahora,
             "dias_restantes": max(0, (vto - ahora).days),
             "serial":   str(cert.serial_number),

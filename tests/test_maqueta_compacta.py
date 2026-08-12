@@ -291,7 +291,7 @@ def test_la_factura_conserva_todos_los_campos_fiscales(pgen, tmp_path):
     for esperado in (
         # Emisor
         "Compulibra - Soporte IT", "20-31234567-8", "Responsable Inscripto",
-        "Av. Villarino 1200", "01/03/2018", "902-654321-7",
+        "Av. Villarino 1200", "01-03-2018", "902-654321-7",
         # Receptor
         "Clinica del Sol S.A.", "30-65432198-2", "Rivadavia 1290",
         # Fiscales del comprobante
