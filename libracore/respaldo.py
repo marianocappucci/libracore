@@ -116,6 +116,29 @@ class Instancia:
             )
         if not self.bases and not self.postgres_url:
             raise ValueError("una instancia sin ninguna base no se puede respaldar")
+        if self.postgres_url:
+            # 🔴 Dos bases que producen el MISMO nombre dentro del ZIP.
+            #
+            # Pasa cuando la principal no es la que se cree: `dumps` nombra a la
+            # principal por `nombre` y a las extra por su base, asi que si la
+            # principal fuera `gestiolibra_core` y la extra `gestiolibra`, las
+            # dos saldrian como `gestiolibra.dump`. Una pisaria a la otra en el
+            # ZIP y `nombres_en_zip` —que es un set— tendria un solo elemento,
+            # asi que **la verificacion pasaria igual**: un backup con una sola
+            # mitad, dado por bueno.
+            #
+            # El orden depende de en que orden aparecen las variables en el
+            # contenedor cuando lo arma `provisioning.panel_admin`, o sea del
+            # compose. Es exactamente la clase de cosa que anda hasta el dia que
+            # alguien reordena dos lineas.
+            nombres = [n for _, n in self.dumps]
+            repetidos = sorted({n for n in nombres if nombres.count(n) > 1})
+            if repetidos:
+                raise ValueError(
+                    f"dos bases de esta instancia caerian en el mismo archivo "
+                    f"del backup ({repetidos}): la principal tiene que ser la "
+                    f"base del dominio, no una de las adicionales"
+                )
         if self.bases and self.postgres_url:
             # No es una limitacion tecnica, es que no existe el caso y dejarlo
             # pasar esconde un error de cableado: un producto que pasa las dos
