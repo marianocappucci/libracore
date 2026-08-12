@@ -76,7 +76,8 @@ def sincronizar_parties_de_clientes() -> int:
         return cur.rowcount
 
 
-def create_client(name, address="", cuit_dni="", email="", phone="", iva_condition=""):
+def create_client(name, address="", cuit_dni="", email="", phone="", iva_condition="",
+                  empresa="", ciudad="", observaciones="", tipo_facturacion="por_servicio"):
     if (cuit_dni or "").replace("-", "").strip():
         existing = get_client_by_cuit(cuit_dni)
         if existing:
@@ -88,8 +89,12 @@ def create_client(name, address="", cuit_dni="", email="", phone="", iva_conditi
             )
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO clients (name, address, cuit_dni, email, phone, iva_condition) VALUES (?,?,?,?,?,?)",
-            (name, address, cuit_dni, email, phone, iva_condition),
+            "INSERT INTO clients (name, address, cuit_dni, email, phone, iva_condition,"
+            " empresa, ciudad, observaciones, tipo_facturacion)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (name, address, cuit_dni, email, phone, iva_condition,
+             empresa or "", ciudad or "", observaciones or "",
+             tipo_facturacion or "por_servicio"),
         )
         client_id = cur.lastrowid
         # En la MISMA transacción que el alta: un cliente sin su party es
@@ -206,7 +211,9 @@ def get_facturas_by_client(cuit_dni: str, name: str, limit: int = 100) -> list:
 
 def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
                   phone=None, iva_condition=None, auto_facturar=None,
-                  cc_resumen_auto=None, cc_resumen_frecuencia=None):
+                  cc_resumen_auto=None, cc_resumen_frecuencia=None,
+                  empresa=None, ciudad=None, observaciones=None,
+                  tipo_facturacion=None):
     client = get_client(client_id)
     if not client:
         return
@@ -223,7 +230,8 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
         conn.execute(
             """UPDATE clients SET name=?, address=?, cuit_dni=?, email=?, phone=?,
                iva_condition=?, auto_facturar=?, cc_resumen_auto=?,
-               cc_resumen_frecuencia=? WHERE id=?""",
+               cc_resumen_frecuencia=?, empresa=?, ciudad=?, observaciones=?,
+               tipo_facturacion=? WHERE id=?""",
             (
                 nuevo_name,
                 address       if address       is not None else client["address"],
@@ -235,6 +243,11 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
                 int(cc_resumen_auto) if cc_resumen_auto is not None else int(client.get("cc_resumen_auto", 0)),
                 cc_resumen_frecuencia if cc_resumen_frecuencia is not None
                 else (client.get("cc_resumen_frecuencia") or "mensual"),
+                empresa       if empresa       is not None else (client.get("empresa") or ""),
+                ciudad        if ciudad        is not None else (client.get("ciudad") or ""),
+                observaciones if observaciones is not None else (client.get("observaciones") or ""),
+                tipo_facturacion if tipo_facturacion is not None
+                else (client.get("tipo_facturacion") or "por_servicio"),
                 client_id,
             ),
         )
