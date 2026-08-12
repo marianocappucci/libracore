@@ -43,9 +43,14 @@ def cfg_zip(tmp_path, fake_docker):  # noqa: F811
     return provisioning.get_config()
 
 
-def _cliente_con_datos(cfg, slug="cliente", db_content=b""):
-    """Un cliente con logos y un backup viejo ya en `data/backups/`."""
-    cdir = _mkclient(cfg, slug, db_content=db_content)
+def _cliente_con_datos(config, slug="cliente", db_content=b""):
+    """Un cliente con logos y un backup viejo ya en `data/backups/`.
+
+    El parametro se llama `config` y no `cfg` a proposito: `cfg` es el nombre de
+    una fixture importada arriba, y sombrearla acá la deja sin usar sin que se
+    note.
+    """
+    cdir = _mkclient(config, slug, db_content=db_content)
     (cdir / "data" / "logos").mkdir()
     (cdir / "data" / "logos" / "logo.png").write_bytes(b"PNG-falso")
     (cdir / "data" / "backups").mkdir()

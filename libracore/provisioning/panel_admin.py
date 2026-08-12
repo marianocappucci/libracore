@@ -503,7 +503,7 @@ def _directorios_de_datos(data_dir: Path) -> list[Path]:
     )
 
 
-def _instancia_del_cliente(c: dict, cfg, urls_postgres: list[str]) -> "Instancia":
+def _instancia_del_cliente(c: dict, cfg, urls_postgres: list[str]):
     """Traduce un cliente del panel a lo que `libracore.respaldo` sabe respaldar.
 
     El `nombre` sale de `cfg.container_prefix` **a propósito**: es el mismo que
@@ -513,6 +513,7 @@ def _instancia_del_cliente(c: dict, cfg, urls_postgres: list[str]) -> "Instancia
     backup es de otro sistema" — y esa es justamente la única cosa que este
     cambio vino a garantizar.
     """
+    # Import diferido, como el resto de los usos de `respaldo` en este modulo.
     from ..respaldo import Instancia
 
     data_dir = c["dir"] / "data"
