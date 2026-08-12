@@ -70,6 +70,12 @@ packages = ["libracore"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    # Una instancia que YA corrió la revisión 0002 del motor. Sin registrarla,
+    # pytest la reporta como desconocida — y bajo `--strict-markers` el test se
+    # caería: una marca que no existe no filtra nada.
+    "las_cuatro: la base ya tiene las cuatro columnas de clients de la 0002",
+]
 
 # === lint + coverage (agregado 2026-07-31) ===
 # Lint activado en los 12 repos de la familia el mismo dia. El ruleset es

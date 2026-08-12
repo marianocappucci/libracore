@@ -108,17 +108,53 @@ def validar_cuit_no_duplicado(cuit_dni, excluir_id: int | None = None) -> None:
     )
 
 
+#: Las cuatro columnas que agregó la revisión `0002` de Alembic para que
+#: LibraDesk pudiera adoptar el módulo.
+_COLUMNAS_0002 = ("empresa", "ciudad", "observaciones", "tipo_facturacion")
+
+
+def _columnas_de_clients(conn) -> set[str]:
+    """Qué columnas tiene HOY la tabla, en esta instancia.
+
+    🔴 **Hace falta porque el schema del motor y el de una instancia viva no son
+    lo mismo.** Las cuatro de la revisión `0002` no están en
+    `init_core_schema()` —esa función quedó congelada en la `0001`— así que sólo
+    las tiene una base que haya corrido la cadena de Alembic del motor. Y hoy
+    **nadie la corre**: no hay ningún punto de entrada que la ejecute.
+
+    Medido el 2026-08-12 sobre las ocho bases PostgreSQL del VPS: **siete no
+    tienen ninguna de las cuatro**. Escribirlas sin preguntar rompía el alta de
+    clientes con `table clients has no column named empresa` — en Contalibra y
+    Restolibra lo agarró su CI; en los otros no, porque ahí la tabla de los
+    tests nace del `CREATE TABLE` y no de la base real.
+
+    Cuando la revisión se aplique, las columnas van a estar y se escriben solas.
+    Esto no compite con Alembic: lo hace tolerable mientras tanto.
+    """
+    return {r[1] for r in conn.execute("PRAGMA table_info(clients)").fetchall()}
+
+
 def create_client(name, address="", cuit_dni="", email="", phone="", iva_condition="",
                   empresa="", ciudad="", observaciones="", tipo_facturacion="por_servicio"):
     validar_cuit_no_duplicado(cuit_dni)
     with get_connection() as conn:
+        columnas = ["name", "address", "cuit_dni", "email", "phone", "iva_condition"]
+        valores = [name, address, cuit_dni, email, phone, iva_condition]
+        nuevas = {
+            "empresa": empresa or "",
+            "ciudad": ciudad or "",
+            "observaciones": observaciones or "",
+            "tipo_facturacion": tipo_facturacion or "por_servicio",
+        }
+        presentes = _columnas_de_clients(conn)
+        for col in _COLUMNAS_0002:
+            if col in presentes:
+                columnas.append(col)
+                valores.append(nuevas[col])
         cur = conn.execute(
-            "INSERT INTO clients (name, address, cuit_dni, email, phone, iva_condition,"
-            " empresa, ciudad, observaciones, tipo_facturacion)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (name, address, cuit_dni, email, phone, iva_condition,
-             empresa or "", ciudad or "", observaciones or "",
-             tipo_facturacion or "por_servicio"),
+            f"INSERT INTO clients ({', '.join(columnas)})"
+            f" VALUES ({', '.join(['?'] * len(columnas))})",
+            tuple(valores),
         )
         client_id = cur.lastrowid
         # En la MISMA transacción que el alta: un cliente sin su party es
@@ -251,29 +287,42 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
     nuevo_email    = email         if email         is not None else client["email"]
     nuevo_phone    = phone         if phone         is not None else client["phone"]
     with get_connection() as conn:
+        # Mismo criterio que en el alta: las cuatro de la revisión `0002` se
+        # tocan sólo si la instancia las tiene. Ver `_columnas_de_clients`.
+        asignaciones = [
+            "name=?", "address=?", "cuit_dni=?", "email=?", "phone=?",
+            "iva_condition=?", "auto_facturar=?", "cc_resumen_auto=?",
+            "cc_resumen_frecuencia=?",
+        ]
+        valores = [
+            nuevo_name,
+            address       if address       is not None else client["address"],
+            nuevo_cuit,
+            nuevo_email,
+            nuevo_phone,
+            iva_condition if iva_condition is not None else client.get("iva_condition", ""),
+            int(auto_facturar) if auto_facturar is not None else int(client.get("auto_facturar", 0)),
+            int(cc_resumen_auto) if cc_resumen_auto is not None else int(client.get("cc_resumen_auto", 0)),
+            cc_resumen_frecuencia if cc_resumen_frecuencia is not None
+            else (client.get("cc_resumen_frecuencia") or "mensual"),
+        ]
+        nuevas = {
+            "empresa": empresa if empresa is not None else (client.get("empresa") or ""),
+            "ciudad": ciudad if ciudad is not None else (client.get("ciudad") or ""),
+            "observaciones": observaciones if observaciones is not None
+            else (client.get("observaciones") or ""),
+            "tipo_facturacion": tipo_facturacion if tipo_facturacion is not None
+            else (client.get("tipo_facturacion") or "por_servicio"),
+        }
+        presentes = _columnas_de_clients(conn)
+        for col in _COLUMNAS_0002:
+            if col in presentes:
+                asignaciones.append(f"{col}=?")
+                valores.append(nuevas[col])
+        valores.append(client_id)
         conn.execute(
-            """UPDATE clients SET name=?, address=?, cuit_dni=?, email=?, phone=?,
-               iva_condition=?, auto_facturar=?, cc_resumen_auto=?,
-               cc_resumen_frecuencia=?, empresa=?, ciudad=?, observaciones=?,
-               tipo_facturacion=? WHERE id=?""",
-            (
-                nuevo_name,
-                address       if address       is not None else client["address"],
-                nuevo_cuit,
-                nuevo_email,
-                nuevo_phone,
-                iva_condition if iva_condition is not None else client.get("iva_condition", ""),
-                int(auto_facturar) if auto_facturar is not None else int(client.get("auto_facturar", 0)),
-                int(cc_resumen_auto) if cc_resumen_auto is not None else int(client.get("cc_resumen_auto", 0)),
-                cc_resumen_frecuencia if cc_resumen_frecuencia is not None
-                else (client.get("cc_resumen_frecuencia") or "mensual"),
-                empresa       if empresa       is not None else (client.get("empresa") or ""),
-                ciudad        if ciudad        is not None else (client.get("ciudad") or ""),
-                observaciones if observaciones is not None else (client.get("observaciones") or ""),
-                tipo_facturacion if tipo_facturacion is not None
-                else (client.get("tipo_facturacion") or "por_servicio"),
-                client_id,
-            ),
+            f"UPDATE clients SET {', '.join(asignaciones)} WHERE id=?",
+            tuple(valores),
         )
         # El espejo se mantiene al día (no solo se crea): el party es el
         # que ve LibraCommerce, y un nombre viejo ahí contradice al de
