@@ -246,6 +246,9 @@ def fmt_fecha(s: str) -> str:
 def generar_ticket_venta(venta: dict) -> bytes:
     ancho_mm, fuente, logo, corte, pie, cfg = cfg_ticket()
     pdf = TicketPDF(ancho_mm, fuente)
+    # Se corta el papel, se traba la impresora: pedir el ticket de nuevo tiene
+    # que dar el mismo archivo. Ver `_TextoSeguroPDF.fijar_fecha_documento()`.
+    pdf.fijar_fecha_documento(venta.get("fecha"))
 
     _empresa_header(pdf, cfg, logo)
     pdf._separador()
@@ -301,6 +304,7 @@ def generar_ticket_venta(venta: dict) -> bytes:
 def generar_ticket_factura(factura: dict) -> bytes:
     ancho_mm, fuente, logo, corte, pie, cfg = cfg_ticket()
     pdf = TicketPDF(ancho_mm, fuente)
+    pdf.fijar_fecha_documento(factura.get("fecha"))
 
     _empresa_header(pdf, cfg, logo)
     pdf._separador()
