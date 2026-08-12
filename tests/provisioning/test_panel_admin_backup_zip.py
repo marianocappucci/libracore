@@ -199,6 +199,51 @@ def test_con_el_flag_no_deja_tar_gz(cfg_zip, monkeypatch):
     assert not list(cfg_zip.clientes_dir.glob("cliente_backup_*.tar.gz"))
 
 
+# ── cual de las dos bases es la principal ─────────────────────────────────────
+
+def test_el_orden_del_compose_no_decide_cual_es_la_principal(cfg_zip, monkeypatch):
+    """Con las variables al reves, el ZIP tiene que salir igual.
+
+    Si se respetara el orden en que vienen, la principal seria la de LibraCore y
+    las dos bases caerian en `testprod.dump`: una pisa a la otra y
+    `nombres_en_zip` —que es un set— tendria un solo elemento, asi que la
+    verificacion pasaria con medio backup.
+    """
+    _cliente_con_datos(cfg_zip)
+    _con_postgres(monkeypatch, [
+        "postgresql://u:p@side:5432/testprod_core",   # primero la de LibraCore
+        "postgresql://u:p@side:5432/testprod",
+    ])
+
+    pa.cmd_backup("cliente", quiet=True)
+
+    zips = sorted((cfg_zip.clientes_dir / "cliente" / "data" / "backups").glob("backup_automatico_*.zip"))
+    with zipfile.ZipFile(zips[0]) as z:
+        bases = sorted(n for n in z.namelist() if n.startswith("bases/"))
+    assert bases == ["bases/testprod.dump", "bases/testprod_core.dump"]
+
+
+def test_principal_primero_deja_el_orden_si_ninguna_coincide():
+    """Reordenar a ciegas seria peor que no tocar nada."""
+    urls = ["postgresql://u:p@h:5432/otra", "postgresql://u:p@h:5432/distinta"]
+
+    assert pa._principal_primero(urls, "testprod") == urls
+
+
+def test_una_instancia_con_dos_bases_del_mismo_nombre_no_se_construye():
+    """La red de abajo: aunque el orden fallara, `Instancia` no deja pasar dos
+    bases que caerian en el mismo archivo."""
+    from libracore.respaldo import Instancia
+
+    with pytest.raises(ValueError) as e:
+        Instancia(
+            nombre="testprod",
+            postgres_url="postgresql://u:p@h:5432/testprod_core",
+            postgres_extra=["postgresql://u:p@h:5432/testprod"],
+        )
+    assert "mismo archivo" in str(e.value)
+
+
 def test_directorios_de_datos_excluye_backups(tmp_path):
     data = tmp_path / "data"
     (data / "logos").mkdir(parents=True)

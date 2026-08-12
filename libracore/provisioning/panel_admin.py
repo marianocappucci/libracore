@@ -503,6 +503,31 @@ def _directorios_de_datos(data_dir: Path) -> list[Path]:
     )
 
 
+def _principal_primero(urls: list[str], prefijo: str) -> list[str]:
+    """Pone adelante la base del DOMINIO, que es la que el producto respalda
+    como principal.
+
+    🔴 **No alcanza con respetar el orden en que vinieron.** `urls` sale de
+    leer las variables del contenedor, o sea del orden en que estan escritas en
+    el compose. Hoy `DATABASE_URL` viene antes que
+    `<PRODUCTO>_LIBRACORE_DB_PATH` en los dos productos con dos bases, y por eso
+    funciona; el dia que alguien reordene esas dos lineas, la principal pasaria
+    a ser la de LibraCore y las dos bases caerian en el mismo archivo del ZIP.
+
+    El criterio es el nombre: la base del dominio se llama igual que el
+    producto (`gestiolibra`), la de LibraCore lleva sufijo
+    (`gestiolibra_core`). Si ninguna coincide, se deja el orden como vino — no
+    es un caso conocido, y reordenar a ciegas seria peor que no tocar nada.
+    """
+    def _base(url: str) -> str:
+        return url.rstrip("/").rsplit("/", 1)[-1].split("?")[0]
+
+    exactas = [u for u in urls if _base(u) == prefijo]
+    if not exactas:
+        return list(urls)
+    return exactas + [u for u in urls if _base(u) != prefijo]
+
+
 def _instancia_del_cliente(c: dict, cfg, urls_postgres: list[str]):
     """Traduce un cliente del panel a lo que `libracore.respaldo` sabe respaldar.
 
@@ -519,10 +544,11 @@ def _instancia_del_cliente(c: dict, cfg, urls_postgres: list[str]):
     data_dir = c["dir"] / "data"
     directorios = _directorios_de_datos(data_dir)
     if urls_postgres:
+        principal, *extra = _principal_primero(urls_postgres, cfg.container_prefix)
         return Instancia(
             nombre=cfg.container_prefix,
-            postgres_url=urls_postgres[0],
-            postgres_extra=urls_postgres[1:],
+            postgres_url=principal,
+            postgres_extra=extra,
             directorios=directorios,
         )
     return Instancia(
