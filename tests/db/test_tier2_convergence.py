@@ -77,6 +77,41 @@ def test_clients_rechaza_cuit_duplicado(conn):
         clients.create_client("Cliente Dos (mismo CUIT)", cuit_dni="20111111111")
 
 
+def test_validar_cuit_sirve_a_un_producto_que_escribe_por_su_cuenta(conn):
+    """La validación separada de `create_client`, para LibraDesk.
+
+    Comparte la tabla `clients` pero escribe por SQLAlchemy, porque el log de
+    actividad de `libraauth` cuelga de los eventos de `flush` de la sesión.
+    Necesita la validación sin el INSERT de este módulo.
+    """
+    clients.create_client("Cliente Uno", cuit_dni="20-11111111-1")
+
+    # Sin guiones y con guiones: la misma fila, igual que en el alta.
+    with pytest.raises(ValueError):
+        clients.validar_cuit_no_duplicado("20111111111")
+    with pytest.raises(ValueError):
+        clients.validar_cuit_no_duplicado("20-11111111-1")
+
+    # Un CUIT libre no molesta, y uno vacío tampoco: no todos los clientes lo
+    # tienen cargado.
+    clients.validar_cuit_no_duplicado("27-99999999-4")
+    clients.validar_cuit_no_duplicado("")
+    clients.validar_cuit_no_duplicado(None)
+
+
+def test_validar_cuit_no_choca_al_cliente_consigo_mismo(conn):
+    """El caso de la edición: guardar un cliente sin cambiarle el CUIT tiene
+    que pasar. Sin `excluir_id`, editarle el nombre a un cliente con CUIT
+    fallaría siempre, contra su propia fila."""
+    cid = clients.create_client("Cliente Uno", cuit_dni="20-11111111-1")
+
+    clients.validar_cuit_no_duplicado("20-11111111-1", excluir_id=cid)
+
+    otro = clients.create_client("Cliente Dos", cuit_dni="27-99999999-4")
+    with pytest.raises(ValueError):
+        clients.validar_cuit_no_duplicado("20-11111111-1", excluir_id=otro)
+
+
 def test_clients_busqueda_normalizada(conn):
     clients.create_client("Cliente Mail", email="Test@Ejemplo.com")
     assert clients.get_client_by_email("test@ejemplo.com") is not None

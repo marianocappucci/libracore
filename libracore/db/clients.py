@@ -76,17 +76,41 @@ def sincronizar_parties_de_clientes() -> int:
         return cur.rowcount
 
 
+def validar_cuit_no_duplicado(cuit_dni, excluir_id: int | None = None) -> None:
+    """Levanta `ValueError` si ese CUIT/DNI ya lo tiene otro cliente.
+
+    Está separada de `create_client` para que la pueda usar **un producto que
+    escribe la tabla por su propia capa** y no por este módulo. El caso vivo es
+    [[libradesk]]: comparte la tabla `clients` desde su revisión `0017`, pero
+    sus escrituras van por SQLAlchemy a propósito, porque el log de actividad
+    de `libraauth` cuelga de los eventos de `flush` de la sesión — escribir por
+    la conexión cruda de acá lo dejaría **sin auditar y sin que nadie se
+    entere**.
+
+    `excluir_id` es para la edición: un cliente no choca consigo mismo.
+
+    > ⚠️ La normalización es la de `get_client_by_cuit`: saca guiones y nada
+    > más. Un CUIT tipeado con puntos o espacios **no** matchea. El adaptador
+    > de SOS de LibraDesk se quedaba con los dígitos, que es más fuerte;
+    > unificar hacia allá cambiaría a qué fila matchean Contalibra, Restolibra
+    > y VentaLibra, así que es una decisión aparte y no se hace de pasada.
+    """
+    if not (cuit_dni or "").replace("-", "").strip():
+        return
+    existing = get_client_by_cuit(cuit_dni)
+    if not existing or existing["id"] == excluir_id:
+        return
+    estado = "activo" if existing.get("activo") else "inactivo"
+    sugerencia = "Reactivalo desde /clientes en vez de crear uno nuevo." if not existing.get("activo") \
+        else "Editalo si necesitás cambiar sus datos."
+    raise ValueError(
+        f'Ya existe un cliente con el CUIT/DNI {cuit_dni}: "{existing["name"]}" ({estado}). {sugerencia}'
+    )
+
+
 def create_client(name, address="", cuit_dni="", email="", phone="", iva_condition="",
                   empresa="", ciudad="", observaciones="", tipo_facturacion="por_servicio"):
-    if (cuit_dni or "").replace("-", "").strip():
-        existing = get_client_by_cuit(cuit_dni)
-        if existing:
-            estado = "activo" if existing.get("activo") else "inactivo"
-            sugerencia = "Reactivalo desde /clientes en vez de crear uno nuevo." if not existing.get("activo") \
-                else "Editalo si necesitás cambiar sus datos."
-            raise ValueError(
-                f'Ya existe un cliente con el CUIT/DNI {cuit_dni}: "{existing["name"]}" ({estado}). {sugerencia}'
-            )
+    validar_cuit_no_duplicado(cuit_dni)
     with get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO clients (name, address, cuit_dni, email, phone, iva_condition,"
