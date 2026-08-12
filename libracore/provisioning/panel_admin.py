@@ -780,6 +780,47 @@ def cmd_resguardo_externo(slugs: list[str] | None = None):
         print(f"[OK] {con_resguardo} instancia/s resguardada/s afuera.")
 
 
+def cmd_estado_externo(slugs: list[str] | None = None):
+    """Avisa si alguna copia externa quedo vieja o fallando.
+
+    🔴 **Esto es lo que convierte el resguardo externo en un resguardo.** Sin un
+    chequeo de frescura, el dia que un cliente revoque el acceso OAuth la subida
+    empieza a fallar y **todo se ve igual**: el ZIP local sigue apareciendo, la
+    pantalla sigue mostrando backups, y nadie se entera hasta que hace falta.
+
+    Sale con codigo 1 si algo esta mal, para que el cron lo pueda detectar.
+    """
+    from . import resguardo_externo as rx
+    from ..resguardo_estado import esta_al_dia
+
+    clientes = load_clients()
+    targets = [c for c in clientes if (not slugs or c["slug"] in slugs)]
+    problemas = []
+    revisados = 0
+
+    for c in targets:
+        try:
+            if rx.destino_de(c) is None:
+                continue
+        except rx.ResguardoExternoError as e:
+            problemas.append((c["slug"], str(e)))
+            continue
+        revisados += 1
+        al_dia, motivo = esta_al_dia(c["dir"] / "data" / "backups")
+        if al_dia:
+            print(f"[OK] {c['slug']}: {motivo}")
+        else:
+            problemas.append((c["slug"], motivo))
+
+    if not revisados and not problemas:
+        print("[*] Ninguna instancia tiene resguardo externo contratado.")
+        return
+    for slug, motivo in problemas:
+        print(f"[ERROR] {slug}: {motivo}")
+    if problemas:
+        sys.exit(1)
+
+
 def cmd_backup_all():
     """Backup de todos los clientes activos — pensado para cron diario."""
     clientes = load_clients()
@@ -1406,6 +1447,7 @@ def cli():
         "backup":       lambda: cmd_backup(slug) if slug else print("Uso: panel_admin.py backup <slug>"),
         "backup-all":   lambda: cmd_backup_all(),
         "resguardo-externo": lambda: cmd_resguardo_externo([slug] if slug else None),
+        "estado-externo":    lambda: cmd_estado_externo([slug] if slug else None),
         "list-backups": lambda: cmd_list_backups(slug) if slug else print("Uso: panel_admin.py list-backups <slug>"),
         "restore-db":   lambda: cmd_restore_db(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py restore-db <slug> [archivo.db]"),
         "actualizar":  lambda: cmd_actualizar([slug] if slug else None),
@@ -1430,7 +1472,7 @@ def cli():
         print("Comandos: listar | info | start | stop | restart | logs | backup | actualizar | eliminar")
         print("Versión:  versiones | rollback <slug> [version] | podar-imagenes [--dry-run]")
         print("DB:       list-backups <slug> | restore-db <slug> [archivo.db]")
-        print("Externo:  resguardo-externo [slug]  (sube el backup a la nube del cliente)")
+        print("Externo:  resguardo-externo [slug] | estado-externo [slug]")
         print("Servicio: activar <slug> | pausar <slug> | suspender <slug> | estado <slug>")
         print("NPM:      npm-listar | npm-crear <slug> | npm-eliminar <slug>")
         sys.exit(1)

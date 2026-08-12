@@ -31,8 +31,19 @@ modulo asume que el remoto ya existe en la config de `rclone` y que
 import json
 import re
 import subprocess
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
+
+# El estado vive en `libracore.resguardo_estado` porque lo escribe el host y lo
+# lee la app: dejarlo aca obligaria al contenedor a importar el modulo que
+# maneja Docker para leer un JSON. Se re-exportan para no romper a quien ya los
+# importaba de aca.
+from ..resguardo_estado import (  # noqa: F401
+    ESTADO,
+    escribir_estado,
+    esta_al_dia,
+    leer_estado,
+)
 
 #: Cuantos ZIP se conservan en el destino externo, por franja. Alla el disco no
 #: es nuestro, asi que se puede guardar mas historia que en el VPS.
@@ -43,9 +54,6 @@ GFS_MENSUALES = 6
 #: `backup_<motivo>_<YYYYmmdd>_<HHMMSS>[_n].zip`
 _NOMBRE = re.compile(r"^backup_[a-z_]+_(\d{8})_(\d{6})(?:_\d+)?\.zip$")
 
-#: Nombre del archivo que la pantalla lee para contar que paso con la copia
-#: externa. Va en el mismo directorio que los ZIP.
-ESTADO = ".externo.json"
 
 
 class ResguardoExternoError(Exception):
@@ -178,17 +186,6 @@ def _listar_remoto(destino: str, binario="rclone") -> dict[str, int]:
     return {i["Name"]: i["Size"] for i in json.loads(salida or "[]") if not i["IsDir"]}
 
 
-def escribir_estado(backups_dir, datos: dict) -> Path:
-    """Deja `.externo.json` para que la pantalla pueda contar que paso.
-
-    Se escribe **tambien cuando falla**: una pantalla que no distingue "nunca se
-    configuro" de "hace cuatro dias que no sube" no sirve de nada, y el silencio
-    es justo el modo de falla que este archivo viene a cerrar.
-    """
-    destino = Path(backups_dir) / ESTADO
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_text(json.dumps(datos, indent=2, ensure_ascii=False), encoding="utf-8")
-    return destino
 
 
 def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print) -> dict:
@@ -251,31 +248,3 @@ def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print
     return estado
 
 
-def esta_al_dia(backups_dir, *, horas=36, ahora=None) -> tuple[bool, str]:
-    """`(al_dia, motivo)` segun el `.externo.json`.
-
-    Existe porque **una copia externa sin chequeo de frescura no cuenta como
-    resguardo**: el dia que el cliente revoque el OAuth, la subida falla y todo
-    se ve igual que si anduviera. Es el mismo modo de falla que el backup
-    nocturno que se salteaba la base en silencio.
-    """
-    ahora = ahora or datetime.now()
-    ruta = Path(backups_dir) / ESTADO
-    if not ruta.exists():
-        return False, "nunca subio: no hay .externo.json"
-    try:
-        datos = json.loads(ruta.read_text(encoding="utf-8"))
-    except ValueError:
-        return False, ".externo.json ilegible"
-    if not datos.get("ok"):
-        return False, f"la ultima subida fallo: {datos.get('error') or 'sin detalle'}"
-    try:
-        cuando = datetime.fromisoformat(datos["cuando"])
-    except (KeyError, ValueError):
-        return False, ".externo.json sin fecha valida"
-    if ahora - cuando > timedelta(hours=horas):
-        return False, (
-            f"la ultima copia externa es de {datos['cuando']}, "
-            f"hace mas de {horas} horas"
-        )
-    return True, f"al dia ({datos['cuando']})"
