@@ -99,37 +99,100 @@ def _compose_path(slug: str) -> Path:
     return get_config().clientes_dir / slug / "docker-compose.yml"
 
 
+_SERVICIO_LINE = re.compile(r"^  (?P<nombre>[A-Za-z0-9_-]+):[ \t]*$")
+_CONTAINER_LINE = re.compile(r"^[ \t]+container_name:[ \t]*(?P<nombre>\S+)")
+
+
+def _image_de_la_app(contenido: str, slug: str):
+    """La línea `image:` **del servicio de la aplicación**, o `None`.
+
+    🔴 **Antes esto era `_IMAGE_LINE.search()`, o sea la PRIMERA línea
+    `image:` del archivo**, con el argumento de que "el compose de un cliente
+    declara un único servicio". Eso dejó de ser cierto el día que cada
+    instancia ganó su sidecar de PostgreSQL, y en [[libradesk]] el sidecar está
+    declarado **arriba** del servicio de la app.
+
+    Lo que pasó el 2026-08-12 desplegando la demo de LibraDesk: el pin escribió
+    la imagen de la aplicación en el servicio `libradesk-demo-db`, y el
+    contenedor de PostgreSQL arrancó **corriendo la app**. La base quedó abajo.
+    No se perdieron datos —viven en un volumen con nombre— pero el `up -d`
+    reportó éxito y el deploy "terminó bien".
+
+    Se elige por identidad, con dos criterios y **sin caer en el primero que
+    aparezca**:
+
+    1. El servicio cuyo `container_name` es el del cliente. Es exacto.
+    2. Si no hay, el que pinea una imagen del propio producto
+       (`<prefijo>:...`). Cubre un compose sin `container_name`.
+
+    Si ninguno matchea devuelve `None` y el que llama avisa. Pinear el
+    servicio equivocado es peor que no pinear: lo segundo deja el deploy sin
+    aplicar, lo primero apaga la base.
+    """
+    cliente = find_client(slug) or {}
+    esperado = cliente.get("container")
+    prefijo = get_config().container_prefix
+
+    servicio = None
+    bloques: dict[str, dict] = {}
+    for m in re.finditer(r"^.*$", contenido, re.MULTILINE):
+        linea = m.group(0)
+        s = _SERVICIO_LINE.match(linea)
+        if s:
+            servicio = s.group("nombre")
+            bloques.setdefault(servicio, {})
+            continue
+        if servicio is None:
+            continue
+        c = _CONTAINER_LINE.match(linea)
+        if c:
+            bloques[servicio]["container_name"] = c.group("nombre")
+            continue
+        i = _IMAGE_LINE.match(linea)
+        if i and "image" not in bloques[servicio]:
+            bloques[servicio]["image"] = (m.start(), m.end(), i.group("pre"), i.group("ref"))
+
+    if esperado:
+        for datos in bloques.values():
+            if datos.get("container_name") == esperado and "image" in datos:
+                return datos["image"]
+    for datos in bloques.values():
+        img = datos.get("image")
+        if img and img[3].startswith(f"{prefijo}:"):
+            return img
+    return None
+
+
 def leer_image_pineada(slug: str) -> str | None:
-    """Referencia de imagen que declara hoy el compose del cliente, o None
-    si el archivo no existe o no tiene una línea `image:`."""
+    """Referencia de imagen que declara hoy el compose del cliente para **su
+    servicio de aplicación**, o None si no se puede determinar."""
     path = _compose_path(slug)
     try:
         contenido = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    m = _IMAGE_LINE.search(contenido)
-    return m.group("ref") if m else None
+    img = _image_de_la_app(contenido, slug)
+    return img[3] if img else None
 
 
 def pinear_image(slug: str, ref: str) -> str | None:
-    """Reescribe la línea `image:` del compose del cliente y devuelve la
-    referencia que había antes (None si no se pudo tocar el archivo).
+    """Reescribe la línea `image:` del servicio de la app y devuelve la
+    referencia que había antes (None si no se pudo identificar o tocar).
 
-    Se reemplaza solo la **primera** ocurrencia: el compose de un cliente
-    declara un único servicio, y limitarlo evita que un `image:` que
-    aparezca más abajo (un sidecar futuro) se pise sin querer."""
+    Ver `_image_de_la_app` para por qué la elección del servicio no puede ser
+    "la primera línea `image:`".
+    """
     path = _compose_path(slug)
     try:
         contenido = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    m = _IMAGE_LINE.search(contenido)
-    if not m:
+    img = _image_de_la_app(contenido, slug)
+    if not img:
         return None
-    anterior = m.group("ref")
+    inicio, fin, pre, anterior = img
     if anterior != ref:
-        nuevo = contenido[:m.start()] + m.group("pre") + ref + contenido[m.end():]
-        path.write_text(nuevo, encoding="utf-8")
+        path.write_text(contenido[:inicio] + pre + ref + contenido[fin:], encoding="utf-8")
     return anterior
 
 
