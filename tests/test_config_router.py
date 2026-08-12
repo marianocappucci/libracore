@@ -301,3 +301,55 @@ def test_la_instancia_puede_resolverse_por_callable(tmp_path, monkeypatch):
         cr.build_backup_router(lambda: Instancia(nombre="t", bases=[base]), tmp_path / "bk"),
     )
     assert TestClient(app).post("/api/config/backups").status_code == 200
+
+
+# ── el estado de la copia externa, que la pantalla lee ────────────────────────
+
+def test_resguardo_externo_sin_configurar_no_es_una_alarma(client):
+    """Para la pantalla, "no hay archivo" es "no tenés el add-on" — no un
+    error. Mostrarle una alarma a quien no lo contrató es ruido."""
+    r = client.get('/api/config/resguardo-externo', headers={'x-rol': 'admin'})
+
+    assert r.status_code == 200
+    assert r.json() == {
+        'contratado': False, 'al_dia': None, 'motivo': None, 'detalle': None,
+    }
+
+
+def test_resguardo_externo_refleja_lo_que_dejo_el_host(client, app):
+    """El host escribe el .externo.json; la app sólo lo cuenta. Nunca sube nada
+    ni ve la credencial de la nube del cliente."""
+    from datetime import datetime
+    from libracore.resguardo_estado import escribir_estado
+
+    escribir_estado(app.state.backups_dir, {
+        'ok': True,
+        'cuando': datetime.now().isoformat(timespec='seconds'),
+        'archivo': 'backup_automatico_20260812_040000.zip',
+        'destino': 'drive_cliente:libra/cliente',
+        'bytes': 3800000,
+        'en_destino': 10,
+    })
+
+    r = client.get('/api/config/resguardo-externo', headers={'x-rol': 'admin'})
+
+    datos = r.json()
+    assert datos['contratado'] is True
+    assert datos['al_dia'] is True
+    assert datos['detalle']['destino'] == 'drive_cliente:libra/cliente'
+
+
+def test_resguardo_externo_muestra_la_falla(client, app):
+    from datetime import datetime
+    from libracore.resguardo_estado import escribir_estado
+
+    escribir_estado(app.state.backups_dir, {
+        'ok': False, 'cuando': datetime.now().isoformat(timespec='seconds'),
+        'error': 'token expired',
+    })
+
+    datos = client.get('/api/config/resguardo-externo',
+                       headers={'x-rol': 'admin'}).json()
+
+    assert datos['al_dia'] is False
+    assert 'token expired' in datos['motivo']
