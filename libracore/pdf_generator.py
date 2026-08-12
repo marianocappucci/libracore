@@ -327,7 +327,7 @@ def _empresa():
 def _fmt_fecha(s: str) -> str:
     if not s or len(s) < 10:
         return s or ""
-    return f"{s[8:10]}/{s[5:7]}/{s[0:4]}"
+    return f"{s[8:10]}-{s[5:7]}-{s[0:4]}"
 
 
 def _afip_qr_url(factura: dict, empresa_cuit: str) -> str:
@@ -850,7 +850,7 @@ def _draw_factura_footer(pdf, factura, empresa):
     cae     = factura.get("cae") or ""
     cae_vto = factura.get("cae_vto") or ""
     if cae_vto and len(cae_vto) == 8:
-        cae_vto = f"{cae_vto[6:8]}/{cae_vto[4:6]}/{cae_vto[0:4]}"
+        cae_vto = f"{cae_vto[6:8]}-{cae_vto[4:6]}-{cae_vto[0:4]}"
 
     fy = pdf.h - 44
 

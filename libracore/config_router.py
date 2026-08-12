@@ -30,6 +30,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from libracore import config_manager
+from libracore.resguardo_estado import resumen as resumen_resguardo
 from libracore.respaldo import (
     BackupInvalido,
     Instancia,
@@ -206,6 +207,19 @@ def build_backup_router(
         return FileResponse(
             destino, media_type="application/zip", filename=os.path.basename(destino),
         )
+
+    @router.get("/resguardo-externo")
+    def estado_externo():
+        """Que paso con la copia a la nube del cliente.
+
+        Lee el `.externo.json` que deja el subidor del host. La app **no sube
+        nada** ni ve la credencial de la nube: sólo cuenta el estado.
+
+        `contratado: false` cuando no hay archivo — para la pantalla eso es "no
+        tenés el add-on", no "está fallando". La diferencia importa: mostrarle
+        una alarma a quien no contrató el servicio es ruido.
+        """
+        return resumen_resguardo(backups_dir)
 
     @router.post("/restore")
     async def restaurar(backup_file: UploadFile = File(...)):

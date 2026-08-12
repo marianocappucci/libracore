@@ -9,15 +9,14 @@ wiki/entities/libracore.md, sección Tier 2).
 import pytest
 
 from libracore.db import core
-from libracore.db.schema import init_core_schema
 from libracore.db import clients, mp, facturas, productos
 
 
 @pytest.fixture
-def conn(tmp_path):
+def conn(tmp_path, crear_schema):
     core.configure(db_path=str(tmp_path / "tier2_test.db"))
     c = core.get_connection()
-    init_core_schema(c)
+    crear_schema(c)
     c.commit()
     yield c
     c.close()
@@ -32,10 +31,85 @@ def test_clients_activar_cliente(conn):
     assert clients.get_client(cid)["activo"] == 1
 
 
+def test_clients_guarda_las_cuatro_columnas_de_libradesk(conn):
+    """Alta y edición de las cuatro columnas que entraron en la revisión `0002`.
+
+    Son las que le faltaban a `clients` para que LibraDesk pudiera dejar su
+    tabla `clientes` propia y adoptar este módulo (ver
+    wiki/analyses/clientes-transversal-familia-libra).
+    """
+    cid = clients.create_client(
+        "Compulibra", cuit_dni="30111111118",
+        empresa="Compulibra SRL", ciudad="Suipacha",
+        observaciones="Cliente del hospital", tipo_facturacion="por_abono",
+    )
+    guardado = clients.get_client(cid)
+    assert (guardado["empresa"], guardado["ciudad"]) == ("Compulibra SRL", "Suipacha")
+    assert guardado["observaciones"] == "Cliente del hospital"
+    assert guardado["tipo_facturacion"] == "por_abono"
+
+    clients.update_client(cid, ciudad="Mercedes", tipo_facturacion="por_servicio")
+    editado = clients.get_client(cid)
+    assert (editado["ciudad"], editado["tipo_facturacion"]) == ("Mercedes", "por_servicio")
+    # Lo que no se pasa no se pisa: `update_client` conserva el resto.
+    assert editado["empresa"] == "Compulibra SRL"
+    assert editado["observaciones"] == "Cliente del hospital"
+
+
+def test_clients_defaults_de_las_cuatro_para_quien_no_las_usa(conn):
+    """Contalibra, Restolibra y VentaLibra no las mandan nunca.
+
+    El alta sin ninguna de las cuatro tiene que seguir andando igual y dejar
+    valores usables, no NULL — es lo que hace que la revisión no cambie nada
+    para los tres productos que ya usaban el módulo.
+    """
+    cid = clients.create_client("Cliente Sin Extras", cuit_dni="27333333334")
+    guardado = clients.get_client(cid)
+    assert guardado["empresa"] == ""
+    assert guardado["ciudad"] == ""
+    assert guardado["observaciones"] == ""
+    assert guardado["tipo_facturacion"] == "por_servicio"
+
+
 def test_clients_rechaza_cuit_duplicado(conn):
     clients.create_client("Cliente Uno", cuit_dni="20-11111111-1")
     with pytest.raises(ValueError):
         clients.create_client("Cliente Dos (mismo CUIT)", cuit_dni="20111111111")
+
+
+def test_validar_cuit_sirve_a_un_producto_que_escribe_por_su_cuenta(conn):
+    """La validación separada de `create_client`, para LibraDesk.
+
+    Comparte la tabla `clients` pero escribe por SQLAlchemy, porque el log de
+    actividad de `libraauth` cuelga de los eventos de `flush` de la sesión.
+    Necesita la validación sin el INSERT de este módulo.
+    """
+    clients.create_client("Cliente Uno", cuit_dni="20-11111111-1")
+
+    # Sin guiones y con guiones: la misma fila, igual que en el alta.
+    with pytest.raises(ValueError):
+        clients.validar_cuit_no_duplicado("20111111111")
+    with pytest.raises(ValueError):
+        clients.validar_cuit_no_duplicado("20-11111111-1")
+
+    # Un CUIT libre no molesta, y uno vacío tampoco: no todos los clientes lo
+    # tienen cargado.
+    clients.validar_cuit_no_duplicado("27-99999999-4")
+    clients.validar_cuit_no_duplicado("")
+    clients.validar_cuit_no_duplicado(None)
+
+
+def test_validar_cuit_no_choca_al_cliente_consigo_mismo(conn):
+    """El caso de la edición: guardar un cliente sin cambiarle el CUIT tiene
+    que pasar. Sin `excluir_id`, editarle el nombre a un cliente con CUIT
+    fallaría siempre, contra su propia fila."""
+    cid = clients.create_client("Cliente Uno", cuit_dni="20-11111111-1")
+
+    clients.validar_cuit_no_duplicado("20-11111111-1", excluir_id=cid)
+
+    otro = clients.create_client("Cliente Dos", cuit_dni="27-99999999-4")
+    with pytest.raises(ValueError):
+        clients.validar_cuit_no_duplicado("20-11111111-1", excluir_id=otro)
 
 
 def test_clients_busqueda_normalizada(conn):

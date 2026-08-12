@@ -231,15 +231,15 @@ def _draw_qr_ticket(pdf: TicketPDF, url: str):
 # ── Ticket de VENTA ────────────────────────────────────────────────────────────
 
 def fmt_fecha(s: str) -> str:
-    """Convierte a 'dd/mm/aaaa'. Acepta 'YYYY-MM-DD[ HH:MM...]' (preservando la hora)
+    """Convierte a 'dd-mm-aaaa'. Acepta 'YYYY-MM-DD[ HH:MM...]' (preservando la hora)
     y el formato ARCA 'AAAAMMDD' (ej: vencimiento de CAE)."""
     s = s or ""
     if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        d = f"{s[8:10]}/{s[5:7]}/{s[0:4]}"
+        d = f"{s[8:10]}-{s[5:7]}-{s[0:4]}"
         resto = s[10:].strip()
         return f"{d} {resto}" if resto else d
     if len(s) == 8 and s.isdigit():
-        return f"{s[6:8]}/{s[4:6]}/{s[0:4]}"
+        return f"{s[6:8]}-{s[4:6]}-{s[0:4]}"
     return s
 
 

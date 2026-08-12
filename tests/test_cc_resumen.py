@@ -12,16 +12,15 @@ import pytest
 
 from libracore import cc_resumen, config_manager
 from libracore.db import clients, core, cuenta_corriente
-from libracore.db.schema import init_core_schema
 
 HOY = datetime.date(2026, 8, 3)  # lunes
 
 
 @pytest.fixture
-def conn(tmp_path, monkeypatch):
+def conn(tmp_path, monkeypatch, crear_schema):
     core.configure(db_path=str(tmp_path / "cc_resumen_test.db"))
     c = core.get_connection()
-    init_core_schema(c)
+    crear_schema(c)
     c.commit()
     monkeypatch.setattr(config_manager, "CONFIG_PATH", str(tmp_path / "config.json"))
     yield c
