@@ -484,13 +484,96 @@ def _dump_postgres_por_docker(url: str, destino) -> None:
         shutil.move(str(provisorio), str(destino))
 
 
+def _directorios_de_datos(data_dir: Path) -> list[Path]:
+    """Las carpetas de `data/` que entran al ZIP: todas menos `backups/`.
+
+    Todas y no una lista fija (`logos`, `arca_certs`, ...) porque este código es
+    de los seis productos y cada uno guarda cosas distintas ahí — MedLibra
+    documentos clínicos, Contalibra los certificados de ARCA. Una lista fija se
+    desactualiza en silencio el día que un producto agrega una carpeta, y el
+    backup sale sin ella sin que nada falle.
+
+    🔴 **`backups/` afuera, y no es un detalle de prolijidad**: es donde queda
+    este mismo ZIP. Incluirla haría que cada backup se llevara adentro a los
+    diez anteriores, creciendo en cascada. Es la versión ordenada del problema
+    que ya tenía el `tar.gz`, que empaquetaba `data/` entero.
+    """
+    return sorted(
+        d for d in data_dir.iterdir() if d.is_dir() and d.name != "backups"
+    )
+
+
+def _instancia_del_cliente(c: dict, cfg, urls_postgres: list[str]) -> "Instancia":
+    """Traduce un cliente del panel a lo que `libracore.respaldo` sabe respaldar.
+
+    El `nombre` sale de `cfg.container_prefix` **a propósito**: es el mismo que
+    el producto le pasa a `Instancia(nombre=...)` en su `main.py`, y de él sale
+    el nombre del dump dentro del ZIP. Si los dos no coincidieran, el ZIP del
+    cron no pasaría la validación de la pantalla al restaurar — diría que "el
+    backup es de otro sistema" — y esa es justamente la única cosa que este
+    cambio vino a garantizar.
+    """
+    from ..respaldo import Instancia
+
+    data_dir = c["dir"] / "data"
+    directorios = _directorios_de_datos(data_dir)
+    if urls_postgres:
+        return Instancia(
+            nombre=cfg.container_prefix,
+            postgres_url=urls_postgres[0],
+            postgres_extra=urls_postgres[1:],
+            directorios=directorios,
+        )
+    return Instancia(
+        nombre=cfg.container_prefix,
+        bases=[data_dir / cfg.db_filename],
+        directorios=directorios,
+    )
+
+
+def _backup_zip(c: dict, cfg, urls_postgres: list[str], _p) -> None:
+    """El backup del cron, en el MISMO formato que el de la pantalla.
+
+    Ver `ProductConfig.backup_zip` para por qué esto convive con el camino
+    viejo en vez de reemplazarlo de una.
+    """
+    from ..respaldo import crear_backup, verificar_backup
+
+    instancia = _instancia_del_cliente(c, cfg, urls_postgres)
+    destino_dir = c["dir"] / "data" / "backups"
+    destino = crear_backup(
+        instancia, destino_dir, motivo="automatico",
+        # Desde el host `pg_dump` no llega al sidecar: no publica puerto y su
+        # nombre es un alias de la red de Docker. Ver `_dump_postgres_por_docker`.
+        dump_fn=_dump_postgres_por_docker if urls_postgres else None,
+    )
+    # Que `crear_backup` no haya fallado NO alcanza — ver `verificar_backup`.
+    detalle = verificar_backup(destino, instancia)
+    _p(f"[OK] Backup: {destino}  ({detalle['tamano_mb']} MB)")
+    for nombre, tam in sorted(detalle["bases"].items()):
+        _p(f"     base {nombre}: {tam / 1024:.0f} KB")
+
+
 def cmd_backup(slug: str, quiet: bool = False):
-    """Backup completo del directorio data (tar.gz) + copia WAL-safe de la DB
-    (vía la API de backup online de sqlite3, no un copy2 crudo del archivo —
-    en modo WAL un copy2 puede capturar el .db sin los cambios que todavía
-    están en .db-wal si hay escrituras activas al mismo tiempo). Purga
-    backups de más de BACKUP_RETENTION_DIAS días. Pensado para correr desde
-    cron (ver `backup-all`) además de manual."""
+    """Backup de una instancia. Pensado para el cron (ver `backup-all`).
+
+    **Con `backup_zip=True` arma el mismo ZIP que la pantalla de Backups del
+    producto**, en `data/backups/`. Ese es el camino nuevo y el que deberían
+    terminar usando los seis: un solo artefacto, una sola retención (la de
+    `respaldo.MAX_BACKUPS`), y lo que se respalda de noche es exactamente lo que
+    el cliente puede listar, bajar y restaurar solo.
+
+    🔴 **Sin ese flag hace lo de siempre, que tiene un problema medido.** El
+    `tar.gz` empaqueta `data/`, pero el dump de PostgreSQL se escribe en
+    `clientes/<slug>/backups/`, que está **afuera**. Medido el 2026-08-12 sobre
+    las nueve instancias del VPS: en cinco de los seis productos el tar nocturno
+    traía los `.db` de SQLite congelados en el corte a PostgreSQL y **ningún
+    dump**. Los datos no estaban en riesgo —el dump existe, al lado— pero el
+    archivo que parece el backup de la instancia no lo es.
+
+    El camino viejo (tar.gz + copia WAL-safe vía la Online Backup API de
+    sqlite3, purgando a los `BACKUP_RETENTION_DIAS`) se conserva mientras
+    Contalibra y Restolibra no migren su pantalla al motor."""
     cfg = get_config()
 
     def _p(*a):
@@ -505,6 +588,14 @@ def cmd_backup(slug: str, quiet: bool = False):
     if not data_dir.exists():
         print(f"[ERROR] No existe {data_dir}")
         return
+    # `docker inspect` una sola vez: lo necesitan los dos caminos.
+    urls_postgres = _urls_postgres_del_contenedor(c)
+
+    if cfg.backup_zip:
+        _p(f"[*] Creando backup de {slug} ...")
+        _backup_zip(c, cfg, urls_postgres, _p)
+        return
+
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_file = cfg.clientes_dir / f"{slug}_backup_{ts}.tar.gz"
     _p(f"[*] Creando backup completo de {slug} ...")
@@ -527,7 +618,6 @@ def cmd_backup(slug: str, quiet: bool = False):
     # archivo SQLite -> copia WAL-safe, y **nada de eso -> error**.
     db_src = data_dir / cfg.db_filename
     bdir = _backups_dir(c)
-    urls_postgres = _urls_postgres_del_contenedor(c)
     if urls_postgres:
         # Una por base. Gestiolibra y MedLibra tienen dos, y con una sola el
         # backup no se puede restaurar.

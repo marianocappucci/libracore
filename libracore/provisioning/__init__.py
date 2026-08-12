@@ -312,6 +312,20 @@ class ProductConfig:
     # pasa en VentaLibra, donde LibraCommerce y LibraCore sí conviven.
     base_core_separada: bool = False
 
+    # `True` hace que el backup del cron (`panel_admin.cmd_backup`) arme **el
+    # mismo ZIP que arma la app** en vez de su propio `tar.gz`.
+    #
+    # Es un interruptor de transicion, con el mismo criterio que `postgres` acá
+    # arriba: sólo pueden prenderlo los productos cuya pantalla de Backups sale
+    # de `libracore.respaldo` —Gestiolibra, MedLibra, VentaLibra y LibraDesk—,
+    # porque son los que listan y restauran ese ZIP. Contalibra y Restolibra
+    # tienen implementación propia (`app/web/routers/config.py`) que filtra por
+    # `.db`/`.dump`: prenderlo ahí les dejaría un backup que su pantalla no ve.
+    #
+    # Se retira cuando esos dos migren al motor — ver
+    # wiki/analyses/resguardo-backup-familia-libra.md.
+    backup_zip: bool = False
+
     # La imagen del sidecar. **Alpine no es un detalle**: musl no implementa
     # locales, así que ordena por bytes igual que el `BINARY` de SQLite. Con la
     # imagen Debian, cada pantalla ordenada por texto cambia de orden sin que
@@ -466,7 +480,8 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
               db_filename: str, repo_root, base_port: int = 8071,
               docs_auth_secret: str = "", postgres: bool = False,
               base_core_separada: bool = False,
-              postgres_image: str = "postgres:16-alpine"):
+              postgres_image: str = "postgres:16-alpine",
+              backup_zip: bool = False):
     """Configura el producto activo. Llamar una sola vez, al principio de
     `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto.
 
@@ -486,7 +501,7 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
             repo_root=repo_root, base_port=base_port,
             docs_auth_secret=docs_auth_secret,
             postgres=postgres, base_core_separada=base_core_separada,
-            postgres_image=postgres_image,
+            postgres_image=postgres_image, backup_zip=backup_zip,
         )
         for p in (repo_root, repo_root / "scripts"):
             sp = str(p)
