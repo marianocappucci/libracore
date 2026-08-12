@@ -504,6 +504,20 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         # el auto-login de la demo, justamente por esto. Aquella vez se
         # renombraron los composes afectados a mano y esta plantilla quedó sin
         # tocar, así que cada instancia nueva reintroducía el defecto.
+        #
+        # 🔴 EL HEALTHCHECK MIRA EL CUERPO, NO EL CÓDIGO HTTP, y la ruta sale de
+        # `cfg.health_path`. Los seis productos sirven su SPA con un catch-all
+        # (`/{full_path:path}` → index.html), así que **cualquier** ruta
+        # devuelve 200 mientras uvicorn sirva estáticos: un `urlopen()` a secas
+        # da `healthy` con la API muerta, y da `healthy` también apuntado a una
+        # ruta inventada. Medido el 2026-08-12 por `docker exec` en los 21
+        # contenedores del VPS: los 21 daban exit 0 contra una ruta que no
+        # existe. Un chequeo que no puede fallar no es un chequeo.
+        #
+        # `json.load` sobre el index.html revienta, que es exactamente lo que se
+        # busca. `isinstance(..., dict)` y no una clave concreta porque el
+        # cuerpo difiere entre productos: `{"status": "ok"}` en Contalibra y
+        # Restolibra, `{"ok": true, "product": …}` en el resto.
         compose = f"""\
 name: {cfg.container_prefix}-{slug}
 
@@ -516,7 +530,7 @@ services:
     mem_reservation: 256m
     cpus: 1.0
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      test: ["CMD", "python3", "-c", "import json,urllib.request; assert isinstance(json.load(urllib.request.urlopen('http://localhost:8000{cfg.health_path}', timeout=3)), dict)"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -798,3 +798,132 @@ def test_sin_postgres_el_plan_se_aplica_como_siempre(cfg, fake_plans, monkeypatc
     assert len(fake_plans.aplicar_plan_calls) == 1
     destino, _ = fake_plans.aplicar_plan_calls[0]
     assert destino.endswith("testprod.db")
+
+
+# ————————————————————————————————————————————————————————————————
+# El healthcheck del compose generado
+#
+# Hasta el 2026-08-12 esta plantilla estampaba
+# `urlopen('http://localhost:8000/health')` para los seis productos, con dos
+# defectos superpuestos:
+#
+#   1. La RUTA. LibraDesk sirve su endpoint en `/api/health`; `/health` no
+#      existe ahi. Lo contestaba el catch-all de la SPA, asi que
+#      `libradesk-demo` figuraba `healthy` midiendo el index.html.
+#   2. La ASERCION, que es lo de fondo. Con estaticos servidos, CUALQUIER ruta
+#      devuelve 200: un `urlopen()` a secas no puede fallar. Medido por
+#      `docker exec` en los 21 contenedores del VPS, los 21 daban exit 0
+#      contra una ruta inventada.
+#
+# Por eso los tests de aca abajo corren el comando generado contra un servidor
+# que imita a la SPA (200 + HTML en todo) y exigen que se ponga en ROJO.
+# ————————————————————————————————————————————————————————————————
+
+@pytest.fixture
+def cfg_health_api(tmp_path, fake_plans, fake_docker):
+    """Producto que sirve la salud en otra ruta, como LibraDesk."""
+    repo_root = tmp_path / "repo"
+    (repo_root / "clientes").mkdir(parents=True)
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=repo_root, base_port=9000,
+        health_path="/api/health",
+    )
+    return provisioning.get_config()
+
+
+def _comando_del_healthcheck(cfg, slug="cliente-uno") -> str:
+    """La fuente Python del healthcheck, tal cual quedo en el compose."""
+    for linea in _compose(cfg, slug).splitlines():
+        m = re.match(r"\s*test:\s*(\[.*\])\s*$", linea)
+        if m and "python3" in linea:
+            cmd = json.loads(m.group(1))
+            assert cmd[:3] == ["CMD", "python3", "-c"], cmd[:3]
+            return cmd[3]
+    raise AssertionError("el compose no declara el healthcheck de la app")
+
+
+def _servidor(cuerpo: bytes, tipo: str, ruta_viva: str | None = None):
+    """Servidor de juguete. Con `ruta_viva=None` contesta lo mismo en TODAS las
+    rutas, que es como se comporta un producto de esta familia con la SPA
+    horneada."""
+    import http.server
+    import threading
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if ruta_viva is not None and self.path != ruta_viva:
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", tipo)
+            self.send_header("Content-Length", str(len(cuerpo)))
+            self.end_headers()
+            self.wfile.write(cuerpo)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+# 🔴 La referencia REAL, tomada en el import. `fake_docker` hace
+# `monkeypatch.setattr(nc.subprocess, "run", ...)` y eso parchea el atributo
+# del modulo `subprocess` ENTERO, no una copia: cualquier `subprocess.run` de
+# este archivo —incluido el de aca abajo— recibiria el stub, que devuelve
+# `returncode=0` siempre. O sea que estos tests darian verde sin ejecutar nada,
+# que es exactamente el falso verde que vienen a cerrar. Lo delato el test que
+# exige ROJO; los otros dos habrian pasado igual.
+_RUN_SIN_STUB = subprocess.run
+
+
+def _correr(fuente: str, puerto: int) -> int:
+    fuente = fuente.replace("http://localhost:8000", f"http://127.0.0.1:{puerto}")
+    return _RUN_SIN_STUB([sys.executable, "-c", fuente], capture_output=True, text=True).returncode
+
+
+def test_el_healthcheck_usa_la_ruta_por_defecto(cfg):
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    assert "localhost:8000/health'" in _comando_del_healthcheck(cfg)
+
+
+def test_el_producto_puede_declarar_otra_ruta(cfg_health_api):
+    """LibraDesk. Sin esto, su instancia nace apuntada a una ruta inexistente."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    assert "localhost:8000/api/health'" in _comando_del_healthcheck(cfg_health_api)
+
+
+def test_el_healthcheck_da_verde_contra_el_endpoint_de_verdad(cfg):
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    srv = _servidor(b'{"status": "ok"}', "application/json", ruta_viva="/health")
+    try:
+        assert _correr(_comando_del_healthcheck(cfg), srv.server_port) == 0
+    finally:
+        srv.shutdown()
+
+
+def test_el_healthcheck_da_rojo_si_contesta_la_SPA(cfg):
+    """La rotura: el backend caido con los estaticos en pie.
+
+    Es el escenario real —200 + index.html en cualquier ruta— y el que el
+    chequeo viejo no podia distinguir."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    srv = _servidor(b"<!doctype html><title>app</title>", "text/html")
+    try:
+        assert _correr(_comando_del_healthcheck(cfg), srv.server_port) != 0
+    finally:
+        srv.shutdown()
+
+
+def test_un_chequeo_de_solo_codigo_http_no_habria_distinguido(cfg):
+    """Contraprueba. Fija POR QUE el generado mira el cuerpo: el chequeo de
+    antes da verde contra la SPA, o sea que no podia fallar."""
+    viejo = "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"
+    srv = _servidor(b"<!doctype html><title>app</title>", "text/html")
+    try:
+        assert _correr(viejo, srv.server_port) == 0
+    finally:
+        srv.shutdown()

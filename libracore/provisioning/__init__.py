@@ -293,6 +293,16 @@ class ProductConfig:
     base_port: int = 8071
     docs_auth_secret: str = ""
 
+    # Ruta del endpoint de salud, para el healthcheck del compose que se le
+    # genera a cada instancia. Cinco de los seis productos la sirven en
+    # `/health`; **LibraDesk la declara en `/api/health`** y por eso esto es un
+    # parámetro y no una constante: hasta el 2026-08-12 el generador estampaba
+    # `/health` para todos, así que toda instancia de LibraDesk nacía con el
+    # healthcheck apuntado a una ruta que en ese producto no existe. La
+    # contestaba el fallback de la SPA con un 200 y el contenedor figuraba
+    # `healthy` con la API muerta (medido en `libradesk-demo`).
+    health_path: str = "/health"
+
     # — PostgreSQL de las instancias NUEVAS —
     #
     # `postgres=True` hace que `crear_cliente()` le genere a la instancia su
@@ -481,7 +491,7 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
               docs_auth_secret: str = "", postgres: bool = False,
               base_core_separada: bool = False,
               postgres_image: str = "postgres:16-alpine",
-              backup_zip: bool = False):
+              backup_zip: bool = False, health_path: str = "/health"):
     """Configura el producto activo. Llamar una sola vez, al principio de
     `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto.
 
@@ -491,6 +501,10 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
 
     **Los nombres de las variables no se pasan**: salen del prefijo, vía
     `libracore.db.url_de_instancia` — ver `ProductConfig.db_urls`.
+
+    `health_path` sólo lo pasa el producto que NO sirve su endpoint de salud en
+    `/health` — hoy LibraDesk, que lo tiene en `/api/health`. Ver el comentario
+    del campo en `ProductConfig`.
     """
     global _cfg
     with _lock:
@@ -502,6 +516,7 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
             docs_auth_secret=docs_auth_secret,
             postgres=postgres, base_core_separada=base_core_separada,
             postgres_image=postgres_image, backup_zip=backup_zip,
+            health_path=health_path,
         )
         for p in (repo_root, repo_root / "scripts"):
             sp = str(p)

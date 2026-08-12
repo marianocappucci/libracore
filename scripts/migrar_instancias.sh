@@ -53,16 +53,33 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-# Los mismos nombres que resuelve `libracore/db/url_de_instancia.py`, incluidos
-# los históricos: VentaLibra todavía llama `_DB_PATH` a lo que hoy es una URL.
-_VARS_DB='^[A-Z_]*(DATABASE_URL|LIBRACORE_DB_PATH|_DB_PATH)$'
-
 enmascarar() { printf '%s' "$1" | sed -E 's#//[^@/]*@#//***:***@#'; }
 
 url_de() {
+  # 🔴 **La base de LIBRACORE, que no siempre es la del producto.**
+  #
+  # Gestiolibra y MedLibra corren DOS bases: la del dominio, que es de
+  # LibraGenda, y una propia de LibraCore (`<producto>_core`). La versión
+  # anterior de esta función tomaba la primera variable en orden alfabético, y
+  # `DATABASE_URL` viene antes que `GESTIOLIBRA_LIBRACORE_DB_PATH`: elegía la
+  # base equivocada.
+  #
+  # Aplicar la cadena de LibraCore ahí **no habría fallado, habría "andado"**:
+  # los `CREATE TABLE IF NOT EXISTS` se saltean la tabla `clients` que ya
+  # existe, y después los ALTER defensivos le agregan las columnas de LibraCore
+  # **a la tabla de LibraGenda** — la que tiene los clientes reales y los
+  # turnos colgando. Lo agarró el dry-run el 2026-08-12, antes de aplicar.
+  #
+  # El orden es el mismo que usa `libracore.db.url_de_instancia` con
+  # `core=True`: primero las variables específicas del motor y, sólo si no hay
+  # ninguna, la del producto — que es el caso de Contalibra, Restolibra y
+  # VentaLibra, donde el motor comparte la base del dominio.
   docker exec "$1" sh -c '
-    env | sed -n "s/^\([A-Z_]*\(DATABASE_URL\|DB_PATH\)\)=.*/\1/p" | sort -u | while read -r k; do
-      printenv "$k"; break
+    for k in $(env | sed -n "s/^\([A-Z_]*LIBRACORE_\(DATABASE_URL\|DB_PATH\)\)=.*/\1/p" | sort -u); do
+      printenv "$k"; exit 0
+    done
+    for k in $(env | sed -n "s/^\([A-Z_]*\(DATABASE_URL\|DB_PATH\)\)=.*/\1/p" | sort -u); do
+      printenv "$k"; exit 0
     done
   ' 2>/dev/null | head -1
 }
