@@ -116,6 +116,29 @@ class Instancia:
             )
         if not self.bases and not self.postgres_url:
             raise ValueError("una instancia sin ninguna base no se puede respaldar")
+        if self.postgres_url:
+            # 🔴 Dos bases que producen el MISMO nombre dentro del ZIP.
+            #
+            # Pasa cuando la principal no es la que se cree: `dumps` nombra a la
+            # principal por `nombre` y a las extra por su base, asi que si la
+            # principal fuera `gestiolibra_core` y la extra `gestiolibra`, las
+            # dos saldrian como `gestiolibra.dump`. Una pisaria a la otra en el
+            # ZIP y `nombres_en_zip` —que es un set— tendria un solo elemento,
+            # asi que **la verificacion pasaria igual**: un backup con una sola
+            # mitad, dado por bueno.
+            #
+            # El orden depende de en que orden aparecen las variables en el
+            # contenedor cuando lo arma `provisioning.panel_admin`, o sea del
+            # compose. Es exactamente la clase de cosa que anda hasta el dia que
+            # alguien reordena dos lineas.
+            nombres = [n for _, n in self.dumps]
+            repetidos = sorted({n for n in nombres if nombres.count(n) > 1})
+            if repetidos:
+                raise ValueError(
+                    f"dos bases de esta instancia caerian en el mismo archivo "
+                    f"del backup ({repetidos}): la principal tiene que ser la "
+                    f"base del dominio, no una de las adicionales"
+                )
         if self.bases and self.postgres_url:
             # No es una limitacion tecnica, es que no existe el caso y dejarlo
             # pasar esconde un error de cableado: un producto que pasa las dos
@@ -252,13 +275,33 @@ def _dump_postgres(url: str, destino: Path) -> None:
     )
 
 
-def crear_backup(instancia: Instancia, destino_dir, motivo: str = "manual") -> Path:
+def crear_backup(
+    instancia: Instancia, destino_dir, motivo: str = "manual", dump_fn=None,
+) -> Path:
     """Arma el ZIP y devuelve su ruta. Rota los viejos.
 
     El nombre lleva el motivo para que en el listado se distinga un backup que
     pidio el cliente de uno que se hizo solo antes de un restore — que es
     justo el que se busca cuando algo salio mal.
+
+    `dump_fn(url, destino)` existe para que **el cron del host arme el mismo
+    ZIP** que arma la app. Los dos necesitan un `pg_dump`, pero no pueden
+    correr el mismo:
+
+    - Desde adentro del contenedor (la app) alcanza con `_dump_postgres`, que
+      llama al binario contra la URL.
+    - Desde el host (`provisioning.panel_admin`) eso **no funciona**: el sidecar
+      no publica puerto —a proposito, publicar 5432 en un VPS es publicarlo a
+      Internet— y su nombre es un alias de la red de Docker que afuera no
+      resuelve. Ahi hay que correr `pg_dump` DENTRO del sidecar y traerse el
+      archivo con `docker cp`.
+
+    Inyectarlo es lo que evita tener dos armadores de backup distintos, que es
+    exactamente el problema que este parametro vino a cerrar: hasta el
+    2026-08-12 el cron armaba un `tar.gz` propio que la pantalla no listaba y el
+    cliente no podia restaurar.
     """
+    dump = dump_fn or _dump_postgres
     destino_dir = Path(destino_dir)
     destino_dir.mkdir(parents=True, exist_ok=True)
     _rotar(destino_dir)
@@ -273,7 +316,7 @@ def crear_backup(instancia: Instancia, destino_dir, motivo: str = "manual") -> P
             # de producir un ZIP al que le falta una base.
             for url, nombre_en_zip in instancia.dumps:
                 copia = tmp / nombre_en_zip
-                _dump_postgres(url, copia)
+                dump(url, copia)
                 z.write(copia, f"bases/{nombre_en_zip}")
             for base in instancia.bases:
                 copia = tmp / base.name
@@ -289,6 +332,47 @@ def crear_backup(instancia: Instancia, destino_dir, motivo: str = "manual") -> P
                         relativo = completo.relative_to(carpeta.parent)
                         z.write(completo, f"datos/{relativo}")
     return destino
+
+
+def verificar_backup(destino, instancia: Instancia) -> dict:
+    """Abre el ZIP recien hecho y confirma que trae las bases, con contenido.
+
+    **No alcanza con que `crear_backup` no haya tirado excepcion.** El historial
+    de este modulo es una lista de backups que salieron "bien" y estaban vacios:
+    el `if not origen.exists()` que se saltaba la base en silencio, el
+    `if db_src.exists()` del cron, el dump de 0 bytes que quedaba con nombre de
+    backup. Todos devolvian exito.
+
+    Por eso el chequeo mira el **producto**, no el proceso: que en `bases/`
+    esten exactamente las que esta instancia declara, y que ninguna pese cero.
+    Devuelve `{"archivo", "tamano_mb", "bases": {nombre: bytes}}` y levanta
+    `BackupInvalido` si algo no cierra.
+    """
+    destino = Path(destino)
+    esperadas = instancia.nombres_en_zip
+    with zipfile.ZipFile(destino) as z:
+        info = {
+            Path(i.filename).name: i.file_size
+            for i in z.infolist()
+            if i.filename.startswith("bases/") and not i.is_dir()
+        }
+    faltan = esperadas - set(info)
+    if faltan:
+        raise BackupInvalido(
+            f"El backup quedo sin {sorted(faltan)}: trae {sorted(info)} y esta "
+            f"instancia declara {sorted(esperadas)}."
+        )
+    vacias = sorted(n for n, tam in info.items() if tam == 0)
+    if vacias:
+        raise BackupInvalido(
+            f"El backup trae {vacias} con 0 bytes. Un archivo con nombre de "
+            f"backup y nada adentro es peor que ninguno: la rotacion lo cuenta."
+        )
+    return {
+        "archivo": destino.name,
+        "tamano_mb": round(destino.stat().st_size / 1_048_576, 2),
+        "bases": info,
+    }
 
 
 def _nombre_libre(destino_dir: Path, motivo: str) -> Path:
