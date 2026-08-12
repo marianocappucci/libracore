@@ -2,9 +2,37 @@ import os
 import json
 import base64
 import unicodedata
+from datetime import date, datetime, timezone
 from fpdf import FPDF  # fpdf2 >= 2.8
 from fpdf.enums import RenderStyle as _RS, Corner as _Cor
 from . import config_manager
+
+
+def fecha_de_documento(valor) -> datetime | None:
+    """La fecha propia de un comprobante, como `datetime` con zona horaria.
+
+    Acepta lo que traen los dicts de los generadores: un `datetime` o un
+    `date` ya armado, el ISO `AAAA-MM-DD` con hora opcional que sale de la
+    base, y el `AAAAMMDD` de ARCA (el vencimiento de CAE, por ejemplo). Una
+    fecha sin zona se lee como **UTC**, no como hora local: si no, el mismo
+    comprobante daría un PDF distinto según el huso del servidor.
+
+    Devuelve `None` cuando no hay nada interpretable.
+    """
+    if isinstance(valor, datetime):
+        return valor if valor.tzinfo else valor.replace(tzinfo=timezone.utc)
+    if isinstance(valor, date):
+        return datetime(valor.year, valor.month, valor.day, tzinfo=timezone.utc)
+    texto = str(valor or "").strip()
+    # Recortar de a pedazos aguanta lo que viene con cola ("... 14:30 hs",
+    # una fecha completa donde sólo se esperaba el día), quedándose siempre con
+    # la mayor precisión que sí se entienda.
+    for candidato in (texto, texto[:19], texto[:16], texto[:10]):
+        try:
+            return fecha_de_documento(datetime.fromisoformat(candidato))
+        except ValueError:
+            continue
+    return None
 
 
 class _TextoSeguroPDF(FPDF):
@@ -55,6 +83,33 @@ class _TextoSeguroPDF(FPDF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.core_fonts_encoding = "cp1252"
+
+    def fijar_fecha_documento(self, valor) -> None:
+        """Sella el `/CreationDate` con la fecha **del comprobante**, no con la
+        del momento en que se lo imprime.
+
+        fpdf2 pone `datetime.now()` al construir el objeto y lo escribe con
+        resolución de segundo. Con eso, reimprimir el mismo comprobante
+        devuelve bytes distintos si las dos impresiones caen en segundos
+        distintos: mismo largo, un dígito de diferencia, nada que se vea en el
+        papel — pero rompe todo lo que compara el archivo, y hace que "el
+        comprobante es el mismo" no se pueda afirmar sobre el PDF.
+
+        > Pasó de verdad: el test de reimpresión de tickets de VentaLibra
+        > pasaba sólo cuando las dos requests entraban en el mismo segundo. En
+        > la pata de PostgreSQL del CI, más lenta, la ventana se agrandó y
+        > falló (2026-08-12). Nunca había probado la reimpresión determinista:
+        > pasaba por suerte de timing.
+
+        Un comprobante no se crea cuando se imprime, se creó cuando se emitió.
+        Sellarlo con su propia fecha es más fiel *y* lo vuelve reproducible.
+
+        Si la fecha no se puede interpretar se deja la de fpdf2 (el momento
+        actual): sin fecha del documento no hay nada determinista que poner.
+        """
+        fecha = fecha_de_documento(valor)
+        if fecha is not None:
+            self.set_creation_date(fecha)
 
     def normalize_text(self, text: str) -> str:
         try:
@@ -883,6 +938,7 @@ class FacturaPDF(_TextoSeguroPDF):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.factura = factura
         self._emp    = None
+        self.fijar_fecha_documento(factura.get("fecha"))
         self.set_margins(_LX, _LX, _LX)
         self.set_auto_page_break(auto=True, margin=46)
         self.alias_nb_pages()
@@ -913,6 +969,7 @@ class RemitoPDF(_TextoSeguroPDF):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.remito = remito
         self._emp   = None
+        self.fijar_fecha_documento(remito.get("date"))
         self.set_margins(_LX, _LX, _LX)
         self.set_auto_page_break(auto=True, margin=22)
 
@@ -934,6 +991,7 @@ class PresupuestoPDF(_TextoSeguroPDF):
         super().__init__(orientation="P", unit="mm", format="A4")
         self.presupuesto = presupuesto
         self._emp        = None
+        self.fijar_fecha_documento(presupuesto.get("date"))
         self.set_margins(_LX, _LX, _LX)
         self.set_auto_page_break(auto=True, margin=22)
 
@@ -1245,6 +1303,7 @@ def _render_recibo(d: dict) -> bytes:
     # codificación en la razón social lo tumbaba con un 500. Mismo agujero que
     # tenía `TicketPDF`, tapado por el mismo camino.
     pdf = _TextoSeguroPDF(format="A4", unit="mm")
+    pdf.fijar_fecha_documento(d["fecha"])
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
@@ -1432,6 +1491,8 @@ class ResumenCCPDF(_TextoSeguroPDF):
         self.cliente = cliente
         self.periodo = periodo
         self._emp    = None
+        # El resumen no tiene fecha propia: la emisión es lo que lo fecha.
+        self.fijar_fecha_documento(periodo.get("emitido") or periodo.get("hasta"))
         self.set_margins(_LX, _LX, _LX)
         self.set_auto_page_break(auto=True, margin=22)
 
