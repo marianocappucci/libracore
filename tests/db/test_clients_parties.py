@@ -13,7 +13,6 @@ tiene. Por eso hay tests de los dos escenarios — con la tabla y sin ella.
 import pytest
 
 from libracore.db import clients, core
-from libracore.db.schema import init_core_schema
 
 # Subconjunto de la definicion real de LibraCommerce (libracommerce/db/schema.py):
 # LibraCore no puede importar LibraCommerce, asi que los tests la declaran igual
@@ -35,11 +34,11 @@ _PARTIES_DDL = """
 
 
 @pytest.fixture
-def conn_sin_parties(tmp_path):
+def conn_sin_parties(tmp_path, crear_schema):
     """Producto sin LibraCommerce (Gestiolibra, MedLibra, LibraDesk)."""
     core.configure(db_path=str(tmp_path / "sin_parties.db"))
     c = core.get_connection()
-    init_core_schema(c)
+    crear_schema(c)
     c.commit()
     yield c
     c.close()
@@ -47,11 +46,11 @@ def conn_sin_parties(tmp_path):
 
 
 @pytest.fixture
-def conn_con_parties(tmp_path):
+def conn_con_parties(tmp_path, crear_schema):
     """Producto con LibraCommerce (Contalibra, Restolibra, VentaLibra)."""
     core.configure(db_path=str(tmp_path / "con_parties.db"))
     c = core.get_connection()
-    init_core_schema(c)
+    crear_schema(c)
     c.execute(_PARTIES_DDL)
     c.commit()
     yield c

@@ -1,21 +1,31 @@
 """La cadena de Alembic de LibraCore, EJECUTADA contra los dos motores.
 
-Lo que estos tests cuidan no es que Alembic corra: es que **la baseline y
-`init_core_schema()` no se separen nunca**. La `0001` llama a la función en vez
-de re-expresarla justamente para que no haya dos fuentes de verdad, y estos
-tests son la prueba de que sigue siendo cierto — contra la misma fixture que
-congela el schema (`test_schema_congelado.py`).
-
-Los cuatro caminos que importan, y los cuatro se ejercitan acá:
+Lo que estos tests cuidan es que **las dos rutas al schema converjan**: una
+instalación nueva (base vacía → `upgrade head`) y una instancia viva (schema
+puesto por `init_core_schema()` en el arranque → `upgrade head`) tienen que
+terminar en el MISMO schema. Si se separan, la suite corre contra una forma de
+la base y producción contra otra.
 
 | | SQLite | PostgreSQL |
 |---|---|---|
-| base **vacía** | el schema resultante == fixture | ídem |
-| base **que ya existe** | el upgrade no cambia nada y queda estampada | ídem |
+| base **vacía** → head | convergen entre sí, y quedan en head | ídem |
+| base **que ya existe** → head | ídem, y **recibe** lo que agregaron las revisiones | ídem |
 
-El segundo es el que decide la operación real: las instancias vivas **se
+> ⚠️ **Hasta el 2026-08-12 el invariante era otro**: "la baseline y
+> `init_core_schema()` no se separan nunca", verificado comparando el resultado
+> del `upgrade` contra la fixture del schema congelado. Eso valía sólo mientras
+> `0001` era la única revisión — que es justamente el estado que Alembic existe
+> para dejar atrás. La **primera revisión real** (`0002`, las cuatro columnas de
+> `clients`) lo puso en rojo por diseño, no por regresión: una base migrada
+> tiene que tener MÁS que `init_core_schema()`, si no la revisión no hizo nada.
+>
+> La fixture sigue congelando `init_core_schema()` — ese es el trabajo de
+> `test_schema_congelado.py` y no cambió. Lo que se dejó de exigir acá es que el
+> resultado de la cadena entera sea igual a esa función.
+
+El segundo caso es el que decide la operación real: las instancias vivas **se
 migran, no se estampan a ciegas**. Como `init_core_schema()` es idempotente, el
-`upgrade` hace lo mismo que un arranque de la app y además registra la versión.
+`upgrade` reaplica lo que ya está, agrega lo que falta y registra la versión.
 """
 import os
 import subprocess
@@ -60,6 +70,19 @@ def _sin_alembic(volcado: str) -> list[str]:
         for linea in volcado.splitlines()
         if "alembic_version" not in linea and not linea.startswith("## ")
     ]
+
+
+def _revision_head() -> str:
+    """El id de la revisión de la punta, leído de la cadena.
+
+    Hardcodearlo obliga a editar estos tests en cada revisión nueva, que es
+    justo el mantenimiento que hace que un test se termine ajustando hasta que
+    pase en vez de leerse.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    return ScriptDirectory.from_config(Config(str(RAIZ / "alembic.ini"))).get_current_head()
 
 
 def _liberar():
@@ -114,56 +137,90 @@ def _crear_base_ya_existente(destino: str):
 # --------------------------------------------------------------------- SQLite
 
 
-def test_upgrade_sobre_base_vacia_sqlite(tmp_path):
-    destino = str(tmp_path / "nueva.db")
-    resultado = _alembic(destino, "upgrade", "head")
-    assert resultado.returncode == 0, resultado.stderr
+def test_las_dos_rutas_al_schema_convergen_sqlite(tmp_path):
+    """Instalación nueva y instancia migrada terminan en el mismo schema.
 
-    esperado = (FIXTURES / "schema_sqlite.txt").read_text(encoding="utf-8")
-    assert _sin_alembic(_volcar(destino)) == _sin_alembic(esperado)
+    Es el invariante que reemplaza a la comparación contra la fixture: no
+    depende de cuántas revisiones haya en la cadena, así que no hay que
+    regenerar nada al agregar la próxima.
+    """
+    nueva = str(tmp_path / "nueva.db")
+    assert _alembic(nueva, "upgrade", "head").returncode == 0
 
-    actual = _alembic(destino, "current")
-    assert "0001_baseline" in actual.stdout
+    viva = str(tmp_path / "viva.db")
+    _crear_base_ya_existente(viva)
+    assert _alembic(viva, "upgrade", "head").returncode == 0
+
+    assert _sin_alembic(_volcar(nueva)) == _sin_alembic(_volcar(viva))
+    assert _revision_head() in _alembic(nueva, "current").stdout
+    assert _revision_head() in _alembic(viva, "current").stdout
 
 
-def test_upgrade_sobre_base_que_ya_existe_sqlite(tmp_path):
-    """El caso de la operación real: una instancia viva se migra, no se estampa."""
+def test_una_instancia_viva_recibe_lo_que_agregan_las_revisiones(tmp_path):
+    """El caso de la operación real, con control negativo.
+
+    El test de convergencia de arriba pasaría igual si la cadena entera no
+    hiciera nada: dos bases idénticas también convergen. Esto fija que el
+    `upgrade` sobre una instancia viva **cambia algo**, y qué.
+    """
     destino = str(tmp_path / "viva.db")
     _crear_base_ya_existente(destino)
-    antes = _volcar(destino)
+    antes = _sin_alembic(_volcar(destino))
 
-    resultado = _alembic(destino, "upgrade", "head")
-    assert resultado.returncode == 0, resultado.stderr
+    assert _alembic(destino, "upgrade", "head").returncode == 0
+    despues = _sin_alembic(_volcar(destino))
 
-    assert _sin_alembic(_volcar(destino)) == _sin_alembic(antes)
-    assert "0001_baseline" in _alembic(destino, "current").stdout
+    assert despues != antes, (
+        "el upgrade no cambió el schema: o la cadena quedó sin revisiones "
+        "después de la baseline, o ninguna aplicó"
+    )
+    agregadas = set(despues) - set(antes)
+    # Las cuatro de `0002`, que son las que hacen posible que LibraDesk deje
+    # su tabla `clientes` propia y adopte este módulo.
+    assert {linea.split("|")[1] for linea in agregadas if linea.startswith("clients|")} == {
+        "empresa", "ciudad", "observaciones", "tipo_facturacion",
+    }, agregadas
 
 
 # ----------------------------------------------------------------- PostgreSQL
 
 
-def test_upgrade_sobre_base_vacia_postgres():
+def test_las_dos_rutas_al_schema_convergen_postgres():
+    """El mismo invariante que en SQLite, contra el motor de producción.
+
+    No es redundante: los `CHECK` sólo se ven por introspección acá, y los
+    tipos y defaults se escriben distinto en cada motor — una revisión puede
+    converger en SQLite y separarse en PostgreSQL.
+    """
     url = _url_postgres()
+
     _limpiar_postgres(url)
+    assert _alembic(url, "upgrade", "head").returncode == 0
+    nueva = _sin_alembic(_volcar(url))
 
-    resultado = _alembic(url, "upgrade", "head")
-    assert resultado.returncode == 0, resultado.stderr
+    _limpiar_postgres(url)
+    _crear_base_ya_existente(url)
+    assert _alembic(url, "upgrade", "head").returncode == 0
+    viva = _sin_alembic(_volcar(url))
 
-    esperado = (FIXTURES / "schema_postgres.txt").read_text(encoding="utf-8")
-    assert _sin_alembic(_volcar(url)) == _sin_alembic(esperado)
-    assert "0001_baseline" in _alembic(url, "current").stdout
+    assert nueva == viva
+    assert _revision_head() in _alembic(url, "current").stdout
 
 
-def test_upgrade_sobre_base_que_ya_existe_postgres():
+def test_una_instancia_viva_recibe_lo_que_agregan_las_revisiones_postgres():
     url = _url_postgres()
     _limpiar_postgres(url)
     _crear_base_ya_existente(url)
-    antes = _volcar(url)
+    antes = _sin_alembic(_volcar(url))
 
-    resultado = _alembic(url, "upgrade", "head")
-    assert resultado.returncode == 0, resultado.stderr
+    assert _alembic(url, "upgrade", "head").returncode == 0
+    despues = _sin_alembic(_volcar(url))
 
-    assert _sin_alembic(_volcar(url)) == _sin_alembic(antes)
+    assert despues != antes
+    agregadas = set(despues) - set(antes)
+    assert {linea.split("|")[1] for linea in agregadas if linea.startswith("clients|")} == {
+        "empresa", "ciudad", "observaciones", "tipo_facturacion",
+    }, agregadas
 
 
 # ------------------------------------------------------------------ La cadena

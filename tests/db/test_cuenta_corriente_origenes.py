@@ -11,7 +11,6 @@ import pytest
 
 from libracore.db import clients, core, cuenta_corriente
 from libracore.db.cuenta_corriente import VENTAS_LIBRACOMMERCE, VENTAS_LIBRACORE
-from libracore.db.schema import init_core_schema
 
 
 @pytest.fixture(autouse=True)
@@ -20,10 +19,10 @@ def _reset_ids():
 
 
 @pytest.fixture
-def conn(tmp_path):
+def conn(tmp_path, crear_schema):
     core.configure(db_path=str(tmp_path / "cc_origenes.db"))
     c = core.get_connection()
-    init_core_schema(c)
+    crear_schema(c)
     # `sales` no es del schema de LibraCore: la crean Contalibra/Restolibra al
     # migrar sus ventas a LibraCommerce, en esta misma base. Acá se declara el
     # mínimo que la cuenta corriente le pide.

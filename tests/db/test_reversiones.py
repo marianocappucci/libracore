@@ -8,14 +8,13 @@ rompe, el arqueo cierra con plata que no existió.
 import pytest
 
 from libracore.db import caja, clients, core, cuenta_corriente, reversiones
-from libracore.db.schema import init_core_schema
 
 
 @pytest.fixture
-def conn(tmp_path):
+def conn(tmp_path, crear_schema):
     core.configure(db_path=str(tmp_path / "reversiones.db"))
     c = core.get_connection()
-    init_core_schema(c)
+    crear_schema(c)
     # El commit va ANTES de tocar nada por otra conexión: el schema deja una
     # transacción abierta en ésta y `create_caja_config` abre la suya, así
     # que sin esto la base queda lockeada hasta el timeout.
