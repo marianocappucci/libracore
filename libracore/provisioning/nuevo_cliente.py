@@ -9,6 +9,7 @@ Requiere `libracore.provisioning.configure()` antes de usar cualquier
 función de acá. `plans.py` (planes reales de cada producto) se resuelve en
 tiempo de ejecución vía import diferido — ver `libracore.provisioning._plans()`.
 """
+import os
 import re
 import secrets
 import shutil
@@ -202,9 +203,75 @@ def _rollback_alta(client_dir: Path, log) -> None:
         log(f"[ERROR] Rollback incompleto — revisá {client_dir} a mano: {e}")
 
 
+class AltaIncompleta(ClienteError):
+    """El alta creó la instancia pero no la dejó lista para entregar.
+
+    Es un `ClienteError` para que el backoffice lo devuelva como error y la
+    pantalla deje de mostrar el panel de credenciales como si todo hubiera
+    salido bien. Pero es una subclase propia por una razón concreta: **no
+    dispara el rollback.**
+
+    El rollback borra el directorio, el contenedor y el volumen. Aplicado acá
+    destruiría la evidencia de por qué falló y, peor, se llevaría puesta una
+    instancia sana cuya base simplemente tardó más que el timeout. El estado
+    correcto ante esto es "creada pero no entregable, andá a mirarla", no
+    "borrada".
+    """
+
+
+def _diagnostico_contenedor(container: str) -> str:
+    """Por qué no arrancó, leído del contenedor y no adivinado.
+
+    Sin esto el operador recibe "la base no se armó" y tiene que ir al VPS a
+    buscar el motivo a mano — que es exactamente lo que hubo que hacer con
+    `lagrace`, donde la causa (`ModuleNotFoundError: No module named
+    'psycopg2'`) estaba en la primera línea de `docker logs`.
+    """
+    try:
+        r = subprocess.run(
+            ["docker", "inspect", "-f",
+             "{{.State.Status}} reinicios={{.RestartCount}}", container],
+            capture_output=True, text=True, timeout=10,
+        )
+        estado = r.stdout.strip() or "desconocido"
+    except Exception:  # noqa: BLE001
+        estado = "desconocido"
+
+    ultima = ""
+    try:
+        r = subprocess.run(["docker", "logs", "--tail", "25", container],
+                           capture_output=True, text=True, timeout=10)
+        salida = (r.stdout or "") + (r.stderr or "")
+        # La línea útil de un traceback de Python es la ÚLTIMA, no la primera:
+        # arriba está el marco de uvicorn y abajo el error real.
+        lineas = [ln.strip() for ln in salida.splitlines() if ln.strip()]
+        if lineas:
+            ultima = lineas[-1][:300]
+    except Exception:  # noqa: BLE001
+        pass
+
+    detalle = f"Contenedor {container}: {estado}."
+    if ultima:
+        detalle += f" Último log: {ultima}"
+    return detalle
+
+
 def _esperar_tabla_en_sidecar(sidecar: str, base: str, usuario: str,
-                              timeout: int = 90) -> bool:
+                              timeout: int = 45) -> bool:
     """Espera a que la app cree la tabla `modulos` DENTRO del sidecar.
+
+    🔴 **El timeout tiene que entrar en el presupuesto del proxy.** Hasta el
+    2026-08-13 eran 90 s, exactamente el `proxy_read_timeout` de Nginx Proxy
+    Manager (su default global, el que usan los seis `admin.<producto>.com.ar`).
+    O sea que esta espera sola podía consumir el presupuesto entero, y lo que
+    viene después —emitir el certificado de Let's Encrypt, ~20 s— caía siempre
+    del otro lado: el navegador recibía `504 Gateway Time-out` con el alta
+    todavía corriendo en el host.
+
+    Pasó con el alta de `libradesk-lagrace` el 2026-08-13. 45 s dejan margen
+    para el certificado y el arranque del contenedor dentro de los 90 s. Un alta
+    normal no se acerca: la medición del 2026-08-02 dio 24 s de punta a punta,
+    certificado incluido.
 
     🔴 **No se puede preguntar desde el host.** El sidecar no publica puerto —a
     propósito— y su nombre es un alias de la red de Docker, así que desde
@@ -323,9 +390,29 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
     # las dos imágenes; se saca junto con `_HISTORICOS`, en el mismo momento.
     from ..db.url_de_instancia import nombres_aceptados
 
+    # 🔴 `postgresql+psycopg://` y NO `postgresql://` a secas.
+    #
+    # LibraCore conecta con `psycopg.connect()`, que acepta la forma libpq, así
+    # que acá el driver nunca se notaba. Pero un producto puede pasarle esta
+    # misma variable a SQLAlchemy, y SQLAlchemy resuelve `postgresql://` al
+    # dialecto **psycopg2**, que ninguna imagen de la familia instala: el
+    # driver es psycopg 3. La app revienta al importar con `ModuleNotFoundError:
+    # No module named 'psycopg2'` y el contenedor queda en crash loop.
+    #
+    # Medido el 2026-08-13 con el alta real de `libradesk-lagrace`, la primera
+    # instancia de LibraDesk creada por el backoffice: 28 reinicios. Las
+    # instancias sanas del parque tenían la forma correcta **escrita a mano**,
+    # que es por qué el defecto vivió acá sin que nadie lo viera.
+    #
+    # Es seguro para los consumidores de LibraCore: `db.core.conectar()`,
+    # `panel_admin` y `respaldo` ya normalizan quitando el `+psycopg`, y
+    # `es_url_postgres()` acepta las dos formas. Y `migrations/env.py` ya hacía
+    # exactamente esta conversión, con este mismo comentario, sólo que del lado
+    # del consumo — o sea que la trampa estaba documentada y el generador la
+    # seguía pisando.
     lineas = []
     for (var, base), core in zip(cfg.db_urls, (False, True)):
-        url = f"postgresql://{usuario}:{clave}@{sidecar}:5432/{base}"
+        url = f"postgresql+psycopg://{usuario}:{clave}@{sidecar}:5432/{base}"
         for nombre in nombres_aceptados(cfg.container_prefix, core=core):
             lineas.append(f"      - {nombre}={url}\n")
     env_lines = "".join(dict.fromkeys(lineas))  # sin repetir, conservando orden
@@ -376,7 +463,9 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
 """
 
     volumen = f"\nvolumes:\n  {sidecar}-data:\n"
-    url_del_plan = f"postgresql://{usuario}:{clave}@{sidecar}:5432/{cfg.db_urls[0][1]}"
+    url_del_plan = (
+        f"postgresql+psycopg://{usuario}:{clave}@{sidecar}:5432/{cfg.db_urls[0][1]}"
+    )
     return env_lines, servicio_db, volumen, url_del_plan
 
 
@@ -476,6 +565,45 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
             if cfg.usa_postgres else ""
         )
 
+        # — credenciales del admin inicial, con el nombre que la app REALMENTE lee —
+        #
+        # 🔴 `ADMIN_USER`/`ADMIN_PASSWORD` no alcanzan. Los productos migrados a
+        # `libraauth.bootstrap.ensure_default_admin(env_prefix=...)` leen
+        # `<PREFIJO>_ADMIN_USERNAME` y `<PREFIJO>_ADMIN_PASSWORD`, y esa función
+        # es **fail-closed**: sin la contraseña con el nombre prefijado la app no
+        # arranca, tira `RuntimeError` y el contenedor entra en crash loop.
+        #
+        # Ya son cuatro los productos así (libradesk, gestiolibra, medlibra,
+        # ventalibra). Las cinco instancias vivas de esos productos tienen las
+        # dos formas —la genérica y la prefijada— porque **a cada alta se le
+        # agregó la prefijada a mano**, sin que quedara escrito en ningún lado.
+        # Encontrado el 2026-08-13 con el alta de `libradesk-lagrace`, que nadie
+        # parchó y por eso no arrancaba.
+        #
+        # Se escriben las DOS: la genérica la siguen leyendo los productos que
+        # todavía no migraron.
+        prefijo_env = cfg.container_prefix.upper()
+        admin_env = (
+            f"      - {prefijo_env}_ADMIN_USERNAME={admin_user}\n"
+            f"      - {prefijo_env}_ADMIN_PASSWORD={admin_password}\n"
+        )
+
+        # — token de servicio, para que el backoffice pueda administrar la instancia —
+        #
+        # Sin `LIBRA_SERVICE_TOKEN` en la instancia, `token_de_servicio_valido()`
+        # de libraauth devuelve False **sin mirar el header** (es opt-in por
+        # ausencia, a propósito), así que las pantallas de Usuarios y SMTP del
+        # backoffice dan 401 contra una instancia recién creada.
+        #
+        # Sale del entorno del proceso que corre el alta —el backoffice, que ya
+        # exige esta variable en sus settings— y por eso la instancia nace con el
+        # mismo valor que él. Desde la CLI, sin la variable puesta, no se escribe
+        # nada y la instancia se comporta como antes.
+        token_servicio = os.environ.get("LIBRA_SERVICE_TOKEN", "").strip()
+        token_env = (
+            f"      - LIBRA_SERVICE_TOKEN={token_servicio}\n" if token_servicio else ""
+        )
+
         # — versión de imagen — el compose nace pineado a una versión concreta,
         # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
         version   = version_para_cliente_nuevo(rebuild)
@@ -544,9 +672,9 @@ services:
       - SECRET_KEY={secret_key}
       - ADMIN_USER={admin_user}
       - ADMIN_PASSWORD={admin_password}
-      - ADMIN_NOMBRE={admin_nombre}
+{admin_env}      - ADMIN_NOMBRE={admin_nombre}
       - DOCS_AUTH_SECRET={cfg.docs_auth_secret}
-{pg_env}{service_net}{pg_service}{top_net}{pg_volume}"""
+{token_env}{pg_env}{service_net}{pg_service}{top_net}{pg_volume}"""
         (client_dir / "docker-compose.yml").write_text(compose)
 
         # — metadata del cliente —
@@ -587,6 +715,16 @@ services:
         # El plan va contra la PRIMERA de `db_urls`: ahí vive el `modulos` que
         # el producto lee. En los productos con dos bases la tabla existe en
         # las dos y sólo la del dominio tiene filas.
+        # 🔴 **Que el plan no se aplique NO puede ser un `[WARN]`.** Cada producto
+        # siembra su tabla `modulos` con un default, y ese default es el plan MÁS
+        # ALTO con todo habilitado (`plan="premium"` en
+        # `libradesk/app/services/modules.py`). O sea que cuando esta espera se
+        # agota, la instancia no queda a medias: queda **en premium**, sin que
+        # nadie lo haya decidido, y el alta devuelve éxito igual.
+        #
+        # Con `lagrace` no se notó porque el plan contratado ERA premium y
+        # coincidió con el default. Un alta de plan básico que caiga por acá le
+        # regala al cliente los diez módulos y no deja rastro.
         if cfg.usa_postgres:
             variable, base = cfg.db_urls[0]
             listo = _esperar_tabla_en_sidecar(
@@ -595,19 +733,28 @@ services:
             if listo and _aplicar_plan_en_contenedor(container, variable, plan):
                 log(f"[OK] Plan '{plan}' aplicado.")
             elif listo:
-                log("[WARN] La DB está lista pero no se pudo aplicar el plan; "
-                    "aplicalo desde el backoffice.")
+                raise AltaIncompleta(
+                    f"La instancia '{slug}' se creó y su base está lista, pero no se "
+                    f"pudo aplicar el plan '{plan}'. Los módulos quedaron en el "
+                    "default del producto, que es el plan más alto con todo "
+                    "habilitado. Aplicá el plan desde el backoffice antes de "
+                    "entregarla."
+                )
             else:
-                log("[WARN] La DB no estuvo lista a tiempo; aplicá el plan "
-                    "desde el backoffice.")
+                raise AltaIncompleta(
+                    f"La instancia '{slug}' se creó pero su base nunca se armó: "
+                    f"la tabla de módulos no apareció. {_diagnostico_contenedor(container)}"
+                )
         else:
             db_path = data_dir / cfg.db_filename
             if _esperar_db_lista(db_path):
                 plans.aplicar_plan_en_db(str(db_path), plan)
                 log(f"[OK] Plan '{plan}' aplicado.")
             else:
-                log("[WARN] La DB no estuvo lista a tiempo; aplicá el plan "
-                    "desde el backoffice.")
+                raise AltaIncompleta(
+                    f"La instancia '{slug}' se creó pero su base nunca se armó: "
+                    f"no apareció {db_path}. {_diagnostico_contenedor(container)}"
+                )
 
         # — proxy NPM (opcional) —
         proxy_ok = None
@@ -629,6 +776,12 @@ services:
             "admin_password": admin_password, "plan": plan, "proxy_ok": proxy_ok,
             "dir": str(client_dir),
         }
+    except AltaIncompleta:
+        # Sin rollback, a propósito — ver el docstring de `AltaIncompleta`. La
+        # instancia queda creada y el error dice qué le falta. Va ANTES del
+        # `except Exception` de abajo porque el orden de los `except` decide, y
+        # `AltaIncompleta` ES un `ClienteError`.
+        raise
     except Exception:
         # `Exception` y no `BaseException` a propósito: un Ctrl-C durante los
         # 25s que espera la DB llega con el contenedor ya arriba y sano, y

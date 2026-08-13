@@ -135,6 +135,38 @@ def test_crear_cliente_duplicado_lanza_service_error(fake_scripts):
         services.crear_cliente(nombre="Cliente Uno Bis", slug="cliente-uno")
 
 
+def test_un_alta_incompleta_no_se_confunde_con_un_rechazo(fake_scripts, monkeypatch):
+    """`AltaIncompleta` tiene que llegar al backoffice como su propio tipo.
+
+    Si se aplana en `ServiceError`, el router la devuelve como 422 y el frontend
+    lee un 422 como "el motor rechazo el alta, no se creo nada" — o sea que
+    invita a reintentar sobre un slug que YA esta tomado. La instancia existe:
+    el estado correcto es "creada pero no entregable".
+
+    El `except` genérico de `crear_cliente` la tapaba por orden, porque
+    `AltaIncompleta` ES un `ClienteError`.
+
+    ⚠️ La excepción sale de LibraCore y NO de `nc`. El shim de cada producto
+    re-exporta una lista explícita de nombres que no incluye `AltaIncompleta`;
+    este fixture reproduce esa forma, asi que `except nc.AltaIncompleta` daria
+    `AttributeError` acá igual que en los seis productos."""
+    from libracore.provisioning.nuevo_cliente import AltaIncompleta
+
+    nc = services._nc()
+    assert not hasattr(nc, "AltaIncompleta"), \
+        "el shim del producto no re-exporta esta clase; es la premisa del test"
+    monkeypatch.setattr(
+        nc, "crear_cliente",
+        lambda **kw: (_ for _ in ()).throw(AltaIncompleta("la base nunca subio")),
+    )
+
+    with pytest.raises(services.AltaIncompletaError, match="la base nunca subio"):
+        services.crear_cliente(nombre="Cliente Uno", slug="cliente-uno")
+
+    # y sigue siendo un ServiceError: el router no tiene que dejar de atraparla
+    assert issubclass(services.AltaIncompletaError, services.ServiceError)
+
+
 def test_get_cliente_inexistente_devuelve_none(fake_scripts):
     assert services.get_cliente("no-existe") is None
 

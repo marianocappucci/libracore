@@ -47,11 +47,19 @@ def fake_docker(monkeypatch):
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(nc.subprocess, "run", fake_run)
-    monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: False)
-    # El camino PostgreSQL espera por `docker exec` hasta 90s: sin stubear,
-    # cada test del sidecar cuesta un minuto y medio y la suite parece colgada.
-    monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: False)
-    monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", lambda *a, **k: False)
+    # ⚠️ Los stubs devuelven ÉXITO, no fracaso.
+    #
+    # Hasta el 2026-08-13 devolvian False y la suite pasaba igual, porque una
+    # base que nunca subia era un `[WARN]` y el alta seguia. O sea que **todos
+    # estos tests corrian sobre el camino de fallo** sin que se notara. Desde
+    # que eso lanza `AltaIncompleta`, el default tiene que ser el alta que sale
+    # bien; el camino de fallo se ejercita explicitamente en los tests que lo
+    # buscan.
+    monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: True)
+    # El camino PostgreSQL espera por `docker exec` hasta 45s: sin stubear,
+    # cada test del sidecar cuesta casi un minuto y la suite parece colgada.
+    monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: True)
+    monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", lambda *a, **k: True)
     return calls
 
 
@@ -535,8 +543,8 @@ def test_la_instancia_nueva_nace_con_su_sidecar(cfg_pg):
     texto = _compose(cfg_pg)
     assert "testprod-cliente-uno-postgres:" in texto
     assert "image: postgres:16-alpine" in texto
-    assert "TESTPROD_DATABASE_URL=postgresql://testprod:" in texto
-    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql://testprod:" in texto
+    assert "TESTPROD_DATABASE_URL=postgresql+psycopg://testprod:" in texto
+    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql+psycopg://testprod:" in texto
     assert "@testprod-cliente-uno-postgres:5432/testprod" in texto
 
 
@@ -622,8 +630,8 @@ def test_dos_bases_se_crean_con_un_init_montado(cfg_pg_dos_bases):
     assert "./postgres-init:/docker-entrypoint-initdb.d:ro" in vols
 
     texto = (d / "docker-compose.yml").read_text()
-    assert "TESTPROD_DATABASE_URL=postgresql://testprod:" in texto
-    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql://testprod:" in texto
+    assert "TESTPROD_DATABASE_URL=postgresql+psycopg://testprod:" in texto
+    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql+psycopg://testprod:" in texto
     assert "/testprod\n" in texto or "/testprod\r\n" in texto
     assert "/testprod_core" in texto
 
@@ -691,8 +699,8 @@ def test_el_compose_escribe_TAMBIEN_el_nombre_historico(cfg_pg_dos_bases):
     texto = _compose(cfg_pg_dos_bases)
 
     # el vigente
-    assert "TESTPROD_DATABASE_URL=postgresql://" in texto
-    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql://" in texto
+    assert "TESTPROD_DATABASE_URL=postgresql+psycopg://" in texto
+    assert "TESTPROD_LIBRACORE_DATABASE_URL=postgresql+psycopg://" in texto
 
     doc = yaml.safe_load(texto)
     env = doc["services"]["testprod-cliente-uno"]["environment"]
@@ -785,8 +793,16 @@ def test_contra_postgres_la_espera_y_el_plan_van_por_docker_exec(cfg_pg, monkeyp
     assert plan[0][:3] == ["docker", "exec", "testprod-uno"]
 
     # y la URL NO puede ir por linea de comando: la leeria cualquiera en un `ps`
+    #
+    # ⚠️ Se busca "postgresql" a secas y no "postgresql://". Cuando el generador
+    # pasó a emitir `postgresql+psycopg://`, la asercion vieja
+    # (`"postgresql://" not in codigo`) quedo pasando por construccion: la
+    # cadena `postgresql://` ya no aparece en NINGUN lado, asi que el test
+    # habria seguido en verde con la URL entera —contrasena incluida— en la
+    # linea de comando.
     codigo = plan[0][-1]
-    assert "postgresql://" not in codigo, "la URL con la contrasena no va en el comando"
+    assert "postgresql" not in codigo, "la URL con la contrasena no va en el comando"
+    assert "@" not in codigo, "ni ninguna credencial embebida"
     assert "TESTPROD_DATABASE_URL" in codigo, "se pasa el NOMBRE de la variable"
 
 
@@ -927,3 +943,169 @@ def test_un_chequeo_de_solo_codigo_http_no_habria_distinguido(cfg):
         assert _correr(viejo, srv.server_port) == 0
     finally:
         srv.shutdown()
+
+
+# ————————————————————————————————————————————————————————————————
+# El alta de `lagrace` (2026-08-13): lo que la dejo en crash loop
+# ————————————————————————————————————————————————————————————————
+
+def test_la_url_generada_trae_el_driver_psycopg(cfg_pg):
+    """`postgresql://` a secas resuelve a psycopg2 en SQLAlchemy, y ninguna
+    imagen de la familia lo instala: el driver es psycopg 3.
+
+    LibraCore no lo notaba porque conecta con `psycopg.connect()`, que acepta la
+    forma libpq. Pero un producto que le pase esta variable a `create_engine()`
+    revienta al importar. Paso con `libradesk-lagrace`: 28 reinicios."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    texto = _compose(cfg_pg)
+
+    urls = re.findall(r"=(postgresql[^\s@]*)://", texto)
+    assert urls, "el compose tiene que traer alguna URL de PostgreSQL"
+    assert set(urls) == {"postgresql+psycopg"}, urls
+
+
+def test_ninguna_url_del_compose_queda_sin_driver(cfg_pg_dos_bases):
+    """La contraprueba sobre el producto de DOS bases: el defecto estaba en el
+    bucle que arma las lineas, asi que alcanzaba con que UNA quedara cruda."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    crudas = [ln.strip() for ln in _compose(cfg_pg_dos_bases).splitlines()
+              if "=postgresql://" in ln]
+    assert not crudas, crudas
+
+
+def test_el_compose_trae_las_credenciales_con_el_nombre_que_la_app_lee(cfg):
+    """`libraauth.bootstrap.ensure_default_admin(env_prefix=...)` lee
+    `<PREFIJO>_ADMIN_USERNAME`/`<PREFIJO>_ADMIN_PASSWORD` y es **fail-closed**:
+    sin la prefijada la app no arranca.
+
+    Son cuatro los productos asi (libradesk, gestiolibra, medlibra, ventalibra).
+    A cada instancia viva se le habia agregado a mano; `lagrace` no la recibio y
+    quedaba en crash loop con `RuntimeError`."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+                     admin_user="admin", admin_password="secreto123",
+                     setup_npm=False)
+    texto = _compose(cfg)
+
+    assert "TESTPROD_ADMIN_USERNAME=admin" in texto
+    assert "TESTPROD_ADMIN_PASSWORD=secreto123" in texto
+    # y la generica se conserva: la siguen leyendo los productos sin migrar
+    assert "ADMIN_USER=admin" in texto
+    assert "ADMIN_PASSWORD=secreto123" in texto
+
+
+def test_el_token_de_servicio_sale_del_entorno(cfg, monkeypatch):
+    """Sin `LIBRA_SERVICE_TOKEN` en la instancia, `token_de_servicio_valido()`
+    devuelve False sin mirar el header y el backoffice recibe 401 en Usuarios y
+    SMTP de la instancia que acaba de crear."""
+    monkeypatch.setenv("LIBRA_SERVICE_TOKEN", "un-token-de-servicio")
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    assert "LIBRA_SERVICE_TOKEN=un-token-de-servicio" in _compose(cfg)
+
+
+def test_sin_token_en_el_entorno_no_se_escribe_la_variable(cfg, monkeypatch):
+    """Contraprueba: es opt-in por ausencia, igual que del lado de libraauth. Un
+    alta desde la CLI no debe estampar una vacia — `LIBRA_SERVICE_TOKEN=` es
+    peor que no tenerla, porque parece configurado."""
+    monkeypatch.delenv("LIBRA_SERVICE_TOKEN", raising=False)
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    assert "LIBRA_SERVICE_TOKEN" not in _compose(cfg)
+
+
+def test_la_espera_de_la_base_entra_en_el_presupuesto_del_proxy():
+    """El `proxy_read_timeout` de Nginx Proxy Manager es 90s (su default global,
+    el que usan los seis `admin.<producto>.com.ar`). Si esta espera sola vale
+    90s, lo que viene despues —emitir el certificado, ~20s— cae siempre del otro
+    lado y el navegador recibe `504` con el alta corriendo en el host.
+
+    El margen se fija acá y no en un comentario para que subirlo de nuevo tenga
+    que ser una decision explicita."""
+    import inspect
+
+    PROXY_READ_TIMEOUT = 90
+    MARGEN_CERTIFICADO_Y_ARRANQUE = 30
+
+    timeout = inspect.signature(
+        nc._esperar_tabla_en_sidecar).parameters["timeout"].default
+    assert timeout <= PROXY_READ_TIMEOUT - MARGEN_CERTIFICADO_Y_ARRANQUE, (
+        f"la espera ({timeout}s) no deja margen para el certificado dentro de "
+        f"los {PROXY_READ_TIMEOUT}s del proxy"
+    )
+
+
+def test_si_la_base_no_sube_el_alta_falla_y_NO_borra_la_instancia(cfg_pg, monkeypatch):
+    """Dos cosas en un test porque son inseparables.
+
+    **Falla**: cada producto siembra `modulos` con su default, y ese default es
+    el plan mas alto con todo habilitado. Un `[WARN]` deja al cliente en premium
+    sin que nadie lo decida y el alta devuelve exito igual.
+
+    **No borra**: el rollback hace `docker compose down -v` —se lleva el
+    volumen— y `rmtree` del directorio. Aplicado acá destruiria la evidencia y,
+    si la base solo tardo mas que el timeout, una instancia sana."""
+    monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: False)
+
+    with pytest.raises(nc.AltaIncompleta) as e:
+        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    assert "cliente-uno" in str(e.value)
+    assert (cfg_pg.clientes_dir / "cliente-uno" / "cliente.json").exists(), \
+        "el rollback se llevo puesta la instancia; hay que poder ir a mirarla"
+
+
+def test_si_no_se_puede_aplicar_el_plan_el_alta_tampoco_reporta_exito(cfg_pg, monkeypatch):
+    """La base subio pero el plan no se pudo aplicar: mismo riesgo, los modulos
+    quedan en el default del producto."""
+    monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: True)
+    monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", lambda *a, **k: False)
+
+    with pytest.raises(nc.AltaIncompleta) as e:
+        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+                         plan="basico", setup_npm=False)
+    assert "basico" in str(e.value)
+    assert (cfg_pg.clientes_dir / "cliente-uno" / "cliente.json").exists()
+
+
+def test_un_fallo_de_verdad_SI_dispara_el_rollback(cfg_pg, monkeypatch):
+    """Contraprueba: `AltaIncompleta` es la UNICA excepcion que no limpia. Un
+    `docker compose up` que falla tiene que seguir borrando, o queda un
+    directorio con el slug tomado y sin contenedor detras."""
+    def falla_el_up(args, **kwargs):
+        if "compose" in args and "up" in args:
+            return subprocess.CompletedProcess(
+                args, 1, stdout="", stderr="port is already allocated")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(nc.subprocess, "run", falla_el_up)
+
+    with pytest.raises(nc.ClienteError):
+        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    assert not (cfg_pg.clientes_dir / "cliente-uno").exists(), \
+        "un fallo de infraestructura si tiene que limpiar"
+
+
+def test_el_diagnostico_dice_que_le_pasa_al_contenedor(cfg_pg, monkeypatch):
+    """El mensaje tiene que traer el motivo leido del contenedor. Sin esto el
+    operador recibe "la base no se armo" y tiene que ir al VPS a buscarlo — que
+    es lo que hubo que hacer con `lagrace`, donde el motivo estaba en la primera
+    linea de `docker logs`."""
+    def fake_run(args, **kwargs):
+        if "inspect" in args:
+            return subprocess.CompletedProcess(
+                args, 0, stdout="restarting reinicios=28\n", stderr="")
+        if "logs" in args:
+            return subprocess.CompletedProcess(
+                args, 0,
+                stdout="Traceback...\nModuleNotFoundError: No module named 'psycopg2'\n",
+                stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(nc.subprocess, "run", fake_run)
+    monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: False)
+
+    with pytest.raises(nc.AltaIncompleta) as e:
+        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    mensaje = str(e.value)
+    assert "reinicios=28" in mensaje, mensaje
+    assert "psycopg2" in mensaje, mensaje
