@@ -19,10 +19,19 @@ def fake_scripts(monkeypatch, tmp_path):
     clientes_dir = tmp_path / "clientes"
     clientes_dir.mkdir()
 
-    def _mkclient(nombre, slug, domain="", port=8080, admin_user="admin", plan="basico"):
+    def _mkclient(nombre, slug, domain="", port=8080, admin_user="admin", plan="basico",
+                  con_config=True):
         cdir = clientes_dir / slug
         (cdir / "data").mkdir(parents=True)
         (cdir / "data" / "test.db").write_bytes(b"")
+        # `data/config.json` lo escribe la instancia en su primer arranque. Con
+        # `con_config=False` se simula la instancia que nunca levantó, que es
+        # donde el corte de servicio no tiene dónde escribir.
+        if con_config:
+            (cdir / "data" / "config.json").write_text(
+                json.dumps({"servicio_estado": "activo", "servicio_mensaje": "",
+                            "empresa_nombre": nombre}),
+                encoding="utf-8")
         meta = {"nombre": nombre, "domain": domain, "port": port,
                 "admin_user": admin_user, "plan": plan}
         (cdir / "cliente.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -54,9 +63,23 @@ def fake_scripts(monkeypatch, tmp_path):
     fake_pa.compose_calls = []
     fake_pa.compose = lambda slug, *args: fake_pa.compose_calls.append((slug, args))
     fake_pa.estado_calls = []
-    fake_pa._set_servicio_estado = lambda slug, estado: (
-        fake_pa.estado_calls.append((slug, estado)) or True
-    )
+
+    def _set_servicio_estado(slug, estado, mensaje=""):
+        # Réplica del real: relee `data/config.json`, pisa las dos claves de
+        # servicio y reescribe el resto tal cual. Escribir de verdad es lo que
+        # hace que `_enrich` pueda leer después lo que esta llamada dejó — con
+        # un stub que sólo anota la llamada, el ida y vuelta no se ejercita.
+        config_path = clientes_dir / slug / "data" / "config.json"
+        fake_pa.estado_calls.append((slug, estado, mensaje))
+        if not config_path.exists():
+            return False
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+        cfg["servicio_estado"] = estado
+        cfg["servicio_mensaje"] = mensaje
+        config_path.write_text(json.dumps(cfg), encoding="utf-8")
+        return True
+
+    fake_pa._set_servicio_estado = _set_servicio_estado
 
     fake_nc = types.ModuleType("nuevo_cliente")
 
@@ -147,7 +170,71 @@ def test_accion_estado_invalida_lanza_service_error(fake_scripts):
 def test_accion_estado_pausar(fake_scripts):
     fake_scripts["mkclient"]("Cliente Seis", "cliente-seis")
     services.accion_estado("cliente-seis", "pausar")
-    assert fake_scripts["pa"].estado_calls[-1] == ("cliente-seis", "pausado")
+    assert fake_scripts["pa"].estado_calls[-1] == ("cliente-seis", "pausado", "")
+
+
+def test_el_inventario_expone_el_estado_de_servicio(fake_scripts):
+    """El corte comercial es un eje distinto del estado del contenedor.
+
+    Sin esto el backoffice puede suspender una instancia pero no mostrar que
+    está suspendida: `estado` sigue diciendo `running`, porque el contenedor
+    efectivamente corre y devuelve 503 a todo.
+    """
+    fake_scripts["mkclient"]("Cliente Ocho", "cliente-ocho")
+    services.accion_estado("cliente-ocho", "suspender", mensaje="Falta de pago")
+
+    c = services.get_cliente("cliente-ocho")
+    assert c["servicio_estado"] == "suspendido"
+    assert c["servicio_mensaje"] == "Falta de pago"
+    assert c["estado"] == "running"
+
+    listado = {i["slug"]: i for i in services.listar_clientes()}
+    assert listado["cliente-ocho"]["servicio_estado"] == "suspendido"
+
+
+def test_activar_limpia_el_mensaje(fake_scripts):
+    """El cliente que ya pagó no puede seguir viendo "falta de pago"."""
+    fake_scripts["mkclient"]("Cliente Nueve", "cliente-nueve")
+    services.accion_estado("cliente-nueve", "suspender", mensaje="Falta de pago")
+    services.accion_estado("cliente-nueve", "activar", mensaje="Falta de pago")
+
+    c = services.get_cliente("cliente-nueve")
+    assert c["servicio_estado"] == "activo"
+    assert c["servicio_mensaje"] == ""
+
+
+def test_el_corte_no_pisa_el_resto_de_la_configuracion(fake_scripts):
+    """Cambiar el estado no puede tocar nada más de `config.json`."""
+    fake_scripts["mkclient"]("Cliente Diez", "cliente-diez")
+    config_path = fake_scripts["clientes_dir"] / "cliente-diez" / "data" / "config.json"
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    cfg["mp_access_token"] = "TOKEN-DEL-CLIENTE"
+    config_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    services.accion_estado("cliente-diez", "pausar", mensaje="Mantenimiento")
+
+    despues = json.loads(config_path.read_text(encoding="utf-8"))
+    assert despues["mp_access_token"] == "TOKEN-DEL-CLIENTE"
+    assert despues["empresa_nombre"] == "Cliente Diez"
+
+
+def test_cortar_el_servicio_de_una_instancia_que_nunca_arranco(fake_scripts):
+    """Sin `config.json` no hay dónde escribir, y el error tiene que decirlo.
+
+    Antes devolvía "No se pudo cambiar el estado del servicio", que no distingue
+    esto de un fallo de escritura.
+    """
+    fake_scripts["mkclient"]("Cliente Once", "cliente-once", con_config=False)
+    with pytest.raises(services.ServiceError, match="iniciarla al menos una vez"):
+        services.accion_estado("cliente-once", "suspender", mensaje="Falta de pago")
+
+
+def test_sin_config_el_inventario_reporta_activo(fake_scripts):
+    """Es lo que hace la instancia: sin `config.json` levanta con los DEFAULTS."""
+    fake_scripts["mkclient"]("Cliente Doce", "cliente-doce", con_config=False)
+    c = services.get_cliente("cliente-doce")
+    assert c["servicio_estado"] == "activo"
+    assert c["servicio_mensaje"] == ""
 
 
 def test_backup_cliente_crea_tar(fake_scripts):

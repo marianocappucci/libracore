@@ -85,11 +85,34 @@ def _modulos_activos(db_path: Path) -> int | None:
         return None
 
 
+def _servicio(dir_cliente: Path) -> tuple[str, str]:
+    """Estado de servicio y mensaje de una instancia, leídos de su `config.json`.
+
+    Es el corte comercial (activo / pausado / suspendido), no el estado del
+    contenedor: un contenedor `running` puede estar suspendido y devolver 503 a
+    todo. Son dos ejes distintos y la UI los tiene que mostrar por separado.
+
+    Si `config.json` no existe todavía (la instancia nunca arrancó), la app
+    levanta con los DEFAULTS de `config_manager`, que traen `activo`. Se
+    devuelve eso mismo para no inventar un tercer estado que no existe del lado
+    de la instancia.
+    """
+    config_path = dir_cliente / "data" / "config.json"
+    if not config_path.exists():
+        return "activo", ""
+    try:
+        cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "activo", ""
+    return cfg.get("servicio_estado", "activo"), cfg.get("servicio_mensaje", "")
+
+
 def _enrich(c: dict) -> dict:
     """Agrega estado del contenedor, plan y conteo de módulos a un cliente."""
     pa = _pa()
     info = pa.container_status(c["container"])
     db_path = c["dir"] / "data" / _db_filename
+    servicio_estado, servicio_mensaje = _servicio(c["dir"])
     return {
         "nombre":      c.get("nombre", ""),
         "slug":        c["slug"],
@@ -101,6 +124,8 @@ def _enrich(c: dict) -> dict:
         "estado":      info["status"],
         "iniciado":    info["started"],
         "modulos_activos": _modulos_activos(db_path),
+        "servicio_estado":  servicio_estado,
+        "servicio_mensaje": servicio_mensaje,
     }
 
 
@@ -177,7 +202,14 @@ def set_plan(slug: str, plan: str) -> None:
 ESTADOS_ACCION = {"start", "stop", "restart", "pausar", "suspender", "activar"}
 
 
-def accion_estado(slug: str, accion: str) -> None:
+def accion_estado(slug: str, accion: str, mensaje: str = "") -> None:
+    """Ciclo de vida del contenedor (start/stop/restart) o corte de servicio.
+
+    `mensaje` es el texto que ve el cliente en el banner de pausa o en la
+    pantalla de suspensión, y sólo aplica a `pausar`/`suspender`. `activar` lo
+    limpia siempre: un mensaje de "falta de pago" que sobrevive a la
+    reactivación se le sigue mostrando al cliente que ya pagó.
+    """
     if accion not in ESTADOS_ACCION:
         raise ServiceError(f"Acción inválida: {accion!r}.")
     pa = _pa()
@@ -193,7 +225,13 @@ def accion_estado(slug: str, accion: str) -> None:
     else:
         # pausar / suspender / activar → estado de servicio (banner en la instancia)
         estado = {"pausar": "pausado", "suspender": "suspendido", "activar": "activo"}[accion]
-        if not pa._set_servicio_estado(slug, estado):
+        texto = "" if accion == "activar" else (mensaje or "")
+        if not (c["dir"] / "data" / "config.json").exists():
+            raise ServiceError(
+                "La instancia todavía no creó su configuración: hay que "
+                "iniciarla al menos una vez antes de cortarle el servicio."
+            )
+        if not pa._set_servicio_estado(slug, estado, texto):
             raise ServiceError("No se pudo cambiar el estado del servicio.")
 
 

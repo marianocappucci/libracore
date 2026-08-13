@@ -294,13 +294,24 @@ class ProductConfig:
     docs_auth_secret: str = ""
 
     # Ruta del endpoint de salud, para el healthcheck del compose que se le
-    # genera a cada instancia. Cinco de los seis productos la sirven en
-    # `/health`; **LibraDesk la declara en `/api/health`** y por eso esto es un
-    # parámetro y no una constante: hasta el 2026-08-12 el generador estampaba
-    # `/health` para todos, así que toda instancia de LibraDesk nacía con el
-    # healthcheck apuntado a una ruta que en ese producto no existe. La
-    # contestaba el fallback de la SPA con un 200 y el contenedor figuraba
-    # `healthy` con la API muerta (medido en `libradesk-demo`).
+    # genera a cada instancia.
+    #
+    # **Hoy los seis productos usan el default y ninguno pasa este parámetro.**
+    # Existe por LibraDesk, que hasta el 2026-08-12 declaraba su salud sólo en
+    # `/api/health`: el generador estampaba `/health` para todos, así que toda
+    # instancia suya nacía con el healthcheck apuntado a una ruta que en ese
+    # producto no existía. La contestaba el fallback de la SPA con un 200 y el
+    # contenedor figuraba `healthy` con la API muerta (medido en
+    # `libradesk-demo`). Ese producto normalizó su ruta y el parámetro quedó
+    # como escape hatch, sin usuarios.
+    #
+    # > Si vuelve a aparecer un producto que necesite pasarlo, el que lo pase
+    # > tiene que hacerlo en `nuevo_cliente.py` **y** en `panel_admin.py`:
+    # > `configure()` pisa un `_cfg` global y `libracore.admin.services` importa
+    # > los dos en el mismo proceso, así que gana el último import. Y conviene
+    # > que su suite verifique que la ruta configurada sea una que su router
+    # > sirva de verdad — con una SPA horneada, apuntar a una ruta inexistente
+    # > no se ve como un 404.
     health_path: str = "/health"
 
     # — PostgreSQL de las instancias NUEVAS —
@@ -502,9 +513,10 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
     **Los nombres de las variables no se pasan**: salen del prefijo, vía
     `libracore.db.url_de_instancia` — ver `ProductConfig.db_urls`.
 
-    `health_path` sólo lo pasa el producto que NO sirve su endpoint de salud en
-    `/health` — hoy LibraDesk, que lo tiene en `/api/health`. Ver el comentario
-    del campo en `ProductConfig`.
+    `health_path` no lo pasa nadie: **los seis sirven su salud en `/health`**
+    desde el 2026-08-12, que es el default. Quedó como escape hatch para un
+    producto que no pudiera. Ver el comentario del campo en `ProductConfig`,
+    que dice qué hay que hacer si alguna vez vuelve a hacer falta.
     """
     global _cfg
     with _lock:
