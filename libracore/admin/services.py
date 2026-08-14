@@ -56,6 +56,16 @@ def _nc():
     return nuevo_cliente
 
 
+def _alta_incompleta():
+    """La clase `AltaIncompleta` de LibraCore — ver el comentario en `crear_cliente`.
+
+    Import diferido por la misma razón que `_nc()`: este módulo se importa antes
+    de que el producto llame a `configure()`.
+    """
+    from ..provisioning.nuevo_cliente import AltaIncompleta
+    return AltaIncompleta
+
+
 def _plans():
     _require_configured()
     import plans
@@ -68,6 +78,20 @@ def _clientes_dir() -> Path:
 
 class ServiceError(Exception):
     """Error de operación del backoffice."""
+
+
+class AltaIncompletaError(ServiceError):
+    """El alta creó la instancia pero no la dejó lista para entregar.
+
+    Subclase y no un `ServiceError` a secas porque el backoffice tiene que
+    poder responder distinto: un `ServiceError` normal sale como **422**, y el
+    frontend lee un 422 como *"el motor rechazó el alta, no se creó nada"* — o
+    sea que invita a reintentar. Acá la instancia **sí existe**, así que
+    reintentar choca contra el slug tomado.
+
+    Con un estado distinto cae en el camino que ya existe: la pantalla relee el
+    inventario, encuentra la instancia nueva y avisa que no se reintente.
+    """
 
 
 # ── lectura ────────────────────────────────────────────────────────────────────
@@ -153,6 +177,23 @@ def crear_cliente(nombre, slug="", domain="", port=0, admin_user="admin",
             admin_user=admin_user or "admin", admin_password=admin_password,
             plan=plan, setup_npm=setup_npm,
         )
+    # 🔴 La excepción se importa de LibraCore, NO se busca en `nc`.
+    #
+    # `_nc()` devuelve el `scripts/nuevo_cliente.py` del producto, que es un
+    # shim con una LISTA EXPLÍCITA de nombres re-exportados
+    # (`ClienteError, ask, build_image, crear_cliente, …`). `AltaIncompleta` no
+    # está en esa lista en ninguno de los seis repos, así que
+    # `except nc.AltaIncompleta` levanta `AttributeError` **antes** de mirar la
+    # excepción real — y rompería el alta de los seis productos hasta que cada
+    # uno actualizara su shim.
+    #
+    # No hace falta tocarlos: el shim re-exporta el `crear_cliente` de LibraCore,
+    # así que la excepción que llega acá ya ES esta clase.
+    #
+    # El orden de los `except` importa: `AltaIncompleta` es un `ClienteError`,
+    # así que el genérico primero se la comería.
+    except _alta_incompleta() as e:
+        raise AltaIncompletaError(str(e))
     except nc.ClienteError as e:
         raise ServiceError(str(e))
 
