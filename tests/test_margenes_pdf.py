@@ -203,6 +203,26 @@ def _recibo(pgen, tmp_path, texto):
           "monto": 2156230.9}])
 
 
+def _recibo_doc(pgen, tmp_path, texto):
+    """El recibo **numerado** (`generate_pdf_recibo_doc`), que es el que emiten
+    los productos hoy — y el que metía el concepto en el membrete.
+
+    `_recibo` de arriba usa la otra entrada (`generate_pdf_recibo`, al vuelo
+    desde una factura) y **no ejercita este camino**: su `ref_line` sale del
+    número de comprobante, no del concepto. Que faltara este caso es la razón
+    por la que el desborde de las filas meta sobrevivió al barrido de agosto.
+    """
+    return pgen.generate_pdf_recibo_doc({
+        "punto_venta": 1, "numero": 1, "fecha": "2026-08-14",
+        "cliente_razon": texto, "cliente_cuit": "30-71234567-9",
+        "cliente_domicilio": texto,
+        "concepto": texto,
+        "pagos": [{"fecha": "2026-08-14", "medio_pago": texto,
+                   "referencia": texto, "monto": 2156230.9}],
+        "total": 2156230.9,
+    })
+
+
 def _resumen_cc(pgen, tmp_path, texto):
     return pgen.generate_pdf_resumen_cc(
         {"id": 7, "name": texto, "cuit_dni": "30-71234567-9", "address": texto,
@@ -219,7 +239,8 @@ def _resumen_cc(pgen, tmp_path, texto):
 
 DOCUMENTOS = [
     ("remito", _remito), ("presupuesto", _presupuesto), ("factura", _factura),
-    ("recibo", _recibo), ("resumen de cuenta", _resumen_cc),
+    ("recibo", _recibo), ("recibo numerado", _recibo_doc),
+    ("resumen de cuenta", _resumen_cc),
 ]
 
 
@@ -240,6 +261,29 @@ def test_ningun_comprobante_se_sale_con_un_texto_sin_espacios(
     código de orden de compra— y antes se iba del papel."""
     fuera = _desbordes(generar(pgen, tmp_path, MONSTRUO))
     assert not fuera, f"{nombre} dibuja fuera del marco:\n" + "\n".join(fuera)
+
+
+def test_el_concepto_del_recibo_no_se_sale_del_membrete(pgen, tmp_path):
+    """El caso de producción, con su texto tal cual y sólo ese campo largo.
+
+    El 2026-08-14, el único recibo de la demo de VentaLibra terminaba en
+    **202,2 mm en una hoja de 210** por el concepto: la fila meta del membrete
+    lo dibujaba con `cell`, que no recorta. Los demás campos van cortos a
+    propósito, para que un rojo acá señale la fila meta y no otra cosa.
+    """
+    pdf = pgen.generate_pdf_recibo_doc({
+        "punto_venta": 1, "numero": 1, "fecha": "2026-08-14",
+        "cliente_razon": "Arre Beef S.A.", "cliente_cuit": "30-71234567-9",
+        "cliente_domicilio": "Ruta 7 km 78",
+        "concepto": "Pago a cuenta en cuenta corriente",
+        "pagos": [{"fecha": "2026-08-14", "medio_pago": "transferencia",
+                   "referencia": "0021-4455", "monto": 150000.0}],
+        "total": 150000.0,
+    })
+
+    fuera = _desbordes(pdf)
+
+    assert not fuera, "el recibo dibuja fuera del marco:\n" + "\n".join(fuera)
 
 
 # ── Las dos piezas, por separado ───────────────────────────────────
