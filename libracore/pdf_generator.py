@@ -83,6 +83,24 @@ class _TextoSeguroPDF(FPDF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.core_fonts_encoding = "cp1252"
+        # El marco del papel, acá y no en cada documento: `_draw_header_block`,
+        # `_draw_emisor_cliente`, las reglas de sección y el pie dibujan todos
+        # entre `_LX` y `_RX` con coordenadas absolutas, mientras que el cuerpo
+        # se escribe con el flujo de fpdf2 (`cell` + `ln`), que arranca en el
+        # margen del documento. Si el documento no fija el suyo queda el de
+        # fpdf2 —10 mm— y el cuerpo entero sale 8 mm a la izquierda del marco
+        # que su propia cabecera acaba de dibujar.
+        #
+        # > Pasó de verdad, en la orden de trabajo y en los comprobantes de
+        # > recepción/entrega de LibraDesk: las dos clases heredan esta base y
+        # > ninguna llamaba a `set_margins`. Sus hermanas —factura, remito,
+        # > presupuesto, resumen de cuenta, informe— lo llaman todas, con estos
+        # > mismos tres valores. O sea que la convención ya existía y lo único
+        # > que la sostenía era que cada documento se acordara de repetirla.
+        #
+        # Un documento con otra geometría la pisa después de este `super()`,
+        # que es lo que hace `TicketPDF` con sus 2 mm de papel térmico.
+        self.set_margins(_LX, _LX, _LX)
 
     def fijar_fecha_documento(self, valor) -> None:
         """Sella el `/CreationDate` con la fecha **del comprobante**, no con la
@@ -162,17 +180,61 @@ _C_TL   = (_Cor.TOP_RIGHT,)                        # solo esquina superior izqui
 _C_BOT  = (_Cor.BOTTOM_RIGHT, _Cor.BOTTOM_LEFT)    # ambas esquinas inferiores visuales
 
 
+def _recortar(pdf, txt: str, cell_w: float) -> str:
+    """El texto que entra en una celda de ancho `cell_w`, con elipsis si sobra.
+
+    `cell` **no recorta ni envuelve**: un texto más ancho que su celda se dibuja
+    igual, encima de la columna de al lado y, si no hay nada al lado, afuera del
+    papel. Va donde el valor lo escribe el usuario y la maqueta no puede crecer
+    a lo alto: una condición de venta, el medio de pago de un cobro.
+
+    `cell` deja 1 mm de aire a cada lado, así que se mide contra `cell_w - 2`.
+    """
+    ancho = cell_w - 2
+    if pdf.get_string_width(txt) <= ancho:
+        return txt
+    elipsis = pdf.get_string_width("…")
+    recorte = txt
+    while recorte and pdf.get_string_width(recorte) + elipsis > ancho:
+        recorte = recorte[:-1]
+    return recorte.rstrip() + "…"
+
+
+def _partir_palabra(pdf, word: str, max_w: float) -> tuple[str, str]:
+    """`word` cortada en el último carácter que entra en `max_w`.
+
+    Siempre corta **al menos un carácter**, aunque no entre: devolver la palabra
+    entera dejaría al llamador en un bucle infinito, y una `w` sola más ancha
+    que el renglón sólo pasa con un ancho absurdo.
+    """
+    corte = 1
+    while corte < len(word) and pdf.get_string_width(word[:corte + 1]) <= max_w:
+        corte += 1
+    return word[:corte], word[corte:]
+
+
 def _wrap_text(pdf, txt: str, max_w: float) -> list[str]:
-    """Divide txt en líneas que caben en max_w con la fuente activa."""
+    """Divide txt en líneas que caben en max_w con la fuente activa.
+
+    Corta por palabra y, cuando una palabra sola es más ancha que el renglón,
+    **por carácter**. Sin ese segundo corte la línea salía tal cual y `cell` la
+    dibujaba entera: un serial pegado, una URL o un texto sin espacios se iban
+    del papel, no sólo del margen. Medido en la orden de trabajo de LibraDesk:
+    536 mm de borde derecho en una hoja de 210.
+    """
     lines, cur = [], ""
     for word in txt.split():
         candidate = (cur + " " + word).strip()
         if pdf.get_string_width(candidate) <= max_w:
             cur = candidate
-        else:
-            if cur:
-                lines.append(cur)
-            cur = word
+            continue
+        if cur:
+            lines.append(cur)
+            cur = ""
+        while pdf.get_string_width(word) > max_w:
+            trozo, word = _partir_palabra(pdf, word, max_w)
+            lines.append(trozo)
+        cur = word
     if cur:
         lines.append(cur)
     return lines or [""]
@@ -761,7 +823,7 @@ def _draw_totals_and_notes(pdf, sub, iva_amount, otros, total, tax_pct,
     pdf.set_xy(_LX + 4, y + 5)
     pdf.set_font("Helvetica", "", 8)
     pdf.set_text_color(*_ACCENT_DARK)
-    pdf.cell(_NOTES_W - 8, 5, cond_label, ln=True)
+    pdf.cell(_NOTES_W - 8, 5, _recortar(pdf, cond_label, _NOTES_W - 8), ln=True)
     if observations:
         pdf.set_x(_LX + 4)
         pdf.set_font("Helvetica", "B", 8)
@@ -1444,7 +1506,10 @@ def _render_recibo(d: dict) -> bytes:
             aligns = ["L", "L", "L", "R"]
             for val, w, al in zip(vals, cols_w, aligns):
                 pdf.set_xy(hx, fy)
-                pdf.cell(w, 6, str(val), align=al)
+                # El medio de pago y la referencia los escribe el usuario: sin
+                # recorte, una referencia larga se lleva puesta la columna del
+                # monto y se va del papel.
+                pdf.cell(w, 6, _recortar(pdf, str(val), w), align=al)
                 hx += w
             fy += 6
 
