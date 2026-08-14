@@ -555,15 +555,31 @@ def _draw_header_block(pdf, letra, titulo, codigo, info_fields, empresa):
     pdf.line(vx + _LETTER_W, vy + 1, vx + _LETTER_W, vy + letter_rh - 1)
 
     # Filas meta (PV / N° / Fecha)
+    #
+    # 🔴 Los dos textos van recortados. La caja del valor mide `vw - 35` ≈ 31 mm
+    # —unos 25 caracteres a 7 pt bold— y el recuadro termina en `_RX`, así que
+    # lo que se pase se dibuja **afuera del papel**: `cell` no recorta ni
+    # envuelve. La fila no puede crecer a lo alto, porque el alto del recuadro
+    # está calculado y los separadores se dibujan por número de fila.
+    #
+    # > Pasó de verdad: el recibo mete el **concepto** acá
+    # > (`("Comprobante:", ref_line)`), que es texto libre del usuario. En la
+    # > demo de VentaLibra decía "Pago a cuenta en cuenta corriente" —33
+    # > caracteres— y terminaba en **202,2 mm en una hoja de 210** (medido el
+    # > 2026-08-14 sobre el PDF de la instancia desplegada).
+    #
+    # La etiqueta se recorta también aunque hoy la fijen los generadores y sean
+    # todas cortas: es la misma celda y no hay motivo para que una defensa
+    # dependa de que el próximo llamador se acuerde.
     for i, (lbl, val) in enumerate(info_fields):
         ry = vy + letter_rh + 2.5 + i * _META_RH
         pdf.set_font("Helvetica", "", 7)
         pdf.set_text_color(*_MUTED)
         pdf.set_xy(vx + 3, ry)
-        pdf.cell(32, _META_RH, lbl, ln=False)
+        pdf.cell(32, _META_RH, _recortar(pdf, str(lbl or ""), 32), ln=False)
         pdf.set_font("Helvetica", "B", 7)
         pdf.set_text_color(*_INK)
-        pdf.cell(vw - 35, _META_RH, str(val or ""), ln=False)
+        pdf.cell(vw - 35, _META_RH, _recortar(pdf, str(val or ""), vw - 35), ln=False)
         # Separador entre filas meta
         if i < len(info_fields) - 1:
             pdf.set_draw_color(*_LINE)
