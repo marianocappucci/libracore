@@ -963,8 +963,21 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
     el build de dev y el de cada cliente, así que atarle el deploy convierte a
     la rama que necesita dev en la que decide qué se le despliega al cliente.
 
-    `dry_run` resuelve el ref y materializa el worktree para probar que se
-    puede, informa, y no construye ni despliega nada."""
+    `dry_run` resuelve el ref y materializa el contexto para probar que se
+    puede, informa, y no construye ni despliega nada.
+
+    **Devuelve `True` si salió todo bien y `False` si algo falló** — el build,
+    el arranque de alguna instancia, o un slug nombrado que no existe. Un fallo
+    PARCIAL cuenta como fallo: si tres instancias se actualizaron y una no,
+    quien llama tiene que enterarse.
+
+    🔴 Hasta el 2026-08-17 esta función devolvía `None` en todos los caminos y
+    `cli()` no miraba el resultado, así que **`panel_admin.py actualizar` salía
+    con código 0 aunque el build hubiera fallado**. Se descubrió desplegando los
+    seis productos: tres builds se cayeron y los tres reportaron éxito; lo que
+    lo delató fue comparar la imagen del contenedor antes y después, no el
+    código de salida. Cualquier script de deploy que confiara en el exit code
+    leía un deploy fallido como exitoso."""
     cfg = get_config()
     aviso = check_venv_sync(cfg.repo_root)
     if aviso:
@@ -990,22 +1003,29 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
                 print(f"[DRY-RUN] Contexto materializado OK ({len(archivos)} archivos).")
         except RuntimeError as e:
             print(f"[ERROR] {e}")
-            return
+            return False
         objetivo = ", ".join(slugs) if slugs else "todos los que estén corriendo"
         print(f"[DRY-RUN] No se construye ni se despliega nada. Objetivo: {objetivo}.")
-        return
+        return True
 
     if not build_image_tagged(version, ref=git_ref, from_checkout=from_checkout):
         print("[ERROR] Falló el build.")
-        return
+        return False
     print(f"[OK] Imagen {ref} construida.")
 
     clients = load_clients()
     targets = [c for c in clients if (not slugs or c["slug"] in slugs)]
     if not targets:
+        # Sin objetivos no hay nada que salga mal: la imagen quedó construida.
+        # Pero si se NOMBRARON slugs y ninguno existe, eso es un error de quien
+        # llama y tiene que notarse.
+        if slugs:
+            print(f"[ERROR] Ninguno de los slugs nombrados existe: {', '.join(slugs)}")
+            return False
         print(f"[INFO] Sin contenedores que actualizar (imagen {ref} disponible).")
-        return
+        return True
 
+    fallidos: list[str] = []
     for c in targets:
         slug = c["slug"]
         info = container_status(c["container"])
@@ -1027,6 +1047,7 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
                       f"Compose repineado a {anterior} (no se aplicó el cambio).")
             else:
                 print(f"[ERROR] Falló el arranque de {c['container']}.")
+            fallidos.append(slug)
             continue
         _guardar_meta(slug, version_desplegada=version,
                       version_anterior=anterior, desplegado_at=datetime.now().isoformat(timespec="seconds"))
@@ -1038,7 +1059,16 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
         print(f"[OK] Poda: {len(borrados)} tag/s de deploy viejos borrados "
               f"(se conservan los {IMAGE_RETENTION} más nuevos, los pineados "
               "y los de rollback).")
+
+    if fallidos:
+        # Un fallo parcial NO es un exito: si tres instancias se actualizaron y
+        # una no, quien llama tiene que enterarse. Antes esto imprimia el error
+        # y terminaba con "Actualizacion completa" igual.
+        print(f"[ERROR] Actualización con fallos en: {', '.join(fallidos)}")
+        return False
+
     print("[OK] Actualización completa.")
+    return True
 
 
 def cmd_versiones():
@@ -1530,7 +1560,15 @@ def cli():
 
     fn = dispatch.get(cmd)
     if fn:
-        fn()
+        # 🔴 Se MIRA el resultado. Antes se llamaba a `fn()` y se descartaba, así
+        # que un `actualizar` con el build caído salía con código 0 y cualquier
+        # script que lo envolviera lo leía como un deploy exitoso.
+        #
+        # Se compara con `is False` y no por verdad: la mayoría de los comandos
+        # devuelve `None` --no informan éxito ni fracaso-- y un `if not
+        # resultado` los haría salir 1 a todos.
+        if fn() is False:
+            sys.exit(1)
     else:
         print(f"Comando desconocido: {cmd}")
         print("Comandos: listar | info | start | stop | restart | logs | backup | actualizar | eliminar")
