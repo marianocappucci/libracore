@@ -546,20 +546,37 @@ def contexto_de_build(repo_root: Path, ref: str = "main", *,
     ).stdout.strip() or "?"
 
     padre = tempfile.mkdtemp(prefix="libracore-build-")
-    worktree = Path(padre) / "src"
+    destino = Path(padre) / "src"
     try:
+        # 🔴 CLONE, no `worktree add`. En un worktree `.git` es un ARCHIVO que
+        # apunta a `<repo>/.git/worktrees/<nombre>`, y ese archivo entra al
+        # contexto de build: adentro del contenedor la ruta no existe y
+        # cualquier cosa que llame a git muere con
+        #
+        #     fatal: not a git repository: /root/<producto>/.git/worktrees/src
+        #
+        # Que es justo lo que le pasa a los productos cuyo Dockerfile hace
+        # `pip install .` con la version derivada de git. Medido el 2026-08-17
+        # desplegando los seis: fallaron 3 de 6 --contalibra, restolibra y
+        # ventalibra-- y los otros tres pasaron sólo porque su build no llama a
+        # git. O sea que el defecto no se ve en la mitad de los casos.
+        #
+        # `git clone --local` deja un `.git` de VERDAD (objetos por hardlink,
+        # sin alternates que apunten afuera), asi que el contexto es
+        # autocontenido y git funciona adentro del contenedor. `--shared` NO
+        # sirve: usa alternates al repo padre y reintroduce el mismo problema.
         subprocess.run(
-            ["git", "-C", str(repo_root), "worktree", "add", "--detach",
-             "--quiet", str(worktree), commit_full],
+            ["git", "clone", "--quiet", "--local", "--no-checkout",
+             str(repo_root), str(destino)],
             check=True, capture_output=True,
         )
-        yield worktree, commit, f"{ref} -> {resuelto} (worktree limpio; el checkout sigue en {head})"
+        subprocess.run(
+            ["git", "-C", str(destino), "checkout", "--quiet", "--detach", commit_full],
+            check=True, capture_output=True,
+        )
+        yield destino, commit, f"{ref} -> {resuelto} (clon limpio; el checkout sigue en {head})"
     finally:
-        subprocess.run(["git", "-C", str(repo_root), "worktree", "remove",
-                        "--force", str(worktree)], capture_output=True)
         shutil.rmtree(padre, ignore_errors=True)
-        subprocess.run(["git", "-C", str(repo_root), "worktree", "prune"],
-                       capture_output=True)
 
 
 def build_image_tagged(version: str, *, ref: str = "main",
