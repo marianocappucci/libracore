@@ -75,12 +75,48 @@ def test_el_control_pidiendo_develop_da_develop(repo):
         assert (ctx / "solo-en-develop.txt").exists()
 
 
-def test_el_worktree_se_limpia_al_salir(repo):
+def test_el_contexto_es_un_repo_AUTOCONTENIDO(repo):
+    """🔴 El defecto que se comió 3 de 6 deploys el 2026-08-17.
+
+    Con `git worktree add`, `.git` es un ARCHIVO que apunta a
+    `<repo>/.git/worktrees/<nombre>`. Ese archivo entra al contexto de Docker y
+    adentro del contenedor la ruta no existe, así que cualquier cosa que llame
+    a git muere con `fatal: not a git repository`. Los productos cuyo
+    Dockerfile hace `pip install .` con versión derivada de git fallaban; los
+    que no llaman a git pasaban igual — **el defecto sólo se veía en la mitad
+    de los casos**, que es por qué los tests anteriores no lo agarraron: medían
+    que el contexto tuviera el CONTENIDO correcto, no que fuera usable.
+    """
+    with contexto_de_build(repo, "main") as (ctx, commit, _origen):
+        dotgit = ctx / ".git"
+        assert dotgit.is_dir(), f".git tiene que ser un directorio, no {dotgit}"
+        assert git(ctx, "rev-parse", "HEAD").stdout.strip().startswith(commit)
+        # No apunta afuera: ni gitdir de worktree, ni alternates al padre.
+        assert "worktrees" not in git(ctx, "rev-parse", "--git-dir").stdout
+        alternates = dotgit / "objects" / "info" / "alternates"
+        assert not alternates.exists(), \
+            f"usa alternates al repo padre: {alternates.read_text()!r}"
+
+
+def test_el_contexto_sobrevive_a_que_el_padre_desaparezca(repo, tmp_path):
+    """La prueba dura de "autocontenido": si el contexto se copia a otro lado y
+    el repo padre ya no está —que es exactamente lo que hace Docker al meterlo
+    en la imagen— git tiene que seguir funcionando."""
+    import shutil as sh
+    with contexto_de_build(repo, "main") as (ctx, commit, _o):
+        copia = tmp_path / "copiado"
+        sh.copytree(ctx, copia)
+    repo.rename(repo.parent / "padre-mudado")
+    assert git(copia, "rev-parse", "HEAD").stdout.strip().startswith(commit)
+    assert (copia / "marca.txt").read_text().strip() == "main"
+
+
+def test_el_contexto_se_limpia_al_salir(repo):
     with contexto_de_build(repo, "main") as (ctx, _c, _o):
         assert ctx.exists()
         creado = ctx
     assert not creado.exists()
-    # Y git no queda con worktrees colgados.
+    # Y el repo padre no queda con worktrees colgados de intentos anteriores.
     assert "src" not in git(repo, "worktree", "list").stdout
 
 
