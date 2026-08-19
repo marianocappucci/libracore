@@ -40,6 +40,28 @@ def fake_docker(monkeypatch):
     return {"docker_calls": calls, "compose_calls": compose_calls}
 
 
+@pytest.fixture(autouse=True)
+def _contexto_de_build_falso(monkeypatch):
+    """Estos tests miran el COMANDO DE DOCKER, no de qué ref se construye.
+
+    Desde que `build_image_tagged` saca el contexto de un worktree del ref
+    promovido, hay llamadas a git en el medio — y como acá `subprocess.run` se
+    mockea entero, git devolvería el doble en vez de datos reales. Se lo
+    reemplaza por un contexto fijo.
+
+    Lo que el guard hace de verdad —resolver el ref, no mover el checkout,
+    limpiar el worktree, fallar si el ref no existe— vive en
+    `test_contexto_de_build.py`, contra un repo git real. Mockearlo acá no deja
+    ese comportamiento sin cubrir: lo cubre el archivo que corresponde."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _falso(repo_root, ref="main", *, from_checkout=False, log=print):
+        yield repo_root, "abc1234", f"{ref} (contexto de prueba)"
+
+    monkeypatch.setattr(provisioning, "contexto_de_build", _falso)
+
+
 @pytest.fixture
 def cfg(tmp_path, fake_docker):
     repo_root = tmp_path / "repo"

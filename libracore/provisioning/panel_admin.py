@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import (
     get_config, _npm_api,
-    check_venv_sync, build_image_tagged, deploy_version,
+    check_venv_sync, build_image_tagged, contexto_de_build, deploy_version,
 )
 
 BACKUP_RETENTION_DIAS = 14
@@ -947,13 +947,37 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
         print("[OK] Contenedor reiniciado.")
 
 
-def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None):
+def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
+                   *, git_ref: str = "main", from_checkout: bool = False,
+                   dry_run: bool = False):
     """Construye una **versión nueva** de la imagen y mueve a ella los
     contenedores indicados (o todos), repineando el compose de cada uno.
 
     Un cliente que no esté corriendo se saltea **sin repinear**: queda en
     la versión que ya tenía, así que arrancarlo más tarde no lo salta a
-    código que no se desplegó para él."""
+    código que no se desplegó para él.
+
+    `git_ref` es de qué código se construye, y por defecto es `main` — o sea
+    **lo promovido**, no lo que el checkout tenga puesto. Ver
+    `provisioning.contexto_de_build` para el porqué: el checkout lo comparten
+    el build de dev y el de cada cliente, así que atarle el deploy convierte a
+    la rama que necesita dev en la que decide qué se le despliega al cliente.
+
+    `dry_run` resuelve el ref y materializa el contexto para probar que se
+    puede, informa, y no construye ni despliega nada.
+
+    **Devuelve `True` si salió todo bien y `False` si algo falló** — el build,
+    el arranque de alguna instancia, o un slug nombrado que no existe. Un fallo
+    PARCIAL cuenta como fallo: si tres instancias se actualizaron y una no,
+    quien llama tiene que enterarse.
+
+    🔴 Hasta el 2026-08-17 esta función devolvía `None` en todos los caminos y
+    `cli()` no miraba el resultado, así que **`panel_admin.py actualizar` salía
+    con código 0 aunque el build hubiera fallado**. Se descubrió desplegando los
+    seis productos: tres builds se cayeron y los tres reportaron éxito; lo que
+    lo delató fue comparar la imagen del contenedor antes y después, no el
+    código de salida. Cualquier script de deploy que confiara en el exit code
+    leía un deploy fallido como exitoso."""
     cfg = get_config()
     aviso = check_venv_sync(cfg.repo_root)
     if aviso:
@@ -961,17 +985,47 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None):
 
     version = version or deploy_version()
     ref = cfg.image_ref(version)
-    if not build_image_tagged(version):
+
+    if git_ref != "main" and not from_checkout:
+        print(f"[AVISO] Se va a construir '{git_ref}', que no es main, para "
+              "instancias de cliente. Es explícito, así que se asume querido.")
+
+    if dry_run:
+        try:
+            with contexto_de_build(cfg.repo_root, git_ref,
+                                   from_checkout=from_checkout) as (ctx, commit, origen):
+                archivos = subprocess.run(
+                    ["git", "-C", str(ctx), "ls-files"],
+                    capture_output=True, text=True).stdout.split()
+                print(f"  version  : {ref}   (commit {commit})")
+                print(f"  origen   : {origen}")
+                print(f"  contexto : {ctx}")
+                print(f"[DRY-RUN] Contexto materializado OK ({len(archivos)} archivos).")
+        except RuntimeError as e:
+            print(f"[ERROR] {e}")
+            return False
+        objetivo = ", ".join(slugs) if slugs else "todos los que estén corriendo"
+        print(f"[DRY-RUN] No se construye ni se despliega nada. Objetivo: {objetivo}.")
+        return True
+
+    if not build_image_tagged(version, ref=git_ref, from_checkout=from_checkout):
         print("[ERROR] Falló el build.")
-        return
+        return False
     print(f"[OK] Imagen {ref} construida.")
 
     clients = load_clients()
     targets = [c for c in clients if (not slugs or c["slug"] in slugs)]
     if not targets:
+        # Sin objetivos no hay nada que salga mal: la imagen quedó construida.
+        # Pero si se NOMBRARON slugs y ninguno existe, eso es un error de quien
+        # llama y tiene que notarse.
+        if slugs:
+            print(f"[ERROR] Ninguno de los slugs nombrados existe: {', '.join(slugs)}")
+            return False
         print(f"[INFO] Sin contenedores que actualizar (imagen {ref} disponible).")
-        return
+        return True
 
+    fallidos: list[str] = []
     for c in targets:
         slug = c["slug"]
         info = container_status(c["container"])
@@ -993,6 +1047,7 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None):
                       f"Compose repineado a {anterior} (no se aplicó el cambio).")
             else:
                 print(f"[ERROR] Falló el arranque de {c['container']}.")
+            fallidos.append(slug)
             continue
         _guardar_meta(slug, version_desplegada=version,
                       version_anterior=anterior, desplegado_at=datetime.now().isoformat(timespec="seconds"))
@@ -1004,7 +1059,16 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None):
         print(f"[OK] Poda: {len(borrados)} tag/s de deploy viejos borrados "
               f"(se conservan los {IMAGE_RETENTION} más nuevos, los pineados "
               "y los de rollback).")
+
+    if fallidos:
+        # Un fallo parcial NO es un exito: si tres instancias se actualizaron y
+        # una no, quien llama tiene que enterarse. Antes esto imprimia el error
+        # y terminaba con "Actualizacion completa" igual.
+        print(f"[ERROR] Actualización con fallos en: {', '.join(fallidos)}")
+        return False
+
     print("[OK] Actualización completa.")
+    return True
 
 
 def cmd_versiones():
@@ -1428,8 +1492,38 @@ def interactive():
 
 # ── CLI directo ───────────────────────────────────────────────────────────────
 
+def _sacar_opciones_de_build(args: list[str]) -> tuple[list[str], dict]:
+    """Separa `--ref`, `--from-checkout` y `--dry-run` del resto.
+
+    Se hace a mano y no con argparse porque este CLI es posicional
+    (`comando [slug] [extra]`) y meterle un parser cambiaría la forma de todos
+    los demás comandos. Las opciones se sacan de la lista, así que el slug
+    sigue siendo `args[1]` aunque la opción venga antes."""
+    opciones = {"git_ref": "main", "from_checkout": False, "dry_run": False}
+    restantes: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--ref":
+            i += 1
+            if i >= len(args):
+                print("[ERROR] --ref necesita un valor (ej: --ref main)")
+                sys.exit(1)
+            opciones["git_ref"] = args[i]
+        elif a.startswith("--ref="):
+            opciones["git_ref"] = a[len("--ref="):]
+        elif a == "--from-checkout":
+            opciones["from_checkout"] = True
+        elif a == "--dry-run":
+            opciones["dry_run"] = True
+        else:
+            restantes.append(a)
+        i += 1
+    return restantes, opciones
+
+
 def cli():
-    args = sys.argv[1:]
+    args, build_opts = _sacar_opciones_de_build(sys.argv[1:])
     if not args:
         interactive()
         return
@@ -1450,7 +1544,7 @@ def cli():
         "estado-externo":    lambda: cmd_estado_externo([slug] if slug else None),
         "list-backups": lambda: cmd_list_backups(slug) if slug else print("Uso: panel_admin.py list-backups <slug>"),
         "restore-db":   lambda: cmd_restore_db(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py restore-db <slug> [archivo.db]"),
-        "actualizar":  lambda: cmd_actualizar([slug] if slug else None),
+        "actualizar":  lambda: cmd_actualizar([slug] if slug else None, **build_opts),
         "versiones":   lambda: cmd_versiones(),
         "podar-imagenes": lambda: cmd_podar_imagenes(dry_run=(slug == "--dry-run")),
         "rollback":    lambda: cmd_rollback(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py rollback <slug> [version]"),
@@ -1466,10 +1560,20 @@ def cli():
 
     fn = dispatch.get(cmd)
     if fn:
-        fn()
+        # 🔴 Se MIRA el resultado. Antes se llamaba a `fn()` y se descartaba, así
+        # que un `actualizar` con el build caído salía con código 0 y cualquier
+        # script que lo envolviera lo leía como un deploy exitoso.
+        #
+        # Se compara con `is False` y no por verdad: la mayoría de los comandos
+        # devuelve `None` --no informan éxito ni fracaso-- y un `if not
+        # resultado` los haría salir 1 a todos.
+        if fn() is False:
+            sys.exit(1)
     else:
         print(f"Comando desconocido: {cmd}")
         print("Comandos: listar | info | start | stop | restart | logs | backup | actualizar | eliminar")
+        print("Build:    actualizar [slug] [--ref <git-ref>] [--from-checkout] [--dry-run]")
+        print("          --ref por defecto es main, o sea lo promovido — no el checkout.")
         print("Versión:  versiones | rollback <slug> [version] | podar-imagenes [--dry-run]")
         print("DB:       list-backups <slug> | restore-db <slug> [archivo.db]")
         print("Externo:  resguardo-externo [slug] | estado-externo [slug]")

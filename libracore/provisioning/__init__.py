@@ -20,9 +20,12 @@ patrón que `libracore.admin.services::_plans()/_pa()/_nc()`.
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -457,7 +460,127 @@ def _git_commit_corto(repo_root: Path) -> str | None:
     return (r.stdout or "").strip() or None
 
 
-def build_image_tagged(version: str, *, log=print) -> bool:
+@contextmanager
+def contexto_de_build(repo_root: Path, ref: str = "main", *,
+                      from_checkout: bool = False, log=print):
+    """El directorio del que construir, como un `git worktree` limpio del `ref`.
+
+    Rinde `(contexto, commit, origen)` y limpia el worktree al salir, pase lo
+    que pase.
+
+    🔴 **Por qué no se construye del checkout.** El checkout es una variable
+    global compartida: el mismo directorio alimenta el build de `<producto>-dev`
+    y el de la instancia de cada cliente. Con el build atado al checkout, la
+    rama que necesita dev decide de rebote qué código se le despliega al
+    cliente. Le pasó a LibraDesk el 2026-08-03 — el checkout del VPS pasó a
+    `develop` para poder probar algo en dev, y a partir de ahí un deploy de
+    cliente habría construido `develop` y se lo habría puesto a un cliente
+    real. No fallaba ni preguntaba: imprimía el commit y seguía.
+
+    De ahí el default `main`, que quiere decir **lo que está promovido**, y no
+    la rama local que puede haber quedado atrás: si existe `origin/<ref>`, gana
+    ese.
+
+    Efecto lateral buscado: el contexto es un árbol limpio, sin los restos
+    ignorados que viven en el host y sin los directorios de datos de clientes
+    que el `.dockerignore` de cada producto no siempre lista.
+
+    `from_checkout=True` es la salida de emergencia, explícita a propósito:
+    construye el working tree tal cual está, con lo que tenga sin commitear.
+    """
+    repo_root = Path(repo_root)
+
+    if from_checkout:
+        commit = _git_commit_corto(repo_root) or "desconocido"
+        sucio = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain=v1"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+        n = len(sucio.splitlines()) if sucio else 0
+        log("[AVISO] from_checkout: se construye el working tree tal cual está, "
+            f"no un ref promovido ({n} archivo/s sin commitear).")
+        yield repo_root, commit, f"checkout {repo_root} ({n} sin commitear)"
+        return
+
+    if subprocess.run(["git", "-C", str(repo_root), "rev-parse", "--git-dir"],
+                      capture_output=True).returncode != 0:
+        raise RuntimeError(
+            f"{repo_root} no es un repo git; no se puede resolver el ref '{ref}'. "
+            "Usá from_checkout=True si de verdad querés construir el directorio."
+        )
+
+    # Best-effort: si no hay red o la deploy key falla seguimos con las refs
+    # locales, avisando. Un fetch caído no tiene por qué bloquear un deploy.
+    if subprocess.run(["git", "-C", str(repo_root), "fetch", "--quiet", "origin"],
+                      capture_output=True).returncode != 0:
+        log(f"[AVISO] 'git fetch origin' falló. Se resuelve '{ref}' con las refs "
+            "locales, que pueden estar viejas.")
+
+    resuelto = ref
+    if subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet",
+         f"refs/remotes/origin/{ref}^{{commit}}"], capture_output=True
+    ).returncode == 0:
+        resuelto = f"origin/{ref}"
+
+    r = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet",
+         f"{resuelto}^{{commit}}"], capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        disponibles = subprocess.run(
+            ["git", "-C", str(repo_root), "for-each-ref",
+             "--format=%(refname:short)", "refs/heads", "refs/remotes/origin", "refs/tags"],
+            capture_output=True, text=True,
+        ).stdout.split()[:20]
+        raise RuntimeError(
+            f"El ref '{ref}' no existe en {repo_root} (ni como origin/{ref}). "
+            f"Disponibles: {', '.join(disponibles)}"
+        )
+    commit_full = r.stdout.strip()
+    commit = commit_full[:7]
+
+    head = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.strip() or "?"
+
+    padre = tempfile.mkdtemp(prefix="libracore-build-")
+    destino = Path(padre) / "src"
+    try:
+        # 🔴 CLONE, no `worktree add`. En un worktree `.git` es un ARCHIVO que
+        # apunta a `<repo>/.git/worktrees/<nombre>`, y ese archivo entra al
+        # contexto de build: adentro del contenedor la ruta no existe y
+        # cualquier cosa que llame a git muere con
+        #
+        #     fatal: not a git repository: /root/<producto>/.git/worktrees/src
+        #
+        # Que es justo lo que le pasa a los productos cuyo Dockerfile hace
+        # `pip install .` con la version derivada de git. Medido el 2026-08-17
+        # desplegando los seis: fallaron 3 de 6 --contalibra, restolibra y
+        # ventalibra-- y los otros tres pasaron sólo porque su build no llama a
+        # git. O sea que el defecto no se ve en la mitad de los casos.
+        #
+        # `git clone --local` deja un `.git` de VERDAD (objetos por hardlink,
+        # sin alternates que apunten afuera), asi que el contexto es
+        # autocontenido y git funciona adentro del contenedor. `--shared` NO
+        # sirve: usa alternates al repo padre y reintroduce el mismo problema.
+        subprocess.run(
+            ["git", "clone", "--quiet", "--local", "--no-checkout",
+             str(repo_root), str(destino)],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(destino), "checkout", "--quiet", "--detach", commit_full],
+            check=True, capture_output=True,
+        )
+        yield destino, commit, f"{ref} -> {resuelto} (clon limpio; el checkout sigue en {head})"
+    finally:
+        shutil.rmtree(padre, ignore_errors=True)
+
+
+def build_image_tagged(version: str, *, ref: str = "main",
+                       from_checkout: bool = False, log=print) -> bool:
     """Construye la imagen del producto activo etiquetándola **con la
     versión y además con `latest`**, y devuelve si el build salió bien.
 
@@ -472,25 +595,28 @@ def build_image_tagged(version: str, *, log=print) -> bool:
     saltarlos a código que nadie probó para ellos.
     """
     cfg = get_config()
-    ref = cfg.image_ref(version)
-    cmd = [
-        "docker", "build", *docker_build_ssh_args(cfg.repo_root),
-        "-t", ref,
-        "-t", cfg.image_ref("latest"),
-        "--label", f"org.libra.version={version}",
-        "--label", f"org.libra.built-at={datetime.now().astimezone().isoformat(timespec='seconds')}",
-    ]
-    commit = _git_commit_corto(cfg.repo_root)
-    if commit:
-        cmd += ["--label", f"org.libra.commit={commit}"]
-    cmd.append(".")
+    image = cfg.image_ref(version)
 
-    log(f"[*] Construyendo {ref}" + (f" (commit {commit})" if commit else "") + " ...")
-    r = subprocess.run(
-        cmd, cwd=str(cfg.repo_root),
-        env={**os.environ, "DOCKER_BUILDKIT": "1"},
-    )
-    return r.returncode == 0
+    with contexto_de_build(cfg.repo_root, ref, from_checkout=from_checkout,
+                           log=log) as (contexto, commit, origen):
+        cmd = [
+            "docker", "build", *docker_build_ssh_args(cfg.repo_root),
+            "-t", image,
+            "-t", cfg.image_ref("latest"),
+            "--label", f"org.libra.version={version}",
+            "--label", f"org.libra.built-at={datetime.now().astimezone().isoformat(timespec='seconds')}",
+            # `org.libra.commit` es verdadera POR CONSTRUCCIÓN: es el commit
+            # del que salió el worktree, no lo que el checkout tuviera puesto.
+            "--label", f"org.libra.commit={commit}",
+            "--label", f"org.libra.ref={origen}",
+            str(contexto),
+        ]
+        log(f"[*] Construyendo {image} (commit {commit}) desde {origen} ...")
+        r = subprocess.run(
+            cmd, cwd=str(cfg.repo_root),
+            env={**os.environ, "DOCKER_BUILDKIT": "1"},
+        )
+        return r.returncode == 0
 
 
 _lock = threading.Lock()

@@ -421,6 +421,22 @@ def test_image_repo_no_confunde_el_puerto_de_un_registry_con_un_tag(tmp_path):
     assert cfg.image_ref("v1") == "registry:5000/testprod:v1"
 
 
+def _contexto_fijo(monkeypatch, contexto, commit="abc1234"):
+    """Reemplaza `contexto_de_build` por uno fijo.
+
+    Estos tests miran el COMANDO DE DOCKER; de qué ref sale el contexto lo
+    cubre `test_contexto_de_build.py` contra un repo git real. Acá hace falta
+    porque `subprocess.run` está mockeado entero y git devolvería el doble.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _falso(repo_root, ref="main", *, from_checkout=False, log=print):
+        yield contexto, commit, f"{ref} (contexto de prueba)"
+
+    monkeypatch.setattr(provisioning, "contexto_de_build", _falso)
+
+
 def test_build_image_tagged_arma_el_comando_con_los_dos_tags_y_labels(tmp_path, monkeypatch):
     import subprocess as sp
     provisioning.configure(
@@ -437,6 +453,7 @@ def test_build_image_tagged_arma_el_comando_con_los_dos_tags_y_labels(tmp_path, 
         return sp.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(provisioning.subprocess, "run", fake_run)
+    _contexto_fijo(monkeypatch, tmp_path)
 
     assert provisioning.build_image_tagged("v2026.07.30-2110", log=lambda *a: None) is True
 
@@ -445,31 +462,33 @@ def test_build_image_tagged_arma_el_comando_con_los_dos_tags_y_labels(tmp_path, 
     assert "testprod:latest" in cmd
     assert "org.libra.version=v2026.07.30-2110" in cmd
     assert "org.libra.commit=abc1234" in cmd
-    assert cmd[-1] == "."
+    # El contexto ahora es el que rinde `contexto_de_build` (un worktree del
+    # ref), no el "." de siempre. `cwd` sigue siendo el repo: de ahí salen las
+    # deploy keys que arma `docker_build_ssh_args`.
+    assert cmd[-1] == str(tmp_path)
     assert kwargs["cwd"] == str(tmp_path)
     assert kwargs["env"]["DOCKER_BUILDKIT"] == "1"
 
 
-def test_build_image_tagged_sin_git_omite_el_label_de_commit(tmp_path, monkeypatch):
+def test_build_image_tagged_aborta_si_el_repo_no_es_git(tmp_path, monkeypatch):
+    """🔴 Reemplaza a `..._sin_git_omite_el_label_de_commit`, cuya premisa murió.
+
+    Antes, sin git, se construía igual y sólo se omitía el label del commit.
+    Desde que el contexto sale del worktree de un ref, un directorio que no es
+    repo no se puede resolver — y **abortar es lo correcto**: seguir sería
+    construir el checkout, que es exactamente lo que el guard viene a impedir.
+    """
     import subprocess as sp
     provisioning.configure(
         product_name="TESTPROD", image_name="testprod:latest",
         container_prefix="testprod", db_filename="testprod.db",
         repo_root=tmp_path,
     )
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd[:2] == ["git", "-C"]:
-            return sp.CompletedProcess(cmd, 128, stdout="")
-        return sp.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(provisioning.subprocess, "run", fake_run)
-    provisioning.build_image_tagged("v2026.07.30-2110", log=lambda *a: None)
-
-    cmd = next(c for c in calls if c[:2] == ["docker", "build"])
-    assert not any(a.startswith("org.libra.commit=") for a in cmd)
+    monkeypatch.setattr(provisioning.subprocess, "run",
+                        lambda cmd, **k: sp.CompletedProcess(cmd, 128, stdout=""))
+    with pytest.raises(RuntimeError) as e:
+        provisioning.build_image_tagged("v1", log=lambda *a: None)
+    assert "no es un repo git" in str(e.value)
 
 
 def test_build_image_tagged_devuelve_false_si_el_build_falla(tmp_path, monkeypatch):
@@ -481,4 +500,5 @@ def test_build_image_tagged_devuelve_false_si_el_build_falla(tmp_path, monkeypat
     )
     monkeypatch.setattr(provisioning.subprocess, "run",
                         lambda cmd, **k: sp.CompletedProcess(cmd, 1, stdout=""))
+    _contexto_fijo(monkeypatch, tmp_path)
     assert provisioning.build_image_tagged("v1", log=lambda *a: None) is False
