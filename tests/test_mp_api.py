@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -94,18 +95,68 @@ def test_buscar_pago_por_referencia_not_found(monkeypatch):
     assert result is None
 
 
-def test_crear_orden_qr_success(monkeypatch):
+# 🔴 Estos tests fijaban `/instore/qrs/merchant/stores/default/pos/POS1/orders`
+# y una respuesta 200 con JSON adentro. Las dos cosas eran la suposición de
+# quien escribió el código, reproducida en el doble de prueba: contra la cuenta
+# real esa URL da **404**, y la buena contesta **204 sin cuerpo**. Verdes desde
+# siempre, defendiendo algo que nunca funcionó.
+#
+# La URL de acá abajo se determinó probándola contra MercadoPago, no leyendo la
+# doc — ver el comentario en `mp_api.crear_orden_qr`.
+URL_ORDEN_QR = "/instore/qr/seller/collectors/U1/pos/POS1/orders"
+
+
+def test_crear_orden_qr_le_pega_a_la_caja_del_collector(monkeypatch):
     def handler(request):
         assert request.method == "PUT"
-        assert request.url.path == "/instore/qrs/merchant/stores/default/pos/POS1/orders"
-        return httpx.Response(200, json={"in_store_order_id": "abc123"})
+        assert request.url.path == URL_ORDEN_QR
+        return httpx.Response(204)
 
     _patch_client(monkeypatch, handler)
     items = [{"nombre": "Cafe", "qty": 1, "precio": 1000.0, "subtotal": 1000.0, "producto_id": 7}]
     result = asyncio.run(
         mp_api.crear_orden_qr("U1", "POS1", "TOKEN", "venta-1", "Venta 1", items, 1000.0)
     )
+    assert result == {}
+
+
+def test_crear_orden_qr_manda_el_monto_y_la_referencia(monkeypatch):
+    visto = {}
+
+    def handler(request):
+        visto.update(json.loads(request.content))
+        return httpx.Response(204)
+
+    _patch_client(monkeypatch, handler)
+    items = [{"nombre": "Cafe", "qty": 2, "precio": 500.0, "subtotal": 1000.0, "producto_id": 7}]
+    asyncio.run(mp_api.crear_orden_qr("U1", "POS1", "TOKEN", "venta-9", "Venta 9", items, 1000.0))
+
+    assert visto["external_reference"] == "venta-9"
+    assert visto["total_amount"] == 1000.0
+    assert [i["title"] for i in visto["items"]] == ["Cafe"]
+
+
+def test_crear_orden_qr_tolera_un_cuerpo_con_json(monkeypatch):
+    """Si algún día MercadoPago devuelve algo, no se descarta."""
+    def handler(request):
+        return httpx.Response(200, json={"in_store_order_id": "abc123"})
+
+    _patch_client(monkeypatch, handler)
+    result = asyncio.run(
+        mp_api.crear_orden_qr("U1", "POS1", "TOKEN", "venta-1", "Venta 1", [], 0.0)
+    )
     assert result == {"in_store_order_id": "abc123"}
+
+
+def test_crear_orden_qr_no_revienta_con_un_cuerpo_que_no_es_json(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, text="OK")
+
+    _patch_client(monkeypatch, handler)
+    result = asyncio.run(
+        mp_api.crear_orden_qr("U1", "POS1", "TOKEN", "venta-1", "Venta 1", [], 0.0)
+    )
+    assert result == {}
 
 
 def test_crear_orden_qr_raises_runtime_error_on_failure(monkeypatch):
@@ -117,11 +168,11 @@ def test_crear_orden_qr_raises_runtime_error_on_failure(monkeypatch):
         asyncio.run(mp_api.crear_orden_qr("U1", "POS1", "TOKEN", "venta-1", "Venta 1", [], 0.0))
 
 
-def test_eliminar_orden_qr(monkeypatch):
+def test_eliminar_orden_qr_usa_la_misma_url_que_el_alta(monkeypatch):
     def handler(request):
         assert request.method == "DELETE"
-        assert request.url.path == "/instore/qrs/merchant/stores/default/pos/POS1/orders"
-        return httpx.Response(200)
+        assert request.url.path == URL_ORDEN_QR
+        return httpx.Response(204)
 
     _patch_client(monkeypatch, handler)
-    asyncio.run(mp_api.eliminar_orden_qr("POS1", "TOKEN"))
+    asyncio.run(mp_api.eliminar_orden_qr("U1", "POS1", "TOKEN"))

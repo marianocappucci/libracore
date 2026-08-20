@@ -64,6 +64,12 @@ async def obtener_pago(payment_id: str, access_token: str) -> dict:
         return r.json()
 
 
+def _url_orden_qr(user_id: str, pos_id: str) -> str:
+    """La URL de la orden de una caja. Una sola definición para el PUT y el
+    DELETE: cuando estaban escritas por separado, las dos estaban mal igual."""
+    return f"{MP_API_BASE}/instore/qr/seller/collectors/{user_id}/pos/{pos_id}/orders"
+
+
 async def crear_orden_qr(
     user_id: str,
     pos_id: str,
@@ -73,16 +79,36 @@ async def crear_orden_qr(
     items: list[dict],
     total: float,
 ) -> dict:
+    """Pone una orden a cobrar en el QR de una caja de MercadoPago.
+
+    Es el modelo de **QR fijo por punto de venta**: el QR es el cartel impreso
+    de la caja y no cambia nunca. Lo que esta llamada cambia es *cuánto cobra*
+    ese QR cuando alguien lo escanea. No devuelve ninguna imagen de QR — no hay
+    ninguna que mostrar.
+
+    `pos_id` es el **`external_id`** de la caja, no su nombre ni su id numérico:
+    una caja sin `external_id` cargado en MercadoPago no es direccionable por
+    esta API. `user_id` es el **collector id** de la cuenta, el que devuelve
+    `GET /users/me`.
+
+    Los ítems deben tener: nombre, qty, precio, subtotal.
+
+    Devuelve el cuerpo de la respuesta, que en la práctica viene **vacío**
+    (MercadoPago contesta 204): se devuelve `{}` y el caller no debe esperar
+    campos adentro.
     """
-    Crea una orden en el POS QR Dinámico de MP.
-    Devuelve el dict de respuesta de MP (contiene 'in_store_order_id').
-    Los ítems deben tener: title, quantity, unit_price.
-    """
-    url = f"{MP_API_BASE}/instore/qrs/merchant/stores/{{}}/pos/{pos_id}/orders"
-    # MP usa: PUT /instore/qrs/merchant/stores/{store_id}/pos/{pos_id}/orders
-    # pero con user_id como header o en la URL según versión de API.
-    # La URL correcta para QR Dinámico V2:
-    url = f"{MP_API_BASE}/instore/qrs/merchant/stores/default/pos/{pos_id}/orders"
+    # 🔴 Hasta el 2026-08-19 esto pegaba a
+    # `/instore/qrs/merchant/stores/default/pos/{pos_id}/orders`, que **no
+    # existe**: contra una cuenta real da 404. El código llegaba a esa URL
+    # asignándola dos veces seguidas, con un comentario que dudaba de si el
+    # user_id iba en la URL o en un header — se escribió de memoria y nunca se
+    # ejercitó contra MercadoPago.
+    #
+    # La forma de acá abajo se determinó **probándola** contra la cuenta real
+    # (respondió 204, y el DELETE de la misma URL también). Y explica el
+    # parámetro que sobraba: el collector id va en el path, así que `user_id`
+    # dejó de estar sin uso.
+    url = _url_orden_qr(user_id, pos_id)
 
     payload = {
         "external_reference": external_reference,
@@ -115,15 +141,27 @@ async def crear_orden_qr(
             raise RuntimeError(
                 f"MP QR error {r.status_code}: {r.text[:300]}"
             )
-        return r.json()
+        # MercadoPago contesta 204 sin cuerpo. `r.json()` sobre eso levanta, y
+        # era la línea siguiente al 404: arreglar sólo la URL habría cambiado un
+        # error por otro.
+        if not r.content:
+            return {}
+        try:
+            return r.json()
+        except ValueError:
+            return {}
 
 
-async def eliminar_orden_qr(pos_id: str, access_token: str) -> None:
-    """Cancela la orden pendiente en el POS (deja el QR sin orden asignada)."""
-    url = f"{MP_API_BASE}/instore/qrs/merchant/stores/default/pos/{pos_id}/orders"
+async def eliminar_orden_qr(user_id: str, pos_id: str, access_token: str) -> None:
+    """Saca la orden pendiente de la caja: el QR impreso queda sin nada que cobrar.
+
+    Cambió la firma el 2026-08-19 — ahora pide `user_id`, porque el collector id
+    va en la URL. No rompe a nadie: ningún producto la llamaba, sólo la
+    re-exportaban los shims de `app/mp_api.py`.
+    """
     headers = {"Authorization": f"Bearer {access_token}"}
     async with httpx.AsyncClient(timeout=10) as client:
-        await client.delete(url, headers=headers)
+        await client.delete(_url_orden_qr(user_id, pos_id), headers=headers)
 
 
 async def buscar_pago_por_referencia(
