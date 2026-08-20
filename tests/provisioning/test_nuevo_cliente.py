@@ -17,6 +17,11 @@ import yaml
 from libracore import provisioning
 from libracore.provisioning import nuevo_cliente as nc
 
+#: CUIT de prueba para las altas de esta suite. Desde que el alta lo exige, un
+#: test que no lo pasa no esta probando su caso: se muere en la validacion. El
+#: caso sin CUIT se ejercita a proposito, y se ve en los tests que lo nombran.
+CUIT = "30-71234567-8"
+
 
 @pytest.fixture(autouse=True)
 def _reset_config():
@@ -85,22 +90,22 @@ def test_slugify_vacio_devuelve_cliente():
 
 def test_crear_cliente_nombre_vacio_lanza_cliente_error(cfg):
     with pytest.raises(nc.ClienteError):
-        nc.crear_cliente(nombre="", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="", setup_npm=False)
 
 
 def test_crear_cliente_plan_invalido_lanza_cliente_error(cfg):
     with pytest.raises(nc.ClienteError):
-        nc.crear_cliente(nombre="Cliente Uno", plan="no-existe", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", plan="no-existe", setup_npm=False)
 
 
 def test_crear_cliente_slug_duplicado_lanza_cliente_error(cfg):
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     with pytest.raises(nc.ClienteError):
-        nc.crear_cliente(nombre="Cliente Uno Bis", slug="cliente-uno", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno Bis", slug="cliente-uno", setup_npm=False)
 
 
 def test_crear_cliente_genera_compose_con_datos_del_producto(cfg):
-    info = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno",
                             admin_password="secreto123", setup_npm=False)
     assert info["container"] == "testprod-cliente-uno"
     assert info["port"] == 9000  # base_port del producto, sin puertos usados
@@ -122,7 +127,7 @@ def test_el_proyecto_de_compose_lleva_el_prefijo_del_producto(cfg):
 
     Paso de verdad: el 2026-08-02 quedaron cuatro instancias `prueba` de
     productos distintos compartiendo `project=prueba`."""
-    nc.crear_cliente(nombre="Prueba", slug="prueba", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Prueba", slug="prueba", setup_npm=False)
     compose_text = (cfg.clientes_dir / "prueba" / "docker-compose.yml").read_text()
     assert compose_text.startswith("name: testprod-prueba\n"), compose_text[:80]
     # El slug solo NO alcanza como nombre de proyecto: es justamente lo que
@@ -155,8 +160,8 @@ def test_dos_instancias_del_mismo_producto_no_comparten_clave_de_servicio(cfg):
     cliente— sirvio a ratos el auto-login de la demo. Aquella vez se
     renombraron los composes afectados a mano y la plantilla quedo sin tocar,
     asi que cada instancia nueva reintroducia el defecto."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
-    nc.crear_cliente(nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
 
     uno = _claves_de_servicio(cfg, "cliente-uno")
     dos = _claves_de_servicio(cfg, "cliente-dos")
@@ -175,7 +180,7 @@ def test_dos_instancias_del_mismo_producto_no_comparten_clave_de_servicio(cfg):
 def test_crear_cliente_pinea_version_y_nunca_latest(cfg):
     """El compose de un cliente nuevo nace con una versión concreta: si
     naciera en `:latest`, el próximo build de otro cliente lo movería."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     compose_text = (cfg.clientes_dir / "cliente-uno" / "docker-compose.yml").read_text()
     assert "testprod:latest" not in compose_text
@@ -191,7 +196,7 @@ def test_crear_cliente_reusa_la_version_ya_construida(cfg, monkeypatch):
     de estrenar un artefacto propio por haberse creado más tarde."""
     monkeypatch.setattr(nc, "version_para_cliente_nuevo", lambda rebuild=False: "v2026.01.02-0304")
 
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     compose_text = (cfg.clientes_dir / "cliente-uno" / "docker-compose.yml").read_text()
     assert "image: testprod:v2026.01.02-0304" in compose_text
@@ -230,13 +235,13 @@ def test_version_para_cliente_nuevo_con_rebuild_siempre_construye(cfg, monkeypat
 
 def test_crear_cliente_aplica_plan_cuando_db_lista(cfg, fake_plans, monkeypatch):
     monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: True)
-    nc.crear_cliente(nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
     assert fake_plans.aplicar_plan_calls[-1][1] == "basico"
     assert fake_plans.aplicar_plan_calls[-1][0].endswith("testprod.db")
 
 
 def test_crear_cliente_sin_dominio_no_configura_proxy(cfg):
-    info = nc.crear_cliente(nombre="Cliente Tres", slug="cliente-tres", setup_npm=True)
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Tres", slug="cliente-tres", setup_npm=True)
     assert info["proxy_ok"] is None
 
 
@@ -261,7 +266,7 @@ def test_crear_cliente_con_dominio_y_npm_crea_proxy(cfg, monkeypatch):
     npm_mod.le_email_from_config = lambda: "admin@test.com"
     monkeypatch.setitem(sys.modules, "npm_api", npm_mod)
 
-    info = nc.crear_cliente(nombre="Cliente Cuatro", slug="cliente-cuatro",
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Cuatro", slug="cliente-cuatro",
                             domain="cliente-cuatro.test", setup_npm=True)
     assert info["proxy_ok"] is True
     assert created["domain"] == "cliente-cuatro.test"
@@ -395,7 +400,7 @@ def test_alta_fallida_borra_el_directorio(cfg, monkeypatch):
     _falla_el_up(monkeypatch, "Bind for 0.0.0.0:8079 failed: port is already allocated")
 
     with pytest.raises(nc.ClienteError):
-        nc.crear_cliente(nombre="Cliente Seis", slug="cliente-seis", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Seis", slug="cliente-seis", setup_npm=False)
 
     assert not (cfg.clientes_dir / "cliente-seis").exists()
 
@@ -406,7 +411,7 @@ def test_alta_fallida_baja_el_contenedor_antes_de_borrar(cfg, monkeypatch):
     ejecutados = _falla_el_up(monkeypatch, "port is already allocated")
 
     with pytest.raises(nc.ClienteError):
-        nc.crear_cliente(nombre="Cliente Siete", slug="cliente-siete", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Siete", slug="cliente-siete", setup_npm=False)
 
     assert ["docker", "compose", "down", "-v"] in ejecutados
     idx_up = ejecutados.index(["docker", "compose", "up", "-d"])
@@ -420,7 +425,7 @@ def test_alta_fallida_reporta_el_motivo_real_de_docker(cfg, monkeypatch):
                               "Bind for 0.0.0.0:8079 failed: port is already allocated\n")
 
     with pytest.raises(nc.ClienteError) as exc:
-        nc.crear_cliente(nombre="Cliente Ocho", slug="cliente-ocho", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Ocho", slug="cliente-ocho", setup_npm=False)
 
     assert "port is already allocated" in str(exc.value)
 
@@ -430,14 +435,14 @@ def test_alta_fallida_libera_el_slug_para_reintentar(cfg, monkeypatch):
     de chocar contra "ya existe un cliente con slug"."""
     _falla_el_up(monkeypatch, "port is already allocated")
     with pytest.raises(nc.ClienteError):
-        nc.crear_cliente(nombre="Cliente Nueve", slug="cliente-nueve", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Nueve", slug="cliente-nueve", setup_npm=False)
 
     # segundo intento, esta vez con docker sano
     def fake_run(args, **kwargs):
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
     monkeypatch.setattr(nc.subprocess, "run", fake_run)
-    info = nc.crear_cliente(nombre="Cliente Nueve", slug="cliente-nueve", setup_npm=False)
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Nueve", slug="cliente-nueve", setup_npm=False)
     assert info["slug"] == "cliente-nueve"
 
 
@@ -452,22 +457,22 @@ def test_alta_fallida_por_el_plan_tambien_hace_rollback(cfg, fake_plans, monkeyp
     fake_plans.aplicar_plan_en_db = explota
 
     with pytest.raises(RuntimeError):
-        nc.crear_cliente(nombre="Cliente Diez", slug="cliente-diez", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Diez", slug="cliente-diez", setup_npm=False)
 
     assert not (cfg.clientes_dir / "cliente-diez").exists()
 
 
 def test_alta_exitosa_no_borra_nada(cfg):
-    nc.crear_cliente(nombre="Cliente Once", slug="cliente-once", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Once", slug="cliente-once", setup_npm=False)
     assert (cfg.clientes_dir / "cliente-once" / "cliente.json").exists()
 
 
 def test_slug_duplicado_no_borra_el_cliente_existente(cfg):
     """El rollback arranca *después* de la validación de slug — si arrancara
     antes, un alta duplicada borraría al cliente que ya estaba."""
-    nc.crear_cliente(nombre="Cliente Doce", slug="cliente-doce", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Doce", slug="cliente-doce", setup_npm=False)
     with pytest.raises(nc.ClienteError):
-        nc.crear_cliente(nombre="Otro", slug="cliente-doce", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Otro", slug="cliente-doce", setup_npm=False)
     assert (cfg.clientes_dir / "cliente-doce" / "cliente.json").exists()
 
 
@@ -486,7 +491,7 @@ def test_crear_cliente_proxy_existente_no_falla(cfg, monkeypatch):
     npm_mod.le_email_from_config = lambda: "admin@test.com"
     monkeypatch.setitem(sys.modules, "npm_api", npm_mod)
 
-    info = nc.crear_cliente(nombre="Cliente Cinco", slug="cliente-cinco",
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Cinco", slug="cliente-cinco",
                             domain="cliente-cinco.test", setup_npm=True)
     assert info["proxy_ok"] is True
 
@@ -539,14 +544,14 @@ def _tok_panel(texto: str) -> str:
 def test_sin_postgres_la_instancia_sigue_naciendo_en_sqlite(cfg):
     """El producto que no declara `db_urls` no cambia en nada — es lo que
     permite migrarlos de a uno sin romper a los demas."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     texto = _compose(cfg)
     assert "postgres" not in texto
     assert "DATABASE_URL" not in texto
 
 
 def test_la_instancia_nueva_nace_con_su_sidecar(cfg_pg):
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     texto = _compose(cfg_pg)
     assert "testprod-cliente-uno-postgres:" in texto
     assert "image: postgres:16-alpine" in texto
@@ -558,7 +563,7 @@ def test_la_instancia_nueva_nace_con_su_sidecar(cfg_pg):
 def test_el_sidecar_no_publica_puerto(cfg_pg):
     """Publicar 5432 en un VPS es publicarlo a Internet. El unico `ports:` del
     compose tiene que ser el de la app."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     texto = _compose(cfg_pg)
     assert texto.count("ports:") == 1
     assert "5432:" not in texto
@@ -573,7 +578,7 @@ def test_el_sidecar_queda_fuera_de_la_red_compartida(cfg_pg, monkeypatch):
     los dos servicios y un `assert ... in texto` pasaria igual con el defecto.
     """
     monkeypatch.setattr(nc, "network_exists", lambda *a, **k: True)
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     doc = yaml.safe_load(_compose(cfg_pg))
     app = doc["services"]["testprod-cliente-uno"]
@@ -589,7 +594,7 @@ def test_la_app_espera_a_que_la_base_este_healthy(cfg_pg):
     """Sin esto la app arranca contra un PostgreSQL que todavia no acepta
     conexiones, se cae y el contenedor entra en loop de reinicio. `depends_on`
     a secas no alcanza: solo espera a que el contenedor exista."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     doc = yaml.safe_load(_compose(cfg_pg))
     dep = doc["services"]["testprod-cliente-uno"]["depends_on"]
     assert dep["testprod-cliente-uno-postgres"]["condition"] == "service_healthy"
@@ -598,8 +603,8 @@ def test_la_app_espera_a_que_la_base_este_healthy(cfg_pg):
 def test_cada_instancia_tiene_su_propia_clave(cfg_pg):
     """Dos instancias del mismo producto no pueden compartir contrasena: si una
     se filtra, se filtran las dos."""
-    nc.crear_cliente(nombre="Uno", slug="uno", setup_npm=False)
-    nc.crear_cliente(nombre="Dos", slug="dos", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Uno", slug="uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Dos", slug="dos", setup_npm=False)
     claves = []
     for slug in ("uno", "dos"):
         doc = yaml.safe_load(_compose(cfg_pg, slug))
@@ -611,7 +616,7 @@ def test_cada_instancia_tiene_su_propia_clave(cfg_pg):
 def test_la_clave_de_la_base_no_va_a_cliente_json(cfg_pg):
     """`cliente.json` lo lee el backoffice y sale por su API. La clave de la
     base vive en el compose, que no se versiona."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     doc = yaml.safe_load(_compose(cfg_pg))
     clave = doc["services"]["testprod-cliente-uno-postgres"]["environment"]["POSTGRES_PASSWORD"]
     meta = (cfg_pg.clientes_dir / "cliente-uno" / "cliente.json").read_text()
@@ -622,7 +627,7 @@ def test_dos_bases_se_crean_con_un_init_montado(cfg_pg_dos_bases):
     """Gestiolibra y MedLibra necesitan DOS bases y no dos schemas: LibraCore y
     LibraGenda declaran los dos una tabla `clients` con `id` de tipos
     incompatibles."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     d = cfg_pg_dos_bases.clientes_dir / "cliente-uno"
     sql = (d / "postgres-init" / "10-bases-extra.sql").read_text()
 
@@ -646,7 +651,7 @@ def test_dos_bases_se_crean_con_un_init_montado(cfg_pg_dos_bases):
 def test_con_una_sola_base_no_se_monta_init(cfg_pg):
     """El init sobra donde hay una sola base, y montar un directorio que no
     existe rompe el `up`."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     d = cfg_pg.clientes_dir / "cliente-uno"
     assert not (d / "postgres-init").exists()
     assert "docker-entrypoint-initdb.d" not in _compose(cfg_pg)
@@ -669,7 +674,7 @@ def test_el_plan_se_aplica_contra_la_PRIMERA_base(cfg_pg_dos_bases, monkeypatch)
     monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", _ESPERA_REAL)
     monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", _APLICAR_REAL)
     monkeypatch.setattr(nc.subprocess, "run", fake_run)
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     # la espera pregunta por la base de DOMINIO, no por la de core
     psql = [a for a in ejecutados if "psql" in a][0]
@@ -685,7 +690,7 @@ def test_el_plan_se_aplica_contra_la_PRIMERA_base(cfg_pg_dos_bases, monkeypatch)
 def test_el_volumen_de_la_base_se_declara(cfg_pg):
     """Sin el volumen nombrado, Docker crea uno anonimo y un `down -v` del
     rollback se lleva los datos sin que nadie lo relacione."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     doc = yaml.safe_load(_compose(cfg_pg))
     assert "testprod-cliente-uno-postgres-data" in doc["volumes"]
     assert "testprod-cliente-uno-postgres-data:/var/lib/postgresql/data" in \
@@ -702,7 +707,7 @@ def test_el_compose_escribe_TAMBIEN_el_nombre_historico(cfg_pg_dos_bases):
     No falla: queda healthy y con la base vacia. Medido con un alta real el
     2026-08-11.
     """
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     texto = _compose(cfg_pg_dos_bases)
 
     # el vigente
@@ -722,7 +727,7 @@ def test_el_compose_escribe_TAMBIEN_el_nombre_historico(cfg_pg_dos_bases):
 def test_para_un_producto_sin_historicos_no_se_repiten_variables(cfg_pg):
     """TESTPROD no tiene nombres historicos registrados, asi que no tiene que
     aparecer ninguna variable duplicada."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     doc = yaml.safe_load(_compose(cfg_pg))
     env = doc["services"]["testprod-cliente-uno"]["environment"]
     claves = [e.split("=", 1)[0] for e in env if "=" in e]
@@ -743,7 +748,7 @@ def test_con_un_prefijo_REAL_el_compose_trae_el_nombre_viejo_y_el_nuevo(
         repo_root=repo_root, base_port=9000, postgres=True,
     )
     cfg = provisioning.get_config()
-    nc.crear_cliente(nombre="Uno", slug="uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Uno", slug="uno", setup_npm=False)
 
     doc = yaml.safe_load((cfg.clientes_dir / "uno" / "docker-compose.yml").read_text())
     env = doc["services"]["ventalibra-uno"]["environment"]
@@ -788,7 +793,7 @@ def test_contra_postgres_la_espera_y_el_plan_van_por_docker_exec(cfg_pg, monkeyp
     monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", _ESPERA_REAL)
     monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", _APLICAR_REAL)
     monkeypatch.setattr(nc.subprocess, "run", fake_run)
-    nc.crear_cliente(nombre="Uno", slug="uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Uno", slug="uno", setup_npm=False)
 
     psql = [a for a in ejecutados if "psql" in a]
     assert psql, "la espera tiene que preguntar por la tabla DENTRO del sidecar"
@@ -817,7 +822,7 @@ def test_sin_postgres_el_plan_se_aplica_como_siempre(cfg, fake_plans, monkeypatc
     """El camino SQLite no cambia: sigue yendo por `plans.aplicar_plan_en_db`
     con una ruta de archivo."""
     monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: True)
-    nc.crear_cliente(nombre="Uno", slug="uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Uno", slug="uno", setup_npm=False)
     assert len(fake_plans.aplicar_plan_calls) == 1
     destino, _ = fake_plans.aplicar_plan_calls[0]
     assert destino.endswith("testprod.db")
@@ -909,18 +914,18 @@ def _correr(fuente: str, puerto: int) -> int:
 
 
 def test_el_healthcheck_usa_la_ruta_por_defecto(cfg):
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     assert "localhost:8000/health'" in _comando_del_healthcheck(cfg)
 
 
 def test_el_producto_puede_declarar_otra_ruta(cfg_health_api):
     """LibraDesk. Sin esto, su instancia nace apuntada a una ruta inexistente."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     assert "localhost:8000/api/health'" in _comando_del_healthcheck(cfg_health_api)
 
 
 def test_el_healthcheck_da_verde_contra_el_endpoint_de_verdad(cfg):
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     srv = _servidor(b'{"status": "ok"}', "application/json", ruta_viva="/health")
     try:
         assert _correr(_comando_del_healthcheck(cfg), srv.server_port) == 0
@@ -933,7 +938,7 @@ def test_el_healthcheck_da_rojo_si_contesta_la_SPA(cfg):
 
     Es el escenario real —200 + index.html en cualquier ruta— y el que el
     chequeo viejo no podia distinguir."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     srv = _servidor(b"<!doctype html><title>app</title>", "text/html")
     try:
         assert _correr(_comando_del_healthcheck(cfg), srv.server_port) != 0
@@ -963,7 +968,7 @@ def test_la_url_generada_trae_el_driver_psycopg(cfg_pg):
     LibraCore no lo notaba porque conecta con `psycopg.connect()`, que acepta la
     forma libpq. Pero un producto que le pase esta variable a `create_engine()`
     revienta al importar. Paso con `libradesk-lagrace`: 28 reinicios."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     texto = _compose(cfg_pg)
 
     urls = re.findall(r"=(postgresql[^\s@]*)://", texto)
@@ -974,7 +979,7 @@ def test_la_url_generada_trae_el_driver_psycopg(cfg_pg):
 def test_ninguna_url_del_compose_queda_sin_driver(cfg_pg_dos_bases):
     """La contraprueba sobre el producto de DOS bases: el defecto estaba en el
     bucle que arma las lineas, asi que alcanzaba con que UNA quedara cruda."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     crudas = [ln.strip() for ln in _compose(cfg_pg_dos_bases).splitlines()
               if "=postgresql://" in ln]
     assert not crudas, crudas
@@ -988,7 +993,7 @@ def test_el_compose_trae_las_credenciales_con_el_nombre_que_la_app_lee(cfg):
     Son cuatro los productos asi (libradesk, gestiolibra, medlibra, ventalibra).
     A cada instancia viva se le habia agregado a mano; `lagrace` no la recibio y
     quedaba en crash loop con `RuntimeError`."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno",
                      admin_user="admin", admin_password="secreto123",
                      setup_npm=False)
     texto = _compose(cfg)
@@ -1005,8 +1010,102 @@ def test_el_token_de_servicio_sale_del_entorno(cfg, monkeypatch):
     devuelve False sin mirar el header y el backoffice recibe 401 en Usuarios y
     SMTP de la instancia que acaba de crear."""
     monkeypatch.setenv("LIBRA_SERVICE_TOKEN", "un-token-de-servicio")
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     assert "LIBRA_SERVICE_TOKEN=un-token-de-servicio" in _compose(cfg)
+
+
+# ── identidad fiscal de la instancia ────────────────────────────────────────
+#
+# El CUIT es lo que le permite al panel del dueno el consolidado por RAZON
+# SOCIAL, que es el unico que cierra contra los libros. La instancia que motiva
+# estos tests existe: `contalibra-demo` contesta `{nombre: "", cuit: "",
+# punto_venta: null}` porque nunca se le cargo la empresa.
+
+
+def _config(cfg, slug="cliente-uno"):
+    return json.loads((cfg.clientes_dir / slug / "data" / "config.json").read_text())
+
+
+def test_el_alta_le_carga_la_identidad_fiscal_a_la_instancia(cfg):
+    """`config.json` es de donde el `identidad()` de cada producto saca lo que
+    le contesta al panel — `config_manager.load()`, sin intermediarios."""
+    nc.crear_cliente(nombre="Compulibra", slug="cliente-uno",
+                     empresa_cuit="20-28993360-4",
+                     empresa_nombre="CAPPUCCI MARIANO", setup_npm=False)
+
+    conf = _config(cfg)
+    assert conf["empresa_cuit"] == "20-28993360-4"
+    assert conf["empresa_nombre"] == "CAPPUCCI MARIANO"
+
+
+def test_la_razon_social_cae_al_nombre_comercial_si_no_se_pasa(cfg):
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Compulibra", slug="cliente-uno",
+                     setup_npm=False)
+    assert _config(cfg)["empresa_nombre"] == "Compulibra"
+
+
+def test_el_cuit_se_guarda_como_lo_escribieron(cfg):
+    """Sin normalizar. Cada consumidor le saca los guiones para lo suyo —el QR
+    de ARCA en `pdf_generator` y `ticket_generator`, el agrupamiento del panel
+    en `normalizar_cuit`—, asi que normalizar aca no le ahorraria el paso a
+    ninguno y le cambiaria a Configuracion lo que el humano tipeo."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+                     empresa_cuit="  20-28993360-4  ", setup_npm=False)
+    assert _config(cfg)["empresa_cuit"] == "20-28993360-4"
+
+
+def test_sin_cuit_el_alta_NO_crea_nada(cfg):
+    """🔴 Los dos asserts son el test.
+
+    Que falle no alcanza: si dejara el directorio armado, el slug quedaria
+    tomado y el reintento —el camino obvio despues de leer el error— chocaria
+    contra el. Por eso se valida antes de tocar Docker y de escribir un archivo,
+    y por eso es `ClienteError` y no `AltaIncompleta`."""
+    with pytest.raises(nc.ClienteError, match="CUIT"):
+        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    assert not (cfg.clientes_dir / "cliente-uno").exists()
+
+
+def test_un_cuit_que_no_es_un_cuit_tampoco_pasa(cfg):
+    """La cadena vacia no es la unica forma de "despues lo cargo"."""
+    for basura in ["-", "sin cuit", "20289933", "0"]:
+        with pytest.raises(nc.ClienteError, match="CUIT"):
+            nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+                             empresa_cuit=basura, setup_npm=False)
+        assert not (cfg.clientes_dir / "cliente-uno").exists()
+
+
+def test_el_cuit_pasa_con_guiones_y_sin_guiones(cfg):
+    """Control positivo del anterior: si el validador rechazara todo, aquel
+    pasaria igual y no estaria probando nada."""
+    a = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+                         empresa_cuit="20-28993360-4", setup_npm=False)
+    b = nc.crear_cliente(nombre="Cliente Dos", slug="cliente-dos",
+                         empresa_cuit="20289933604", setup_npm=False)
+    assert a["empresa_cuit"] == "20-28993360-4"
+    assert b["empresa_cuit"] == "20289933604"
+
+
+def test_una_demo_se_puede_dar_de_alta_sin_cuit_pero_pidiendolo(cfg):
+    """Las instancias de demo son legitimas y no tienen CUIT. El opt-in es
+    explicito porque la alternativa —inventar un CUIT para pasar el chequeo— es
+    peor: uno falso agrupa, y agrupa mal."""
+    lineas = []
+    info = nc.crear_cliente(nombre="Demo", slug="demo", sin_identidad=True,
+                            setup_npm=False, log=lineas.append)
+
+    assert info["empresa_cuit"] == ""
+    assert _config(cfg, "demo")["empresa_cuit"] == ""
+    assert any("sin identificar" in str(ln) for ln in lineas)
+
+
+def test_ni_siquiera_una_demo_puede_llevar_un_cuit_roto(cfg):
+    """`sin_identidad` habilita NO tener CUIT, no tener cualquier cosa. Sin este
+    limite, el opt-in seria la puerta por la que entra el CUIT mal tipeado."""
+    with pytest.raises(nc.ClienteError, match="CUIT"):
+        nc.crear_cliente(nombre="Demo", slug="demo", sin_identidad=True,
+                         empresa_cuit="20289933", setup_npm=False)
 
 
 # ── credencial del panel del cliente ────────────────────────────────────────
@@ -1021,7 +1120,7 @@ def test_la_instancia_nueva_nace_con_su_credencial_de_panel(cfg):
     """Sin la variable, el guard de libraauth devuelve 401 **sin mirar el
     header** —es opt-in por ausencia— y el panel del dueno muestra la sucursal
     como "sin respuesta", igual que si estuviera caida."""
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     assert re.search(r"- LIBRA_PANEL_TOKEN=[0-9a-f]{64}$", _compose(cfg), re.M)
 
 
@@ -1031,8 +1130,8 @@ def test_dos_altas_no_comparten_la_credencial_de_panel(cfg):
     Un valor compartido —derivado del producto, del `secret_key`, o leido del
     entorno como el de servicio— hace que darsela al dueno de UNA sucursal le
     abra las de todos los demas clientes del producto."""
-    a = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
-    b = nc.crear_cliente(nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
+    a = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    b = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
 
     assert a["panel_token"] != b["panel_token"]
     assert _tok_panel(_compose(cfg, "cliente-uno")) != _tok_panel(_compose(cfg, "cliente-dos"))
@@ -1046,7 +1145,7 @@ def test_la_credencial_de_panel_no_es_la_de_servicio(cfg, monkeypatch):
     `libradesk-compulibra` —dos clientes distintos— tambien. Reusarlo seria
     exactamente el agujero que esta credencial existe para no abrir."""
     monkeypatch.setenv("LIBRA_SERVICE_TOKEN", "un-token-de-servicio")
-    info = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     texto = _compose(cfg)
     assert "LIBRA_SERVICE_TOKEN=un-token-de-servicio" in texto
@@ -1060,7 +1159,7 @@ def test_la_credencial_de_panel_no_pasa_por_el_log(cfg):
     credencial vuelve por el resultado y se queda en el compose; el unico lugar
     que la imprime es el bloque final de `main()`."""
     lineas = []
-    info = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno",
                             setup_npm=False, log=lineas.append)
 
     assert info["panel_token"]  # control positivo: hubo credencial que filtrar
@@ -1072,7 +1171,7 @@ def test_la_credencial_de_panel_no_queda_en_cliente_json(cfg):
     por la instancia — por eso el backoffice filtra su respuesta campo por
     campo. Un secreto mas ahi adentro es una forma mas de filtrarse, y no hace
     falta: el compose ya es el lugar donde queda recuperable."""
-    info = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     meta = (cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text()
 
     assert info["panel_token"] not in meta
@@ -1084,7 +1183,7 @@ def test_sin_token_en_el_entorno_no_se_escribe_la_variable(cfg, monkeypatch):
     alta desde la CLI no debe estampar una vacia — `LIBRA_SERVICE_TOKEN=` es
     peor que no tenerla, porque parece configurado."""
     monkeypatch.delenv("LIBRA_SERVICE_TOKEN", raising=False)
-    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     assert "LIBRA_SERVICE_TOKEN" not in _compose(cfg)
 
 
@@ -1122,7 +1221,7 @@ def test_si_la_base_no_sube_el_alta_falla_y_NO_borra_la_instancia(cfg_pg, monkey
     monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: False)
 
     with pytest.raises(nc.AltaIncompleta) as e:
-        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     assert "cliente-uno" in str(e.value)
     assert (cfg_pg.clientes_dir / "cliente-uno" / "cliente.json").exists(), \
@@ -1136,7 +1235,7 @@ def test_si_no_se_puede_aplicar_el_plan_el_alta_tampoco_reporta_exito(cfg_pg, mo
     monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", lambda *a, **k: False)
 
     with pytest.raises(nc.AltaIncompleta) as e:
-        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno",
                          plan="basico", setup_npm=False)
     assert "basico" in str(e.value)
     assert (cfg_pg.clientes_dir / "cliente-uno" / "cliente.json").exists()
@@ -1155,7 +1254,7 @@ def test_un_fallo_de_verdad_SI_dispara_el_rollback(cfg_pg, monkeypatch):
     monkeypatch.setattr(nc.subprocess, "run", falla_el_up)
 
     with pytest.raises(nc.ClienteError):
-        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     assert not (cfg_pg.clientes_dir / "cliente-uno").exists(), \
         "un fallo de infraestructura si tiene que limpiar"
@@ -1181,7 +1280,7 @@ def test_el_diagnostico_dice_que_le_pasa_al_contenedor(cfg_pg, monkeypatch):
     monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: False)
 
     with pytest.raises(nc.AltaIncompleta) as e:
-        nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     mensaje = str(e.value)
     assert "reinicios=28" in mensaje, mensaje
