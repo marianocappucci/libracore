@@ -529,6 +529,13 @@ def _compose(cfg, slug="cliente-uno"):
     return (cfg.clientes_dir / slug / "docker-compose.yml").read_text()
 
 
+def _tok_panel(texto: str) -> str:
+    """El valor de `LIBRA_PANEL_TOKEN` en un compose generado."""
+    m = re.search(r"- LIBRA_PANEL_TOKEN=(\S+)", texto)
+    assert m, "el compose no tiene LIBRA_PANEL_TOKEN"
+    return m.group(1)
+
+
 def test_sin_postgres_la_instancia_sigue_naciendo_en_sqlite(cfg):
     """El producto que no declara `db_urls` no cambia en nada — es lo que
     permite migrarlos de a uno sin romper a los demas."""
@@ -1000,6 +1007,76 @@ def test_el_token_de_servicio_sale_del_entorno(cfg, monkeypatch):
     monkeypatch.setenv("LIBRA_SERVICE_TOKEN", "un-token-de-servicio")
     nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
     assert "LIBRA_SERVICE_TOKEN=un-token-de-servicio" in _compose(cfg)
+
+
+# ── credencial del panel del cliente ────────────────────────────────────────
+#
+# Estos cuatro fijan lo que distingue a `LIBRA_PANEL_TOKEN` de la de servicio.
+# La instancia que los motivo existe: hasta el 2026-08-20 NINGUN compose la
+# tenia, las dos de Contalibra se parcharon a mano, y el generador siguio
+# pariendo instancias sin ella.
+
+
+def test_la_instancia_nueva_nace_con_su_credencial_de_panel(cfg):
+    """Sin la variable, el guard de libraauth devuelve 401 **sin mirar el
+    header** —es opt-in por ausencia— y el panel del dueno muestra la sucursal
+    como "sin respuesta", igual que si estuviera caida."""
+    nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    assert re.search(r"- LIBRA_PANEL_TOKEN=[0-9a-f]{64}$", _compose(cfg), re.M)
+
+
+def test_dos_altas_no_comparten_la_credencial_de_panel(cfg):
+    """🔴 El test que sostiene la decision entera.
+
+    Un valor compartido —derivado del producto, del `secret_key`, o leido del
+    entorno como el de servicio— hace que darsela al dueno de UNA sucursal le
+    abra las de todos los demas clientes del producto."""
+    a = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    b = nc.crear_cliente(nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
+
+    assert a["panel_token"] != b["panel_token"]
+    assert _tok_panel(_compose(cfg, "cliente-uno")) != _tok_panel(_compose(cfg, "cliente-dos"))
+
+
+def test_la_credencial_de_panel_no_es_la_de_servicio(cfg, monkeypatch):
+    """Contraprueba del anterior contra la fuente equivocada mas a mano.
+
+    `LIBRA_SERVICE_TOKEN` es por PRODUCTO: medido en el VPS, `contalibra` y
+    `contalibra-demo` comparten uno y `libradesk-lagrace` y
+    `libradesk-compulibra` —dos clientes distintos— tambien. Reusarlo seria
+    exactamente el agujero que esta credencial existe para no abrir."""
+    monkeypatch.setenv("LIBRA_SERVICE_TOKEN", "un-token-de-servicio")
+    info = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    texto = _compose(cfg)
+    assert "LIBRA_SERVICE_TOKEN=un-token-de-servicio" in texto
+    assert info["panel_token"] != "un-token-de-servicio"
+    assert _tok_panel(texto) == info["panel_token"]
+
+
+def test_la_credencial_de_panel_no_pasa_por_el_log(cfg):
+    """El `log` del alta no es la terminal del operador: en el backoffice se
+    acumula y termina en la respuesta HTTP y en los logs del contenedor. La
+    credencial vuelve por el resultado y se queda en el compose; el unico lugar
+    que la imprime es el bloque final de `main()`."""
+    lineas = []
+    info = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
+                            setup_npm=False, log=lineas.append)
+
+    assert info["panel_token"]  # control positivo: hubo credencial que filtrar
+    assert not [ln for ln in lineas if info["panel_token"] in str(ln)]
+
+
+def test_la_credencial_de_panel_no_queda_en_cliente_json(cfg):
+    """`cliente.json` lo lee `load_clients()` y viaja entero a quien pregunte
+    por la instancia — por eso el backoffice filtra su respuesta campo por
+    campo. Un secreto mas ahi adentro es una forma mas de filtrarse, y no hace
+    falta: el compose ya es el lugar donde queda recuperable."""
+    info = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    meta = (cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text()
+
+    assert info["panel_token"] not in meta
+    assert "panel_token" not in meta
 
 
 def test_sin_token_en_el_entorno_no_se_escribe_la_variable(cfg, monkeypatch):

@@ -505,6 +505,31 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
     admin_nombre = admin_nombre or nombre
     secret_key = secrets.token_hex(32)
 
+    # — credencial del panel del cliente —
+    #
+    # 🔴 **Aleatoria y distinta en cada instancia, y ese es todo el punto.** No
+    # sale del entorno como `LIBRA_SERVICE_TOKEN` (ver más abajo) ni se deriva
+    # del `secret_key`: `LIBRA_SERVICE_TOKEN` es **por producto**. Medido el
+    # 2026-08-20 en el VPS: `contalibra` y `contalibra-demo` comparten uno, y
+    # `libradesk-lagrace` y `libradesk-compulibra` —dos CLIENTES distintos—
+    # también. Correcto para lo que es, porque el backoffice del proveedor
+    # administra todas las instancias de un producto; inservible acá, porque
+    # esta credencial se le entrega al DUEÑO de unas sucursales y con un valor
+    # compartido le abriría las de los demás.
+    #
+    # Se escribe SIEMPRE, no sólo si alguien la pidió. El guard de libraauth es
+    # opt-in por ausencia: sin la variable, `/api/resumen` devuelve **401 sin
+    # mirar el header**, y desde el panel eso se ve como "sin respuesta" —
+    # indistinguible de una sucursal caída. Las dos instancias de Contalibra la
+    # tienen porque se les puso a mano el 2026-08-20; esto es para que la
+    # próxima no nazca necesitando esa visita. Que exista no expone nada: sin
+    # el valor no se entra, y el valor sale de acá y del compose de la
+    # instancia, de ningún otro lado.
+    #
+    # 64 hex y no `token_urlsafe`: viaja como header HTTP y los alfabetos con
+    # `=` o `+` obligan a pensar en encoding cada vez que alguien la copia.
+    panel_token = secrets.token_hex(32)
+
     # A partir de acá el alta escribe en disco, así que todo lo que sigue va
     # bajo rollback: si algo falla a mitad, `client_dir` se borra entero. Es
     # seguro borrarlo porque existe sólo porque lo creamos nosotros — el
@@ -603,6 +628,9 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         token_env = (
             f"      - LIBRA_SERVICE_TOKEN={token_servicio}\n" if token_servicio else ""
         )
+        # Sin `if`: a diferencia de la de servicio, esta no depende de que el
+        # entorno del proceso que corre el alta tenga nada puesto.
+        token_env += f"      - LIBRA_PANEL_TOKEN={panel_token}\n"
 
         # — versión de imagen — el compose nace pineado a una versión concreta,
         # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
@@ -775,6 +803,19 @@ services:
             "container": container, "admin_user": admin_user,
             "admin_password": admin_password, "plan": plan, "proxy_ok": proxy_ok,
             "dir": str(client_dir),
+            # 🔴 Vuelve por acá y **no se escribe en `cliente.json`**, a
+            # diferencia de `admin_password`. Esa metadata la lee
+            # `load_clients()` y viaja entera a quien pregunte por la instancia
+            # —por eso el backoffice tiene un `response_model` que la filtra
+            # campo por campo—; sumarle un secreto más es sumarle una forma de
+            # filtrarse. Donde queda recuperable es en el `docker-compose.yml`
+            # de la instancia, que es donde tiene que estar igual para que el
+            # contenedor la lea.
+            #
+            # Y **nunca por `log()`**: en el backoffice ese stream termina en la
+            # respuesta del alta y en los logs del contenedor. En la CLI la
+            # imprime `main()`, en el mismo bloque final que la contraseña.
+            "panel_token": panel_token,
         }
     except AltaIncompleta:
         # Sin rollback, a propósito — ver el docstring de `AltaIncompleta`. La
@@ -849,5 +890,10 @@ def main():
         print(f"  Dominio:     https://{info['domain']}")
     print(f"  Admin:       {info['admin_user']}  /  {info['admin_password']}")
     print(f"  Plan:        {info['plan']}")
+    # La credencial con la que el panel del dueño le pide los números a esta
+    # sucursal. Se imprime acá —y no por `log()`— porque este bloque es el canal
+    # deliberado hacia el operador, el mismo por el que sale la contraseña.
+    print(f"  Panel token: {info['panel_token']}")
     print("=" * 60)
     print("\n[!] Guardá las credenciales — no se volverán a mostrar.")
+    print("[!] El panel token es el que va en el alta de esta sucursal en LibraPanel.")
