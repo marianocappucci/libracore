@@ -88,12 +88,21 @@ def fake_scripts(monkeypatch, tmp_path):
 
     fake_nc.ClienteError = ClienteError
 
+    # La firma se copia de la real a proposito: este doble es lo unico que
+    # atrapa un `services.crear_cliente` que deje de pasarle un argumento al
+    # motor. Si se le agrega `**kwargs` para que "no moleste", deja de atrapar
+    # nada — que es justo lo que hizo ruido al sumar la identidad fiscal.
     def crear_cliente(nombre, slug="", domain="", port=0, admin_user="admin",
-                      admin_password="", plan="basico", setup_npm=True):
+                      admin_password="", plan="basico", empresa_cuit="",
+                      empresa_nombre="", sin_identidad=False, setup_npm=True):
         slug = slug or nombre.lower().replace(" ", "-")
         if fake_pa.find_client(slug):
             raise ClienteError(f"Ya existe un cliente con slug '{slug}'.")
         _mkclient(nombre, slug, domain, port, admin_user, plan)
+        fake_nc.ultima_alta = {
+            "empresa_cuit": empresa_cuit, "empresa_nombre": empresa_nombre,
+            "sin_identidad": sin_identidad,
+        }
         return {"slug": slug, "admin_password": admin_password or "generated123"}
 
     fake_nc.crear_cliente = crear_cliente

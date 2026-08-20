@@ -169,13 +169,15 @@ def get_cliente(slug: str) -> dict | None:
 # ── alta ───────────────────────────────────────────────────────────────────────
 
 def crear_cliente(nombre, slug="", domain="", port=0, admin_user="admin",
-                  admin_password="", plan="basico", setup_npm=True) -> dict:
+                  admin_password="", plan="basico", empresa_cuit="",
+                  empresa_nombre="", sin_identidad=False, setup_npm=True) -> dict:
     nc = _nc()
     try:
         return nc.crear_cliente(
             nombre=nombre, slug=slug, domain=domain, port=int(port or 0),
             admin_user=admin_user or "admin", admin_password=admin_password,
-            plan=plan, setup_npm=setup_npm,
+            plan=plan, empresa_cuit=empresa_cuit, empresa_nombre=empresa_nombre,
+            sin_identidad=sin_identidad, setup_npm=setup_npm,
         )
     # 🔴 La excepción se importa de LibraCore, NO se busca en `nc`.
     #

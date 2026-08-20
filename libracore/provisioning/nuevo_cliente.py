@@ -176,6 +176,20 @@ class ClienteError(Exception):
     """Error de alta de cliente (validación o infraestructura)."""
 
 
+def cuit_valido(cuit: str) -> bool:
+    """¿Tiene forma de CUIT? Once dígitos, con o sin guiones.
+
+    No verifica el dígito verificador **a propósito**: el alta no es el lugar
+    donde se descubre que un CUIT real está mal tipeado —eso lo dice ARCA la
+    primera vez que se factura—, y un validador de más acá rechazaría también
+    los CUIT de prueba con los que se arman las demos.
+
+    Lo que sí ataja es el caso que motivó todo esto: la cadena vacía, y el
+    "después lo cargo" escrito como `-` o `sin cuit`.
+    """
+    return len(re.sub(r"[^0-9]", "", cuit or "")) == 11
+
+
 def _rollback_alta(client_dir: Path, log) -> None:
     """Deshace un alta que falló a mitad de camino.
 
@@ -472,10 +486,18 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
 def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
                   admin_user: str = "admin", admin_password: str = "",
                   admin_nombre: str = "", plan: str = "basico",
+                  empresa_cuit: str = "", empresa_nombre: str = "",
+                  sin_identidad: bool = False,
                   setup_npm: bool = True, rebuild: bool = False, log=lambda *a: None) -> dict:
     """Da de alta un cliente de forma NO interactiva: crea el directorio, config,
     docker-compose y cliente.json, buildea la imagen si falta, levanta el contenedor,
     aplica el plan inicial y (si hay dominio + NPM) crea el proxy con SSL.
+
+    `empresa_cuit` y `empresa_nombre` son la IDENTIDAD FISCAL de la instancia y
+    van a su `config.json`, que es de donde el `identidad()` de cada producto
+    saca lo que le contesta al panel del dueño. `empresa_nombre` es la razón
+    social —que puede no ser el nombre comercial de `nombre`— y cae a `nombre`
+    si no se pasa.
 
     Devuelve un dict con los datos del cliente (incluida la contraseña generada).
     Lanza ClienteError ante validaciones o fallos de infraestructura.
@@ -495,6 +517,47 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
     if plan not in plans.PLANES:
         raise ClienteError(f"Plan inválido: {plan!r}.")
 
+    # — identidad fiscal —
+    #
+    # 🔴 Se valida ACÁ, antes de tocar Docker y antes de escribir un solo
+    # archivo, así que un alta sin CUIT no deja nada atrás y se puede reintentar
+    # con el mismo slug. Es la diferencia con `AltaIncompleta`, que es para
+    # cuando la instancia ya existe.
+    #
+    # El caso que esto cierra está vivo: `contalibra-demo` contesta
+    # `instancia: {nombre: "", cuit: "", punto_venta: null}` porque nunca se le
+    # cargó la empresa, y el panel no la puede agrupar por razón social. El
+    # panel sabe defenderse —la muestra aparte como "sin identificar" en vez de
+    # juntarla con cualquier otra vacía— pero eso es la red, no el objetivo:
+    # sumar entre CUITs da un número de gestión y no uno declarable, así que una
+    # sucursal sin CUIT es una sucursal que no entra en el único consolidado que
+    # cierra contra los libros.
+    #
+    # `sin_identidad` existe porque las instancias de demo son legítimas y no
+    # tienen CUIT. Es un opt-in EXPLÍCITO y no un default: inventar un CUIT para
+    # pasar el chequeo sería peor que no tener ninguno —un CUIT falso agrupa, y
+    # agrupa mal—, y un `[WARN]` en el log no lo lee nadie.
+    empresa_nombre = (empresa_nombre or "").strip() or nombre
+    empresa_cuit = (empresa_cuit or "").strip()
+    if sin_identidad:
+        if empresa_cuit and not cuit_valido(empresa_cuit):
+            raise ClienteError(
+                f"CUIT inválido: {empresa_cuit!r}. Son once dígitos, con o sin guiones."
+            )
+        log("[WARN] Instancia sin CUIT: el panel del dueño no la va a poder "
+            "agrupar por razón social y la va a mostrar como «sin identificar». "
+            "Cargale la empresa desde Configuración antes de entregarla.")
+    elif not empresa_cuit:
+        raise ClienteError(
+            "Falta el CUIT de la empresa. Es lo que le permite al panel del "
+            "dueño agrupar la sucursal por razón social; sin él la instancia "
+            "queda sin identificar. Si es una demo, pedila con sin_identidad."
+        )
+    elif not cuit_valido(empresa_cuit):
+        raise ClienteError(
+            f"CUIT inválido: {empresa_cuit!r}. Son once dígitos, con o sin guiones."
+        )
+
     _used = used_ports()
     port = int(port) if port else next_port(_used)
     if port in _used:
@@ -504,6 +567,31 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         admin_password = secrets.token_urlsafe(12)
     admin_nombre = admin_nombre or nombre
     secret_key = secrets.token_hex(32)
+
+    # — credencial del panel del cliente —
+    #
+    # 🔴 **Aleatoria y distinta en cada instancia, y ese es todo el punto.** No
+    # sale del entorno como `LIBRA_SERVICE_TOKEN` (ver más abajo) ni se deriva
+    # del `secret_key`: `LIBRA_SERVICE_TOKEN` es **por producto**. Medido el
+    # 2026-08-20 en el VPS: `contalibra` y `contalibra-demo` comparten uno, y
+    # `libradesk-lagrace` y `libradesk-compulibra` —dos CLIENTES distintos—
+    # también. Correcto para lo que es, porque el backoffice del proveedor
+    # administra todas las instancias de un producto; inservible acá, porque
+    # esta credencial se le entrega al DUEÑO de unas sucursales y con un valor
+    # compartido le abriría las de los demás.
+    #
+    # Se escribe SIEMPRE, no sólo si alguien la pidió. El guard de libraauth es
+    # opt-in por ausencia: sin la variable, `/api/resumen` devuelve **401 sin
+    # mirar el header**, y desde el panel eso se ve como "sin respuesta" —
+    # indistinguible de una sucursal caída. Las dos instancias de Contalibra la
+    # tienen porque se les puso a mano el 2026-08-20; esto es para que la
+    # próxima no nazca necesitando esa visita. Que exista no expone nada: sin
+    # el valor no se entra, y el valor sale de acá y del compose de la
+    # instancia, de ningún otro lado.
+    #
+    # 64 hex y no `token_urlsafe`: viaja como header HTTP y los alfabetos con
+    # `=` o `+` obligan a pensar en encoding cada vez que alguien la copia.
+    panel_token = secrets.token_hex(32)
 
     # A partir de acá el alta escribe en disco, así que todo lo que sigue va
     # bajo rollback: si algo falla a mitad, `client_dir` se borra entero. Es
@@ -517,9 +605,18 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         log(f"[OK] Directorios en {client_dir}")
 
         # — config.json — (claves deben coincidir con _DEFAULTS en config_manager.py)
+        #
+        # El CUIT se guarda COMO LO ESCRIBIERON, con guiones o sin ellos. No se
+        # normaliza acá porque cada consumidor ya lo hace a su manera y para lo
+        # suyo (`arca_wsfe`, `pdf_generator` y `ticket_generator` le sacan los
+        # guiones para el QR de ARCA), y el panel agrupa contra los dígitos
+        # (`normalizar_cuit`). Normalizar en el alta no le ahorraría el paso a
+        # ninguno y le cambiaría a la pantalla de Configuración lo que el humano
+        # tipeó.
         config = {
-            "empresa_nombre": nombre, "empresa_direccion": "", "empresa_telefono": "",
-            "empresa_email": "", "empresa_cuit": "",
+            "empresa_nombre": empresa_nombre, "empresa_direccion": "",
+            "empresa_telefono": "", "empresa_email": "",
+            "empresa_cuit": empresa_cuit,
             "empresa_iva_condition": "Responsable Inscripto",
         }
         (data_dir / "config.json").write_text(
@@ -603,6 +700,9 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         token_env = (
             f"      - LIBRA_SERVICE_TOKEN={token_servicio}\n" if token_servicio else ""
         )
+        # Sin `if`: a diferencia de la de servicio, esta no depende de que el
+        # entorno del proceso que corre el alta tenga nada puesto.
+        token_env += f"      - LIBRA_PANEL_TOKEN={panel_token}\n"
 
         # — versión de imagen — el compose nace pineado a una versión concreta,
         # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
@@ -775,6 +875,20 @@ services:
             "container": container, "admin_user": admin_user,
             "admin_password": admin_password, "plan": plan, "proxy_ok": proxy_ok,
             "dir": str(client_dir),
+            "empresa_nombre": empresa_nombre, "empresa_cuit": empresa_cuit,
+            # 🔴 Vuelve por acá y **no se escribe en `cliente.json`**, a
+            # diferencia de `admin_password`. Esa metadata la lee
+            # `load_clients()` y viaja entera a quien pregunte por la instancia
+            # —por eso el backoffice tiene un `response_model` que la filtra
+            # campo por campo—; sumarle un secreto más es sumarle una forma de
+            # filtrarse. Donde queda recuperable es en el `docker-compose.yml`
+            # de la instancia, que es donde tiene que estar igual para que el
+            # contenedor la lea.
+            #
+            # Y **nunca por `log()`**: en el backoffice ese stream termina en la
+            # respuesta del alta y en los logs del contenedor. En la CLI la
+            # imprime `main()`, en el mismo bloque final que la contraseña.
+            "panel_token": panel_token,
         }
     except AltaIncompleta:
         # Sin rollback, a propósito — ver el docstring de `AltaIncompleta`. La
@@ -808,6 +922,18 @@ def main():
 
     domain = ask("Dominio (ej: mitienda.com, Enter para omitir)", "")
 
+    # La identidad fiscal, que es lo que el panel del dueño usa para agrupar por
+    # razón social. Se pregunta acá y no "después, desde Configuración" porque
+    # eso es exactamente lo que pasó con `contalibra-demo`, que hoy contesta
+    # nombre y CUIT vacíos.
+    empresa_nombre = ask("Razón social", nombre)
+    empresa_cuit = ask("CUIT (Enter = es una demo, sin identidad fiscal)", "")
+    sin_identidad = not empresa_cuit
+    if sin_identidad and ask(
+        "Sin CUIT el panel no la va a poder agrupar. ¿Seguir igual? [s/N]", "n"
+    ).lower() != "s":
+        sys.exit("Cancelado.")
+
     _used = used_ports()
     port  = int(ask("Puerto HTTP", str(next_port(_used))))
 
@@ -821,6 +947,7 @@ def main():
 
     print("\n" + "-" * 60)
     print(f"  Comercio:  {nombre}   Slug: {slug}   Puerto: {port}   Plan: {plan}")
+    print(f"  Empresa:   {empresa_nombre}   CUIT: {empresa_cuit or '— sin identidad —'}")
     if domain:
         print(f"  Dominio:   {domain}")
     print("-" * 60)
@@ -835,7 +962,10 @@ def main():
         info = crear_cliente(
             nombre=nombre, slug=slug, domain=domain, port=port,
             admin_user=admin_user, admin_password=admin_password,
-            admin_nombre=admin_nombre, plan=plan, setup_npm=setup_npm, log=print,
+            admin_nombre=admin_nombre, plan=plan,
+            empresa_cuit=empresa_cuit, empresa_nombre=empresa_nombre,
+            sin_identidad=sin_identidad,
+            setup_npm=setup_npm, log=print,
         )
     except ClienteError as e:
         sys.exit(f"[ERROR] {e}")
@@ -849,5 +979,10 @@ def main():
         print(f"  Dominio:     https://{info['domain']}")
     print(f"  Admin:       {info['admin_user']}  /  {info['admin_password']}")
     print(f"  Plan:        {info['plan']}")
+    # La credencial con la que el panel del dueño le pide los números a esta
+    # sucursal. Se imprime acá —y no por `log()`— porque este bloque es el canal
+    # deliberado hacia el operador, el mismo por el que sale la contraseña.
+    print(f"  Panel token: {info['panel_token']}")
     print("=" * 60)
     print("\n[!] Guardá las credenciales — no se volverán a mostrar.")
+    print("[!] El panel token es el que va en el alta de esta sucursal en LibraPanel.")
