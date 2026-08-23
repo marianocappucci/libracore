@@ -38,6 +38,15 @@ from . import (
 #
 # El sidecar de PostgreSQL lo lleva igual que la app: es el que define qué es
 # "hoy" para un `CURRENT_DATE` o un default del schema.
+#
+# 🔴 Y en el sidecar va por `command:`, no sólo por `TZ`. La imagen de
+# PostgreSQL escribe `timezone` en `postgresql.conf` UNA vez, en el `initdb`, y
+# ese archivo vive en el volumen de datos: sobre un volumen que ya existe, `TZ`
+# cambia el `date` del contenedor y **no cambia nada de lo que hace el
+# servidor** — `now()` sigue devolviendo UTC. Medido el 2026-08-23 en las seis
+# demos: `date` decía `-03` y `select now()` seguía dando la hora de Londres.
+# Con `-c timezone=` se fija al arrancar el servidor, venga el volumen de donde
+# venga.
 _TZ = "America/Argentina/Buenos_Aires"
 
 
@@ -474,6 +483,7 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
     servicio_db = f"""
   {sidecar}:
     image: {cfg.postgres_image}
+    command: postgres -c timezone={_TZ}
     container_name: {sidecar}
     restart: unless-stopped
     environment:
