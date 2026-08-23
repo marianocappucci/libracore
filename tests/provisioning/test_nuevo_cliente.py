@@ -588,6 +588,15 @@ def test_la_instancia_nueva_nace_en_hora_de_argentina(cfg_pg, monkeypatch):
     assert "TZ=America/Argentina/Buenos_Aires" in app["environment"]
     assert base["environment"]["TZ"] == "America/Argentina/Buenos_Aires"
 
+    # 🔴 Y en el sidecar, ADEMAS por `command:`. `TZ` sola sirve nada mas que
+    # cuando el volumen se inicializa de cero: la imagen escribe `timezone` en
+    # `postgresql.conf` en el `initdb` y despues no lo vuelve a mirar. Sobre un
+    # volumen que ya existe, `date` adentro del contenedor dice `-03` y
+    # `select now()` sigue devolviendo UTC — que es el reloj que estampa los
+    # `server_default=func.now()`. Chequear solo `TZ` seria chequear la
+    # propiedad equivocada.
+    assert base["command"] == "postgres -c timezone=America/Argentina/Buenos_Aires"
+
 
 def test_el_sidecar_no_publica_puerto(cfg_pg):
     """Publicar 5432 en un VPS es publicarlo a Internet. El unico `ports:` del
