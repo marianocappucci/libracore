@@ -30,6 +30,12 @@ Lo que no es igual en todos los productos entra por parámetro, no por copia:
   `external_reference` con cierto prefijo. Es como Contalibra reconoce el cobro
   de una **venta presencial por QR** (`venta-123`) y lo aplica a esa venta en
   vez de tratarlo como una suscripción.
+
+  La firma es `(identificador, payment_id, pago, cfg)`.
+  ⚠️ **El `payment_id` se pasa aparte a propósito**: es el de la notificación
+  que se está procesando, que es el que sella la idempotencia y el que se
+  guarda en `mp_pagos`. Sacarlo de `pago["id"]` —el detalle que devuelve la
+  API— parece lo mismo y no lo es; un test de Contalibra lo cazó.
 - `debe_auto_facturar` — la regla de negocio de cuándo facturar solo. Por
   omisión es la bandera `auto_facturar` del cliente, que es lo que hacen todos;
   Contalibra le suma su regla de *"Hosting Mensual"*, que es su propio negocio
@@ -98,7 +104,7 @@ def build_mp_webhook_router(
     prefix: str = "",
     ruta: str = "/webhooks/mercadopago",
     manejadores_de_referencia: dict[
-        str, Callable[[int, dict, dict], Awaitable[int | None]]
+        str, Callable[[int, str, dict, dict], Awaitable[int | None]]
     ] | None = None,
     debe_auto_facturar: Callable[[dict, dict], bool] = _auto_facturar_por_bandera,
 ) -> APIRouter:
@@ -164,7 +170,7 @@ def build_mp_webhook_router(
             factura_id = None
             if estado == "approved":
                 try:
-                    factura_id = await manejador(identificador, pago, cfg)
+                    factura_id = await manejador(identificador, payment_id, pago, cfg)
                 except Exception as e:
                     # El cobro ya está hecho: perderlo sería peor que quedarse
                     # sin la factura, que se puede emitir después a mano.
