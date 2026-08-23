@@ -25,6 +25,22 @@ from . import (
 )
 
 
+# Huso horario del ecosistema: Argentina, UTC-3 fijo, sin horario de verano
+# (el país no aplica DST desde 2009). Ver `wiki/concepts/estandares-desarrollo.md`,
+# sección "Fecha y hora".
+#
+# 🔴 Va en el compose que se GENERA, no sólo en el del repo del producto: las
+# instancias de demo y de cada cliente salen de acá, no del compose versionado.
+# Hasta el 2026-08-23 esta plantilla no lo ponía y las 18 instancias de los seis
+# productos corrían en UTC — con la suite entera en verde, porque el defecto no
+# da error: el reloj sale 3 h adelantado y entre las 21:00 y la medianoche
+# `date.today()` devuelve directamente mañana.
+#
+# El sidecar de PostgreSQL lo lleva igual que la app: es el que define qué es
+# "hoy" para un `CURRENT_DATE` o un default del schema.
+_TZ = "America/Argentina/Buenos_Aires"
+
+
 def slugify(name: str) -> str:
     s = name.lower().strip()
     for src, dst in [("áàäâ","a"),("éèëê","e"),("íìïî","i"),("óòöô","o"),("úùüû","u"),("ñ","n")]:
@@ -464,6 +480,7 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
       POSTGRES_DB: {principal}
       POSTGRES_USER: {usuario}
       POSTGRES_PASSWORD: {clave}
+      TZ: {_TZ}
     volumes:
       - {sidecar}-data:/var/lib/postgresql/data
 {monta_init}    healthcheck:
@@ -769,6 +786,7 @@ services:
       - ./data:/app/data
     environment:
       - DATA_DIR=/app/data
+      - TZ={_TZ}
       - SECRET_KEY={secret_key}
       - ADMIN_USER={admin_user}
       - ADMIN_PASSWORD={admin_password}
