@@ -273,24 +273,28 @@ def test_una_referencia_conocida_va_a_su_manejador(armar):
     resuelve el producto, con el id que venía en la referencia."""
     vistos = []
 
-    async def manejar_venta(venta_id, pago, cfg):
-        vistos.append(venta_id)
+    async def manejar_venta(venta_id, payment_id, pago, cfg):
+        vistos.append((venta_id, payment_id))
         return None
 
+    # ⚠️ El detalle que devuelve MercadoPago trae OTRO id que el de la
+    # notificacion. En produccion coinciden; el test los separa a proposito,
+    # porque el manejador tiene que recibir el de la notificacion --- que es el
+    # que sella la idempotencia y el que se guarda en `mp_pagos`.
     cliente, _ = armar(
-        pago=_pago(external_reference="venta-42"),
+        pago=_pago(external_reference="venta-42", id="otro-id-del-detalle"),
         manejadores_de_referencia={"venta-": manejar_venta},
     )
     r = _postear(cliente)
     assert r.status_code == 200
-    assert vistos == [42]
+    assert vistos == [(42, PAYMENT_ID)], "el payment_id es el de la notificacion"
     assert db_mp.get_mp_pago(PAYMENT_ID) is not None
 
 
 def test_si_el_manejador_falla_el_cobro_igual_queda_registrado(armar):
     """🔑 El cobro ya está hecho. Perderlo sería peor que quedarse sin la
     factura, que se puede emitir después a mano."""
-    async def explota(venta_id, pago, cfg):
+    async def explota(venta_id, payment_id, pago, cfg):
         raise RuntimeError("la venta no existe")
 
     cliente, _ = armar(
@@ -306,7 +310,7 @@ def test_una_referencia_de_otro_prefijo_sigue_el_camino_normal(armar):
     puede desaparecer por el desvío."""
     llamado = []
 
-    async def manejar_venta(venta_id, pago, cfg):
+    async def manejar_venta(venta_id, payment_id, pago, cfg):
         llamado.append(venta_id)
         return None
 
