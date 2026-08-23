@@ -8,9 +8,7 @@ import random
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.serialization import Encoding
+from libracore import arca_certificados
 
 WSAA_URL = {
     "homologacion": "https://wsaahomo.afip.gov.ar/ws/services/LoginCms",
@@ -22,70 +20,33 @@ def validar_archivos(cert_path, key_path):
     """
     Verifica que el certificado y la clave sean válidos y coincidan.
     Devuelve lista de errores (vacía = todo OK).
+
+    Sigue acá por compatibilidad —es la firma que llaman las pantallas de
+    configuración de la familia— pero **la implementación vive en
+    `arca_certificados`**, que además sabe trabajar sobre `bytes` para los
+    productos que guardan el par en la base y no en el volumen.
     """
-    errores = []
-
-    cert = None
-    try:
-        with open(cert_path, "rb") as f:
-            cert = x509.load_pem_x509_certificate(f.read())
-        ahora = datetime.now(timezone.utc)
-        vto = cert.not_valid_after_utc
-        if vto < ahora:
-            errores.append(f"Certificado vencido el {vto.strftime('%d-%m-%Y')}")
-        elif cert.not_valid_before_utc > ahora:
-            errores.append("Certificado aún no es válido (fecha de inicio futura)")
-    except FileNotFoundError:
-        errores.append("Archivo de certificado no encontrado")
-        return errores
-    except Exception as e:
-        errores.append(f"Error al leer certificado: {e}")
-        return errores
-
-    key = None
-    try:
-        with open(key_path, "rb") as f:
-            key = serialization.load_pem_private_key(f.read(), password=None)
-    except FileNotFoundError:
-        errores.append("Archivo de clave privada no encontrado")
-        return errores
-    except Exception as e:
-        errores.append(f"Error al leer clave privada: {e}")
-        return errores
-
-    # Verificar que cert y clave se corresponden
-    try:
-        pub_cert = cert.public_key().public_bytes(
-            Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-        )
-        pub_key = key.public_key().public_bytes(
-            Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-        )
-        if pub_cert != pub_key:
-            errores.append("La clave privada no corresponde al certificado")
-    except Exception as e:
-        errores.append(f"Error al comparar clave y certificado: {e}")
-
-    return errores
+    return arca_certificados.revisar_par_de_archivos(cert_path, key_path)
 
 
 def info_certificado(cert_path):
-    """Devuelve dict con información del certificado."""
+    """Devuelve dict con información del certificado.
+
+    Mismo caso que `validar_archivos`: la firma se mantiene, el criptográfico
+    lo pone `arca_certificados`.
+    """
     try:
-        with open(cert_path, "rb") as f:
-            cert = x509.load_pem_x509_certificate(f.read())
-        ahora = datetime.now(timezone.utc)
-        vto   = cert.not_valid_after_utc
-        return {
-            "subject":  cert.subject.rfc4514_string(),
-            "issuer":   cert.issuer.rfc4514_string(),
-            "vencimiento": vto.strftime("%d-%m-%Y"),
-            "vencido":  vto < ahora,
-            "dias_restantes": max(0, (vto - ahora).days),
-            "serial":   str(cert.serial_number),
-        }
-    except Exception as e:
+        datos = arca_certificados.leer_certificado_de_archivo(cert_path)
+    except arca_certificados.ArchivoInvalido as e:
         return {"error": str(e)}
+    return {
+        "subject":        datos.sujeto,
+        "issuer":         datos.emisor,
+        "vencimiento":    datos.vence.strftime("%d-%m-%Y"),
+        "vencido":        datos.vencido,
+        "dias_restantes": max(0, datos.dias_para_vencer),
+        "serial":         str(int(datos.numero_de_serie, 16)),
+    }
 
 
 def _generar_tra(servicio="wsfe"):
