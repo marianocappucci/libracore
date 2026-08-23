@@ -25,6 +25,31 @@ from . import (
 )
 
 
+# Huso horario del ecosistema: Argentina, UTC-3 fijo, sin horario de verano
+# (el país no aplica DST desde 2009). Ver `wiki/concepts/estandares-desarrollo.md`,
+# sección "Fecha y hora".
+#
+# 🔴 Va en el compose que se GENERA, no sólo en el del repo del producto: las
+# instancias de demo y de cada cliente salen de acá, no del compose versionado.
+# Hasta el 2026-08-23 esta plantilla no lo ponía y las 18 instancias de los seis
+# productos corrían en UTC — con la suite entera en verde, porque el defecto no
+# da error: el reloj sale 3 h adelantado y entre las 21:00 y la medianoche
+# `date.today()` devuelve directamente mañana.
+#
+# El sidecar de PostgreSQL lo lleva igual que la app: es el que define qué es
+# "hoy" para un `CURRENT_DATE` o un default del schema.
+#
+# 🔴 Y en el sidecar va por `command:`, no sólo por `TZ`. La imagen de
+# PostgreSQL escribe `timezone` en `postgresql.conf` UNA vez, en el `initdb`, y
+# ese archivo vive en el volumen de datos: sobre un volumen que ya existe, `TZ`
+# cambia el `date` del contenedor y **no cambia nada de lo que hace el
+# servidor** — `now()` sigue devolviendo UTC. Medido el 2026-08-23 en las seis
+# demos: `date` decía `-03` y `select now()` seguía dando la hora de Londres.
+# Con `-c timezone=` se fija al arrancar el servidor, venga el volumen de donde
+# venga.
+_TZ = "America/Argentina/Buenos_Aires"
+
+
 def slugify(name: str) -> str:
     s = name.lower().strip()
     for src, dst in [("áàäâ","a"),("éèëê","e"),("íìïî","i"),("óòöô","o"),("úùüû","u"),("ñ","n")]:
@@ -458,12 +483,14 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
     servicio_db = f"""
   {sidecar}:
     image: {cfg.postgres_image}
+    command: postgres -c timezone={_TZ}
     container_name: {sidecar}
     restart: unless-stopped
     environment:
       POSTGRES_DB: {principal}
       POSTGRES_USER: {usuario}
       POSTGRES_PASSWORD: {clave}
+      TZ: {_TZ}
     volumes:
       - {sidecar}-data:/var/lib/postgresql/data
 {monta_init}    healthcheck:
@@ -769,6 +796,7 @@ services:
       - ./data:/app/data
     environment:
       - DATA_DIR=/app/data
+      - TZ={_TZ}
       - SECRET_KEY={secret_key}
       - ADMIN_USER={admin_user}
       - ADMIN_PASSWORD={admin_password}
