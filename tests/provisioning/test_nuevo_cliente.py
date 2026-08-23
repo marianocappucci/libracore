@@ -560,6 +560,35 @@ def test_la_instancia_nueva_nace_con_su_sidecar(cfg_pg):
     assert "@testprod-cliente-uno-postgres:5432/testprod" in texto
 
 
+def test_la_instancia_nueva_nace_en_hora_de_argentina(cfg_pg, monkeypatch):
+    """UTC-3 fijo, sin horario de verano, en la app **y** en el sidecar.
+
+    🔴 Los dos, y por eso se chequean por separado: `created_at` lo estampa la
+    BASE (`server_default=func.now()` en varios productos) mientras el codigo
+    compara contra el reloj del PROCESO. Con una sola de las dos zonas movida
+    quedan 3 h de diferencia y salen antiguedades negativas — paso en el backlog
+    del dashboard de LibraDesk el 2026-08-23, con una incidencia recien creada
+    que no caia en ningun tramo.
+
+    Sobre el YAML resuelto y no por substring: `TZ` aparece en los dos
+    servicios, asi que un `assert "TZ" in texto` pasaria igual con uno solo
+    puesto.
+
+    Esta plantilla es la que le da el compose a la demo y a cada instancia de
+    cliente. Hasta el 2026-08-23 no ponia zona, y las 18 instancias de los seis
+    productos corrian en UTC con la suite entera en verde.
+    """
+    monkeypatch.setattr(nc, "network_exists", lambda *a, **k: True)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    doc = yaml.safe_load(_compose(cfg_pg))
+    app = doc["services"]["testprod-cliente-uno"]
+    base = doc["services"]["testprod-cliente-uno-postgres"]
+
+    assert "TZ=America/Argentina/Buenos_Aires" in app["environment"]
+    assert base["environment"]["TZ"] == "America/Argentina/Buenos_Aires"
+
+
 def test_el_sidecar_no_publica_puerto(cfg_pg):
     """Publicar 5432 en un VPS es publicarlo a Internet. El unico `ports:` del
     compose tiene que ser el de la app."""
