@@ -1,0 +1,149 @@
+"""La pestaña de MercadoPago de la pantalla de Configuración.
+
+Es la última pieza que faltaba para que los productos que cobran por
+MercadoPago tengan la misma pantalla: las credenciales, el QR de caja, y el
+botón que dice si el token sirve.
+
+## Dos cosas que este router hace distinto de lo que había
+
+1. 🔴 **El token no vuelve en claro.** Hoy `GET /api/config` de Contalibra
+   devuelve `config_manager.load()` **entero**, o sea el `mp_access_token` y la
+   contraseña de SMTP en el JSON de una pantalla. Acá el token sale enmascarado
+   (`APP_USR-…3f2a`) y sólo se manda entero hacia adentro.
+
+2. 🔴 **El `PUT` guarda SOBRE la config existente, nunca un dict armado de
+   cero.** `config_manager.save()` mergea contra los **DEFAULTS**, no contra el
+   archivo: toda clave que no venga en `data` vuelve a su valor por defecto. Ese
+   detalle ya borró el token de MercadoPago una vez —guardar la razón social
+   reseteaba `servicio_estado` y vaciaba el token—, así que acá se carga, se
+   actualiza lo que vino, y se guarda.
+
+Y una del mismo tipo: **un token vacío no borra el que estaba.** La pantalla
+muestra el valor enmascarado, así que mandar el campo tal como se ve borraría la
+credencial. Vacío significa "no lo toqués", igual que la contraseña de SMTP.
+"""
+
+import httpx
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from libracore import config_manager
+
+#: Los campos de MercadoPago que la pantalla edita. El resto de `config.json`
+#: no se toca desde acá.
+CAMPOS = (
+    "mp_access_token",
+    "mp_webhook_secret",
+    "mp_concepto_descripcion",
+    "mp_iva_rate",
+    "mp_user_id",
+    "mp_pos_id",
+    "mp_auto_facturar_ventas",
+)
+
+#: Los que no pueden salir en claro por la API.
+SECRETOS = ("mp_access_token", "mp_webhook_secret")
+
+URL_USERS_ME = "https://api.mercadopago.com/users/me"
+
+
+class MpPayload(BaseModel):
+    """⚠️ Los secretos son `str` con default vacío **a propósito**: vacío quiere
+    decir "dejá el que está", no "borralo". Ver el docstring del módulo."""
+
+    mp_access_token: str = ""
+    mp_webhook_secret: str = ""
+    mp_concepto_descripcion: str = ""
+    mp_iva_rate: str = "0"
+    mp_user_id: str = ""
+    mp_pos_id: str = ""
+    mp_auto_facturar_ventas: bool = False
+
+
+def enmascarar(valor: str) -> str:
+    """`APP_USR-1234…9f2a`. Sirve para que la pantalla muestre **cuál** de dos
+    credenciales está cargada sin exponerla."""
+    valor = (valor or "").strip()
+    if not valor:
+        return ""
+    if len(valor) <= 8:
+        return "…" * 4
+    return f"{valor[:4]}…{valor[-4:]}"
+
+
+def _visible(cfg: dict) -> dict:
+    salida = {k: cfg.get(k, "") for k in CAMPOS}
+    for k in SECRETOS:
+        salida[k] = enmascarar(cfg.get(k, ""))
+        salida[f"{k}_cargado"] = bool((cfg.get(k) or "").strip())
+    salida["mp_auto_facturar_ventas"] = bool(cfg.get("mp_auto_facturar_ventas"))
+    return salida
+
+
+def build_mp_config_router(*, prefix: str = "/api/config/mercadopago") -> APIRouter:
+    """Va detrás del gate de admin del producto. **Todo el router**, incluida la
+    lectura: aunque el token salga enmascarado, saber si hay credenciales
+    cargadas y con qué CUIT cobra el negocio no es información de cualquier
+    usuario logueado."""
+    router = APIRouter(prefix=prefix, tags=["mercadopago"])
+
+    @router.get("")
+    def obtener():
+        return _visible(config_manager.load())
+
+    @router.put("")
+    def guardar(payload: MpPayload):
+        cfg = config_manager.load()
+        for campo in CAMPOS:
+            valor = getattr(payload, campo)
+            if campo in SECRETOS and not str(valor).strip():
+                # Vacío = no lo toqués. La pantalla muestra el enmascarado.
+                continue
+            cfg[campo] = valor
+        config_manager.save(cfg)
+        return _visible(config_manager.load())
+
+    @router.delete("/credenciales")
+    def borrar_credenciales():
+        """Sacar las credenciales tiene que ser posible desde la pantalla:
+        con "vacío = no lo toqués", no hay otra forma de desconectar la cuenta."""
+        cfg = config_manager.load()
+        for campo in SECRETOS:
+            cfg[campo] = ""
+        config_manager.save(cfg)
+        return _visible(config_manager.load())
+
+    @router.post("/probar")
+    async def probar():
+        """Le pregunta a MercadoPago quién es el dueño del token.
+
+        Además de decir si sirve, devuelve el `user_id` — que es justo lo que
+        hay que copiar en el campo de al lado para armar el QR de caja.
+        """
+        token = (config_manager.load().get("mp_access_token") or "").strip()
+        if not token:
+            raise HTTPException(400, "No hay Access Token configurado.")
+        try:
+            async with httpx.AsyncClient(timeout=10) as cliente:
+                r = await cliente.get(
+                    URL_USERS_ME, headers={"Authorization": f"Bearer {token}"}
+                )
+        except httpx.RequestError as e:
+            raise HTTPException(502, f"Sin conexión con MercadoPago: {e}") from None
+
+        if r.status_code != 200:
+            # El texto de MercadoPago va tal cual, recortado: distingue un token
+            # vencido de uno de otra aplicación.
+            raise HTTPException(502, f"MercadoPago respondió {r.status_code}: {r.text[:200]}")
+
+        datos = r.json()
+        return {
+            "ok": True,
+            "user_id": datos.get("id"),
+            "nickname": datos.get("nickname"),
+            "email": datos.get("email"),
+            "site_id": datos.get("site_id"),
+            "pais": datos.get("country_id"),
+        }
+
+    return router

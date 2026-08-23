@@ -34,6 +34,10 @@ DEFAULTS = {
     "mp_webhook_secret":      "",
     "mp_concepto_descripcion": "Cobro con Mercadopago",
     "mp_iva_rate":            "0",
+    # Cobrar una venta presencial por QR y facturarla sola son dos cosas: el
+    # cobro entra igual, pero emitir el comprobante sin que nadie lo pida es
+    # una decision del negocio. Por omision, no.
+    "mp_auto_facturar_ventas": False,
     # MercadoPago QR Dinámico (punto de venta presencial)
     "mp_user_id":             "",   # ID numérico del vendedor en MP
     "mp_pos_id":              "",   # External ID del POS creado en MP
