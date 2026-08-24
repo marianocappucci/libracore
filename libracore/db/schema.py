@@ -662,10 +662,14 @@ def init_core_schema(conn: sqlite3.Connection):
     # Caja principal por defecto
     if conn.execute("SELECT COUNT(*) FROM cajas").fetchone()[0] == 0:
         import json as _json
-        _todos_medios = _json.dumps([
-            "efectivo", "transferencia", "mercadopago",
-            "cuenta_dni", "billetera", "cuenta_corriente",
-        ])
+
+        from libracore import medios_pago as _medios
+
+        # 🔴 De la lista canónica, **no de una copia escrita acá**. Era la
+        # séptima declaración del mismo vocabulario, y la que decidía con qué
+        # medios nace toda instancia nueva: agregar uno a `caja.py` y olvidarse
+        # de este `INSERT` dejaba el medio existiendo y no ofrecido.
+        _todos_medios = _json.dumps(list(_medios.ELEGIBLES))
         cur = conn.execute(
             "INSERT INTO cajas (nombre, descripcion, medios_pago, es_default) VALUES (?,?,?,1)",
             ("Caja Principal", "Caja por defecto del sistema", _todos_medios),

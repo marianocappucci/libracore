@@ -19,7 +19,7 @@ import base64
 from fpdf import FPDF  # noqa: F401  (lo usa _TextoSeguroPDF)
 from .pdf_generator import _TextoSeguroPDF
 
-from libracore import config_manager
+from libracore import config_manager, medios_pago
 
 try:
     import qrcode as _qrlib
@@ -46,13 +46,14 @@ _ANCHOS = {
     "80": 80,
 }
 
-_MEDIOS_LABEL = {
-    "efectivo":      "Efectivo",
-    "transferencia": "Transferencia",
-    "mercadopago":   "Mercado Pago",
-    "cuenta_dni":    "Cuenta DNI",
-    "billetera":     "Billetera",
-}
+# 🔴 Acá había un `_MEDIOS_LABEL` propio con cinco medios —**sin
+# `cuenta_corriente`**, así que un ticket de una venta a crédito imprimía el
+# slug crudo—. Y `pdf_generator` tenía otro con el MISMO nombre, en el mismo
+# repo, con contenido distinto ("Billetera" contra "Billetera Virtual",
+# "Mercado Pago" contra "MercadoPago"): el mismo cobro salía escrito de dos
+# formas según si el cliente pedía el ticket o el recibo.
+#
+# `medios_pago.label()` es la única etiqueta, y nunca devuelve vacío.
 
 _TIPO_FACTURA = {
     1:  "FACTURA A",   2:  "NOTA DÉBITO A",   3:  "NOTA CRÉDITO A",
@@ -292,7 +293,7 @@ def generar_ticket_venta(venta: dict) -> bytes:
     if pagos:
         pdf._separador("-")
         for p in pagos:
-            label = _MEDIOS_LABEL.get(p.get("medio", ""), p.get("medio", ""))
+            label = medios_pago.label(p.get("medio", ""))
             pdf._row(label + ":", "$" + _ar(float(p.get('monto', 0))))
 
     _pie_ticket(pdf, pie, corte)
