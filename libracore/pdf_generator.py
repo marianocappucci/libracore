@@ -5,7 +5,7 @@ import unicodedata
 from datetime import date, datetime, timezone
 from fpdf import FPDF  # fpdf2 >= 2.8
 from fpdf.enums import RenderStyle as _RS, Corner as _Cor
-from . import config_manager
+from . import config_manager, medios_pago
 
 
 def fecha_de_documento(valor) -> datetime | None:
@@ -1288,15 +1288,12 @@ def generate_pdf_factura(factura, output_dir=None):
 
 # ── Recibo de pago ────────────────────────────────────────────────────────────
 
-_MEDIOS_LABEL = {
-    "efectivo":      "Efectivo",
-    "transferencia": "Transferencia",
-    "mercadopago":   "MercadoPago",
-    "cuenta_dni":    "Cuenta DNI",
-    "billetera":     "Billetera Virtual",
-    "cheque":        "Cheque",
-    "tarjeta":       "Tarjeta",
-}
+# 🔴 Acá había un `_MEDIOS_LABEL` propio, y `ticket_generator` tenía otro con el
+# MISMO nombre y contenido distinto. Ver la nota en aquel archivo: el mismo cobro
+# salía escrito de dos formas según si el cliente pedía el ticket o el recibo.
+# Éste, además, era el único lugar de la familia donde `tarjeta` y `cheque`
+# tenían etiqueta — sin estar en ninguna lista elegible, así que nadie los podía
+# registrar. Ahora sí: los dos están en `medios_pago.ELEGIBLES`.
 
 
 def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
@@ -1515,7 +1512,7 @@ def _render_recibo(d: dict) -> bytes:
             hx = lx
             vals = [
                 _fmt_fecha((c.get("fecha") or "")[:10]),
-                _MEDIOS_LABEL.get(c.get("medio_pago", ""), c.get("medio_pago", "") or "-"),
+                medios_pago.label(c.get("medio_pago", "")) or "-",
                 c.get("referencia") or "-",
                 f"$ {_ar(float(c.get('monto', 0)))}",
             ]

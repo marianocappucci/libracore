@@ -33,6 +33,47 @@ La **tabla** `usuarios` sigue siendo de LibraCore y no se toco: vive en
 las que la referencian comparten el mismo archivo SQLite. Lo que salio es el
 codigo de auth, no el schema.
 
+## El vocabulario de medios de pago
+
+Desde `v1.50.0` la lista de medios de pago de la familia vive en
+`libracore.medios_pago`, y es **la unica**. Antes estaba declarada 28 veces en
+11 repos y ya divergia en seis formas distintas; el inventario completo esta en
+`wiki/concepts/medios-de-pago-familia-libra.md`.
+
+Dos listas, y la diferencia es la que importa:
+
+- **`ELEGIBLES`** — lo que se puede elegir hoy. Es lo unico que puebla un
+  selector y lo unico que `validar()` acepta al escribir.
+- **`HISTORICOS`** — grafias que quedaron en filas de bases reales (`tarjeta`,
+  `mercado_pago`, `debito`, `credito`, `qr`, `otro`, `cuenta corriente`) y que
+  hay que **saber leer**. No se ofrecen mas.
+
+> 🔴 **Un historico no se saca nunca.** Sacarlo no borra la fila que lo tiene:
+> la deja sin etiqueta, y un cierre de caja con un bucket sin nombre es peor que
+> uno con un nombre viejo. Si algun dia se migran los datos, primero se migran y
+> despues se saca la grafia — nunca al reves. Hay un test que se pone rojo si se
+> intenta.
+
+La API:
+
+| | |
+|---|---|
+| `label(medio)` | Como se muestra. **Nunca devuelve vacio**: un medio desconocido sale tal cual, para que se pueda ver. |
+| `canonico(medio)` | El elegible equivalente, para que un reporte no muestre `mercado_pago` y `mercadopago` como dos filas. |
+| `validar(medio)` | El medio, o `MedioDePagoInvalido`. **Falla cerrado.** |
+| `es_elegible(medio)` | Si se puede elegir hoy. Los historicos dan `False`. |
+| `para_selector()` | `[{id, label}]`. Con `incluir_cuenta_corriente=False` para las pantallas que cobran. |
+| `sql_es_electronico(col)` | Fragmento SQL de "se pago por QR o billetera". |
+
+`db.caja.MEDIOS_PAGO_LABELS` sigue existiendo como alias de `ELEGIBLES`, asi que
+los productos que ya lo importan heredan los medios nuevos sin tocar una linea.
+
+> ⚠️ **Una instancia que ya existe conserva los medios de su caja.** El
+> movimiento se registra igual —`create_caja_movimiento` no valida contra esa
+> lista— y el cierre lo agrupa bien, pero el selector de esa caja no ofrece los
+> nuevos hasta que alguien los agregue desde Cajas. Es configuracion del
+> comercio, no algo que se pise solo.
+
 ## Desarrollo
 
 ```

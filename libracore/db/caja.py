@@ -8,16 +8,18 @@ import json
 import sqlite3
 import contextlib
 
+from libracore import medios_pago
 from libracore.db.core import get_connection
 
-MEDIOS_PAGO_LABELS = {
-    "efectivo":         "Efectivo",
-    "transferencia":    "Transferencia",
-    "mercadopago":      "Mercado Pago",
-    "cuenta_dni":       "Cuenta DNI",
-    "billetera":        "Otras billeteras",
-    "cuenta_corriente": "Cuenta corriente",
-}
+# 🔴 **La lista vive en `libracore.medios_pago`, no acá.** Esto es un alias para
+# no romper a los seis productos que importan este nombre desde hace meses; el
+# vocabulario —qué se puede elegir, qué grafías viejas hay que saber leer y a
+# cuál equivale cada una— está en ese módulo, con el porqué de cada una.
+#
+# Importar el alias trae **la lista nueva**: `tarjeta_debito`, `tarjeta_credito`
+# y `cheque` se suman a las seis de siempre. Es a propósito — un producto que
+# arma su caja con `list(MEDIOS_PAGO_LABELS)` pasa a ofrecerlos sin tocar nada.
+MEDIOS_PAGO_LABELS = medios_pago.ELEGIBLES
 
 # --- La cuenta corriente como medio -------------------------------------
 #

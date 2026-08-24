@@ -15,7 +15,8 @@ import sqlite3
 import contextlib
 
 from libracore.db.core import get_connection, _ar_now
-from libracore.db.caja import MEDIOS_PAGO_LABELS, create_caja_movimiento
+from libracore import medios_pago
+from libracore.db.caja import create_caja_movimiento
 from libracore.db.stock import descontar_stock_venta, add_movimiento_stock
 from libracore.db.turnos import get_turno_activo, vincular_venta_turno
 from libracore.db.cuenta_corriente import create_cc_pago
@@ -103,7 +104,7 @@ def crear_venta_directa(fecha: str, items: list, subtotal: float, descuento: flo
                 for p in pagos:
                     add_venta_pago(venta_id, p["medio"], p["monto"],
                                    p.get("referencia", ""), conn=conn)
-                    label = MEDIOS_PAGO_LABELS.get(p["medio"], p["medio"])
+                    label = medios_pago.label(p["medio"])
                     create_caja_movimiento(
                         fecha=fecha, tipo="ingreso",
                         concepto=f"Venta {numero} — {label}",
@@ -233,7 +234,7 @@ def anular_venta(vid: int, usuario_id: int | None = None) -> None:
             for p in conn.execute(
                 "SELECT id, medio, monto FROM ventas_pagos WHERE venta_id=?", (vid,)
             ).fetchall():
-                label = MEDIOS_PAGO_LABELS.get(p["medio"], p["medio"])
+                label = medios_pago.label(p["medio"])
                 create_caja_movimiento(
                     fecha=fecha, tipo="egreso",
                     concepto=f"Anulación venta {venta['numero']} — {label}",
@@ -294,10 +295,12 @@ def get_venta_by_mp_order(mp_order_id: str) -> dict | None:
 def add_venta_pago_referencia_mp(venta_id: int, payment_id: str) -> None:
     """Actualiza la referencia del pago MP/billetera de la venta con el payment_id."""
     with get_connection() as conn:
-        # Actualizar referencia en el pago existente de medio mercadopago/billetera/cuenta_dni
+        # El criterio de "medio electrónico" sale de `medios_pago`, no de un
+        # `IN (...)` escrito acá: el mismo literal estaba repetido en tres repos
+        # y era el único lugar donde `qr` existía como valor.
         conn.execute(
-            """UPDATE ventas_pagos SET referencia=?
-               WHERE venta_id=? AND medio IN ('mercadopago','billetera','cuenta_dni','qr')
+            f"""UPDATE ventas_pagos SET referencia=?
+               WHERE venta_id=? AND {medios_pago.sql_es_electronico("medio")}
                AND (referencia IS NULL OR referencia='')""",
             (f"MP#{payment_id}", venta_id),
         )
