@@ -92,8 +92,62 @@ Lo que **no** es igual en todos entra por parámetro:
 | `manejadores_de_referencia` | `build_mp_webhook_router` | Qué hacer con un `external_reference` conocido. Contalibra reconoce `venta-123` y lo aplica a esa venta presencial en vez de tratarlo como suscripción |
 | `debe_auto_facturar` | webhook y `mp_sync` | Cuándo facturar solo. Por omisión, la bandera `auto_facturar` del cliente. Contalibra le suma su regla de *Hosting Mensual*, que es su negocio y no del motor |
 | `referencias_a_omitir` | bandeja y `mp_sync` | Qué cobros no traer a la bandeja porque el producto ya los maneja por otro lado |
+| `registro` | los cuatro | De dónde salen los clientes. Ver abajo — es la costura más importante |
 
 ---
+
+## De dónde salen los clientes: el puerto
+
+🔑 **El módulo de MercadoPago no sabe dónde viven los clientes.** Lo recibe.
+
+Nació extraído de Contalibra y se trajo puesta una suposición de allá —que el
+registro de clientes es `libracore.db.clients`— que es cierta en dos productos y
+falsa en los otros cuatro:
+
+| Productos | De dónde sale el cliente |
+|---|---|
+| Contalibra, Restolibra | `libracore.db.clients` |
+| Gestiolibra, MedLibra | `libragenda.Client` + una fila de extensión local |
+| LibraClub, VentaLibra | su propio dominio |
+
+⚠️ **Y eso no es falta de normalización: es la normalización correcta.** Un
+producto de turnos saca el cliente de su motor de agenda, que es de donde
+cuelgan `appointments` y —en MedLibra— la historia clínica. Unificar todo en
+`libracore.clients` rompería seis claves foráneas y cambiaría la identidad del
+cliente de `String(100)` a `INTEGER`. Analizado y decidido el 2026-08-12
+(`wiki/analyses/clientes-transversal-familia-libra.md`).
+
+Lo transversal es **el flujo**: la firma del webhook, la idempotencia, la
+ingesta única, los cuatro caminos por un solo punto de resolución. Nada de eso
+depende de dónde esté guardado el cliente.
+
+```python
+from libracore.registro_de_clientes import RegistroDeClientes
+
+class RegistroDeMiProducto:
+    def resolver(self, payer_email: str, payer_cuit: str) -> dict | None: ...
+    def crear(self, *, nombre, email="", cuit_dni="",
+              iva_condition="Consumidor Final", address="") -> dict: ...
+    def buscar_muchos(self, emails: set, cuits: set) -> tuple[dict, dict]: ...
+
+app.include_router(build_mp_bandeja_router(registro=RegistroDeMiProducto()))
+app.include_router(build_mp_webhook_router(registro=RegistroDeMiProducto()))
+```
+
+**Sin `registro` se usa el de LibraCore**, que es lo que Contalibra y Restolibra
+ya tenían: para ellos no cambia nada.
+
+Un cliente es un `dict` con `id`, `name` (la única obligatoria), `cuit_dni`,
+`iva_condition`, `address`, `email` y `auto_facturar`. El `id` puede ser entero
+o texto — el motor no lo interpreta.
+
+> ⚠️ **Los alias son del registro, no del motor.**
+> `facturacion_alias.cliente_id` es `INTEGER`, así que la tabla de alias de
+> LibraCore **no sirve** para un registro cuya identidad es texto. Un producto
+> así trae su propio almacenamiento de alias, o no tiene alias. Y `resolver()`
+> es un solo método a propósito: con dos —uno de alias y otro de match— habría
+> dónde saltearse el alias, que es exactamente lo que se rompió una vez y costó
+> dos comprobantes al CUIT equivocado.
 
 ## Los cuatro caminos por los que un pago de MP termina en una factura
 

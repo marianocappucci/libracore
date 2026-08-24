@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 from libracore import config_manager, mp_api, mp_facturacion
 from libracore.db import mp as db_mp
+from libracore.registro_de_clientes import RegistroDeClientes, el_registro
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,7 @@ async def sincronizar_y_facturar(
     dias: int = 2,
     referencias_a_omitir: tuple[str, ...] = (),
     debe_auto_facturar=_auto_facturar_por_bandera,
+    registro: RegistroDeClientes | None = None,
 ) -> dict:
     """Lo que corre el cron nocturno. **Es el camino que emite la mayoría de las
     facturas de MercadoPago**, y el que corre sin nadie mirando.
@@ -182,11 +184,12 @@ async def sincronizar_y_facturar(
     except MercadoPagoNoContesta as e:
         return {"error": str(e)}
 
+    registro_de_clientes = el_registro(registro)
     facturados = pendientes = 0
     for mov in nuevos:
         # 🔑 Por `resolver_cliente_pago` y no por un match propio. Este es el
         # camino que se quedó afuera cuando se agregaron los alias.
-        client = db_mp.resolver_cliente_pago(mov.payer_email, mov.payer_id_number)
+        client = registro_de_clientes.resolver(mov.payer_email, mov.payer_id_number)
         contexto = {"descripcion": mov.descripcion, "monto": mov.monto}
 
         if not (client and debe_auto_facturar(client, contexto)):
@@ -208,6 +211,7 @@ async def sincronizar_y_facturar(
                 concepto_override=mov.descripcion,
                 cliente_override=client,
                 payment_type=mov.payment_type,
+                registro=registro,
             )
             db_mp.update_mp_movimiento_estado(mov.mov_id, "facturado", factura_id=factura_id)
             facturados += 1
