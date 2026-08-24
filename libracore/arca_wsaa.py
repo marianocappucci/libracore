@@ -4,6 +4,7 @@ Implementa el flujo: TRA → firma CMS → llamada SOAP → token+sign.
 """
 
 import base64
+import contextlib
 import random
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -180,3 +181,56 @@ async def autenticar(cert_path, key_path, ambiente="homologacion", servicio="wsf
         raise RuntimeError(f"Error al parsear respuesta de WSAA: {e}\n{resp.text[:400]}")
 
     return {"token": token, "sign": sign, "expiracion": exp}
+
+
+# ── El par en memoria, para el producto que no lo guarda en el volumen ──────
+
+
+@contextlib.contextmanager
+def par_en_disco(certificado: bytes, clave: bytes):
+    """Deja el par en dos archivos temporales mientras dure el bloque.
+
+    🔑 **Hace falta porque la firma del TRA la hace `openssl` por subproceso**,
+    y openssl lee de archivos. No es una comodidad: no hay forma de firmar el
+    TRA sin que el par toque el disco, aunque sea un instante.
+
+    Existe acá y no en cada producto porque los productos guardan el par en
+    lugares distintos —[[libracargo]] lo tiene **en la base**, para que entre en
+    el dump del backup— y cada uno improvisando su propio temporal es cada uno
+    improvisando sus propios permisos y su propia limpieza.
+
+    ⚠️ **La clave privada se escribe con permisos 0600 y se borra siempre**,
+    también si el bloque explota. `mkstemp` ya crea con 0600; se vuelve a fijar
+    explícitamente para que el día que alguien cambie la forma de crear el
+    archivo, el permiso siga siendo una decisión escrita y no un default
+    heredado.
+    """
+    import os
+    import stat
+    import tempfile
+
+    caminos = []
+    try:
+        for contenido, sufijo in ((certificado, ".crt"), (clave, ".key")):
+            fd, camino = tempfile.mkstemp(suffix=sufijo)
+            caminos.append(camino)
+            with os.fdopen(fd, "wb") as f:
+                f.write(contenido)
+            os.chmod(camino, stat.S_IRUSR | stat.S_IWUSR)
+        yield caminos[0], caminos[1]
+    finally:
+        for camino in caminos:
+            try:
+                os.unlink(camino)
+            except OSError:
+                pass
+
+
+async def autenticar_con_bytes(certificado: bytes, clave: bytes,
+                               ambiente="homologacion", servicio="wsfe"):
+    """`autenticar()` para el producto que tiene el par en memoria.
+
+    Es la misma función: escribe el par, delega, y lo borra pase lo que pase.
+    """
+    with par_en_disco(certificado, clave) as (cert_path, key_path):
+        return await autenticar(cert_path, key_path, ambiente, servicio)
