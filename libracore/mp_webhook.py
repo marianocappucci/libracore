@@ -53,6 +53,7 @@ from fastapi.responses import JSONResponse
 
 from libracore import config_manager, mp_api, mp_facturacion
 from libracore.db import mp as db_mp
+from libracore.registro_de_clientes import RegistroDeClientes, el_registro
 
 logger = logging.getLogger(__name__)
 
@@ -107,11 +108,13 @@ def build_mp_webhook_router(
         str, Callable[[int, str, dict, dict], Awaitable[int | None]]
     ] | None = None,
     debe_auto_facturar: Callable[[dict, dict], bool] = _auto_facturar_por_bandera,
+    registro: RegistroDeClientes | None = None,
 ) -> APIRouter:
     """El router del webhook. **Va sin gate de rol**: lo llama MercadoPago, no
     un usuario logueado. Lo que lo protege es la firma, no una cookie."""
     router = APIRouter(prefix=prefix, tags=["mercadopago"])
     manejadores = manejadores_de_referencia or {}
+    registro_de_clientes = el_registro(registro)
 
     @router.post(ruta, include_in_schema=False)
     async def webhook_mercadopago(request: Request):
@@ -207,7 +210,9 @@ def build_mp_webhook_router(
 
         # 🔑 El cliente sale de `resolver_cliente_pago` —alias primero— y no de
         # un match propio. Es el punto único que comparten los cuatro caminos.
-        client = db_mp.resolver_cliente_pago(datos["payer_email"], datos["payer_id_number"])
+        client = registro_de_clientes.resolver(
+            datos["payer_email"], datos["payer_id_number"]
+        )
         contexto = {"descripcion": descripcion, "pago": pago, "monto": monto}
 
         if client and debe_auto_facturar(client, contexto):
@@ -221,6 +226,7 @@ def build_mp_webhook_router(
                     concepto_override=descripcion,
                     cliente_override=client,
                     payment_type=payment_type,
+                    registro=registro,
                 )
                 db_mp.update_mp_pago_estado(
                     db_mp.get_mp_pago(payment_id)["id"], "facturado", factura_id,

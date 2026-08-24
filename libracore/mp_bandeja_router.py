@@ -38,8 +38,7 @@ from libracore import (
     mp_sync,
     pdf_generator as pdf_gen,
 )
-from libracore.db import clients as db_clients
-from libracore.db import core
+from libracore.registro_de_clientes import RegistroDeClientes, el_registro
 from libracore.db import facturas as db_facturas
 from libracore.db import mp as db_mp
 
@@ -85,7 +84,7 @@ class PagoDeDemo(BaseModel):
     clase: str = "pago"
 
 
-def _con_cliente(items: list) -> list:
+def _con_cliente(items: list, registro: RegistroDeClientes) -> list:
     """Le cuelga a cada fila el cliente que le correspondería, si lo hay.
 
     Se resuelve **en dos consultas para toda la lista** y no una por fila: la
@@ -98,26 +97,7 @@ def _con_cliente(items: list) -> list:
     }
     cuits.discard("")
 
-    por_email: dict = {}
-    por_cuit: dict = {}
-    with core.get_connection() as conn:
-        if emails:
-            hueco = ",".join("?" * len(emails))
-            filas = conn.execute(
-                f"SELECT * FROM clients WHERE email IN ({hueco})", tuple(emails)
-            ).fetchall()
-            por_email = {dict(f)["email"]: dict(f) for f in filas}
-        if cuits:
-            hueco = ",".join("?" * len(cuits))
-            filas = conn.execute(
-                f"SELECT * FROM clients WHERE REPLACE(cuit_dni, '-', '') IN ({hueco})",
-                tuple(cuits),
-            ).fetchall()
-            for fila in filas:
-                d = dict(fila)
-                norm = (d.get("cuit_dni") or "").replace("-", "").strip()
-                if norm:
-                    por_cuit[norm] = d
+    por_email, por_cuit = registro.buscar_muchos(emails, cuits)
 
     for p in items:
         cuit = (p.get("payer_id_number") or "").replace("-", "").strip()
@@ -127,14 +107,17 @@ def _con_cliente(items: list) -> list:
     return items
 
 
-def _crear_cliente_si_no_esta(payload: CrearClientePayload) -> None:
+def _crear_cliente_si_no_esta(
+    payload: CrearClientePayload, registro: RegistroDeClientes
+) -> None:
     if not payload.nombre.strip():
         raise HTTPException(422, "El nombre es obligatorio.")
-    ya_esta = db_clients.get_client_by_email(payload.email) if payload.email else None
-    if ya_esta:
+    # Se resuelve por el mismo camino que usa la facturacion: si el registro ya
+    # lo encuentra --por alias o por match-- no se crea uno nuevo al lado.
+    if registro.resolver(payload.email, payload.cuit_dni):
         return
-    db_clients.create_client(
-        name=payload.nombre, email=payload.email, cuit_dni=payload.cuit_dni,
+    registro.crear(
+        nombre=payload.nombre, email=payload.email, cuit_dni=payload.cuit_dni,
         iva_condition=payload.iva_condition, address=payload.address,
     )
 
@@ -151,6 +134,7 @@ def build_mp_bandeja_router(
     prefix: str = "/api/mp-bandeja",
     referencias_a_omitir: tuple[str, ...] = (),
     permitir_siembra_de_demo: bool | None = None,
+    registro: RegistroDeClientes | None = None,
 ) -> APIRouter:
     """La bandeja. Va detrás del gate de rol del producto.
 
@@ -164,15 +148,16 @@ def build_mp_bandeja_router(
     cliente la ruta no existe, no es un `if` adentro del endpoint.
     """
     router = APIRouter(prefix=prefix, tags=["mp_bandeja"])
+    registro_de_clientes = el_registro(registro)
 
     @router.get("")
     def bandeja():
         cfg = config_manager.load()
         return {
-            "pendientes": _con_cliente(db_mp.get_mp_pagos_by_estado("pendiente")),
-            "historial": _con_cliente(db_mp.get_mp_pagos_historial(limit=30)),
-            "transferencias": _con_cliente(db_mp.get_mp_movimientos_by_estado("pendiente")),
-            "transferencias_hist": _con_cliente(db_mp.get_mp_movimientos_historial(limit=30)),
+            "pendientes": _con_cliente(db_mp.get_mp_pagos_by_estado("pendiente"), registro_de_clientes),
+            "historial": _con_cliente(db_mp.get_mp_pagos_historial(limit=30), registro_de_clientes),
+            "transferencias": _con_cliente(db_mp.get_mp_movimientos_by_estado("pendiente"), registro_de_clientes),
+            "transferencias_hist": _con_cliente(db_mp.get_mp_movimientos_historial(limit=30), registro_de_clientes),
             "mp_concepto_default": cfg.get("mp_concepto_descripcion", "") or "",
         }
 
@@ -208,7 +193,7 @@ def build_mp_bandeja_router(
     def crear_cliente_pago(mp_pago_id: int, payload: CrearClientePayload):
         if not db_mp.get_mp_pago_by_id(mp_pago_id):
             raise HTTPException(404, "Pago no encontrado")
-        _crear_cliente_si_no_esta(payload)
+        _crear_cliente_si_no_esta(payload, registro_de_clientes)
         return {"ok": True}
 
     @router.post("/pagos/{mp_pago_id}/facturar")
@@ -230,6 +215,7 @@ def build_mp_bandeja_router(
             # 🔑 El CUIT del pagador va SIEMPRE: sin él, un alias por CUIT no
             # puede resolver. Es lo que le faltaba a la copia de Restolibra.
             payer_cuit=pago.get("payer_id_number") or "",
+            registro=registro,
         )
         db_mp.update_mp_pago_estado(mp_pago_id, "facturado", factura_id=factura_id)
         return {"factura_id": factura_id, "numero": numero,
@@ -257,7 +243,7 @@ def build_mp_bandeja_router(
     def crear_cliente_movimiento(mov_id: int, payload: CrearClientePayload):
         if not db_mp.get_mp_movimiento_by_id(mov_id):
             raise HTTPException(404, "Movimiento no encontrado")
-        _crear_cliente_si_no_esta(payload)
+        _crear_cliente_si_no_esta(payload, registro_de_clientes)
         db_mp.update_mp_movimiento_datos(
             mov_id, payer_email=payload.email or None,
             payer_name=payload.nombre or None,
@@ -284,6 +270,7 @@ def build_mp_bandeja_router(
             cfg=_cfg_con_concepto(payload.concepto),
             payment_type=mov.get("tipo") or "",
             payer_cuit=mov.get("payer_id_number") or "",
+            registro=registro,
         )
         db_mp.update_mp_movimiento_estado(mov_id, "facturado", factura_id=factura_id)
         return {"factura_id": factura_id, "numero": numero,
@@ -307,7 +294,10 @@ def build_mp_bandeja_router(
 
         destino = factura.get("cliente_email", "") or ""
         if not destino:
-            cliente = db_clients.get_client_by_cuit(factura.get("cliente_cuit", ""))
+            # Por el registro, no por la tabla: en un producto cuyos
+            # clientes viven en otro motor, `db_clients` esta vacia y el
+            # comprobante se quedaria sin destinatario sin decir por que.
+            cliente = registro_de_clientes.resolver("", factura.get("cliente_cuit", ""))
             destino = (cliente or {}).get("email", "")
         if not destino:
             raise HTTPException(422, "El cliente no tiene email registrado.")
