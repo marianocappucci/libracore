@@ -356,6 +356,27 @@ class ProductConfig:
     # nadie toque una línea. Ver wiki/analyses/migracion-postgresql-familia-libra.md.
     postgres_image: str = "postgres:16-alpine"
 
+    # El comando que aplica las migraciones de esquema del producto, corrido
+    # como parte de `panel_admin.py actualizar`. Vacío = **el producto no tiene
+    # migraciones en el camino de deploy**, que es como estaba todo hasta el
+    # 2026-08-24.
+    #
+    # 🔴 Existe porque tener el mecanismo no es tenerlo invocado. LibraClub
+    # llegó a `main` con la revisión `0008` adentro de la imagen y **nadie que
+    # corriera en el deploy la aplicaba**: los únicos `alembic upgrade` del repo
+    # están en `semilla_dev.py`, `reset_demo.sh` y la suite. La instancia se
+    # habría reconstruido con código que espera una columna que su base no
+    # tiene.
+    #
+    # Es una tupla y no un string: se pasa a `subprocess` como argumentos
+    # sueltos, sin shell de por medio.
+    #
+    # Hoy lo pueden prender los productos con Alembic (LibraClub, Gestiolibra,
+    # MedLibra). VentaLibra crea su esquema al conectar (`init_*_schema`) y
+    # Contalibra/Restolibra con `init_core_schema()`: ésos no tienen nada que
+    # correr acá, y por eso el default es vacío en vez de `alembic upgrade head`.
+    migraciones: tuple[str, ...] = ()
+
     @property
     def usa_postgres(self) -> bool:
         return bool(self.postgres)
@@ -628,7 +649,8 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
               docs_auth_secret: str = "", postgres: bool = False,
               base_core_separada: bool = False,
               postgres_image: str = "postgres:16-alpine",
-              backup_zip: bool = False, health_path: str = "/health"):
+              backup_zip: bool = False, health_path: str = "/health",
+              migraciones: tuple[str, ...] = ()):
     """Configura el producto activo. Llamar una sola vez, al principio de
     `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto.
 
@@ -643,6 +665,11 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
     desde el 2026-08-12, que es el default. Quedó como escape hatch para un
     producto que no pudiera. Ver el comentario del campo en `ProductConfig`,
     que dice qué hay que hacer si alguna vez vuelve a hacer falta.
+
+    `migraciones` es el comando que aplica el esquema —típicamente
+    `("alembic", "upgrade", "head")`— y lo corre `cmd_actualizar` **antes** de
+    mover la instancia a la imagen nueva. Vacío por default: un producto que no
+    lo pase se comporta exactamente como antes.
     """
     global _cfg
     with _lock:
@@ -654,7 +681,7 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
             docs_auth_secret=docs_auth_secret,
             postgres=postgres, base_core_separada=base_core_separada,
             postgres_image=postgres_image, backup_zip=backup_zip,
-            health_path=health_path,
+            health_path=health_path, migraciones=tuple(migraciones),
         )
         for p in (repo_root, repo_root / "scripts"):
             sp = str(p)
