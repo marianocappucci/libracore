@@ -43,9 +43,9 @@ from libracore import (
     email_sender,
     pdf_generator as pdf_gen,
 )
+from libracore.registro_de_clientes import RegistroDeClientes, el_registro
 from libracore.db import arca_config as db_arca_config
 from libracore.db import caja as db_caja
-from libracore.db import clients as db_clients
 from libracore.db import facturas as db_facturas
 from libracore.db import mp as db_mp
 
@@ -113,22 +113,31 @@ def _importes(monto: float, tipo: int, cfg: dict) -> tuple[float, float, float]:
     return subtotal, round(monto - subtotal, 2), round(monto, 2)
 
 
-def resolver_cliente(payer_email: str, payer_name: str, payer_cuit: str = "") -> dict:
+def resolver_cliente(
+    payer_email: str,
+    payer_name: str,
+    payer_cuit: str = "",
+    registro: RegistroDeClientes | None = None,
+) -> dict:
     """A quién facturarle este pago. **Punto único** para los cuatro caminos.
 
-    Primero el alias explícito, después el match directo, y recién si no hay
-    ninguno se crea un cliente nuevo. Ningún llamador resuelve el cliente por
-    su cuenta: es la regla que se rompió una vez y costó dos comprobantes.
+    El `registro` decide: primero el alias explícito, después el match directo.
+    Y recién si no hay ninguno se crea un cliente nuevo. Ningún llamador
+    resuelve el cliente por su cuenta — es la regla que se rompió una vez y
+    costó dos comprobantes.
+
+    Sin `registro` usa el de LibraCore, que es lo que hacían Contalibra y
+    Restolibra: para ellos no cambia nada.
     """
-    client = db_mp.resolver_cliente_pago(payer_email, payer_cuit)
+    registro = el_registro(registro)
+    client = registro.resolver(payer_email, payer_cuit)
     if client:
         return client
-    client_id = db_clients.create_client(
-        name=payer_name or payer_email or "Sin nombre",
+    return registro.crear(
+        nombre=payer_name or payer_email or "Sin nombre",
         email=payer_email,
         iva_condition="Consumidor Final",
     )
-    return db_clients.get_client(client_id)
 
 
 async def generar_factura_mp(
@@ -141,6 +150,7 @@ async def generar_factura_mp(
     cliente_override: dict | None = None,
     payment_type: str = "",
     payer_cuit: str = "",
+    registro: RegistroDeClientes | None = None,
 ) -> tuple[int, str, str, bool]:
     """Crea la factura con CAE, el PDF y el movimiento de caja; manda el mail si
     hay SMTP configurado.
@@ -150,7 +160,9 @@ async def generar_factura_mp(
     Con `cliente_override` se usa ese cliente y no se resuelve nada — es el caso
     del botón *Facturar* sobre un pago que el operador ya vinculó a mano.
     """
-    client = cliente_override or resolver_cliente(payer_email, payer_name, payer_cuit)
+    client = cliente_override or resolver_cliente(
+        payer_email, payer_name, payer_cuit, registro
+    )
 
     iva_cond = cfg.get("empresa_iva_condition", "Monotributista")
     tipo = TIPO_POR_CONDICION.get(iva_cond, 11)
