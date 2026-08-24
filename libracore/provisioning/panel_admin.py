@@ -968,6 +968,12 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
     el build de dev y el de cada cliente, así que atarle el deploy convierte a
     la rama que necesita dev en la que decide qué se le despliega al cliente.
 
+    Si el producto declara `migraciones` en su `configure(...)`, **se corren
+    antes de mover cada instancia** (ver el bloque comentado abajo): el compose
+    ya está pineado a la imagen nueva, así que la migración corre con el código
+    nuevo mientras la instancia todavía sirve el viejo. Una migración que falla
+    aborta el deploy de esa instancia y repinea el compose.
+
     `dry_run` resuelve el ref y materializa el contexto para probar que se
     puede, informa, y no construye ni despliega nada.
 
@@ -1044,6 +1050,41 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
             print(f"[WARN] No se pudo pinear la versión en el compose de '{slug}' "
                   "(sin línea `image:`) — se actualiza igual, pero sin pin.")
         print(f"[*] Actualizando {c['container']} → {ref} ...")
+
+        # ── Las migraciones, ANTES de mover la instancia ─────────────────────
+        #
+        # 🔑 **El orden es la mitad del arreglo.** El compose ya quedó pineado a
+        # la imagen nueva, así que este `run` levanta un contenedor efímero CON
+        # EL CÓDIGO NUEVO —y por lo tanto con las revisiones nuevas adentro—
+        # mientras la instancia sigue sirviendo la imagen vieja. Cuando el
+        # `up -d` de abajo la mueva, la base ya está migrada.
+        #
+        # Al revés —migrar después del `up -d`— deja una ventana en la que el
+        # código nuevo consulta un esquema viejo. Es exactamente lo que le iba a
+        # pasar a la demo de LibraClub: la revisión `0008` viajó a `main` dentro
+        # de la imagen y ningún paso del deploy la aplicaba.
+        #
+        # `compose run` levanta las dependencias declaradas y espera a que estén
+        # sanas, así que el sidecar de PostgreSQL está arriba aunque la
+        # instancia estuviera apagada. `--rm` no deja el contenedor efímero.
+        # Verificado contra una instancia real: un `container_name` fijo en el
+        # servicio no lo impide — Compose le pone un nombre generado al one-off.
+        if cfg.migraciones:
+            print(f"    migraciones: {' '.join(cfg.migraciones)}")
+            m = compose(slug, "run", "--rm", c["container"], *cfg.migraciones)
+            if m.returncode != 0:
+                # 🔴 Una migración que falla ABORTA el deploy de esta instancia,
+                # igual que un arranque fallido. Seguir sería mover la instancia
+                # a código que su base no soporta — el caso peor de los dos.
+                if anterior:
+                    pinear_image(slug, anterior)
+                    print(f"[ERROR] Fallaron las migraciones de {c['container']}. "
+                          f"Compose repineado a {anterior} (no se aplicó el cambio).")
+                else:
+                    print(f"[ERROR] Fallaron las migraciones de {c['container']}.")
+                fallidos.append(slug)
+                continue
+
         r = compose(slug, "up", "-d")
         if r.returncode != 0:
             if anterior:
