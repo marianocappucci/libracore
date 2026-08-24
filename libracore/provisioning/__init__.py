@@ -356,10 +356,21 @@ class ProductConfig:
     # nadie toque una línea. Ver wiki/analyses/migracion-postgresql-familia-libra.md.
     postgres_image: str = "postgres:16-alpine"
 
-    # El comando que aplica las migraciones de esquema del producto, corrido
-    # como parte de `panel_admin.py actualizar`. Vacío = **el producto no tiene
-    # migraciones en el camino de deploy**, que es como estaba todo hasta el
-    # 2026-08-24.
+    # Los comandos que aplican las migraciones de esquema del producto,
+    # corridos en orden como parte de `panel_admin.py actualizar`. Vacío = **el
+    # producto no tiene migraciones en el camino de deploy**, que es como
+    # estaba todo hasta el 2026-08-24.
+    #
+    # 🔑 Es una secuencia de comandos y no UN comando porque **Gestiolibra y
+    # MedLibra tienen dos cadenas de Alembic independientes**: la de LibraGenda
+    # (`libragenda-migrar upgrade`, con su propia `alembic_version`) y la
+    # propia (`alembic upgrade head`, con `alembic_version_<producto>`). Las dos
+    # tienen que correr, y en ese orden: las revisiones del producto tienen FK
+    # contra tablas de LibraGenda.
+    #
+    # Podría ser un `("sh", "-c", "a && b")`, pero entonces el `[ERROR]` de acá
+    # abajo diría "fallaron las migraciones" sin decir **cuál de las dos**, que
+    # es justo el dato que uno necesita a las tres de la mañana.
     #
     # 🔴 Existe porque tener el mecanismo no es tenerlo invocado. LibraClub
     # llegó a `main` con la revisión `0008` adentro de la imagen y **nadie que
@@ -368,14 +379,18 @@ class ProductConfig:
     # habría reconstruido con código que espera una columna que su base no
     # tiene.
     #
-    # Es una tupla y no un string: se pasa a `subprocess` como argumentos
-    # sueltos, sin shell de por medio.
+    # Cada comando es una tupla y no un string: se pasa a `subprocess` como
+    # argumentos sueltos, sin shell de por medio. La forma plana
+    # —`("alembic", "upgrade", "head")`, que es la que uno escribe por
+    # reflejo— la **rechaza `configure()`**: sin esa guarda cada string se
+    # splatearía carácter por carácter y el deploy correría
+    # `compose run --rm app a l e m b i c`.
     #
     # Hoy lo pueden prender los productos con Alembic (LibraClub, Gestiolibra,
     # MedLibra). VentaLibra crea su esquema al conectar (`init_*_schema`) y
     # Contalibra/Restolibra con `init_core_schema()`: ésos no tienen nada que
     # correr acá, y por eso el default es vacío en vez de `alembic upgrade head`.
-    migraciones: tuple[str, ...] = ()
+    migraciones: tuple[tuple[str, ...], ...] = ()
 
     @property
     def usa_postgres(self) -> bool:
@@ -644,13 +659,37 @@ _lock = threading.Lock()
 _cfg: ProductConfig | None = None
 
 
+def _migraciones_normalizadas(valor) -> tuple:
+    """Una secuencia de comandos, con la forma plana rechazada a propósito.
+
+    🔴 `migraciones=("alembic", "upgrade", "head")` es lo que uno escribe por
+    reflejo, y sin esta guarda **no falla**: el bucle de `cmd_actualizar`
+    iteraría los tres strings y splatearía cada uno carácter por carácter,
+    corriendo `compose run --rm app a l e m b i c`. Un `TypeError` acá, al
+    importar el `panel_admin.py` del producto, es infinitamente mejor que
+    descubrirlo en un deploy.
+    """
+    comandos = tuple(valor)
+    planos = [c for c in comandos if isinstance(c, str)]
+    if planos:
+        raise TypeError(
+            "migraciones es una secuencia de COMANDOS, no un comando: "
+            f"llegó {planos[0]!r} suelto. Anidalo — "
+            f"migraciones=({tuple(comandos)!r},)"
+        )
+    normalizados = tuple(tuple(str(a) for a in c) for c in comandos)
+    if any(not c for c in normalizados):
+        raise ValueError("migraciones tiene un comando vacío")
+    return normalizados
+
+
 def configure(*, product_name: str, image_name: str, container_prefix: str,
               db_filename: str, repo_root, base_port: int = 8071,
               docs_auth_secret: str = "", postgres: bool = False,
               base_core_separada: bool = False,
               postgres_image: str = "postgres:16-alpine",
               backup_zip: bool = False, health_path: str = "/health",
-              migraciones: tuple[str, ...] = ()):
+              migraciones: tuple[tuple[str, ...], ...] = ()):
     """Configura el producto activo. Llamar una sola vez, al principio de
     `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto.
 
@@ -666,10 +705,13 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
     producto que no pudiera. Ver el comentario del campo en `ProductConfig`,
     que dice qué hay que hacer si alguna vez vuelve a hacer falta.
 
-    `migraciones` es el comando que aplica el esquema —típicamente
-    `("alembic", "upgrade", "head")`— y lo corre `cmd_actualizar` **antes** de
-    mover la instancia a la imagen nueva. Vacío por default: un producto que no
-    lo pase se comporta exactamente como antes.
+    `migraciones` son los comandos que aplican el esquema —típicamente
+    `(("alembic", "upgrade", "head"),)`— y los corre `cmd_actualizar` en orden
+    **antes** de mover la instancia a la imagen nueva. Vacío por default: un
+    producto que no lo pase se comporta exactamente como antes.
+
+    ⚠️ **Van anidados aunque sea uno solo.** La forma plana se rechaza con un
+    `TypeError` — ver `_migraciones_normalizadas`.
     """
     global _cfg
     with _lock:
@@ -681,7 +723,8 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
             docs_auth_secret=docs_auth_secret,
             postgres=postgres, base_core_separada=base_core_separada,
             postgres_image=postgres_image, backup_zip=backup_zip,
-            health_path=health_path, migraciones=tuple(migraciones),
+            health_path=health_path,
+            migraciones=_migraciones_normalizadas(migraciones),
         )
         for p in (repo_root, repo_root / "scripts"):
             sp = str(p)
