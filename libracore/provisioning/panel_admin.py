@@ -1069,21 +1069,34 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
         # instancia estuviera apagada. `--rm` no deja el contenedor efímero.
         # Verificado contra una instancia real: un `container_name` fijo en el
         # servicio no lo impide — Compose le pone un nombre generado al one-off.
-        if cfg.migraciones:
-            print(f"    migraciones: {' '.join(cfg.migraciones)}")
-            m = compose(slug, "run", "--rm", c["container"], *cfg.migraciones)
+        # Los comandos corren EN ORDEN y el primero que falla corta: Gestiolibra
+        # y MedLibra tienen dos cadenas de Alembic —la de LibraGenda y la
+        # propia— y las revisiones del producto tienen FK contra tablas de
+        # LibraGenda. Seguir con la segunda después de que falló la primera es
+        # garantía de un error que no nombra la causa.
+        migracion_fallida = None
+        for comando in cfg.migraciones:
+            print(f"    migraciones: {' '.join(comando)}")
+            m = compose(slug, "run", "--rm", c["container"], *comando)
             if m.returncode != 0:
-                # 🔴 Una migración que falla ABORTA el deploy de esta instancia,
-                # igual que un arranque fallido. Seguir sería mover la instancia
-                # a código que su base no soporta — el caso peor de los dos.
-                if anterior:
-                    pinear_image(slug, anterior)
-                    print(f"[ERROR] Fallaron las migraciones de {c['container']}. "
-                          f"Compose repineado a {anterior} (no se aplicó el cambio).")
-                else:
-                    print(f"[ERROR] Fallaron las migraciones de {c['container']}.")
-                fallidos.append(slug)
-                continue
+                migracion_fallida = " ".join(comando)
+                break
+
+        if migracion_fallida:
+            # 🔴 Una migración que falla ABORTA el deploy de esta instancia,
+            # igual que un arranque fallido. Seguir sería mover la instancia
+            # a código que su base no soporta — el caso peor de los dos.
+            #
+            # El mensaje nombra el comando: con dos cadenas, "fallaron las
+            # migraciones" a secas manda a revisar las dos.
+            if anterior:
+                pinear_image(slug, anterior)
+                print(f"[ERROR] Falló `{migracion_fallida}` en {c['container']}. "
+                      f"Compose repineado a {anterior} (no se aplicó el cambio).")
+            else:
+                print(f"[ERROR] Falló `{migracion_fallida}` en {c['container']}.")
+            fallidos.append(slug)
+            continue
 
         r = compose(slug, "up", "-d")
         if r.returncode != 0:
