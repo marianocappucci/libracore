@@ -851,7 +851,12 @@ def cmd_list_backups(slug: str):
     print(f"  {'#':<3}  {'ARCHIVO':<35}  {'TAMAÑO':>8}  FECHA")
     print("  " + "-" * 70)
     for i, f in enumerate(dbs, 1):
-        mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        # 🔴 `dd-mm-aaaa`, que es el formato visible del ecosistema: esto se
+        # imprime en pantalla. Los `strftime` ISO que quedan en este archivo
+        # arman nombres de archivo y tags, y esos siguen en ISO a proposito --
+        # es lo que ordena bien. Se conservan los segundos para que la columna
+        # mantenga el mismo ancho que el resto de la tabla.
+        mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%d-%m-%Y %H:%M:%S")
         size  = f"{f.stat().st_size/1_048_576:.1f} MB"
         print(f"  {i:<3}  {f.name:<35}  {size:>8}  {mtime}")
     print()
