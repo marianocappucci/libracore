@@ -1323,3 +1323,79 @@ def test_el_diagnostico_dice_que_le_pasa_al_contenedor(cfg_pg, monkeypatch):
     mensaje = str(e.value)
     assert "reinicios=28" in mensaje, mensaje
     assert "psycopg2" in mensaje, mensaje
+
+
+# ── Las migraciones en el ALTA ───────────────────────────────────────────────
+#
+# 🔴 Sin este paso, prender `migraciones` planta una bomba en cada alta: la
+# instancia nueva nace con TODO el esquema hecho por `create_all()` al bootear y
+# la tabla de versión de Alembic **vacía**, así que el primer
+# `panel_admin.py actualizar` arranca la cadena desde `0001` y muere con
+# `DuplicateTable` contra tablas que ella misma creó.
+
+DOS_CADENAS = (("libragenda-migrar", "upgrade"), ("alembic", "upgrade", "head"))
+
+
+@pytest.fixture
+def cfg_con_migraciones(tmp_path, fake_plans, fake_docker):
+    repo_root = tmp_path / "repo"
+    (repo_root / "clientes").mkdir(parents=True)
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="testprod.db",
+        repo_root=repo_root, base_port=9000, migraciones=DOS_CADENAS,
+    )
+    return provisioning.get_config()
+
+
+def _compose_cmds(calls):
+    """Los `docker compose ...` del alta, en orden, sin el prefijo."""
+    return [tuple(c[2:]) for c in calls if list(c[:2]) == ["docker", "compose"]]
+
+
+def test_el_alta_corre_las_migraciones_antes_del_primer_arranque(
+        cfg_con_migraciones, fake_docker):
+    """🔑 **Antes**, no después. Si el `up -d` va primero, el `create_all()` del
+    arranque le gana a la cadena y la instancia queda otra vez con el esquema de
+    los modelos y la versión vacía — que es exactamente el estado que este paso
+    viene a evitar."""
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Demo", slug="demo", setup_npm=False)
+
+    cmds = _compose_cmds(fake_docker)
+    assert cmds == [
+        ("run", "--rm", "testprod-demo", "libragenda-migrar", "upgrade"),
+        ("run", "--rm", "testprod-demo", "alembic", "upgrade", "head"),
+        ("up", "-d"),
+    ]
+
+
+def test_un_producto_sin_migraciones_da_de_alta_igual_que_antes(cfg, fake_docker):
+    """El control de no-regresión para los cuatro productos que no declaran
+    nada: el alta sigue siendo un `up -d` pelado."""
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Demo", slug="demo", setup_npm=False)
+
+    assert _compose_cmds(fake_docker) == [("up", "-d")]
+
+
+def test_una_migracion_fallida_corta_el_alta(cfg_con_migraciones, monkeypatch):
+    """Una instancia con la mitad del esquema y sin nadie que avise es peor que
+    un alta que falla: el `[OK]` manda a entregarle el acceso al cliente."""
+    def fake_run(args, **kwargs):
+        codigo = 1 if args[2:4] == ["run", "--rm"] else 0
+        return subprocess.CompletedProcess(args, codigo, stdout="",
+                                           stderr="alembic: no such revision")
+    monkeypatch.setattr(nc.subprocess, "run", fake_run)
+
+    with pytest.raises(nc.ClienteError, match="libragenda-migrar upgrade"):
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Demo", slug="demo",
+                         setup_npm=False)
+
+
+def test_el_control_de_que_el_alta_sale_bien_con_el_mismo_doble(
+        cfg_con_migraciones, fake_docker):
+    """Control positivo del de arriba: con el doble devolviendo 0, el alta
+    termina. Sin esto, un `ClienteError` levantado por cualquier otra cosa
+    pasaría por bueno."""
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Demo", slug="demo",
+                            setup_npm=False)
+    assert info["container"] == "testprod-demo"

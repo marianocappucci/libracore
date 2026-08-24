@@ -815,6 +815,40 @@ services:
             }, indent=2, ensure_ascii=False)
         )
 
+        # — migraciones, ANTES del primer arranque —
+        #
+        # 🔴 Sin esto, el producto que declara `migraciones` planta una
+        # bomba en cada alta. La instancia nueva nace con el esquema que arma
+        # `Base.metadata.create_all()` al bootear —todas las tablas— y con la
+        # tabla de versión de Alembic **vacía**. El primer
+        # `panel_admin.py actualizar` que le toque arranca la cadena desde
+        # `0001` y muere con `DuplicateTable` contra tablas que ella misma
+        # creó, abortando el deploy.
+        #
+        # Correrlas acá hace que el esquema nazca de la MISMA fuente que lo va
+        # a mantener, y deja la versión donde corresponde. El `create_all()`
+        # del arranque pasa a ser un no-op para lo que las migraciones ya
+        # crearon —sigue cubriendo lo que no está en ninguna cadena, como las
+        # tablas de auth y auditoría—.
+        #
+        # Es la misma secuencia y el mismo orden que `cmd_actualizar`. Los
+        # productos sin `migraciones` —cuatro de seis— no ven ningún paso
+        # nuevo.
+        for comando in cfg.migraciones:
+            log(f"[*] Migraciones: {' '.join(comando)}")
+            r = subprocess.run(
+                ["docker", "compose", "run", "--rm", container, *comando],
+                cwd=str(client_dir), capture_output=True, text=True)
+            if r.returncode != 0:
+                detalle = [ln.strip() for ln
+                           in (r.stderr or r.stdout or "").splitlines() if ln.strip()]
+                for linea in detalle:
+                    log(linea)
+                raise ClienteError(
+                    f"Fallo `{' '.join(comando)}` al crear la instancia."
+                    + (f" {detalle[-1]}" if detalle else "")
+                )
+
         # — levantar —
         log(f"[*] Iniciando {container} ...")
         r = subprocess.run(["docker", "compose", "up", "-d"], cwd=str(client_dir),
