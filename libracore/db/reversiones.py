@@ -13,7 +13,8 @@ ese contexto y el dinero de este.
 import sqlite3
 import contextlib
 
-from libracore.db.caja import MEDIOS_PAGO_LABELS, create_caja_movimiento
+from libracore import medios_pago
+from libracore.db.caja import create_caja_movimiento
 from libracore.db.core import get_connection
 from libracore.db.cuenta_corriente import create_cc_pago
 
@@ -66,7 +67,7 @@ def revertir_cobro_venta(
         for pago in pagos:
             medio = pago["medio"]
             monto = pago["monto"]
-            label = MEDIOS_PAGO_LABELS.get(medio, medio)
+            label = medios_pago.label(medio)
 
             create_caja_movimiento(
                 fecha=fecha, tipo="egreso",
