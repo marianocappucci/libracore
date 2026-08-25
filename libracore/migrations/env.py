@@ -1,5 +1,10 @@
 """Entorno de Alembic para LibraCore.
 
+Vive **adentro del paquete** (`libracore/migrations/`) y no en la raíz del
+repo: es lo que hace que las revisiones viajen en el wheel y que un
+consumidor pueda aplicarlas con `libracore-migrar` sin clonar nada. Hay un
+test que abre el wheel construido y lo verifica.
+
 Dos diferencias con el entorno de LibraGenda, que es el precedente de la
 familia, y las dos salen de que acá el schema es DDL crudo y no modelos
 SQLAlchemy:
@@ -25,9 +30,28 @@ from libracore.db import core
 
 
 def _destino() -> str:
-    """El destino tal como lo escribe un producto: URL PostgreSQL o ruta SQLite."""
-    destino = os.environ.get("DATABASE_URL") or context.config.get_main_option(
-        "sqlalchemy.url", default=""
+    """El destino tal como lo escribe un producto: URL PostgreSQL o ruta SQLite.
+
+    El orden de precedencia, y por qué:
+
+    1. **`libracore.url`**, que pone `libracore.migrar.configuracion()` cuando
+       alguien pasa el destino explícito. Va primero porque es la única señal
+       inequívoca de intención.
+    2. `DATABASE_URL` del entorno — el caso de un script parado en el host.
+    3. `sqlalchemy.url` del `alembic.ini`, que en este repo es un placeholder.
+
+    🔴 **El paso 1 existe porque sin él el destino explícito se ignoraba en
+    silencio, y acá eso es peor que en LibraGenda.** Este comando corre adentro
+    del contenedor del producto, donde `DATABASE_URL` apunta a la base **del
+    dominio**. En Gestiolibra, MedLibra y LibraClub el schema de LibraCore vive
+    en una base **aparte**: sin esta precedencia, `upgrade(url_del_core)`
+    habría creado las tablas del core al lado de las del dominio, dejado la base
+    real sin tocar y devuelto éxito.
+    """
+    destino = (
+        context.config.get_main_option("libracore.url", default="")
+        or os.environ.get("DATABASE_URL")
+        or context.config.get_main_option("sqlalchemy.url", default="")
     )
     if not destino or destino.startswith("postgresql://user:password@"):
         raise RuntimeError(

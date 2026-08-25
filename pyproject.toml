@@ -46,6 +46,11 @@ dev = [
     # La cadena de Alembic se ejercita en la suite (tests/db/test_migraciones.py),
     # asi que el extra de abajo hace falta tambien para correr los tests.
     "libracore[migrations]",
+    # 🔴 Sin `build`, el test que verifica que las migraciones VIAJEN en el
+    # wheel se saltea — y es el unico que contesta la pregunta real. Un skip
+    # ahi se lee igual que un verde. Va en dev para que el CI tampoco lo
+    # saltee.
+    "build>=1.0",
 ]
 
 # NO son dependencias de runtime: LibraCore no importa SQLAlchemy en ningun
@@ -65,8 +70,19 @@ source = "vcs"
 # hash como sufijo de desarrollo en vez de fallar).
 local_scheme = "no-local-version"
 
+[project.scripts]
+# 🔴 `migrations/` vive **adentro** de `libracore/` justamente para entrar en
+# el wheel de acá abajo. Mientras estuvo en la raíz del repo quedaba fuera de
+# `packages` y no viajaba: un consumidor instalado con pip no tenía forma de
+# aplicarlas sin clonar el repo, y por eso 7 de las 14 bases con schema de
+# LibraCore no tienen `alembic_version` ninguna. Hay un test que abre el wheel
+# construido y lo verifica.
+libracore-migrar = "libracore.migrar:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["libracore"]
+# Los `__pycache__` de las revisiones no tienen por qué viajar.
+exclude = ["**/__pycache__", "**/*.pyc"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
