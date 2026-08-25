@@ -3,9 +3,17 @@
 # consumidor (Contalibra, Restolibra, VentaLibra, Gestiolibra, MedLibra,
 # LibraDesk), clonando el repo en el tag exacto que ese consumidor pinea.
 #
-# Espejo de scripts/run_migrations.sh de LibraGenda, por el mismo motivo: las
-# migraciones no viajan en el wheel de pip, asi que este script es la forma
-# reproducible de aplicarlas en cualquier pipeline de deploy.
+# Espejo de scripts/run_migrations.sh de LibraGenda.
+#
+# NOTA (2026-08-25): las migraciones AHORA SI viajan en el wheel --se mudaron a
+# libracore/migrations/-- asi que desde el lado de un consumidor instalado con
+# pip el camino corto es:
+#
+#     libracore-migrar upgrade --prefijo <producto>
+#
+# Este script sigue siendo util para el caso en que hace falta aplicar un TAG
+# EXACTO distinto del instalado, porque clona el repo en esa referencia. Para el
+# deploy normal de una instancia, usar el console script.
 #
 # Uso:
 #   LIBRACORE_REF=v1.19.0 DATABASE_URL=postgresql://user:pass@host/db \
