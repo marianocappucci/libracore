@@ -11,7 +11,9 @@ qué eso no era un problema cosmético:
 - `tarjeta` existía en LibraDesk, LibraClub, MedLibra y Gestiolibra, cada uno
   por su cuenta, y en `pdf_generator` de este mismo motor. Ninguna de las cuatro
   lo podía mapear a una condición de venta de ARCA.
-- VentaLibra escribe `mercado_pago`, con guión bajo, en todo su stack.
+- VentaLibra **escribía** `mercado_pago`, con guión bajo, en todo su stack.
+  Es la única histórica que ya se retiró: ver "Cómo sale una grafía de
+  `HISTORICOS`", más abajo.
 - `qr` aparece **sólo dentro de un `WHERE ... IN (...)`** de tres repos, sin
   estar declarado en ninguna lista.
 - `ticket_generator._MEDIOS_LABEL` y `pdf_generator._MEDIOS_LABEL` —mismo
@@ -31,6 +33,28 @@ con cada una, y perder una cambiaría saldos ya calculados"*—, generalizado.
 **Un histórico no se borra nunca.** Sacarlo de acá no borra la fila: la deja sin
 etiqueta, y un cierre de caja que muestra un bucket vacío es peor que uno que
 muestra un nombre viejo.
+
+## Cómo sale una grafía de `HISTORICOS`
+
+"Nunca" quiere decir *nunca sin migrar los datos primero*, no *nunca jamás*. El
+único camino, recorrido una vez —`mercado_pago`, el 2026-08-25— es éste y en
+este orden:
+
+1. **Medir** cuántas filas la tienen, en todas las instancias reales y
+   recorriendo TODAS las columnas de texto. No alcanza con filtrar las columnas
+   por nombre: la de VentaLibra vivía además adentro del JSON de
+   `recibos.pagos`, en una columna que no se llama nada parecido a "medio".
+2. **Migrar** esas filas a la grafía canónica, y dejar corriendo el mecanismo
+   que las vuelve a normalizar si alguien restaura un backup viejo.
+3. **Verificar cero** después de desplegar, no antes.
+4. Recién entonces sacarla de acá, de `EQUIVALENTE_CANONICO` y de
+   `MEDIOS_ELECTRONICOS` — de las tres, porque una grafía que ya no se conoce y
+   sigue nombrada en un `IN (...)` es ruido que el próximo lector va a
+   interpretar como que todavía existe.
+
+El trinquete de `tests/test_medios_pago.py` se pone rojo en el paso 4. **Ese
+rojo es la pregunta "¿hiciste los tres pasos anteriores?"**, no un obstáculo a
+esquivar editando la lista del test.
 
 ## Por qué la tarjeta va partida en dos
 
@@ -71,8 +95,6 @@ HISTORICOS: dict[str, str] = {
     # LibraClub, en su `enums.MedioPago`.
     "debito":           "Tarjeta de débito",
     "credito":          "Tarjeta de crédito",
-    # VentaLibra, en todo su stack.
-    "mercado_pago":     "Mercado Pago",
     # Sólo dentro de un `WHERE medio IN (...)` de tres repos. Nunca estuvo
     # declarado en ninguna lista, así que si hay filas con este valor no vinieron
     # de un selector.
@@ -89,8 +111,8 @@ HISTORICOS: dict[str, str] = {
 CONOCIDOS: dict[str, str] = {**ELEGIBLES, **HISTORICOS}
 
 #: A qué medio elegible corresponde cada histórico. Es el mapa que usaría una
-#: migración de datos, y el que permite que un reporte agrupe `mercado_pago` y
-#: `mercadopago` en la misma fila en vez de mostrar dos.
+#: migración de datos, y el que permite que un reporte agrupe `tarjeta` y
+#: `tarjeta_credito` en la misma fila en vez de mostrar dos.
 #:
 #: `qr` y `otro` no tienen equivalente y quedan afuera **a propósito**: elegir
 #: uno sería inventar información que la fila no tiene.
@@ -98,7 +120,6 @@ EQUIVALENTE_CANONICO: dict[str, str] = {
     "tarjeta":          "tarjeta_credito",
     "debito":           "tarjeta_debito",
     "credito":          "tarjeta_credito",
-    "mercado_pago":     "mercadopago",
     "cuenta corriente": "cuenta_corriente",
 }
 
@@ -109,11 +130,14 @@ EQUIVALENTE_CANONICO: dict[str, str] = {
 #: 🔴 Estaba escrito como un `IN ('mercadopago','billetera','cuenta_dni','qr')`
 #: inline, **repetido en tres repos**, y era el único lugar de la familia donde
 #: `qr` existía: no estaba declarado en ninguna lista, así que si hay filas con
-#: ese valor no salieron de ningún selector. Incluye también `mercado_pago`, la
-#: grafía de VentaLibra — sin ella, ahí la referencia del pago nunca se
-#: actualizaba y nadie lo notaba, porque el pago entra igual.
+#: ese valor no salieron de ningún selector.
+#:
+#: Hasta el 2026-08-25 incluía también `mercado_pago`, la grafía vieja de
+#: VentaLibra — sin ella, ahí la referencia del pago de MercadoPago nunca se
+#: actualizaba y nadie lo notaba, porque el pago entra igual. Salió junto con la
+#: grafía, y sólo después de que no quedara ninguna fila con ese valor.
 MEDIOS_ELECTRONICOS = (
-    "mercadopago", "mercado_pago", "billetera", "cuenta_dni", "qr",
+    "mercadopago", "billetera", "cuenta_dni", "qr",
 )
 
 _LISTA_ELECTRONICOS = ",".join(f"'{m}'" for m in MEDIOS_ELECTRONICOS)
@@ -148,7 +172,7 @@ def label(medio: str) -> str:
 def canonico(medio: str) -> str:
     """El medio elegible que le corresponde, o el mismo si ya lo es.
 
-    Para agrupar en reportes: sin esto, `mercado_pago` y `mercadopago` salen
+    Para agrupar en reportes: sin esto, `tarjeta` y `tarjeta_credito` salen
     como dos filas distintas de la misma cosa.
     """
     return EQUIVALENTE_CANONICO.get(medio, medio)
