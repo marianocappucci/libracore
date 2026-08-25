@@ -29,7 +29,7 @@ explícitamente al confirmar la venta fiada, con la misma forma que un
 `cc_pago` pero del otro signo. La tabla queda vacía en los productos que no
 la usan, así que suma cero y su saldo no cambia.
 """
-import sqlite3
+from .core import Conexion
 import contextlib
 from dataclasses import dataclass
 
@@ -298,7 +298,7 @@ def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[d
 
 def create_cc_pago(cliente_id: int, monto: float, fecha: str, concepto: str,
                    referencia: str, medio_pago: str, caja_id, usuario_id,
-                   conn: sqlite3.Connection | None = None) -> int:
+                   conn: Conexion | None = None) -> int:
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         cur = c.execute(
@@ -333,7 +333,7 @@ def delete_cc_pago(pago_id: int):
 
 def create_cc_debito(cliente_id: int, monto: float, fecha: str, concepto: str = "",
                      referencia: str = "", usuario_id=None,
-                     conn: sqlite3.Connection | None = None) -> int:
+                     conn: Conexion | None = None) -> int:
     """Registra deuda que no nace de una venta de ESTA base.
 
     Idempotente por `referencia` cuando se pasa una: el producto la arma con

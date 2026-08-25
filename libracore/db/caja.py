@@ -5,7 +5,7 @@ la migración real a libracore.db (Fase 3 de LibraCore, ver
 wiki/entities/libracore.md).
 """
 import json
-import sqlite3
+from .core import Conexion
 import contextlib
 
 from libracore import medios_pago
@@ -126,7 +126,7 @@ def delete_caja_config(cid: int):
 
 def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_id=None,
                            usuario_id=None, caja_id=None, medio_pago="", turno_id=None,
-                           conn: sqlite3.Connection | None = None):
+                           conn: Conexion | None = None):
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         # Idempotencia: si ya existe un movimiento con la misma referencia PARA LA MISMA

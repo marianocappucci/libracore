@@ -12,7 +12,7 @@ sites, ver `libracore.auth`).
 import sqlite3
 import threading
 from datetime import datetime as _datetime, timezone as _timezone, timedelta as _timedelta
-from typing import Callable
+from typing import Callable, TYPE_CHECKING, TypeAlias
 
 _AR_TZ = _timezone(_timedelta(hours=-3))   # America/Argentina/Buenos_Aires (sin DST)
 
@@ -56,6 +56,33 @@ def configure(db_path: str, *, timeout: int = 5, extra_pragmas: tuple[str, ...] 
         _database_url = db_path if "://" in db_path else None
         _timeout = timeout
         _extra_pragmas = tuple(extra_pragmas)
+
+
+#: Una conexión de esta familia: `sqlite3.Connection` **o** el
+#: `ConnectionWrapper` de PostgreSQL.
+#:
+#: 🔴 **Existe porque el nombre anterior mentía a medias.** Estas funciones
+#: estaban anotadas `sqlite3.Connection`, y contra PostgreSQL reciben el wrapper
+#: de `db/_postgres.py`. La anotación no era falsa —el wrapper emula la API de
+#: `sqlite3` a propósito: el `Row`, los `?` como placeholders, y hasta las
+#: excepciones traducidas por nombre— pero se lee como si dijera *"esto corre
+#: sobre SQLite"*, que es otra cosa.
+#:
+#: La diferencia importa cuando se escribe SQL. Pasó el 2026-08-25 en
+#: [[ventalibra]]: leer `sqlite3.Connection` en un servicio llevó a escribir un
+#: arreglo con dialecto de PostgreSQL, que habría roto la corrida que entonces
+#: iba contra SQLite. **Lo que el wrapper garantiza es la forma de la API, no el
+#: dialecto de la base.**
+#:
+#: Y hay una diferencia que ni siquiera la API tapa: en PostgreSQL un error
+#: **aborta la transacción** y en SQLite no. Ver `_errores_como_sqlite3` en
+#: `db/_postgres.py`.
+if TYPE_CHECKING:
+    from ._postgres import ConnectionWrapper
+
+    Conexion: TypeAlias = "sqlite3.Connection | ConnectionWrapper"
+else:  # pragma: no cover - en runtime alcanza el tipo base
+    Conexion = sqlite3.Connection
 
 
 def es_url_postgres(destino: str) -> bool:

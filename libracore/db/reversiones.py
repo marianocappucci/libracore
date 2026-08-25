@@ -10,12 +10,11 @@ esta clase encontrada el mismo día. La parte de stock no está acá: vive en
 `libracommerce.usecases.sales` (`cancel_sale`), porque el inventario es de
 ese contexto y el dinero de este.
 """
-import sqlite3
 import contextlib
 
 from libracore import medios_pago
 from libracore.db.caja import create_caja_movimiento
-from libracore.db.core import get_connection
+from libracore.db.core import Conexion, get_connection
 from libracore.db.cuenta_corriente import create_cc_pago
 
 #: Medio que representa el fiado. Su reversión no toca la caja (no había
@@ -32,7 +31,7 @@ def revertir_cobro_venta(
     usuario_id: int | None = None,
     motivo: str = "Anulación",
     turno_id: int | None = None,
-    conn: sqlite3.Connection | None = None,
+    conn: Conexion | None = None,
 ) -> None:
     """Deshace el cobro de una venta: un egreso de caja por cada pago.
 
@@ -95,7 +94,7 @@ def reintegrar_devolucion(
     cliente_id: int | None = None,
     usuario_id: int | None = None,
     turno_id: int | None = None,
-    conn: sqlite3.Connection | None = None,
+    conn: Conexion | None = None,
 ) -> None:
     """Devuelve plata por una devolución parcial.
 

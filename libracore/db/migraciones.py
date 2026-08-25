@@ -19,6 +19,7 @@ versión ya escrita.
 > revisión que no lo sea.
 """
 from __future__ import annotations
+from libracore.db.core import Conexion
 
 
 def conexion_libracore(bind):
@@ -26,7 +27,7 @@ def conexion_libracore(bind):
     `libracore.db`.
 
     Contra PostgreSQL devuelve el adaptador de LibraCore sobre la conexión
-    psycopg del propio bind; contra SQLite, la `sqlite3.Connection` cruda, que
+    psycopg del propio bind; contra SQLite, la `Conexion` cruda, que
     ya es exactamente lo que la capa usa.
     """
     from . import core

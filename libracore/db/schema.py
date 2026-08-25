@@ -20,10 +20,10 @@ wiki/entities/libracore.md.
 """
 import sqlite3
 
-from .core import is_postgres
+from .core import Conexion, is_postgres
 
 
-def init_core_schema(conn: sqlite3.Connection):
+def init_core_schema(conn: Conexion):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS clients (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
