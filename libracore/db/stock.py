@@ -11,10 +11,9 @@ Contalibra no configura nada y preserva el comportamiento simple original
 — ver wiki/entities/libracore.md).
 """
 import json
-import sqlite3
 import contextlib
 
-from libracore.db.core import get_connection, get_resolver_receta
+from libracore.db.core import Conexion, get_connection, get_resolver_receta
 from libracore.db.productos import get_default_deposito_id
 
 
@@ -23,7 +22,7 @@ def add_movimiento_stock(producto_id: int, tipo: str, cantidad: float,
                          venta_id: int | None = None,
                          usuario_id: int | None = None,
                          deposito_id: int | None = None,
-                         conn: sqlite3.Connection | None = None):
+                         conn: Conexion | None = None):
     """Agrega un movimiento de stock. cantidad positiva=entrada, negativa=salida."""
     from datetime import date as _date
     _fecha = fecha or _date.today().isoformat()
@@ -98,7 +97,7 @@ def ajustar_stock(producto_id: int, stock_nuevo: float, referencia: str,
     )
 
 
-def _es_servicio(producto_id: int, conn: sqlite3.Connection | None = None) -> bool:
+def _es_servicio(producto_id: int, conn: Conexion | None = None) -> bool:
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         row = c.execute("SELECT tipo FROM productos WHERE id=?", (producto_id,)).fetchone()
@@ -107,7 +106,7 @@ def _es_servicio(producto_id: int, conn: sqlite3.Connection | None = None) -> bo
 
 def descontar_stock_venta(venta_id: int, items: list, fecha: str = "",
                            usuario_id: int | None = None,
-                           conn: sqlite3.Connection | None = None):
+                           conn: Conexion | None = None):
     """Descuenta stock por cada ítem de la venta que tenga producto_id y sea
     de tipo 'producto' — un servicio (`productos.tipo = 'servicio'`) nunca
     genera movimiento de stock, ni propio ni de receta: no tiene inventario.

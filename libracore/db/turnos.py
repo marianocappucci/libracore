@@ -4,10 +4,9 @@ Extraído de database.py de Contalibra/Restolibra (idéntico en ambos) como
 parte de la migración real a libracore.db (Fase 3 de LibraCore, ver
 wiki/entities/libracore.md).
 """
-import sqlite3
 import contextlib
 
-from libracore.db.core import get_connection, _ar_now
+from libracore.db.core import Conexion, _ar_now, get_connection
 
 
 def create_turno(usuario_id: int, monto_inicial: float, notas: str = "") -> int:
@@ -21,7 +20,7 @@ def create_turno(usuario_id: int, monto_inicial: float, notas: str = "") -> int:
         return cur.lastrowid
 
 
-def get_turno_activo(usuario_id: int, conn: sqlite3.Connection | None = None) -> dict | None:
+def get_turno_activo(usuario_id: int, conn: Conexion | None = None) -> dict | None:
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         row = c.execute(
@@ -170,7 +169,7 @@ def cerrar_turno(tid: int, monto_declarado: float, notas: str = ""):
         )
 
 
-def vincular_venta_turno(venta_id: int, turno_id: int, conn: sqlite3.Connection | None = None):
+def vincular_venta_turno(venta_id: int, turno_id: int, conn: Conexion | None = None):
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         c.execute("UPDATE ventas SET turno_id=? WHERE id=?", (turno_id, venta_id))
