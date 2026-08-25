@@ -45,21 +45,26 @@ Dos listas, y la diferencia es la que importa:
 - **`ELEGIBLES`** — lo que se puede elegir hoy. Es lo unico que puebla un
   selector y lo unico que `validar()` acepta al escribir.
 - **`HISTORICOS`** — grafias que quedaron en filas de bases reales (`tarjeta`,
-  `mercado_pago`, `debito`, `credito`, `qr`, `otro`, `cuenta corriente`) y que
-  hay que **saber leer**. No se ofrecen mas.
+  `debito`, `credito`, `qr`, `otro`, `cuenta corriente`) y que hay que **saber
+  leer**. No se ofrecen mas.
 
-> 🔴 **Un historico no se saca nunca.** Sacarlo no borra la fila que lo tiene:
-> la deja sin etiqueta, y un cierre de caja con un bucket sin nombre es peor que
-> uno con un nombre viejo. Si algun dia se migran los datos, primero se migran y
-> despues se saca la grafia — nunca al reves. Hay un test que se pone rojo si se
-> intenta.
+> 🔴 **Un historico no se saca sin migrar los datos primero.** Sacarlo no borra
+> la fila que lo tiene: la deja sin etiqueta, y un cierre de caja con un bucket
+> sin nombre es peor que uno con un nombre viejo. Hay un test que se pone rojo
+> si se intenta, y ese rojo es la pregunta "¿ya migraste?".
+>
+> Se recorrio una vez, con `mercado_pago` (la grafia de VentaLibra) el
+> 2026-08-25: medir sobre las instancias reales recorriendo TODAS las columnas
+> de texto, migrar, verificar cero **despues** de desplegar, y recien ahi sacarla
+> — de `HISTORICOS`, de `EQUIVALENTE_CANONICO` y de `MEDIOS_ELECTRONICOS`. El
+> orden completo esta en el docstring del modulo.
 
 La API:
 
 | | |
 |---|---|
 | `label(medio)` | Como se muestra. **Nunca devuelve vacio**: un medio desconocido sale tal cual, para que se pueda ver. |
-| `canonico(medio)` | El elegible equivalente, para que un reporte no muestre `mercado_pago` y `mercadopago` como dos filas. |
+| `canonico(medio)` | El elegible equivalente, para que un reporte no muestre `tarjeta` y `tarjeta_credito` como dos filas. |
 | `validar(medio)` | El medio, o `MedioDePagoInvalido`. **Falla cerrado.** |
 | `es_elegible(medio)` | Si se puede elegir hoy. Los historicos dan `False`. |
 | `para_selector()` | `[{id, label}]`. Con `incluir_cuenta_corriente=False` para las pantallas que cobran. |

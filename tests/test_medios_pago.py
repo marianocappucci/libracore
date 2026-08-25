@@ -51,7 +51,6 @@ def test_las_grafias_que_ya_estan_en_bases_reales_se_siguen_pudiendo_leer():
 
     - `tarjeta` — LibraDesk, LibraClub, MedLibra, Gestiolibra
     - `debito` / `credito` — el enum de LibraClub
-    - `mercado_pago` — VentaLibra, en todo su stack
     - `qr` — sólo dentro de un `WHERE ... IN (...)`, nunca declarado
     - `otro` — los enums de LibraCargo y LibraClub
     - `cuenta corriente` (con espacio) — los movimientos de la emisión
@@ -59,12 +58,50 @@ def test_las_grafias_que_ya_estan_en_bases_reales_se_siguen_pudiendo_leer():
     Sacar cualquiera de acá pone en rojo este test **a propósito**. Si algún día
     se migran los datos, primero se migran y después se saca la grafía; nunca al
     revés.
+
+    `mercado_pago` estaba en esta lista y **salió el 2026-08-25**, recorriendo
+    ese orden. El test que documenta la baja, con la medición que la habilitó,
+    es el de acá abajo.
     """
-    for medio in ("tarjeta", "debito", "credito", "mercado_pago",
+    for medio in ("tarjeta", "debito", "credito",
                   "qr", "otro", "cuenta corriente"):
         assert medios_pago.label(medio) not in ("", medio), (
             f"«{medio}» quedó sin etiqueta: hay filas con ese valor"
         )
+
+
+def test_mercado_pago_salio_de_historicos_y_no_puede_volver_por_la_ventana():
+    """🔴 La única grafía que se retiró, y por qué se pudo.
+
+    `mercado_pago` la escribía VentaLibra. El 2026-08-24 se recorrió el orden
+    completo antes de tocar nada:
+
+    1. **Medido** sobre las 24 instancias PostgreSQL del VPS y los 35 archivos
+       `.db`, recorriendo TODAS las columnas de texto y no sólo las que se
+       llaman "medio": **3 filas, todas en `ventalibra-dev`**
+       (`caja_movimientos`, `cc_pagos` y el JSON de `recibos.pagos`). Cero en
+       los otros cinco productos.
+    2. **Migradas**, con `app/normalizacion_medios.py` de VentaLibra, que además
+       corre en **cada arranque** — así una base restaurada desde un backup
+       anterior vuelve a quedar canónica sola. Hace falta: los archivos de
+       rollback pre-PostgreSQL de ese producto todavía la tienen.
+    3. **Verificado cero** después de desplegar.
+
+    Se saca de las TRES listas y no sólo de `HISTORICOS`: una grafía que el
+    motor ya no sabe nombrar y sigue apareciendo en un `IN (...)` es ruido que
+    el próximo lector interpreta como que todavía existe.
+    """
+    assert "mercado_pago" not in medios_pago.HISTORICOS
+    assert "mercado_pago" not in medios_pago.CONOCIDOS
+    assert "mercado_pago" not in medios_pago.EQUIVALENTE_CANONICO
+    assert "mercado_pago" not in medios_pago.MEDIOS_ELECTRONICOS
+    # Y tampoco se cuela como elegible: la baja es una baja, no un traslado.
+    assert not medios_pago.es_elegible("mercado_pago")
+    # El control: la grafía BUENA sigue en su lugar en las tres. Sin esto, un
+    # módulo vacío pasaría todos los asserts de arriba.
+    assert medios_pago.es_elegible("mercadopago")
+    assert "mercadopago" in medios_pago.MEDIOS_ELECTRONICOS
+    assert medios_pago.label("mercadopago") == "Mercado Pago"
 
 
 # ── label() ────────────────────────────────────────────────────────────────
@@ -77,19 +114,26 @@ def test_un_medio_desconocido_se_devuelve_tal_cual_y_no_vacio():
     assert medios_pago.label("") == ""
 
 
-def test_las_dos_grafias_de_mercadopago_dicen_lo_mismo():
-    """Antes `ticket_generator` decía "Mercado Pago" y `pdf_generator`
-    "MercadoPago" para el mismo cobro, según si el cliente pedía el ticket o el
-    recibo."""
-    assert medios_pago.label("mercadopago") == medios_pago.label("mercado_pago")
+def test_la_grafia_retirada_sale_tal_cual_y_eso_es_lo_que_se_quiere():
+    """Hasta el 2026-08-25 este test afirmaba que las dos grafías de MercadoPago
+    decían lo mismo. Ya no: `mercado_pago` salió de `HISTORICOS`, así que
+    `label()` la devuelve cruda.
+
+    🔴 **No es una regresión, es el punto.** Con los datos migrados, ver
+    `mercado_pago` escrito en una pantalla significa que apareció una fila nueva
+    con la grafía vieja — o sea, que algo la volvió a escribir. Taparla con una
+    etiqueta linda sería esconder justamente esa señal, que es la misma razón
+    por la que `label()` nunca devuelve `"-"`.
+    """
+    assert medios_pago.label("mercado_pago") == "mercado_pago"
+    assert medios_pago.label("mercadopago") == "Mercado Pago"
 
 
 # ── canonico() ─────────────────────────────────────────────────────────────
 
 def test_los_historicos_agrupan_con_su_equivalente():
-    """Sin esto, un reporte muestra `mercado_pago` y `mercadopago` como dos
+    """Sin esto, un reporte muestra `tarjeta` y `tarjeta_credito` como dos
     filas distintas de la misma cosa."""
-    assert medios_pago.canonico("mercado_pago") == "mercadopago"
     assert medios_pago.canonico("tarjeta") == "tarjeta_credito"
     assert medios_pago.canonico("debito") == "tarjeta_debito"
     assert medios_pago.canonico("cuenta corriente") == "cuenta_corriente"
@@ -165,13 +209,17 @@ def test_el_nombre_viejo_sigue_funcionando_y_trae_la_lista_nueva():
 
 # ── El SQL de medios electrónicos ──────────────────────────────────────────
 
-def test_el_fragmento_sql_incluye_las_dos_grafias_de_mercadopago():
-    """🔴 `mercado_pago` faltaba en el `IN (...)` inline, así que en VentaLibra
-    la referencia del pago de MercadoPago **nunca se actualizaba** — y no se
-    notaba, porque el pago entra igual."""
+def test_el_fragmento_sql_nombra_mercadopago_y_ya_no_la_grafia_vieja():
+    """🔴 El `IN (...)` inline original no tenía **ninguna** de las dos, así que
+    en VentaLibra la referencia del pago de MercadoPago nunca se actualizaba — y
+    no se notaba, porque el pago entra igual.
+
+    Desde el 2026-08-25 lleva sólo la canónica: la vieja salió junto con su
+    entrada en `HISTORICOS`, después de verificar que no quedaran filas.
+    """
     sql = medios_pago.sql_es_electronico("medio")
     assert "'mercadopago'" in sql
-    assert "'mercado_pago'" in sql
+    assert "'mercado_pago'" not in sql
     assert sql.startswith("medio IN (")
 
 
