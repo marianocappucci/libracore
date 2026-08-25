@@ -154,6 +154,26 @@ def upsert_comprobante(origen_producto, origen_tipo, origen_id, cliente_razon,
             # Dos altas simultáneas del mismo origen: la otra ganó la carrera.
             # Es exactamente el caso que el UNIQUE viene a cubrir, y la
             # respuesta correcta es devolver la fila que quedó, no fallar.
+            #
+            # 🔴 **El `rollback()` no es de higiene: sin él este camino no
+            # existe contra PostgreSQL.** Ahí un error ABORTA la transacción, y
+            # cualquier consulta posterior sobre la misma conexión muere con
+            # *"current transaction is aborted, commands ignored until end of
+            # transaction block"*. O sea que el `SELECT` de abajo —el que va a
+            # buscar la fila que ganó— fallaba justo cuando la carrera ocurría,
+            # que es el único momento en que este bloque corre. En SQLite no
+            # pasa: la conexión sigue usable y por eso nunca se vio.
+            #
+            # Lo anticipa el docstring de `_errores_como_sqlite3` en
+            # `_postgres.py`: el adaptador traduce los NOMBRES de las
+            # excepciones, y avisa que esta diferencia de comportamiento queda
+            # afuera y hay que mirarla caso por caso. Ésta es uno de esos casos.
+            #
+            # Los otros reintentos de la familia (`facturas.py`, `recibos.py`)
+            # no lo necesitan porque abren una conexión nueva por intento,
+            # dentro del bucle; acá la conexión es una sola para toda la
+            # función. `ventas.py` sí hace `rollback()`, por lo mismo.
+            conn.rollback()
             fila = conn.execute(
                 "SELECT id FROM comprobantes_pendientes "
                 "WHERE origen_producto=? AND origen_instancia=? AND "
