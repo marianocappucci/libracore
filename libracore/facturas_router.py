@@ -539,7 +539,17 @@ def build_comprobantes_router(
                     factura_id,
                 )
 
-        return _detalle(db_facturas.get_factura(factura_id))
+        # 🔴 **El comprobante PELADO, no `_detalle(...)`.** Es lo que devolvían
+        # las dos copias, y la pantalla de alta hace
+        # `navigate(`/facturas/${factura.id}`)` con esto: envuelto en el detalle,
+        # `factura.id` queda `undefined` y el usuario aterriza en
+        # `/facturas/undefined` justo después de emitir.
+        #
+        # Se descubrió al migrar Contalibra (2026-08-27) comparando la forma de
+        # la respuesta antes y después. **Ninguna de las dos suites lo cubría**,
+        # así que el cambio habría llegado a producción; el test de más abajo lo
+        # fija para que no vuelva a pasar.
+        return db_facturas.get_factura(factura_id)
 
     # ── Un comprobante ────────────────────────────────────────────────────
 
