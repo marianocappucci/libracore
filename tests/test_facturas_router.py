@@ -102,7 +102,7 @@ def _factura(**extra):
 def _emitir(client, **extra) -> dict:
     r = client.post(API, json=_factura(**extra))
     assert r.status_code == 200, r.text
-    return r.json()["factura"]
+    return r.json()
 
 
 # ── Qué puede emitir el emisor ────────────────────────────────────────────
@@ -640,3 +640,29 @@ def test_sin_direccion_no_se_manda_nada(client, monkeypatch):
     factura = _emitir(client)
     r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "   "})
     assert r.status_code == 422, r.text
+
+
+def test_el_alta_devuelve_el_comprobante_PELADO(client):
+    """🔴 La pantalla de alta hace `navigate(`/facturas/${factura.id}`)` con esto.
+
+    Envuelto en el detalle —`{"factura": {...}, "cobros": [...]}`— `factura.id`
+    queda `undefined` y el usuario aterriza en `/facturas/undefined` justo
+    después de emitir. Es lo que devolvían las dos copias de Contalibra y
+    Restolibra, y la primera versión de este factory lo cambió sin querer: no lo
+    agarró ninguna de las dos suites, ni el volcado A/B de la migración, porque
+    el arnés estaba escrito tolerante a las dos formas.
+
+    El detalle completo lo da `GET /{id}`, que es otro endpoint.
+    """
+    r = client.post(API, json=_factura())
+    cuerpo = r.json()
+
+    assert "id" in cuerpo, "la pantalla necesita el id acá arriba"
+    assert "factura" not in cuerpo, "no viene envuelto en el detalle"
+    assert cuerpo["numero"] == 1
+    assert cuerpo["total"] == 14000.0
+
+    # Control: el detalle SÍ viene envuelto, y ese es el que tiene las notas.
+    detalle = client.get(f"{API}/{cuerpo['id']}").json()
+    assert "factura" in detalle
+    assert "notas_credito" in detalle
