@@ -12,6 +12,7 @@ que apaga esa variable.
 """
 
 import json
+import pathlib
 
 import pytest
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -491,3 +492,151 @@ def test_el_borrador_NO_guarda_ni_numera(client):
     """No toca la base: es una previsualización, no una emisión."""
     client.post(f"{API}/borrador-pdf", json=_factura())
     assert client.get(API).json()["total"] == 0, "no se emitió nada"
+
+
+# ── Cobrar ────────────────────────────────────────────────────────────────
+
+
+def test_cobrar_imputa_el_pago_contra_la_factura(client):
+    """El cobro deja el comprobante saldado y el movimiento en la caja.
+
+    Se mira el `pendiente` del detalle y no sólo el `200`: un endpoint que
+    escribiera el movimiento sin imputarlo a la factura devolvería 200 igual, y
+    el comprobante quedaría figurando como impago para siempre.
+    """
+    factura = _emitir(client)
+    assert client.get(f"{API}/{factura['id']}").json()["pendiente"] == 14000.0
+
+    r = client.post(
+        f"{API}/{factura['id']}/cobrar",
+        json={"pagos": [{"medio_id": "efectivo", "monto": 14000.0, "referencia": ""}]},
+    )
+    assert r.status_code == 200, r.text
+
+    detalle = r.json()
+    assert detalle["total_cobrado"] == 14000.0
+    assert detalle["pendiente"] == 0.0
+    assert len(detalle["cobros"]) == 1
+
+
+def test_un_cobro_parcial_deja_el_resto_pendiente(client):
+    """El control del de arriba: si `pendiente` fuera siempre cero, aquel test
+    pasaría igual."""
+    factura = _emitir(client)
+    client.post(
+        f"{API}/{factura['id']}/cobrar",
+        json={"pagos": [{"medio_id": "efectivo", "monto": 4000.0}]},
+    )
+    detalle = client.get(f"{API}/{factura['id']}").json()
+    assert detalle["total_cobrado"] == 4000.0
+    assert detalle["pendiente"] == 10000.0
+
+
+def test_la_cuenta_corriente_no_es_un_medio_de_COBRO(client):
+    """🔴 Cobrar con "cuenta corriente" es no cobrar: es mover la deuda de lugar.
+
+    Aceptarlo daría por saldado un comprobante que nadie pagó. El motor lo
+    rechaza y acá se verifica que el 400 llegue a la pantalla en vez de un 500.
+    """
+    factura = _emitir(client)
+    r = client.post(
+        f"{API}/{factura['id']}/cobrar",
+        json={"pagos": [{"medio_id": "cuenta_corriente", "monto": 14000.0}]},
+    )
+    assert r.status_code == 400, r.text
+
+    # Y no dejó nada escrito: el rechazo es antes de la primera escritura.
+    assert client.get(f"{API}/{factura['id']}").json()["pendiente"] == 14000.0
+
+
+def test_autorizar_pide_el_CAE_a_ARCA_y_lo_guarda(tmp_path, monkeypatch):
+    """El camino exitoso del reintento, con ARCA simulado.
+
+    Lo que se prueba es el cableado del endpoint —que autentique, pida el CAE,
+    lo guarde y regenere el PDF—, no el cliente de ARCA, que tiene sus propios
+    tests. Sin esto el único camino cubierto era el del error.
+    """
+    client = _montar(tmp_path, monkeypatch, dev=False)
+    factura = _emitir(client)
+    assert not factura["cae"], "arranca sin CAE"
+
+    from libracore.db import arca_config as db_arca
+
+    cert = tmp_path / "cert.pem"
+    clave = tmp_path / "clave.key"
+    cert.write_text("x")
+    clave.write_text("x")
+    db_arca.crear_arca_config(
+        "empresa", "30712345679", 1, str(clave), str(cert), "homologacion"
+    )
+
+    async def autenticar_falso(*a, **kw):
+        return {"token": "t", "sign": "s"}
+
+    async def cae_falso(*a, **kw):
+        return {"cae": "75123456789012", "cae_vto": "20260906"}
+
+    monkeypatch.setattr(fr.arca_wsaa, "autenticar", autenticar_falso)
+    monkeypatch.setattr(fr.arca_wsfe, "solicitar_cae", cae_falso)
+
+    r = client.post(f"{API}/{factura['id']}/autorizar")
+    assert r.status_code == 200, r.text
+
+    # Se relee del servidor: lo que importa es que el CAE quedó GUARDADO, no
+    # que el endpoint devolvió algo.
+    guardada = client.get(f"{API}/{factura['id']}").json()["factura"]
+    assert guardada["cae"] == "75123456789012"
+    assert guardada["cae_vto"] == "20260906"
+
+
+def test_mandar_el_comprobante_adjunta_el_PDF_y_lo_nombra(client, monkeypatch):
+    """Con SMTP cargado, el envío arma el adjunto y la etiqueta del comprobante.
+
+    Se intercepta el `enviar_comprobante` del motor —que tiene sus propios
+    tests— y se mira **con qué lo llamaron**: el PDF que existe en disco, y la
+    etiqueta con el tipo y el número, que es lo que el cliente lee en el asunto.
+    """
+    from libracore import config_manager as cm
+
+    cm.save({
+        "email_smtp_host": "smtp.example.com", "email_smtp_user": "yo@example.com",
+        "email_smtp_password": "x", "empresa_nombre": "Complejo Centro",
+    })
+
+    llamado = {}
+
+    def sender_falso(**kw):
+        llamado.update(kw)
+
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", sender_falso)
+
+    factura = _emitir(client)
+    r = client.post(
+        f"{API}/{factura['id']}/enviar-email", json={"email": "cliente@example.com"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True}
+
+    assert llamado["to_email"] == "cliente@example.com"
+    assert llamado["to_name"] == "Juan Perez"
+    assert llamado["factura_label"] == "FACTURA C 0001-00000001"
+    assert llamado["total"] == 14000.0
+    # El adjunto tiene que ser un archivo que exista: mandar la ruta de un PDF
+    # que no está deja al cliente con un mail sin comprobante.
+    assert pathlib.Path(llamado["pdf_path"]).is_file()
+
+
+def test_sin_direccion_no_se_manda_nada(client, monkeypatch):
+    """El control: un 422 antes de tocar el SMTP."""
+    from libracore import config_manager as cm
+
+    cm.save({"email_smtp_host": "smtp.example.com", "email_smtp_user": "yo@example.com"})
+
+    def sender_que_no_deberia_correr(**kw):
+        raise AssertionError("no tendría que haberse llamado")
+
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", sender_que_no_deberia_correr)
+
+    factura = _emitir(client)
+    r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "   "})
+    assert r.status_code == 422, r.text
