@@ -15,7 +15,7 @@ el numero real puede ser cualquiera — seria el tope, no el dato.
 
 Ver wiki/analyses/panel-del-dueno-multisucursal.md.
 """
-from libracore.db.caja import sql_no_es_cuenta_corriente
+from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 #: Los tipos que son factura. Las notas de credito y debito quedan afuera de
@@ -39,7 +39,8 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
             """SELECT
                  COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE 0 END), 0),
                  COALESCE(SUM(CASE WHEN tipo='egreso'  THEN monto ELSE 0 END), 0)
-               FROM caja_movimientos WHERE fecha BETWEEN ? AND ?""",
+               FROM caja_movimientos
+               WHERE fecha BETWEEN ? AND ? AND """ + sql_no_anulado(),
             (desde, hasta),
         ).fetchone()
 
@@ -47,7 +48,7 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
         # entro en el periodo.
         saldo_caja = conn.execute(
             "SELECT COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END), 0) "
-            "FROM caja_movimientos"
+            f"FROM caja_movimientos WHERE {sql_no_anulado()}"
         ).fetchone()[0]
 
         # Sin cobrar: TODAS las que quedan impagas, no las del periodo. Una

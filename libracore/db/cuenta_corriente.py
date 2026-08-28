@@ -33,7 +33,7 @@ from .core import Conexion
 import contextlib
 from dataclasses import dataclass
 
-from libracore.db.caja import sql_es_cuenta_corriente
+from libracore.db.caja import sql_es_cuenta_corriente, sql_no_anulado
 from libracore.db.core import get_connection
 
 _TIPO_LABEL = {
@@ -83,6 +83,7 @@ def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> fl
                 JOIN facturas f ON cm.factura_id = f.id
                 WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
                   AND {sql_es_cuenta_corriente('cm.medio_pago')}
+                  AND {sql_no_anulado('cm')}
             """, (cuit,)).fetchone()[0]
         debitos_directos = conn.execute(
             "SELECT COALESCE(SUM(monto), 0) FROM cc_debitos WHERE cliente_id = ?",
@@ -127,6 +128,7 @@ def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE)
                 LEFT JOIN usuarios u ON u.id = cm.usuario_id
                 WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
                   AND {sql_es_cuenta_corriente('cm.medio_pago')}
+                  AND {sql_no_anulado('cm')}
             """, (cuit,)).fetchall()
             for r in rows:
                 lbl = _TIPO_LABEL.get(r["ftipo"], "COMP")
@@ -271,6 +273,7 @@ def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[d
                 JOIN clients c ON c.cuit_dni = f.cliente_cuit
                 WHERE cm.tipo = 'ingreso'
                   AND {sql_es_cuenta_corriente('cm.medio_pago')}
+                  AND {sql_no_anulado('cm')}
                 GROUP BY c.id
             ),
             dd AS (

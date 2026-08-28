@@ -8,7 +8,7 @@ ver wiki/entities/libracore.md).
 import json
 import sqlite3
 
-from libracore.db.caja import sql_no_es_cuenta_corriente
+from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 
@@ -103,7 +103,12 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
     if q:
         conds.append("(CAST(f.numero AS TEXT) LIKE ? OR f.cliente_razon LIKE ? OR f.observaciones LIKE ?)")
         params += [f"%{q}%", f"%{q}%", f"%{q}%"]
-    _cc_excl = f"AND {sql_no_es_cuenta_corriente('cm.medio_pago')}"
+    # 🔴 Los dos criterios juntos y en UNA variable: se usan en dos lugares de
+    # esta función —la columna `total_cobrado` y el filtro `solo_sin_cobrar`— y
+    # si divergieran, una factura podría listarse como impaga y a la vez mostrar
+    # el total cobrado completo.
+    _cc_excl = (f"AND {sql_no_es_cuenta_corriente('cm.medio_pago')}"
+                f" AND {sql_no_anulado('cm')}")
     if solo_sin_cobrar:
         conds.append("f.cae != '' AND f.cae IS NOT NULL AND f.cae != 'PENDIENTE'")
         conds.append(f"""

@@ -16,6 +16,8 @@ from __future__ import annotations
 import pytest
 
 from libracore.db import caja as db_caja
+from libracore.db import dashboard as db_dashboard
+from libracore.db import reportes as db_reportes
 from libracore.db import core
 from libracore.db import turnos as db_turnos
 from libracore.db.schema import init_core_schema
@@ -114,3 +116,66 @@ def test_los_movimientos_nacen_sin_anular(conn):
     resumen = db_turnos.get_resumen_turno_caja(tid)
     assert resumen["movimientos"][0]["anulado"] == 0
     assert resumen["pagos_por_medio"]["efectivo"] == 7000
+
+
+# -- El barrido, medido por conducta ---------------------------------------
+#
+# El guard de `test_barrido_de_anulados.py` lee los fuentes y dice que el filtro
+# ESTA. Estos dicen que FUNCIONA, que no es lo mismo: un filtro escrito sobre la
+# columna equivocada, o con el alias mal, pasa el guard y no filtra nada.
+
+
+def _con_un_anulado(conn):
+    """Dos movimientos de 1000, uno anulado. Lo que cuente tiene que dar 1000."""
+    tid = _turno(conn)
+    uno = db_caja.create_caja_movimiento(
+        FECHA, "ingreso", "Se anula", 1000, medio_pago="efectivo", turno_id=tid,
+    )
+    db_caja.create_caja_movimiento(
+        FECHA, "ingreso", "Queda", 1000, medio_pago="efectivo", turno_id=tid,
+    )
+    db_caja.anular_caja_movimiento(uno)
+    return tid
+
+
+def test_el_resumen_de_caja_no_cuenta_el_anulado(conn):
+    """`get_caja_resumen` es el arqueo que ven Contalibra y Restolibra."""
+    _con_un_anulado(conn)
+    r = db_caja.get_caja_resumen(FECHA, FECHA)
+    assert r["ingresos"] == 1000, f'conto el anulado: {r["ingresos"]}'
+    assert r["saldo_total"] == 1000
+
+
+def test_el_reporte_por_tipo_no_cuenta_el_anulado(conn):
+    _con_un_anulado(conn)
+    filas = {f["tipo"]: f for f in db_reportes.get_reporte_caja(FECHA, FECHA)}
+    assert filas["ingreso"]["total"] == 1000
+    # Y la CANTIDAD tambien: dos filas, una anulada, cuenta una.
+    assert filas["ingreso"]["cantidad"] == 1
+
+
+def test_el_reporte_por_medio_no_cuenta_el_anulado(conn):
+    _con_un_anulado(conn)
+    filas = db_reportes.get_reporte_caja_medios(FECHA, FECHA)
+    total = sum(f["total"] for f in filas if f["tipo"] == "ingreso")
+    assert total == 1000
+
+
+def test_el_tablero_no_cuenta_el_anulado(conn):
+    """Los KPI del mes y el saldo historico."""
+    _con_un_anulado(conn)
+    d = db_dashboard.get_dashboard_data(FECHA, FECHA)
+    assert d["saldo_total"] == 1000, f'el saldo conto el anulado: {d["saldo_total"]}'
+
+
+def test_la_lista_del_operador_SI_muestra_el_anulado(conn):
+    """El control de la regla: los numeros filtran, la lista no.
+
+    Sin esto, el barrido se podria "arreglar" filtrando en todos lados --- y
+    entonces anular volveria a ser indistinguible de borrar, que es el defecto
+    del que salimos.
+    """
+    _con_un_anulado(conn)
+    filas = db_caja.get_caja_movimientos(FECHA, FECHA)
+    assert len(filas) == 2, "la lista tiene que traer los dos"
+    assert sorted(f["anulado"] for f in filas) == [0, 1]
