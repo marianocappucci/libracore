@@ -137,9 +137,13 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
 
         agregadas = set(despues.splitlines()) - set(antes.splitlines())
         # La línea de la columna, y el conteo de la cabecera que se mueve con
-        # ella: 367 columnas es la cifra que se comparó contra las diez
-        # instancias vivas, así que también tiene que ser sensible.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (368)"}
+        # ella: la cifra base se comparó contra las diez instancias vivas, así
+        # que también tiene que ser sensible.
+        #
+        # 368 desde el 2026-08-28, cuando entró `cajas.sucursal_id` (era 367).
+        # Que este número haya que moverlo a mano **es la señal**: si cambia sin
+        # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (369)"}
     finally:
         conn.close()
         _liberar()
