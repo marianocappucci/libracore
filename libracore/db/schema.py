@@ -708,7 +708,6 @@ def init_core_schema(conn: Conexion):
     cm_cols = [r[1] for r in conn.execute("PRAGMA table_info(caja_movimientos)").fetchall()]
     if cm_cols and "caja_id" not in cm_cols:
         conn.execute("ALTER TABLE caja_movimientos ADD COLUMN caja_id INTEGER REFERENCES cajas(id) ON DELETE SET NULL")
-        conn.execute("UPDATE caja_movimientos SET caja_id=? WHERE caja_id IS NULL", (_default_caja_id,))
     if cm_cols and "medio_pago" not in cm_cols:
         conn.execute("ALTER TABLE caja_movimientos ADD COLUMN medio_pago TEXT DEFAULT ''")
     # El arqueo se cuenta sobre la caja, no sobre las ventas: con `turno_id`
@@ -727,7 +726,28 @@ def init_core_schema(conn: Conexion):
     tc_cols = [r[1] for r in conn.execute("PRAGMA table_info(turnos_caja)").fetchall()]
     if tc_cols and "caja_id" not in tc_cols:
         conn.execute("ALTER TABLE turnos_caja ADD COLUMN caja_id INTEGER REFERENCES cajas(id) ON DELETE SET NULL")
-        conn.execute("UPDATE turnos_caja SET caja_id=? WHERE caja_id IS NULL", (_default_caja_id,))
+
+    # 🔴 **El relleno va FUERA del `if`, y ese es el arreglo.** Estaba adentro
+    # —corría sólo cuando la columna se acababa de crear—, así que en toda base
+    # donde `caja_id` **ya existía** las filas viejas se quedaban en `NULL` para
+    # siempre. La promesa de "las filas viejas quedan con la caja por defecto"
+    # se cumplía sólo en bases nuevas, que son justo las que no tienen filas
+    # viejas.
+    #
+    # Lo destapó LibraClub el 2026-08-28: su pantalla mostraba *"Turno abierto —
+    # sin caja asignada"* sobre turnos de una semana antes, en una base donde la
+    # columna venía de una versión anterior. Lo reportó el humano.
+    #
+    # Idempotente y barato: el `WHERE ... IS NULL` no toca ninguna fila cuando
+    # no quedan, que es el caso normal a partir de la primera corrida.
+    conn.execute(
+        "UPDATE caja_movimientos SET caja_id=? WHERE caja_id IS NULL",
+        (_default_caja_id,),
+    )
+    conn.execute(
+        "UPDATE turnos_caja SET caja_id=? WHERE caja_id IS NULL",
+        (_default_caja_id,),
+    )
 
     ms_cols = [r[1] for r in conn.execute("PRAGMA table_info(movimientos_stock)").fetchall()]
     if ms_cols and "deposito_id" not in ms_cols:
