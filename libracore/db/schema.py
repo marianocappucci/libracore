@@ -107,6 +107,10 @@ def init_core_schema(conn: Conexion):
             medios_pago TEXT NOT NULL DEFAULT '[]',
             activo      INTEGER NOT NULL DEFAULT 1,
             es_default  INTEGER NOT NULL DEFAULT 0,
+            -- La sucursal a la que pertenece este mostrador. Sin FK: las
+            -- sucursales viven en la base del PRODUCTO. Ver la nota de las
+            -- migraciones defensivas, más abajo.
+            sucursal_id INTEGER,
             created_at  TEXT DEFAULT (datetime('now'))
         );
 
@@ -575,6 +579,26 @@ def init_core_schema(conn: Conexion):
     # Migraciones defensivas (columnas agregadas después del CREATE original en
     # instancias ya existentes) — se mantienen por compatibilidad con bases de
     # datos que ya corrieron versiones previas de este mismo schema.
+
+    # La caja como mostrador de UNA SUCURSAL.
+    #
+    # 🔑 **Es opcional y por eso no toca a nadie.** Los cinco productos que usan
+    # `cajas` y no tienen sucursales siguen trabajando con la caja por default,
+    # exactamente como antes. La estrena LibraClub, que sí las tiene.
+    #
+    # 🔴 **No lleva FK, y no es un olvido**: las sucursales viven en la base del
+    # PRODUCTO y las cajas en la de LibraCore. Es el mismo caso que
+    # `reservas.factura_id` de LibraClub, y por el mismo motivo: no hay
+    # integridad referencial que declarar entre dos bases.
+    #
+    # ⚠️ **`turnos_caja.caja_id` ya existe** —lo agrega un ALTER defensivo más
+    # abajo, con `ON DELETE SET NULL`, y rellena las filas viejas con la caja por
+    # default—. Lo que faltaba no era la columna sino que `create_turno` la
+    # escribiera; eso se arregla en `db/turnos.py`, no acá.
+    cols_cajas = [r[1] for r in conn.execute("PRAGMA table_info(cajas)").fetchall()]
+    if "sucursal_id" not in cols_cajas:
+        conn.execute("ALTER TABLE cajas ADD COLUMN sucursal_id INTEGER")
+
     cols = [r[1] for r in conn.execute("PRAGMA table_info(clients)").fetchall()]
     if "iva_condition" not in cols:
         conn.execute("ALTER TABLE clients ADD COLUMN iva_condition TEXT DEFAULT ''")

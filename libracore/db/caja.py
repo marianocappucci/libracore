@@ -58,27 +58,38 @@ def sql_no_es_cuenta_corriente(columna: str = "medio_pago") -> str:
     return f"LOWER({columna}) NOT IN ({_LISTA_CC})"
 
 
-def get_all_cajas() -> list[dict]:
+def _fila_de_caja(row) -> dict:
+    """La fila con `medios_pago` ya parseado.
+
+    Estaba escrito dos veces —en el listado y en el detalle— y las dos copias
+    hacían exactamente lo mismo. Se unifica al pasar por acá.
+    """
+    d = dict(row)
+    d["medios_pago"] = json.loads(d["medios_pago"] or "[]")
+    return d
+
+
+def get_all_cajas(sucursal_id: int | None = None) -> list[dict]:
+    """Las cajas, o sólo las de una sucursal.
+
+    Sin `sucursal_id` devuelve todas, que es lo que hacen los cinco productos sin
+    sucursales. Con él filtra — y **no** trae las que tienen la sucursal en
+    blanco: una caja sin sede no es de ninguna, y mostrarla en todas es peor que
+    no mostrarla.
+    """
+    donde = " WHERE sucursal_id=?" if sucursal_id is not None else ""
+    params = (sucursal_id,) if sucursal_id is not None else ()
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM cajas ORDER BY es_default DESC, nombre"
+            f"SELECT * FROM cajas{donde} ORDER BY es_default DESC, nombre", params
         ).fetchall()
-    result = []
-    for r in rows:
-        d = dict(r)
-        d["medios_pago"] = json.loads(d["medios_pago"] or "[]")
-        result.append(d)
-    return result
+    return [_fila_de_caja(r) for r in rows]
 
 
 def get_caja_config(cid: int) -> dict | None:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM cajas WHERE id=?", (cid,)).fetchone()
-    if not row:
-        return None
-    d = dict(row)
-    d["medios_pago"] = json.loads(d["medios_pago"] or "[]")
-    return d
+    return _fila_de_caja(row) if row else None
 
 
 def get_default_caja_id() -> int | None:
@@ -89,11 +100,13 @@ def get_default_caja_id() -> int | None:
     return row[0] if row else None
 
 
-def create_caja_config(nombre: str, descripcion: str, medios_pago: list) -> int:
+def create_caja_config(nombre: str, descripcion: str, medios_pago: list,
+                       sucursal_id: int | None = None) -> int:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO cajas (nombre, descripcion, medios_pago) VALUES (?,?,?)",
-            (nombre, descripcion, json.dumps(medios_pago)),
+            "INSERT INTO cajas (nombre, descripcion, medios_pago, sucursal_id)"
+            " VALUES (?,?,?,?)",
+            (nombre, descripcion, json.dumps(medios_pago), sucursal_id),
         )
         return cur.lastrowid
 
