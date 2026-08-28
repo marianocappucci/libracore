@@ -27,7 +27,7 @@ from libracore.db.schema import init_core_schema
 USUARIO = {"id": 1, "username": "admin", "nombre": "Administrador"}
 
 
-def _montar(tmp_path, monkeypatch, *, al_emitir=None, dev=True):
+def _montar(tmp_path, monkeypatch, *, al_emitir=None, registrar_cobro=None, dev=True):
     """Una app con el router montado, como lo haría un producto."""
     core.configure(db_path=str(tmp_path / "comprobantes.db"))
     conn = core.get_connection()
@@ -69,6 +69,7 @@ def _montar(tmp_path, monkeypatch, *, al_emitir=None, dev=True):
             usuario_actual=lambda: USUARIO,
             solo_admin=gate_admin,
             al_emitir=al_emitir,
+            registrar_cobro=registrar_cobro,
             donde_configurar_smtp="Configuración → Integraciones",
         )
     )
@@ -666,3 +667,79 @@ def test_el_alta_devuelve_el_comprobante_PELADO(client):
     detalle = client.get(f"{API}/{cuerpo['id']}").json()
     assert "factura" in detalle
     assert "notas_credito" in detalle
+
+
+# ── El cobro, cuando el producto lleva su propia caja ─────────────────────
+
+
+def test_el_producto_puede_reemplazar_la_escritura_del_cobro(tmp_path, monkeypatch):
+    """🔑 Existe por LibraClub, y el motivo no es de estilo.
+
+    Ese producto lleva la caja **por turno**, con su arqueo al cerrar, y el
+    default escribe el movimiento **sin `turno_id`**: la plata entraba y ningún
+    cierre la contaba — que es exactamente lo que una caja por turno evita.
+
+    Se verifica lo que recibe el reemplazo **y** que el default no corrió: si
+    corrieran los dos, el ingreso quedaría contado dos veces.
+    """
+    recibido = {}
+
+    def registrar(factura, pagos, *, fecha, caja_id, usuario):
+        recibido.update(
+            factura_id=factura["id"], pagos=pagos, fecha=fecha,
+            caja_id=caja_id, usuario=usuario,
+        )
+
+    client = _montar(tmp_path, monkeypatch, registrar_cobro=registrar)
+    factura = _emitir(client)
+
+    r = client.post(
+        f"{API}/{factura['id']}/cobrar",
+        json={"pagos": [{"medio_id": "efectivo", "monto": 14000.0}], "caja_id": 7},
+    )
+    assert r.status_code == 200, r.text
+
+    assert recibido["factura_id"] == factura["id"]
+    assert recibido["pagos"] == [{"medio_id": "efectivo", "monto": 14000.0}]
+    assert recibido["caja_id"] == 7
+    assert recibido["usuario"] == USUARIO
+
+    # 🔴 El default NO escribió: el comprobante sigue sin cobrar. Sin esta
+    # aserción, un factory que llamara a los dos pasaría igual.
+    assert r.json()["pendiente"] == 14000.0
+    assert r.json()["cobros"] == []
+
+
+def test_lo_que_levanta_el_reemplazo_sale_tal_cual(tmp_path, monkeypatch):
+    """El producto decide su propio error: LibraClub devuelve 409 si no hay caja
+    abierta, porque un cobro sin turno queda fuera de todo arqueo."""
+    def registrar(factura, pagos, *, fecha, caja_id, usuario):
+        raise HTTPException(409, "No hay una caja abierta.")
+
+    client = _montar(tmp_path, monkeypatch, registrar_cobro=registrar)
+    factura = _emitir(client)
+
+    r = client.post(
+        f"{API}/{factura['id']}/cobrar",
+        json={"pagos": [{"medio_id": "efectivo", "monto": 14000.0}]},
+    )
+    assert r.status_code == 409, r.text
+    assert "caja abierta" in r.text
+
+
+def test_sin_reemplazo_el_cobro_sigue_siendo_el_de_siempre(tmp_path, monkeypatch):
+    """El control: los dos productos que ya usan el factory no cambian.
+
+    Sin esto, un factory que ignorara el default y no escribiera nunca pasaría
+    los dos tests de arriba.
+    """
+    client = _montar(tmp_path, monkeypatch)
+    factura = _emitir(client)
+
+    r = client.post(
+        f"{API}/{factura['id']}/cobrar",
+        json={"pagos": [{"medio_id": "efectivo", "monto": 14000.0}]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["pendiente"] == 0.0
+    assert len(r.json()["cobros"]) == 1
