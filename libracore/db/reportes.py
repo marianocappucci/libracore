@@ -4,6 +4,7 @@ caja, stock bajo, resumen). Extraído de database.py de Contalibra/
 Restolibra (idéntico en ambos) como parte de la migración real a
 libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
+from libracore.db.caja import sql_no_anulado
 from libracore.db.core import get_connection
 
 
@@ -74,7 +75,11 @@ def get_reporte_caja(desde: str = "", hasta: str = "") -> list[dict]:
         where.append("fecha >= ?"); params.append(desde)
     if hasta:
         where.append("fecha <= ?"); params.append(hasta)
-    w = ("WHERE " + " AND ".join(where)) if where else ""
+    # Un movimiento anulado no cuenta en ningún reporte de plata. El `where`
+    # puede venir vacío, así que la condición se agrega a la lista y no al
+    # fragmento ya armado.
+    where.append(sql_no_anulado())
+    w = "WHERE " + " AND ".join(where)
     sql = f"""
         SELECT tipo, COUNT(*) AS cantidad, ROUND(SUM(monto), 2) AS total
         FROM caja_movimientos {w}
@@ -87,6 +92,7 @@ def get_reporte_caja(desde: str = "", hasta: str = "") -> list[dict]:
 def get_reporte_caja_medios(desde: str = "", hasta: str = "", caja_id: int = 0) -> list[dict]:
     """Movimientos de caja agrupados por caja y medio de pago."""
     where, params = ["cm.fecha BETWEEN ? AND ?"], [desde or "1900-01-01", hasta or "2999-12-31"]
+    where.append(sql_no_anulado("cm"))
     if caja_id:
         where.append("cm.caja_id = ?"); params.append(caja_id)
     sql = f"""
@@ -149,8 +155,14 @@ def get_reporte_resumen(desde: str = "", hasta: str = "") -> dict:
         f_row = conn.execute(
             f"SELECT COUNT(*) cnt FROM facturas {w}", params
         ).fetchone()
+        # 🔴 El `w` de arriba lo comparten `ventas` y `facturas`, que NO tienen
+        # columna `anulado`. Y puede venir vacio ---sin fechas no hay `WHERE`---,
+        # asi que pegarle un ` AND ...` deja `FROM caja_movimientos AND anulado`
+        # y revienta. Se arma uno propio para la caja.
+        w_caja = "WHERE " + " AND ".join(where + [sql_no_anulado()])
         caja = conn.execute(
-            f"SELECT ROUND(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END),2) saldo FROM caja_movimientos {w}", params
+            f"SELECT ROUND(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END),2)"
+            f" saldo FROM caja_movimientos {w_caja}", params
         ).fetchone()
     return {
         "ventas_cantidad": v["cnt"] or 0,
