@@ -117,14 +117,18 @@ def get_resumen_turno_caja(tid: int) -> dict:
     Contar sobre la caja además es más fiel a lo que se arquea: entra todo lo
     que pasó por el cajón, incluidos ingresos y egresos que no son ventas."""
     with get_connection() as conn:
+        # 🔑 **La lista los trae TODOS, con su marca; los totales NO.** Es la
+        # razón de ser de `anulado`: el arqueo tiene que dar lo que hay en el
+        # cajón, y la pantalla tiene que poder mostrar qué se dio de baja. Una
+        # lista que esconde los anulados no se distingue de una que los borra.
         movimientos = conn.execute(
-            """SELECT id, fecha, tipo, concepto, monto, medio_pago, referencia
+            """SELECT id, fecha, tipo, concepto, monto, medio_pago, referencia, anulado
                FROM caja_movimientos WHERE turno_id=? ORDER BY id""",
             (tid,),
         ).fetchall()
         por_medio = conn.execute(
             """SELECT medio_pago, SUM(CASE WHEN tipo='egreso' THEN -monto ELSE monto END) AS total
-               FROM caja_movimientos WHERE turno_id=? GROUP BY medio_pago""",
+               FROM caja_movimientos WHERE turno_id=? AND anulado=0 GROUP BY medio_pago""",
             (tid,),
         ).fetchall()
     pagos = {(r["medio_pago"] or "sin_medio"): r["total"] for r in por_medio}

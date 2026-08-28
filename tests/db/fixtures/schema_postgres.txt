@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (368)
+## tablas (369)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -18,6 +18,7 @@ auth_log|id|bigint|NN|nextval('auth_log_id_seq'::regclass)
 auth_log|ip|text||
 auth_log|ts|text|NN|to_char(LOCALTIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'::text)
 auth_log|username|text|NN|
+caja_movimientos|anulado|integer|NN|0
 caja_movimientos|caja_id|integer||
 caja_movimientos|concepto|text|NN|
 caja_movimientos|created_at|text||to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text), 'YYYY-MM-DD HH24:MI:SS'::text)

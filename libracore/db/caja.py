@@ -256,5 +256,37 @@ def get_cobros_factura(factura_id) -> list[dict]:
 
 
 def delete_caja_movimiento(mov_id):
+    """Borra la fila. **Preferir `anular_caja_movimiento`.**
+
+    ⚠️ Sigue existiendo porque [[contalibra]] y [[restolibra]] la usan desde
+    antes; no se retira para no romperlos. Pero borrar deja un agujero en el
+    arqueo que nadie puede auditar — ver el comentario de la columna `anulado`
+    en `schema.py`.
+    """
     with get_connection() as conn:
         conn.execute("DELETE FROM caja_movimientos WHERE id=?", (mov_id,))
+
+
+def anular_caja_movimiento(mov_id):
+    """Marca el movimiento como anulado. La fila **queda**.
+
+    🔴 **Un movimiento de caja se anula, no se borra.** Borrarlo deja un agujero
+    en el arqueo que nadie puede auditar, y en LibraClub rompía más: un cobro de
+    turno borrado hace que la reserva vuelva a figurar impaga —el pendiente se
+    calcula sumando movimientos por referencia— y un cobro por QR queda con
+    `caja_movimiento_id` colgando, con lo cual el poll **no** lo vuelve a
+    registrar y la plata desaparece del cajón para siempre. Pedido del humano el
+    2026-08-28: *"no deberían poder borrarse, tienen que quedar registrados"*.
+
+    Sale de los totales del arqueo y la lista lo sigue mostrando —ver
+    `get_resumen_turno_caja`—, que es lo que permite auditar qué se cargó y se
+    dio de baja. Idempotente: anular dos veces deja lo mismo.
+
+    ⚠️ **Esta explicación no puede ir adentro del `CREATE TABLE`.** El
+    `executescript()` del adaptador PostgreSQL parte el script por el punto y
+    coma, así que un `--` con un `;` adentro corta la sentencia al medio: el
+    volcado muere con *"syntax error at end of input"*. Está avisado en el
+    bloque de `usuarios.activo` de `schema.py`, y volvió a pasar acá.
+    """
+    with get_connection() as conn:
+        conn.execute("UPDATE caja_movimientos SET anulado=1 WHERE id=?", (mov_id,))
