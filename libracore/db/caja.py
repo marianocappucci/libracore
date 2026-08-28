@@ -58,6 +58,28 @@ def sql_no_es_cuenta_corriente(columna: str = "medio_pago") -> str:
     return f"LOWER({columna}) NOT IN ({_LISTA_CC})"
 
 
+def sql_no_anulado(alias: str = "") -> str:
+    """Fragmento SQL: el movimiento **no está anulado**, o sea que cuenta.
+
+    🔴 **Va en todo lo que produce un NÚMERO de plata**, y en nada de lo que
+    produce una lista para mirar. Esa es la línea, y el motor la cruzaba en
+    catorce consultas: hasta el 2026-08-28 sólo `get_resumen_turno_caja`
+    filtraba, así que un movimiento anulado seguía contando en el arqueo de
+    Contalibra y Restolibra, en lo cobrado de una factura, en el saldo de una
+    cuenta corriente, en los reportes y en el tablero.
+
+    🔑 **Es un fragmento compartido y no un `AND anulado=0` suelto**, por la
+    misma razón que `sql_no_es_cuenta_corriente`: *"tener dos listas del mismo
+    criterio es cómo se llega a que una consulta cuente un movimiento como deuda
+    y otra no"*. Y además se puede grepear — que es lo que permite auditar el
+    barrido de una sola pasada.
+
+    `alias` para las consultas con JOIN, donde la columna necesita calificarse
+    (`cm.anulado`). Sin alias, para las que consultan la tabla sola.
+    """
+    return f"{alias + '.' if alias else ''}anulado = 0"
+
+
 def _fila_de_caja(row) -> dict:
     """La fila con `medios_pago` ya parseado.
 
@@ -202,7 +224,7 @@ def get_caja_resumen(desde=None, hasta=None, caja_id=None):
     una factura está "cobrada" (ver `_cc_excl` ahí)."""
     _cc_excl = sql_no_es_cuenta_corriente()
     with get_connection() as conn:
-        where, params = [_cc_excl], []
+        where, params = [_cc_excl, sql_no_anulado()], []
         if desde and hasta:
             where.append("fecha BETWEEN ? AND ?"); params += [desde, hasta]
         if caja_id:
@@ -220,7 +242,7 @@ def get_caja_resumen(desde=None, hasta=None, caja_id=None):
 
         total = conn.execute(
             f"""SELECT COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END), 0)
-               FROM caja_movimientos WHERE {_cc_excl}"""
+               FROM caja_movimientos WHERE {_cc_excl} AND {sql_no_anulado()}"""
         ).fetchone()[0]
 
         return {
@@ -236,7 +258,7 @@ def get_cobro_factura(factura_id):
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM caja_movimientos WHERE factura_id=? AND tipo='ingreso'"
-            f" AND {sql_no_es_cuenta_corriente()}"
+            f" AND {sql_no_es_cuenta_corriente()} AND {sql_no_anulado()}"
             " ORDER BY id DESC LIMIT 1",
             (factura_id,),
         ).fetchone()
@@ -244,11 +266,17 @@ def get_cobro_factura(factura_id):
 
 
 def get_cobros_factura(factura_id) -> list[dict]:
-    """Devuelve todos los movimientos de cobro de una factura."""
+    """Devuelve todos los movimientos de cobro de una factura.
+
+    🔴 **Excluye los anulados, y acá no es cosmético**: esta lista alimenta el
+    **recibo** (`recibos.py`) y el detalle del comprobante. Un recibo es un
+    documento que dice *"recibimos esto"* — meterle un cobro anulado es firmar
+    plata que no entró.
+    """
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM caja_movimientos WHERE factura_id=? AND tipo='ingreso'"
-            f" AND {sql_no_es_cuenta_corriente()}"
+            f" AND {sql_no_es_cuenta_corriente()} AND {sql_no_anulado()}"
             " ORDER BY id",
             (factura_id,),
         ).fetchall()

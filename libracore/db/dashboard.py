@@ -3,6 +3,7 @@ Datos agregados del dashboard principal. Extraído de database.py de
 Contalibra/Restolibra (idéntico en ambos) como parte de la migración real
 a libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
+from libracore.db.caja import sql_no_anulado
 from libracore.db.core import get_connection
 
 
@@ -22,7 +23,8 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str) -> dict:
             """SELECT
                  COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE 0 END), 0),
                  COALESCE(SUM(CASE WHEN tipo='egreso'  THEN monto ELSE 0 END), 0)
-               FROM caja_movimientos WHERE fecha BETWEEN ? AND ?""",
+               FROM caja_movimientos
+               WHERE fecha BETWEEN ? AND ? AND """ + sql_no_anulado(),
             (mes_desde, mes_hasta),
         ).fetchone()
         cobrado_mes = row[0]
@@ -30,7 +32,8 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str) -> dict:
 
         # KPI 4: saldo total de caja (histórico)
         saldo_total = conn.execute(
-            "SELECT COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END), 0) FROM caja_movimientos"
+            "SELECT COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END), 0)"
+            f" FROM caja_movimientos WHERE {sql_no_anulado()}"
         ).fetchone()[0]
 
         # Cantidad de facturas emitidas en el mes
@@ -57,7 +60,14 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str) -> dict:
 
         # Últimos 6 movimientos de caja
         rows = conn.execute(
-            "SELECT * FROM caja_movimientos ORDER BY fecha DESC, id DESC LIMIT 6"
+            # 🔑 **Ésta SÍ filtra, y es la única lista que lo hace.** La regla
+            # general es que los números filtran y las listas no —para poder
+            # mostrar el anulado con su marca—, pero eso vale donde la pantalla
+            # PUEDE marcarlo. El tablero muestra seis movimientos de un vistazo,
+            # sin estado ni columnas: uno anulado ahí se lee como actividad que
+            # quedó, y no quedó.
+            "SELECT * FROM caja_movimientos"
+            f" WHERE {sql_no_anulado()} ORDER BY fecha DESC, id DESC LIMIT 6"
         ).fetchall()
         ultimos_movimientos = [dict(r) for r in rows]
 
