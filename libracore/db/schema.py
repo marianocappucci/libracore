@@ -123,7 +123,8 @@ def init_core_schema(conn: Conexion):
             referencia  TEXT DEFAULT '',
             factura_id  INTEGER,
             created_at  TEXT DEFAULT (datetime('now')),
-            turno_id    INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL
+            turno_id    INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL,
+            anulado     INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS mp_pagos (
@@ -710,6 +711,11 @@ def init_core_schema(conn: Conexion):
         conn.execute("ALTER TABLE caja_movimientos ADD COLUMN caja_id INTEGER REFERENCES cajas(id) ON DELETE SET NULL")
     if cm_cols and "medio_pago" not in cm_cols:
         conn.execute("ALTER TABLE caja_movimientos ADD COLUMN medio_pago TEXT DEFAULT ''")
+    # Las filas que ya estaban nacen como NO anuladas, que es lo que eran.
+    if cm_cols and "anulado" not in cm_cols:
+        conn.execute(
+            "ALTER TABLE caja_movimientos ADD COLUMN anulado INTEGER NOT NULL DEFAULT 0"
+        )
     # El arqueo se cuenta sobre la caja, no sobre las ventas: con `turno_id`
     # el resumen de un turno sale de `caja_movimientos` directo.
     # Contalibra/Restolibra lo derivan hoy de `ventas.turno_id`, que solo
