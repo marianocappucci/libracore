@@ -343,6 +343,7 @@ def build_comprobantes_router(
     solo_admin: Callable[..., Any],
     prefix: str = "/api/facturas",
     al_emitir: Callable[[int, dict, dict], None] | None = None,
+    registrar_cobro: Callable[..., None] | None = None,
     donde_configurar_smtp: str = "Configuración → Email",
 ) -> APIRouter:
     """Los doce endpoints de comprobantes, con lo del producto inyectado.
@@ -351,6 +352,20 @@ def build_comprobantes_router(
     —hace falta para el `usuario_id` que queda en cada comprobante, que es la
     trazabilidad de quién le facturó qué a quién—. `solo_admin` gatea las tres
     rutas que no son de mostrador: borrar, nota de crédito y nota de débito.
+
+    `registrar_cobro` **reemplaza** —no envuelve— la escritura del cobro. Se
+    llama con `(factura, pagos, fecha=..., caja_id=..., usuario=...)` y lo que
+    levante sale tal cual: un producto puede devolver un 409 si no hay caja
+    abierta. Por omisión se usa `libracore.cobros.registrar_cobro_factura`, que
+    es lo que hacen Contalibra y Restolibra.
+
+    🔑 **Existe por LibraClub, y el motivo no es cosmético.** Ese producto lleva
+    la caja **por turno** (`turnos_caja`, con su arqueo al cerrar) y el default
+    escribe el movimiento **sin `turno_id`**: la plata entraba y ningún cierre la
+    contaba — que es exactamente lo que una caja por turno viene a evitar. La
+    alternativa era que el producto tapara la ruta del factory con una propia,
+    y dos rutas con el mismo path resueltas por orden de registro es peor que
+    un parámetro.
     """
     router = APIRouter(prefix=prefix, tags=["facturas"])
     admin = [Depends(solo_admin)]
@@ -617,11 +632,21 @@ def build_comprobantes_router(
         # acreditación en cuenta corriente si el comprobante era a crédito, y el
         # rechazo de "cuenta corriente" como medio de cobro. Estaba duplicada
         # byte a byte, que es como los dos productos terminaron con el mismo bug.
+        #
+        # Un producto con caja por turno reemplaza esta escritura entera —ver
+        # `registrar_cobro` en el docstring del factory—, porque el default no
+        # sabe de turnos y dejaría la plata fuera del arqueo.
         try:
-            registrar_cobro_factura(
-                factura, payload.pagos, fecha=payload.fecha or None,
-                caja_id=payload.caja_id, usuario_id=usuario["id"],
-            )
+            if registrar_cobro is not None:
+                registrar_cobro(
+                    factura, payload.pagos, fecha=payload.fecha or None,
+                    caja_id=payload.caja_id, usuario=usuario,
+                )
+            else:
+                registrar_cobro_factura(
+                    factura, payload.pagos, fecha=payload.fecha or None,
+                    caja_id=payload.caja_id, usuario_id=usuario["id"],
+                )
         except MedioNoEsDeCobro as exc:
             raise HTTPException(400, str(exc)) from exc
         return _detalle(db_facturas.get_factura(factura_id))
