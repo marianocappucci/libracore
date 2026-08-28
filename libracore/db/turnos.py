@@ -9,13 +9,20 @@ import contextlib
 from libracore.db.core import Conexion, _ar_now, get_connection
 
 
-def create_turno(usuario_id: int, monto_inicial: float, notas: str = "") -> int:
+def create_turno(usuario_id: int, monto_inicial: float, notas: str = "",
+                 caja_id: int | None = None) -> int:
+    """Abre el turno. `caja_id` dice **sobre qué mostrador**.
+
+    🔑 Opcional a propósito: los productos que no tienen cajas múltiples abren el
+    turno suelto, como siempre. El que sí las tiene guarda la caja acá y no en
+    cada movimiento, para que el arqueo del turno sea el de ESE mostrador.
+    """
     apertura = _ar_now()
     with get_connection() as conn:
         cur = conn.execute(
-            """INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial, notas)
-               VALUES (?,?,?,?)""",
-            (usuario_id, apertura, monto_inicial, notas),
+            """INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial, notas, caja_id)
+               VALUES (?,?,?,?,?)""",
+            (usuario_id, apertura, monto_inicial, notas, caja_id),
         )
         return cur.lastrowid
 
