@@ -140,10 +140,11 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
-        # 368 desde el 2026-08-28, cuando entró `cajas.sucursal_id` (era 367).
+        # 369 desde el 2026-08-28, cuando entró `caja_movimientos.anulado` (era
+        # 368, que venía de `cajas.sucursal_id`, que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (369)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (370)"}
     finally:
         conn.close()
         _liberar()
