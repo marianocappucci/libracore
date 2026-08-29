@@ -17,6 +17,17 @@ if TYPE_CHECKING:
 #: no puede aparecer en SQL escrito a mano, para que nada lo confunda con texto.
 _MARCA = "\x00"
 
+#: Los modificadores de `datetime('now', ...)` / `date('now', ...)` que el
+#: adaptador sabe traducir: los que tienen forma de intervalo (`-3 hours`,
+#: `+15 minutes`). Se compilan aca y no adentro de `_paramstyle`, que corre
+#: en cada consulta.
+_MODIFICADOR_DATETIME = re.compile(
+    r"\bdatetime\('now'\s*,\s*'([+-]?\d+\s+\w+)'\s*\)", re.IGNORECASE
+)
+_MODIFICADOR_DATE = re.compile(
+    r"\bdate\('now'\s*,\s*'([+-]?\d+\s+\w+)'\s*\)", re.IGNORECASE
+)
+
 _INSERT_RE = re.compile(r"^\s*INSERT\s+INTO\s+", re.IGNORECASE)
 _INSERT_IGNORE_RE = re.compile(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\s+", re.IGNORECASE)
 _TABLE_INFO_RE = re.compile(r"^\s*PRAGMA\s+table_info\s*\(\s*([\w]+)\s*\)\s*;?\s*$", re.IGNORECASE)
@@ -215,6 +226,26 @@ def _paramstyle(sql: str) -> str:
         f"to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', {_FORMATO})",
         sql,
         flags=re.IGNORECASE,
+    )
+    # `datetime('now', '-3 hours')` es el "ahora" en hora de Argentina, y es
+    # lo que estampan los DEFAULT de `schema.py` (ver `AHORA_AR` alla). Sale del
+    # MISMO instante UTC que la traduccion de arriba y no de `LOCALTIMESTAMP`:
+    # asi el valor no depende de la zona de la sesion del servidor, que se fija
+    # en el `initdb` y que `TZ` no mueve.
+    #
+    # Solo se traduce el modificador con forma de intervalo (`+-N unidad`), que
+    # es el que PostgreSQL entiende con la misma sintaxis. Cualquier otro
+    # (`'start of month'`, `'weekday 0'`) se deja pasar tal cual para que falle
+    # en el motor con su nombre a la vista, igual que en `_traducir_strftime`.
+    sql = _MODIFICADOR_DATETIME.sub(
+        lambda m: (f"to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC'"
+                   f" + interval '{m.group(1)}', {_FORMATO})"),
+        sql,
+    )
+    sql = _MODIFICADOR_DATE.sub(
+        lambda m: (f"to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'"
+                   f" + interval '{m.group(1)}')::date, 'YYYY-MM-DD')"),
+        sql,
     )
     # `date('now')` devuelve TEXTO en SQLite, y las fechas de este motor se
     # guardan como TEXT ISO ('YYYY-MM-DD'), así que las comparaciones son

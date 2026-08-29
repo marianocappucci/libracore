@@ -6,12 +6,12 @@ arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
 arca_config|certificado_path|TEXT|NN|
 arca_config|clave_path|TEXT|NN|
-arca_config|created_at|TEXT||datetime('now')
+arca_config|created_at|TEXT||datetime('now','-3 hours')
 arca_config|cuit|TEXT|NN|
 arca_config|empresa|TEXT|NN|
 arca_config|id|INTEGER||
 arca_config|punto_venta|INTEGER|NN|
-arca_config|updated_at|TEXT||datetime('now')
+arca_config|updated_at|TEXT||datetime('now','-3 hours')
 auth_log|detalle|TEXT||
 auth_log|evento|TEXT|NN|
 auth_log|id|INTEGER||
@@ -21,7 +21,7 @@ auth_log|username|TEXT|NN|
 caja_movimientos|anulado|INTEGER|NN|0
 caja_movimientos|caja_id|INTEGER||
 caja_movimientos|concepto|TEXT|NN|
-caja_movimientos|created_at|TEXT||datetime('now')
+caja_movimientos|created_at|TEXT||datetime('now','-3 hours')
 caja_movimientos|factura_id|INTEGER||
 caja_movimientos|fecha|TEXT|NN|
 caja_movimientos|id|INTEGER||
@@ -32,7 +32,7 @@ caja_movimientos|tipo|TEXT|NN|
 caja_movimientos|turno_id|INTEGER||
 caja_movimientos|usuario_id|INTEGER||
 cajas|activo|INTEGER|NN|1
-cajas|created_at|TEXT||datetime('now')
+cajas|created_at|TEXT||datetime('now','-3 hours')
 cajas|descripcion|TEXT||''
 cajas|es_default|INTEGER|NN|0
 cajas|id|INTEGER||
@@ -45,7 +45,7 @@ categorias_producto|id|INTEGER||
 categorias_producto|nombre|TEXT|NN|
 cc_debitos|cliente_id|INTEGER|NN|
 cc_debitos|concepto|TEXT||''
-cc_debitos|created_at|TEXT||datetime('now')
+cc_debitos|created_at|TEXT||datetime('now','-3 hours')
 cc_debitos|fecha|TEXT|NN|
 cc_debitos|id|INTEGER||
 cc_debitos|monto|REAL|NN|
@@ -54,7 +54,7 @@ cc_debitos|usuario_id|INTEGER||
 cc_pagos|caja_id|INTEGER||
 cc_pagos|cliente_id|INTEGER|NN|
 cc_pagos|concepto|TEXT||''
-cc_pagos|created_at|TEXT||datetime('now')
+cc_pagos|created_at|TEXT||datetime('now','-3 hours')
 cc_pagos|fecha|TEXT|NN|
 cc_pagos|id|INTEGER||
 cc_pagos|medio_pago|TEXT||'efectivo'
@@ -63,7 +63,7 @@ cc_pagos|referencia|TEXT||''
 cc_pagos|usuario_id|INTEGER||
 cc_resumenes_enviados|automatico|INTEGER|NN|1
 cc_resumenes_enviados|cliente_id|INTEGER|NN|
-cc_resumenes_enviados|created_at|TEXT||datetime('now')
+cc_resumenes_enviados|created_at|TEXT||datetime('now','-3 hours')
 cc_resumenes_enviados|detalle|TEXT||''
 cc_resumenes_enviados|email|TEXT||''
 cc_resumenes_enviados|estado|TEXT|NN|'ok'
@@ -78,7 +78,7 @@ clients|auto_facturar|INTEGER|NN|0
 clients|cc_resumen_auto|INTEGER|NN|0
 clients|cc_resumen_frecuencia|TEXT|NN|'mensual'
 clients|cc_resumen_ultimo_envio|TEXT||''
-clients|created_at|TEXT||datetime('now')
+clients|created_at|TEXT||datetime('now','-3 hours')
 clients|cuit_dni|TEXT||
 clients|email|TEXT||
 clients|external_ref|TEXT||
@@ -92,7 +92,7 @@ comprobantes_pendientes|cliente_id|INTEGER||
 comprobantes_pendientes|cliente_razon|TEXT|NN|
 comprobantes_pendientes|concepto|TEXT||''
 comprobantes_pendientes|condicion_venta|TEXT||''
-comprobantes_pendientes|created_at|TEXT||datetime('now')
+comprobantes_pendientes|created_at|TEXT||datetime('now','-3 hours')
 comprobantes_pendientes|estado|TEXT|NN|'pendiente'
 comprobantes_pendientes|factura_id|INTEGER||
 comprobantes_pendientes|fecha_sugerida|TEXT||''
@@ -111,7 +111,7 @@ comprobantes_pendientes|resuelto_por|TEXT||''
 comprobantes_pendientes|total|REAL|NN|0
 cuentas_tesoreria|activa|INTEGER|NN|1
 cuentas_tesoreria|banco|TEXT||''
-cuentas_tesoreria|created_at|TEXT||datetime('now')
+cuentas_tesoreria|created_at|TEXT||datetime('now','-3 hours')
 cuentas_tesoreria|descripcion|TEXT||''
 cuentas_tesoreria|id|INTEGER||
 cuentas_tesoreria|nombre|TEXT|NN|
@@ -120,13 +120,13 @@ cuentas_tesoreria|orden|INTEGER|NN|0
 cuentas_tesoreria|saldo_inicial|REAL|NN|0
 cuentas_tesoreria|tipo|TEXT|NN|'banco'
 depositos|activo|INTEGER|NN|1
-depositos|created_at|TEXT||datetime('now')
+depositos|created_at|TEXT||datetime('now','-3 hours')
 depositos|descripcion|TEXT||''
 depositos|es_default|INTEGER|NN|0
 depositos|id|INTEGER||
 depositos|nombre|TEXT|NN|
 egresos_pagos|caja_id|INTEGER||
-egresos_pagos|created_at|TEXT||datetime('now')
+egresos_pagos|created_at|TEXT||datetime('now','-3 hours')
 egresos_pagos|egreso_id|INTEGER|NN|
 egresos_pagos|fecha|TEXT|NN|
 egresos_pagos|id|INTEGER||
@@ -136,7 +136,7 @@ egresos_pagos|referencia|TEXT||''
 egresos_pagos|usuario_id|INTEGER||
 egresos|categoria|TEXT||''
 egresos|concepto|TEXT|NN|
-egresos|created_at|TEXT||datetime('now')
+egresos|created_at|TEXT||datetime('now','-3 hours')
 egresos|estado|TEXT|NN|'pendiente'
 egresos|fecha|TEXT|NN|
 egresos|id|INTEGER||
@@ -152,7 +152,7 @@ egresos|total|REAL|NN|
 egresos|usuario_id|INTEGER||
 facturacion_alias|activo|INTEGER|NN|1
 facturacion_alias|cliente_id|INTEGER|NN|
-facturacion_alias|created_at|TEXT||datetime('now')
+facturacion_alias|created_at|TEXT||datetime('now','-3 hours')
 facturacion_alias|id|INTEGER||
 facturacion_alias|tipo|TEXT|NN|
 facturacion_alias|valor|TEXT|NN|
@@ -167,7 +167,7 @@ facturas|cliente_iva_cond|INTEGER||
 facturas|cliente_razon|TEXT||
 facturas|concepto|INTEGER|NN|1
 facturas|condicion_venta|TEXT||''
-facturas|created_at|TEXT||datetime('now')
+facturas|created_at|TEXT||datetime('now','-3 hours')
 facturas|fch_serv_desde|TEXT||''
 facturas|fch_serv_hasta|TEXT||''
 facturas|fch_vto_pago|TEXT||''
@@ -187,7 +187,7 @@ lista_precio_items|lista_id|INTEGER|NN|
 lista_precio_items|precio|REAL|NN|0
 lista_precio_items|producto_id|INTEGER|NN|
 listas_precio|activa|INTEGER|NN|1
-listas_precio|created_at|TEXT||datetime('now')
+listas_precio|created_at|TEXT||datetime('now','-3 hours')
 listas_precio|descripcion|TEXT||''
 listas_precio|es_default|INTEGER|NN|0
 listas_precio|id|INTEGER||
@@ -197,7 +197,7 @@ modulos|id|INTEGER||
 modulos|modulo|TEXT|NN|
 modulos|plan|TEXT|NN|'estandar'
 movimientos_stock|cantidad|REAL|NN|
-movimientos_stock|created_at|TEXT||datetime('now')
+movimientos_stock|created_at|TEXT||datetime('now','-3 hours')
 movimientos_stock|deposito_id|INTEGER||
 movimientos_stock|fecha|TEXT|NN|
 movimientos_stock|id|INTEGER||
@@ -207,7 +207,7 @@ movimientos_stock|tipo|TEXT|NN|
 movimientos_stock|usuario_id|INTEGER||
 movimientos_stock|venta_id|INTEGER||
 movimientos_tesoreria|concepto|TEXT|NN|''
-movimientos_tesoreria|created_at|TEXT||datetime('now')
+movimientos_tesoreria|created_at|TEXT||datetime('now','-3 hours')
 movimientos_tesoreria|cuenta_destino_id|INTEGER||
 movimientos_tesoreria|cuenta_id|INTEGER|NN|
 movimientos_tesoreria|fecha|TEXT|NN|
@@ -217,7 +217,7 @@ movimientos_tesoreria|referencia|TEXT||''
 movimientos_tesoreria|tipo|TEXT|NN|
 movimientos_tesoreria|transferencia_id|INTEGER||
 movimientos_tesoreria|usuario_id|INTEGER||
-mp_movimientos|created_at|TEXT||datetime('now')
+mp_movimientos|created_at|TEXT||datetime('now','-3 hours')
 mp_movimientos|descripcion|TEXT||
 mp_movimientos|estado_factura|TEXT||'pendiente'
 mp_movimientos|factura_id|INTEGER||
@@ -233,7 +233,7 @@ mp_movimientos|payer_id_number|TEXT||
 mp_movimientos|payer_id_type|TEXT||
 mp_movimientos|payer_name|TEXT||
 mp_movimientos|tipo|TEXT||
-mp_pagos|created_at|TEXT||datetime('now')
+mp_pagos|created_at|TEXT||datetime('now','-3 hours')
 mp_pagos|descripcion_mp|TEXT||NULL
 mp_pagos|estado_factura|TEXT||NULL
 mp_pagos|factura_id|INTEGER||
@@ -253,7 +253,7 @@ presupuestos|client_email|TEXT||
 presupuestos|client_id|INTEGER||
 presupuestos|client_name|TEXT|NN|
 presupuestos|client_phone|TEXT||
-presupuestos|created_at|TEXT||datetime('now')
+presupuestos|created_at|TEXT||datetime('now','-3 hours')
 presupuestos|date|TEXT|NN|
 presupuestos|id|INTEGER||
 presupuestos|items|TEXT|NN|
@@ -271,7 +271,7 @@ presupuestos|valid_until|TEXT|NN|
 productos|activo|INTEGER|NN|1
 productos|categoria|TEXT||''
 productos|codigo|TEXT||
-productos|created_at|TEXT||datetime('now')
+productos|created_at|TEXT||datetime('now','-3 hours')
 productos|descripcion|TEXT||''
 productos|estacion|TEXT||''
 productos|id|INTEGER||
@@ -283,7 +283,7 @@ productos|tipo|TEXT|NN|'producto'
 productos|unidad|TEXT|NN|'u'
 productos|vendible|INTEGER|NN|1
 proveedores|address|TEXT||''
-proveedores|created_at|TEXT||datetime('now')
+proveedores|created_at|TEXT||datetime('now','-3 hours')
 proveedores|cuit_dni|TEXT||''
 proveedores|email|TEXT||''
 proveedores|id|INTEGER||
@@ -298,7 +298,7 @@ recibos|cliente_domicilio|TEXT||''
 recibos|cliente_id|INTEGER||
 recibos|cliente_razon|TEXT|NN|
 recibos|concepto|TEXT||''
-recibos|created_at|TEXT||datetime('now')
+recibos|created_at|TEXT||datetime('now','-3 hours')
 recibos|fecha|TEXT|NN|
 recibos|id|INTEGER||
 recibos|numero|INTEGER|NN|
@@ -315,7 +315,7 @@ remitos|client_email|TEXT||
 remitos|client_id|INTEGER||
 remitos|client_name|TEXT|NN|
 remitos|client_phone|TEXT||
-remitos|created_at|TEXT||datetime('now')
+remitos|created_at|TEXT||datetime('now','-3 hours')
 remitos|date|TEXT|NN|
 remitos|id|INTEGER||
 remitos|items|TEXT|NN|
@@ -330,7 +330,7 @@ remitos|usuario_id|INTEGER||
 turnos_caja|apertura|TEXT|NN|
 turnos_caja|caja_id|INTEGER||
 turnos_caja|cierre|TEXT||
-turnos_caja|created_at|TEXT||datetime('now')
+turnos_caja|created_at|TEXT||datetime('now','-3 hours')
 turnos_caja|estado|TEXT|NN|'abierto'
 turnos_caja|id|INTEGER||
 turnos_caja|monto_declarado_cierre|REAL||
@@ -339,14 +339,14 @@ turnos_caja|monto_inicial|REAL|NN|0
 turnos_caja|notas|TEXT||''
 turnos_caja|usuario_id|INTEGER|NN|
 usuarios|activo|BOOLEAN|NN|TRUE
-usuarios|created_at|TEXT||datetime('now')
+usuarios|created_at|TEXT||datetime('now','-3 hours')
 usuarios|email|TEXT||''
 usuarios|id|INTEGER||
 usuarios|nombre|TEXT|NN|
 usuarios|password_hash|TEXT|NN|
 usuarios|role|TEXT|NN|'operador'
 usuarios|username|TEXT|NN|
-ventas_pagos|created_at|TEXT||datetime('now')
+ventas_pagos|created_at|TEXT||datetime('now','-3 hours')
 ventas_pagos|id|INTEGER||
 ventas_pagos|medio|TEXT|NN|
 ventas_pagos|monto|REAL|NN|
@@ -354,7 +354,7 @@ ventas_pagos|referencia|TEXT||''
 ventas_pagos|venta_id|INTEGER|NN|
 ventas|cliente_id|INTEGER||
 ventas|cliente_nombre|TEXT||''
-ventas|created_at|TEXT||datetime('now')
+ventas|created_at|TEXT||datetime('now','-3 hours')
 ventas|descuento|REAL|NN|0
 ventas|estado|TEXT|NN|'cobrada'
 ventas|factura_id|INTEGER||

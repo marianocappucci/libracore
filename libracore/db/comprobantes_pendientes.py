@@ -245,7 +245,7 @@ def _resolver(comprobante_id, estado, usuario="", factura_id=None, motivo=""):
         cur = conn.execute(
             "UPDATE comprobantes_pendientes SET estado=?, factura_id=?, "
             "motivo_descarte=?, resuelto_por=?, "
-            "resuelto_at=datetime('now') WHERE id=? AND estado=?",
+            "resuelto_at=datetime('now','-3 hours') WHERE id=? AND estado=?",
             (estado, factura_id, motivo, usuario, comprobante_id,
              ESTADO_PENDIENTE),
         )

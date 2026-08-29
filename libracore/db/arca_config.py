@@ -52,7 +52,7 @@ def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None
         conn.execute(
             """UPDATE arca_config
                SET cuit=?, punto_venta=?, clave_path=?, certificado_path=?,
-                   ambiente=?, alias=?, updated_at=datetime('now')
+                   ambiente=?, alias=?, updated_at=datetime('now','-3 hours')
                WHERE empresa=?""",
             (
                 cuit if cuit is not None else config["cuit"],

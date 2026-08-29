@@ -23,6 +23,29 @@ import sqlite3
 from .core import Conexion, is_postgres
 
 
+#: El "ahora" que estampan los `created_at`/`updated_at` de este schema.
+#:
+#: 🔴 **Es `-3 hours`, no `'localtime'`, y no es un capricho.** `datetime('now')`
+#: de SQLite es UTC, y el adaptador de PostgreSQL lo traduce a UTC a propósito
+#: para que las dos bases guarden el mismo texto. El resultado era que **todas**
+#: las columnas con este DEFAULT quedaban 3 h adelantadas: un comprobante creado
+#: a las 22:00 de Argentina se guardaba con fecha del día siguiente. Se midió en
+#: la instancia `compulibra` de Contalibra el 2026-08-29 — las 112 filas de
+#: `caja_movimientos` y las 81 de `facturas`, no sólo las del cron nocturno.
+#:
+#: `'localtime'` (que es lo que usa `auth_log.ts`) arregla el reloj **si** el
+#: entorno está bien puesto: en SQLite lee la TZ del proceso y en PostgreSQL la
+#: de la sesión del servidor. Son dos perillas distintas, las dos fáciles de
+#: perder — la del servidor se escribe en el `initdb` y `TZ` no la mueve
+#: (2026-08-23). El offset fijo no depende de ninguna de las dos y es
+#: exactamente el mismo que `_ar_now()` (`timezone(timedelta(hours=-3))`):
+#: Argentina no aplica DST desde 2009.
+#:
+#: La forma la vigila `tests/db/test_created_at_en_hora_de_argentina.py`: si
+#: una tabla nueva nace con el DEFAULT viejo, la suite lo dice.
+AHORA_AR = "datetime('now','-3 hours')"
+
+
 def init_core_schema(conn: Conexion):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS clients (
@@ -33,7 +56,7 @@ def init_core_schema(conn: Conexion):
             email         TEXT,
             phone         TEXT,
             iva_condition TEXT DEFAULT '',
-            created_at    TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS remitos (
@@ -53,7 +76,7 @@ def init_core_schema(conn: Conexion):
             total          REAL NOT NULL,
             observations   TEXT,
             pdf_path       TEXT,
-            created_at     TEXT DEFAULT (datetime('now'))
+            created_at     TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS presupuestos (
@@ -76,7 +99,7 @@ def init_core_schema(conn: Conexion):
             observations    TEXT,
             pdf_path        TEXT,
             remito_id       INTEGER REFERENCES remitos(id),
-            created_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS facturas (
@@ -97,7 +120,7 @@ def init_core_schema(conn: Conexion):
             cae_vto         TEXT,
             observaciones   TEXT,
             pdf_path        TEXT,
-            created_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS cajas (
@@ -111,7 +134,7 @@ def init_core_schema(conn: Conexion):
             -- sucursales viven en la base del PRODUCTO. Ver la nota de las
             -- migraciones defensivas, más abajo.
             sucursal_id INTEGER,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS caja_movimientos (
@@ -122,7 +145,7 @@ def init_core_schema(conn: Conexion):
             monto       REAL NOT NULL,
             referencia  TEXT DEFAULT '',
             factura_id  INTEGER,
-            created_at  TEXT DEFAULT (datetime('now')),
+            created_at  TEXT DEFAULT (datetime('now','-3 hours')),
             turno_id    INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL,
             anulado     INTEGER NOT NULL DEFAULT 0
         );
@@ -135,7 +158,7 @@ def init_core_schema(conn: Conexion):
             payer_email     TEXT,
             payer_name      TEXT,
             factura_id      INTEGER,
-            created_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS mp_movimientos (
@@ -154,7 +177,7 @@ def init_core_schema(conn: Conexion):
             payer_id_number TEXT,
             estado_factura  TEXT DEFAULT 'pendiente',
             factura_id      INTEGER,
-            created_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS facturacion_alias (
@@ -163,7 +186,7 @@ def init_core_schema(conn: Conexion):
             valor       TEXT NOT NULL,
             cliente_id  INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
             activo      INTEGER NOT NULL DEFAULT 1,
-            created_at  TEXT DEFAULT (datetime('now')),
+            created_at  TEXT DEFAULT (datetime('now','-3 hours')),
             UNIQUE (tipo, valor)
         );
 
@@ -177,8 +200,8 @@ def init_core_schema(conn: Conexion):
             ambiente        TEXT DEFAULT 'homologacion',
             activo          INTEGER DEFAULT 1,
             alias           TEXT,
-            created_at      TEXT DEFAULT (datetime('now')),
-            updated_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours')),
+            updated_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -215,7 +238,7 @@ def init_core_schema(conn: Conexion):
             -- declarado. Es inocuo -- SQLite no aplica el tipo, y libraauth ya
             -- les escribe True/False hoy -- y no vale un rebuild de tabla.
             activo        BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at    TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS modulos (
@@ -235,7 +258,7 @@ def init_core_schema(conn: Conexion):
             unidad       TEXT NOT NULL DEFAULT 'u',
             categoria    TEXT DEFAULT '',
             activo       INTEGER NOT NULL DEFAULT 1,
-            created_at   TEXT DEFAULT (datetime('now')),
+            created_at   TEXT DEFAULT (datetime('now','-3 hours')),
             stock_minimo REAL NOT NULL DEFAULT 0,
             estacion     TEXT DEFAULT '',
             vendible     INTEGER NOT NULL DEFAULT 1,
@@ -248,7 +271,7 @@ def init_core_schema(conn: Conexion):
             descripcion TEXT DEFAULT '',
             activo      INTEGER NOT NULL DEFAULT 1,
             es_default  INTEGER NOT NULL DEFAULT 0,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS categorias_producto (
@@ -269,7 +292,7 @@ def init_core_schema(conn: Conexion):
             phone         TEXT DEFAULT '',
             address       TEXT DEFAULT '',
             iva_condition TEXT DEFAULT '',
-            created_at    TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS egresos (
@@ -288,7 +311,7 @@ def init_core_schema(conn: Conexion):
             estado           TEXT NOT NULL DEFAULT 'pendiente',
             observaciones    TEXT DEFAULT '',
             usuario_id       INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at       TEXT DEFAULT (datetime('now'))
+            created_at       TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS egresos_pagos (
@@ -300,7 +323,7 @@ def init_core_schema(conn: Conexion):
             medio_pago  TEXT DEFAULT '',
             referencia  TEXT DEFAULT '',
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS turnos_caja (
@@ -313,7 +336,7 @@ def init_core_schema(conn: Conexion):
             monto_esperado_cierre  REAL,
             estado                 TEXT NOT NULL DEFAULT 'abierto',
             notas                  TEXT DEFAULT '',
-            created_at             TEXT DEFAULT (datetime('now'))
+            created_at             TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS movimientos_stock (
@@ -325,7 +348,7 @@ def init_core_schema(conn: Conexion):
             venta_id    INTEGER REFERENCES ventas(id) ON DELETE SET NULL,
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
             fecha       TEXT NOT NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS ventas (
@@ -343,7 +366,7 @@ def init_core_schema(conn: Conexion):
             remito_id       INTEGER REFERENCES remitos(id) ON DELETE SET NULL,
             usuario_id      INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
             observaciones   TEXT DEFAULT '',
-            created_at      TEXT DEFAULT (datetime('now')),
+            created_at      TEXT DEFAULT (datetime('now','-3 hours')),
             turno_id        INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL,
             mp_order_id     TEXT DEFAULT '',
             mp_payment_id   TEXT DEFAULT ''
@@ -355,7 +378,7 @@ def init_core_schema(conn: Conexion):
             medio      TEXT NOT NULL,
             monto      REAL NOT NULL,
             referencia TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now'))
+            created_at TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS cuentas_tesoreria (
@@ -368,7 +391,7 @@ def init_core_schema(conn: Conexion):
             saldo_inicial REAL NOT NULL DEFAULT 0,
             activa        INTEGER NOT NULL DEFAULT 1,
             orden         INTEGER NOT NULL DEFAULT 0,
-            created_at    TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS movimientos_tesoreria (
@@ -382,7 +405,7 @@ def init_core_schema(conn: Conexion):
             cuenta_destino_id INTEGER REFERENCES cuentas_tesoreria(id) ON DELETE SET NULL,
             transferencia_id  INTEGER,
             usuario_id        INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at        TEXT DEFAULT (datetime('now'))
+            created_at        TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS auth_log (
@@ -400,7 +423,7 @@ def init_core_schema(conn: Conexion):
             descripcion TEXT DEFAULT '',
             es_default  INTEGER NOT NULL DEFAULT 0,
             activa      INTEGER NOT NULL DEFAULT 1,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS lista_precio_items (
@@ -420,7 +443,7 @@ def init_core_schema(conn: Conexion):
             medio_pago  TEXT DEFAULT 'efectivo',
             caja_id     INTEGER REFERENCES cajas(id) ON DELETE SET NULL,
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         -- Deuda que NO nace de una venta de esta base. Existe porque
@@ -437,7 +460,7 @@ def init_core_schema(conn: Conexion):
             concepto    TEXT DEFAULT '',
             referencia  TEXT DEFAULT '',
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS cc_resumenes_enviados (
@@ -451,7 +474,7 @@ def init_core_schema(conn: Conexion):
             estado       TEXT NOT NULL DEFAULT 'ok',
             detalle      TEXT DEFAULT '',
             automatico   INTEGER NOT NULL DEFAULT 1,
-            created_at   TEXT DEFAULT (datetime('now'))
+            created_at   TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         -- El comprobante de que se recibió plata. Hasta acá el recibo era un
@@ -492,7 +515,7 @@ def init_core_schema(conn: Conexion):
             anulado_motivo    TEXT DEFAULT '',
             anulado_at        TEXT DEFAULT '',
             usuario_id        INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at        TEXT DEFAULT (datetime('now'))
+            created_at        TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         -- La bandeja de lo que **otro producto de la familia** dejó para
@@ -544,7 +567,7 @@ def init_core_schema(conn: Conexion):
             motivo_descarte   TEXT DEFAULT '',
             resuelto_at       TEXT DEFAULT '',
             resuelto_por      TEXT DEFAULT '',
-            created_at        TEXT DEFAULT (datetime('now'))
+            created_at        TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         -- 🔴 **La constraint que hace seguro el reenvío.** El modo de falla
