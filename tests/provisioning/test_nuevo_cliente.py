@@ -1399,3 +1399,202 @@ def test_el_control_de_que_el_alta_sale_bien_con_el_mismo_doble(
     info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Demo", slug="demo",
                             setup_npm=False)
     assert info["container"] == "testprod-demo"
+
+
+# ── la casilla de correo saliente de cada instancia ──────────────────────────
+
+
+@pytest.fixture
+def correo(monkeypatch):
+    """Un servidor de correo configurado en el entorno del proceso que da de alta.
+
+    No hace falta doble de `subprocess`: `fake_docker` ya reemplazó
+    `subprocess.run` —que es el MISMO objeto de módulo que usa
+    `mail_cuentas`— y contesta éxito. Los ssh salen por ahí y quedan
+    registrados con el resto de las órdenes, que es lo que permite asertar
+    sobre la orden real y no sobre un doble propio.
+    """
+    monkeypatch.setenv("LIBRA_MAIL_ADMIN_SSH", "libra-mail@mail.testprod.com.ar")
+    monkeypatch.setenv("LIBRA_MAIL_DOMINIO", "testprod.com.ar")
+
+
+@pytest.fixture
+def correo_caido(correo, fake_docker, monkeypatch):
+    """El servidor de correo rechaza todo; el resto de las órdenes siguen bien.
+
+    Filtra por `ssh` en vez de reemplazar `subprocess.run` entero: si fallaran
+    también los `docker`, el alta moriría por otro motivo y el test estaría
+    midiendo cualquier cosa menos lo que dice su nombre.
+    """
+    original = nc.subprocess.run
+
+    def run(args, **kwargs):
+        if args and args[0] == "ssh":
+            return subprocess.CompletedProcess(
+                args, 255, stdout="", stderr="ssh: connect to host: Connection refused"
+            )
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(nc.subprocess, "run", run)
+
+
+def _env_de_la_app(cfg, slug: str) -> dict:
+    """Las variables de entorno que le quedan al contenedor de la instancia.
+
+    Parsea el compose con YAML en vez de buscar texto: es la única forma de ver
+    lo que le va a llegar de verdad al proceso — un valor mal citado se lee
+    igual de bien en el archivo y llega distinto.
+    """
+    doc = yaml.safe_load((cfg.clientes_dir / slug / "docker-compose.yml").read_text())
+    servicio = next(s for s in doc["services"].values() if "environment" in s)
+    return dict(item.partition("=")[::2] for item in servicio["environment"])
+
+
+def _ordenes_ssh(calls) -> list:
+    return [a for a in calls if a and a[0] == "ssh"]
+
+
+def test_sin_servidor_de_correo_la_instancia_nace_como_antes(cfg, fake_docker, monkeypatch):
+    """🔴 El opt-in por ausencia, que es lo que deja desplegar esto sin tener
+    todavía el servidor de correo. Sin las variables en el entorno, el alta no
+    intenta nada y el compose sale igual que antes de que esto existiera."""
+    monkeypatch.delenv("LIBRA_MAIL_ADMIN_SSH", raising=False)
+    monkeypatch.delenv("LIBRA_MAIL_DOMINIO", raising=False)
+
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                            setup_npm=False)
+
+    assert info["smtp_ok"] is None
+    assert info["smtp_user"] == ""
+    env = _env_de_la_app(cfg, "lagrace")
+    assert not [k for k in env if k.startswith("LIBRAAUTH_SMTP")]
+    assert _ordenes_ssh(fake_docker) == []
+    # Control: el alta hizo lo suyo igual, así que el vacío de arriba no es
+    # "no se creó nada".
+    assert env["ADMIN_USER"] == "admin"
+
+
+def test_el_alta_le_deja_el_correo_configurado_a_la_instancia(cfg, correo, fake_docker):
+    """El caso que motivó todo: hoy ninguna instancia del parque tiene SMTP y
+    `/auth/forgot-password` contesta 503 hasta que alguien lo cargue a mano."""
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                            setup_npm=False)
+
+    assert info["smtp_ok"] is True
+    assert info["smtp_user"] == "lagrace@testprod.com.ar"
+
+    env = _env_de_la_app(cfg, "lagrace")
+    assert env["LIBRAAUTH_SMTP_HOST"] == "mail.testprod.com.ar"
+    assert env["LIBRAAUTH_SMTP_PORT"] == "587"
+    assert env["LIBRAAUTH_SMTP_USER"] == "lagrace@testprod.com.ar"
+    assert env["LIBRAAUTH_SMTP_FROM_EMAIL"] == "lagrace@testprod.com.ar"
+    assert env["LIBRAAUTH_SMTP_FROM_NAME"] == "La Grace"
+    assert env["LIBRAAUTH_SMTP_PASSWORD"]
+
+    # Y la casilla se pidió de verdad, con el verbo y la dirección.
+    (orden,) = _ordenes_ssh(fake_docker)
+    assert orden[-2:] == ["crear", "lagrace@testprod.com.ar"]
+
+
+def test_dos_instancias_no_comparten_la_credencial_de_correo(cfg, correo, fake_docker):
+    """Una credencial por instancia: si una se compromete, sólo puede mandar
+    como ella misma. Con una compartida, podría hacerse pasar por las demás."""
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Uno", slug="uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Dos", slug="dos", setup_npm=False)
+
+    uno = _env_de_la_app(cfg, "uno")
+    dos = _env_de_la_app(cfg, "dos")
+    assert uno["LIBRAAUTH_SMTP_USER"] != dos["LIBRAAUTH_SMTP_USER"]
+    assert uno["LIBRAAUTH_SMTP_PASSWORD"] != dos["LIBRAAUTH_SMTP_PASSWORD"]
+
+
+def test_la_contrasena_del_correo_no_sale_del_compose(cfg, correo, fake_docker):
+    """🔴 Mismo tratamiento que `LIBRA_PANEL_TOKEN`.
+
+    `cliente.json` la lee `load_clients()` y viaja a quien pregunte por la
+    instancia; la respuesta del alta la serializa el backoffice. El único lugar
+    donde esta contraseña tiene que estar es el compose, que es de donde la
+    lee el contenedor.
+    """
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                            setup_npm=False)
+    password = _env_de_la_app(cfg, "lagrace")["LIBRAAUTH_SMTP_PASSWORD"]
+    assert password  # si estuviera vacía, todo lo de abajo pasaría solo
+
+    meta_texto = (cfg.clientes_dir / "lagrace" / "cliente.json").read_text()
+    assert password not in meta_texto
+    assert password not in json.dumps(info)
+
+
+def test_la_contrasena_del_correo_no_sale_por_el_log(cfg, correo, fake_docker):
+    """En el backoffice ese stream termina en la respuesta del alta y en los
+    logs del contenedor."""
+    lineas = []
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                     setup_npm=False, log=lineas.append)
+
+    password = _env_de_la_app(cfg, "lagrace")["LIBRAAUTH_SMTP_PASSWORD"]
+    assert password not in "\n".join(lineas)
+    # Control: el log SÍ dice que la casilla se creó, así que el negativo de
+    # arriba no es "el log salió vacío".
+    assert any("lagrace@testprod.com.ar" in linea for linea in lineas)
+
+
+def test_un_servidor_de_correo_caido_no_aborta_el_alta(cfg, correo_caido, fake_docker):
+    """🔴 Best-effort como NPM: una instancia sin correo es una instancia a la
+    que le falta una pantalla de configuración, y la pantalla existe. Que el
+    alta entera fallara por esto sería peor que el problema."""
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                            setup_npm=False)
+
+    assert info["smtp_ok"] is False
+    assert info["container"] == "testprod-lagrace"
+    assert (cfg.clientes_dir / "lagrace" / "docker-compose.yml").exists()
+    # Sin credencial a medias: o están las seis o no está ninguna.
+    env = _env_de_la_app(cfg, "lagrace")
+    assert not [k for k in env if k.startswith("LIBRAAUTH_SMTP")]
+
+
+def test_un_alta_que_falla_despues_borra_la_casilla(cfg, correo, fake_docker, monkeypatch):
+    """🔴 Sin esto queda una casilla huérfana con credencial viva: el compose
+    que la usaba se borra en el rollback, pero la casilla seguiría pudiendo
+    mandar correo para cualquiera que conserve una copia."""
+    # `_esperar_db_lista` y no `_aplicar_plan_en_contenedor`: el segundo sólo
+    # corre en la rama PostgreSQL y el `cfg` de esta suite es SQLite, así que
+    # inyectar el fallo ahí no rompe nada y el test pasaría por el motivo
+    # equivocado. Este corre siempre, y bien después de crear la casilla.
+    monkeypatch.setattr(
+        nc, "_esperar_db_lista",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("explotó después de la casilla")),
+    )
+
+    with pytest.raises(RuntimeError):
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                         setup_npm=False)
+
+    ordenes = _ordenes_ssh(fake_docker)
+    assert [o[-2:] for o in ordenes] == [
+        ["crear", "lagrace@testprod.com.ar"],
+        ["borrar", "lagrace@testprod.com.ar"],
+    ]
+    # Y el rollback del directorio pasó igual.
+    assert not (cfg.clientes_dir / "lagrace").exists()
+
+
+def test_si_borrar_la_casilla_falla_el_error_que_llega_es_el_del_alta(
+        cfg, correo, fake_docker, monkeypatch):
+    """El rollback de la casilla corre adentro de un `except` que va a
+    re-lanzar el error REAL. Si se le escapara una excepción, reemplazaría al
+    de arriba y nadie sabría por qué falló el alta."""
+    monkeypatch.setattr(
+        nc, "_esperar_db_lista",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("la causa verdadera")),
+    )
+    monkeypatch.setattr(
+        nc.mail_cuentas, "borrar_cuenta",
+        lambda *a, **k: (_ for _ in ()).throw(nc.mail_cuentas.MailError("y encima esto")),
+    )
+
+    with pytest.raises(RuntimeError, match="la causa verdadera"):
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                         setup_npm=False)
