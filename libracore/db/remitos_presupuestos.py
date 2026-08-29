@@ -106,7 +106,7 @@ def auto_vencimiento_presupuestos():
         conn.execute(
             """UPDATE presupuestos SET status='vencido'
                WHERE status IN ('enviado', 'pendiente')
-               AND valid_until < date('now')"""
+               AND valid_until < date('now','-3 hours')"""
         )
 
 
