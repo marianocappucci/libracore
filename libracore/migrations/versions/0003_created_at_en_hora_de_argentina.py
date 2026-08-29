@@ -33,6 +33,12 @@ motor desde el 2026-08-12, con LibraEdge como excepción, que no lleva este
 schema. En SQLite el DEFAULT nuevo llega igual, pero por `init_core_schema()`:
 al crear la tabla, no al migrarla.
 
+⚠️ **No se renderiza offline.** `alembic upgrade --sql` no tiene base del otro
+lado, así que esta revisión no puede preguntar qué columnas son TEXT y no emite
+ningún `SET DEFAULT`: el script queda sin ellos. Es la limitación normal de una
+migración que depende del estado de la base. El deploy de esta familia corre
+`upgrade` en línea.
+
 ⚠️ **Lo que esta revisión NO hace: tocar las filas ya escritas.** Quedan como
 están, 3 h adelantadas, y a partir de acá hay una discontinuidad en cada
 instancia — la misma que dejó el barrido del 2026-08-23 y por el mismo motivo.

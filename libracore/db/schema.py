@@ -121,6 +121,20 @@ def _columnas_de_texto(conexion) -> set[tuple[str, str]]:
         filas = conexion.execute(sa.text(_SQL_COLUMNAS_DE_TEXTO))
     else:
         filas = conexion.execute(_SQL_COLUMNAS_DE_TEXTO).fetchall()
+
+    # 🔴 En modo OFFLINE (`alembic upgrade --sql`, que es como se RENDERIZA la
+    # cadena sin base) el `bind` no ejecuta nada y devuelve `None`. Sin esta
+    # linea la revision explota con *"'NoneType' object is not iterable"* y se
+    # lleva puesto el render entero -- lo encontro `test_alembic.py` de
+    # LibraDesk el 2026-08-29, que renderiza la cadena como parte de su suite.
+    #
+    # Sin columnas que mirar no se emite ningun ALTER: el script renderizado
+    # queda SIN estos `SET DEFAULT`, y eso esta anotado en el docstring de cada
+    # revision. Es la limitacion normal de una migracion que depende del estado
+    # de la base; el deploy de esta familia corre `upgrade` en linea, no `--sql`.
+    if filas is None:
+        return set()
+
     return {(fila[0], fila[1]) for fila in filas}
 
 

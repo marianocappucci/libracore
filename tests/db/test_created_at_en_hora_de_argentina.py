@@ -338,3 +338,34 @@ def test_en_sqlite_no_hay_alters_que_correr(conn_sqlite):
     tabla, no al migrarla.
     """
     assert alters_para_hora_ar(conn_sqlite, [("clients", "created_at")]) == []
+
+
+class _BindOffline:
+    """Lo que Alembic le pasa a una revisión en modo `--sql`.
+
+    Tiene `dialect` —así que el helper lo trata como un bind de SQLAlchemy— pero
+    `execute()` **no ejecuta nada y devuelve `None`**, porque no hay base del
+    otro lado: el modo offline sólo escribe el SQL.
+    """
+
+    class dialect:  # noqa: N801  (imita el atributo de SQLAlchemy)
+        name = "postgresql"
+
+    def execute(self, *_args, **_kwargs):
+        return None
+
+
+def test_el_render_offline_no_explota():
+    """🔴 En `alembic upgrade --sql` el bind devuelve `None`.
+
+    Sin la guarda, el helper reventaba con *"'NoneType' object is not
+    iterable"* y se llevaba puesto el render de la cadena entera. Lo encontró la
+    suite de LibraDesk el 2026-08-29, que renderiza su cadena como parte de los
+    tests — no una base de producción, pero el mismo camino.
+
+    Sin columnas que mirar no se emite ningún ALTER: el script renderizado queda
+    **sin** estos `SET DEFAULT`. Es la limitación normal de una migración que
+    depende del estado de la base, y está anotada en el docstring de cada
+    revisión; el deploy de esta familia corre `upgrade` en línea, no `--sql`.
+    """
+    assert alters_para_hora_ar(_BindOffline(), [("clients", "created_at")]) == []
