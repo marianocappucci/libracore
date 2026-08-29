@@ -265,3 +265,47 @@ def test_la_revision_arregla_una_instancia_que_ya_existia(conn_postgres):
     assert _desfasaje(despues) <= TOLERANCIA, (
         f"despues de migrar guardó {despues!r}; en Argentina son {_ar_now()!r}"
     )
+
+
+def test_la_revision_no_toca_las_columnas_que_no_son_de_texto(conn_postgres):
+    """🔴 El DEFAULT nuevo es texto: ponérselo a una columna `timestamp` corta
+    con *"default expression is of type text"* y **aborta el `upgrade` entero**.
+
+    No es hipotético. LibraDesk llegó al motor desde sus propios modelos de
+    SQLAlchemy y en sus seis bases `depositos`, `proveedores` y `usuarios`
+    tienen `created_at` como `timestamp` — medido el 2026-08-29. Sin la guarda
+    por tipo, esta revisión rompía el deploy de LibraDesk y no el de los demás,
+    que es la clase de rojo que aparece recién en producción.
+
+    Esas columnas además **no necesitan el arreglo**: `CURRENT_TIMESTAMP` sale
+    de la zona de la sesión, y los 21 servidores del VPS están en hora de
+    Argentina desde el 2026-08-24.
+    """
+    conn_postgres.execute(
+        "ALTER TABLE depositos ALTER COLUMN created_at DROP DEFAULT"
+    )
+    conn_postgres.execute(
+        "ALTER TABLE depositos ALTER COLUMN created_at TYPE timestamp "
+        "USING created_at::timestamp"
+    )
+    conn_postgres.execute(
+        "ALTER TABLE depositos ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP"
+    )
+    conn_postgres.commit()
+
+    resultado = _alembic_upgrade_head(_url())
+    assert resultado.returncode == 0, resultado.stderr
+
+    # La de texto se arregló...
+    assert "interval" in _default_de(conn_postgres, "clients", "created_at")
+    # ...y la `timestamp` quedó como estaba, sin romper la corrida.
+    assert _default_de(conn_postgres, "depositos", "created_at") == "CURRENT_TIMESTAMP"
+
+
+def _default_de(conn, tabla: str, columna: str) -> str:
+    fila = conn.execute(
+        "SELECT column_default FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?",
+        (tabla, columna),
+    ).fetchone()
+    return fila[0]

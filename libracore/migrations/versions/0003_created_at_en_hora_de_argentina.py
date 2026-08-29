@@ -101,6 +101,32 @@ def _expresion(sqlite: str) -> str:
     return _paramstyle(f"SELECT {sqlite}").removeprefix("SELECT ")
 
 
+def _columnas_de_texto(bind) -> set[tuple[str, str]]:
+    """Las columnas del esquema actual que son TEXT, por (tabla, columna).
+
+    🔴 **No todas las instancias tienen estas columnas como TEXT, y ahí está el
+    riesgo real de esta revisión.** El DEFAULT nuevo es texto —`to_char(...)`—
+    así que ponérselo a una columna `timestamp` corta con *"default expression
+    is of type text"* y **aborta el `upgrade` entero**.
+
+    No es hipotético: LibraDesk llegó al motor desde sus propios modelos de
+    SQLAlchemy, y en sus seis bases `depositos`, `proveedores` y `usuarios`
+    tienen `created_at` como `timestamp with CURRENT_TIMESTAMP`. Medido el
+    2026-08-29 — y esas columnas **ya estampan hora de Argentina**, porque
+    `CURRENT_TIMESTAMP` sale de la zona de la sesión y los 21 servidores del VPS
+    están en `America/Argentina/Buenos_Aires` desde el 2026-08-24. O sea que
+    saltearlas no deja nada sin arreglar: las que hay que tocar son exactamente
+    las de texto, que son las que traducía el adaptador.
+    """
+    filas = bind.execute(
+        sa.text(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND data_type = 'text'"
+        )
+    )
+    return {(t, c) for t, c in filas}
+
+
 def _aplicar(sqlite_expr: str) -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
@@ -108,17 +134,14 @@ def _aplicar(sqlite_expr: str) -> None:
         # `init_core_schema()`, no por acá.
         return
 
-    inspector = sa.inspect(bind)
-    tablas = set(inspector.get_table_names())
+    # Idempotente y tolerante, igual que `0002`: `alembic upgrade` corre sobre
+    # bases vivas que llegaron acá por caminos distintos, y no todos los
+    # productos tienen las 29 tablas, ni las tienen con la misma forma.
+    de_texto = _columnas_de_texto(bind)
     expresion = _expresion(sqlite_expr)
 
     for tabla, columna in _COLUMNAS:
-        # Idempotente y tolerante, igual que `0002`: `alembic upgrade` corre
-        # sobre bases vivas que llegaron acá por caminos distintos, y no todos
-        # los productos tienen las 29 tablas creadas.
-        if tabla not in tablas:
-            continue
-        if columna not in {c["name"] for c in inspector.get_columns(tabla)}:
+        if (tabla, columna) not in de_texto:
             continue
         op.execute(f'ALTER TABLE "{tabla}" ALTER COLUMN "{columna}" SET DEFAULT {expresion}')
 
