@@ -99,6 +99,77 @@ def defaults_fuera_de_hora_ar(texto_sql: str) -> list[str]:
     ]
 
 
+#: Las columnas de texto del esquema actual. La consulta es la misma para los
+#: dos tipos de conexion; lo que cambia es como se la ejecuta.
+_SQL_COLUMNAS_DE_TEXTO = (
+    "SELECT table_name, column_name FROM information_schema.columns "
+    "WHERE table_schema = current_schema() AND data_type = 'text'"
+)
+
+
+def _columnas_de_texto(conexion) -> set[tuple[str, str]]:
+    """Acepta un `bind` de SQLAlchemy (las revisiones de Alembic) o una
+    `Conexion` de esta casa (las migraciones propias de LibraCommerce).
+
+    Son dos APIs distintas para lo mismo y las dos aparecen en los cinco repos
+    que corren este arreglo, asi que la diferencia se resuelve aca y no en cada
+    llamador.
+    """
+    if hasattr(conexion, "dialect"):
+        import sqlalchemy as sa
+
+        filas = conexion.execute(sa.text(_SQL_COLUMNAS_DE_TEXTO))
+    else:
+        filas = conexion.execute(_SQL_COLUMNAS_DE_TEXTO).fetchall()
+    return {(fila[0], fila[1]) for fila in filas}
+
+
+def _es_postgres(conexion) -> bool:
+    if hasattr(conexion, "dialect"):
+        return conexion.dialect.name == "postgresql"
+    return is_postgres()
+
+
+def alters_para_hora_ar(conexion, columnas, expresion: str = AHORA_AR) -> list[str]:
+    """Los `ALTER TABLE ... SET DEFAULT` que pasan a hora de Argentina las
+    `columnas` —pares `(tabla, columna)`— de la base a la que apunta `conexion`.
+
+    Lo usan la revision `0003` del motor y las revisiones equivalentes de los
+    cuatro productos con DDL propio. Vive aca por las dos partes que tienen que
+    decir lo mismo en los cinco repos, y que no son obvias:
+
+    1. **La expresion exacta.** Sale de la misma traduccion que usa el adaptador
+       en cada consulta. Estas columnas son TEXT, hay codigo que las parsea con
+       `strptime` y los rangos de fecha se comparan lexicograficamente: el
+       formato tiene que ser identico, byte por byte, al que escribe el DEFAULT.
+
+    2. 🔴 **Saltear las columnas que no son TEXT.** El DEFAULT nuevo es texto
+       (`to_char(...)`): ponerselo a una columna `timestamp` corta con *"default
+       expression is of type text"* y **aborta el `upgrade` entero**. No es
+       hipotetico — LibraDesk llego al motor desde sus propios modelos de
+       SQLAlchemy y en sus seis bases `depositos`, `proveedores` y `usuarios`
+       tienen `created_at` como `timestamp` (medido en el VPS el 2026-08-29).
+       Esas columnas ademas no necesitan el arreglo: `CURRENT_TIMESTAMP` sale de
+       la zona de la sesion, y los 21 servidores estan en hora de Argentina
+       desde el 2026-08-24.
+
+    Devuelve `[]` en SQLite, que no tiene `ALTER COLUMN ... SET DEFAULT`: alla
+    el DEFAULT nuevo llega al crear la tabla, no al migrarla.
+    """
+    if not _es_postgres(conexion):
+        return []
+
+    from ._postgres import _paramstyle
+
+    sql_default = _paramstyle(f"SELECT {expresion}").removeprefix("SELECT ")
+    de_texto = _columnas_de_texto(conexion)
+    return [
+        f'ALTER TABLE "{tabla}" ALTER COLUMN "{columna}" SET DEFAULT {sql_default}'
+        for tabla, columna in columnas
+        if (tabla, columna) in de_texto
+    ]
+
+
 def init_core_schema(conn: Conexion):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS clients (

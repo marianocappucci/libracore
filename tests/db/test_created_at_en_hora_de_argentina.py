@@ -34,6 +34,7 @@ import pytest
 from libracore.db import core
 from libracore.db.core import _ar_now
 from libracore.db.schema import (
+    alters_para_hora_ar,
     defaults_con_reloj,
     defaults_fuera_de_hora_ar,
     init_core_schema,
@@ -306,3 +307,34 @@ def _default_de(conn, tabla: str, columna: str) -> str:
         (tabla, columna),
     ).fetchone()
     return fila[0]
+
+
+def test_alters_para_hora_ar_acepta_una_conexion_de_esta_casa(conn_postgres):
+    """La otra forma de conexión con la que se llama al helper.
+
+    Las revisiones de Alembic le pasan un `bind` de SQLAlchemy; las migraciones
+    propias de LibraCommerce le pasan una `Conexion` de este motor, que no tiene
+    `.dialect` ni acepta `sa.text(...)`. Son dos APIs distintas para lo mismo y
+    las dos aparecen en los cinco repos que corren este arreglo, así que si el
+    helper sólo sirviera para una, la mitad del barrido se escribiría de nuevo
+    en LibraCommerce — que es como se separan.
+    """
+    sentencias = alters_para_hora_ar(conn_postgres, [("clients", "created_at")])
+    assert len(sentencias) == 1
+    assert sentencias[0].startswith('ALTER TABLE "clients" ALTER COLUMN "created_at" SET DEFAULT')
+    assert "interval '-3 hours'" in sentencias[0]
+
+    # Una columna que no existe no genera sentencia, en vez de generar una que
+    # rompa: `alembic upgrade` corre sobre bases que llegaron por caminos
+    # distintos y no todas tienen las mismas tablas.
+    assert alters_para_hora_ar(conn_postgres, [("no_existe", "created_at")]) == []
+
+
+def test_en_sqlite_no_hay_alters_que_correr(conn_sqlite):
+    """SQLite no tiene `ALTER COLUMN ... SET DEFAULT`.
+
+    Devolver `[]` y no una sentencia que reviente es lo que deja que la misma
+    revisión corra en los dos motores. Allá el DEFAULT nuevo llega al crear la
+    tabla, no al migrarla.
+    """
+    assert alters_para_hora_ar(conn_sqlite, [("clients", "created_at")]) == []

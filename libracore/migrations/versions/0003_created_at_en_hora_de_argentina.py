@@ -39,7 +39,6 @@ instancia — la misma que dejó el barrido del 2026-08-23 y por el mismo motivo
 Corregirlas es un trabajo aparte y con decisión humana: son datos de
 comprobantes.
 """
-import sqlalchemy as sa
 from alembic import op
 
 revision = "0003_created_at_hora_ar"
@@ -87,63 +86,20 @@ _COLUMNAS = (
 _UTC = "datetime('now')"
 
 
-def _expresion(sqlite: str) -> str:
-    """La forma PostgreSQL de un `datetime(...)` de SQLite.
+def _aplicar(expresion: str) -> None:
+    """Aplica el DEFAULT `expresion` a las 29 columnas, donde corresponda.
 
-    Sale de la MISMA traducción que usa el adaptador en cada consulta, y no de
-    una copia escrita a mano: el texto exacto importa —estas columnas son TEXT y
-    hay código que las parsea con `strptime`, y los rangos de fecha se comparan
-    lexicográficamente— así que si el formato cambiara, tiene que cambiar en los
-    dos lados o en ninguno.
+    El trabajo fino —la traduccion exacta a PostgreSQL y saltear las columnas
+    que no son TEXT— lo hace `schema.alters_para_hora_ar()`, que es la misma
+    funcion que usan las revisiones equivalentes de los cuatro productos con DDL
+    propio. Idempotente y tolerante, igual que `0002`: `alembic upgrade` corre
+    sobre bases vivas que llegaron aca por caminos distintos y no todas tienen
+    las 29 tablas, ni las tienen con la misma forma.
     """
-    from libracore.db._postgres import _paramstyle
+    from libracore.db.schema import alters_para_hora_ar
 
-    return _paramstyle(f"SELECT {sqlite}").removeprefix("SELECT ")
-
-
-def _columnas_de_texto(bind) -> set[tuple[str, str]]:
-    """Las columnas del esquema actual que son TEXT, por (tabla, columna).
-
-    🔴 **No todas las instancias tienen estas columnas como TEXT, y ahí está el
-    riesgo real de esta revisión.** El DEFAULT nuevo es texto —`to_char(...)`—
-    así que ponérselo a una columna `timestamp` corta con *"default expression
-    is of type text"* y **aborta el `upgrade` entero**.
-
-    No es hipotético: LibraDesk llegó al motor desde sus propios modelos de
-    SQLAlchemy, y en sus seis bases `depositos`, `proveedores` y `usuarios`
-    tienen `created_at` como `timestamp with CURRENT_TIMESTAMP`. Medido el
-    2026-08-29 — y esas columnas **ya estampan hora de Argentina**, porque
-    `CURRENT_TIMESTAMP` sale de la zona de la sesión y los 21 servidores del VPS
-    están en `America/Argentina/Buenos_Aires` desde el 2026-08-24. O sea que
-    saltearlas no deja nada sin arreglar: las que hay que tocar son exactamente
-    las de texto, que son las que traducía el adaptador.
-    """
-    filas = bind.execute(
-        sa.text(
-            "SELECT table_name, column_name FROM information_schema.columns "
-            "WHERE table_schema = current_schema() AND data_type = 'text'"
-        )
-    )
-    return {(t, c) for t, c in filas}
-
-
-def _aplicar(sqlite_expr: str) -> None:
-    bind = op.get_bind()
-    if bind.dialect.name != "postgresql":
-        # Ver el docstring del módulo: en SQLite el DEFAULT nuevo llega por
-        # `init_core_schema()`, no por acá.
-        return
-
-    # Idempotente y tolerante, igual que `0002`: `alembic upgrade` corre sobre
-    # bases vivas que llegaron acá por caminos distintos, y no todos los
-    # productos tienen las 29 tablas, ni las tienen con la misma forma.
-    de_texto = _columnas_de_texto(bind)
-    expresion = _expresion(sqlite_expr)
-
-    for tabla, columna in _COLUMNAS:
-        if (tabla, columna) not in de_texto:
-            continue
-        op.execute(f'ALTER TABLE "{tabla}" ALTER COLUMN "{columna}" SET DEFAULT {expresion}')
+    for sentencia in alters_para_hora_ar(op.get_bind(), _COLUMNAS, expresion):
+        op.execute(sentencia)
 
 
 def upgrade() -> None:
