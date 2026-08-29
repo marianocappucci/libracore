@@ -25,7 +25,6 @@ separadas:
 """
 import datetime
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,7 +33,11 @@ import pytest
 
 from libracore.db import core
 from libracore.db.core import _ar_now
-from libracore.db.schema import init_core_schema
+from libracore.db.schema import (
+    defaults_con_reloj,
+    defaults_fuera_de_hora_ar,
+    init_core_schema,
+)
 
 #: Margen entre el reloj del test y el de la base. Generoso a propósito: lo que
 #: se busca distinguir son 3 horas, no segundos.
@@ -112,20 +115,6 @@ def test_el_default_guarda_hora_de_argentina_en_sqlite(conn_sqlite, tabla):
 
 # ── Que ninguna tabla nueva nazca con el DEFAULT viejo ───────────────────────
 
-#: La única columna del schema que estampa la hora sin el offset fijo.
-#:
-#: `auth_log` es la tabla de LibraAuth y contra PostgreSQL **no la crea este
-#: DDL**: la crea el modelo de libraauth, con la columna como `timestamp` y
-#: `LOCALTIMESTAMP` de default (ver el comentario largo de
-#: `contar_login_fallidos_recientes` en `db/logs.py`, que calcula la ventana de
-#: forma distinta según el motor por eso mismo). Cambiarle la forma acá sola la
-#: dejaría desalineada de su propio modelo, así que queda como está y se
-#: enumera, en vez de que la excepción sea invisible.
-SIN_OFFSET_FIJO = {"ts TEXT NOT NULL DEFAULT (datetime('now','localtime')),"}
-
-_RELOJ = re.compile(r"DEFAULT\s*\(?\s*(?:datetime|date)\s*\(\s*'now'|DEFAULT\s+CURRENT_TIMESTAMP")
-
-
 def test_ninguna_columna_del_schema_estampa_utc():
     """🔴 Se mira la **propiedad final** —"ninguna columna con reloj queda fuera
     de la hora de Argentina"— y no el patrón viejo.
@@ -133,22 +122,30 @@ def test_ninguna_columna_del_schema_estampa_utc():
     Buscar `datetime('now')` sería repetir el patrón original: una columna nueva
     escrita como `DEFAULT CURRENT_TIMESTAMP` (que es lo que usa LibraCommerce, y
     que en PostgreSQL además arrastra microsegundos y offset) pasaría por limpia.
+
+    El barrido vive en `db/schema.py` y no acá porque los cuatro productos con
+    DDL propio corren esta misma comprobación sobre el suyo. Copiarlo en cada
+    repo es la forma conocida de que empiecen a decir cosas distintas — pasó con
+    las cinco definiciones de "hoy" del frontend.
     """
-    lineas = [
-        " ".join(linea.split())
-        for linea in SCHEMA_PY.read_text(encoding="utf-8").splitlines()
-        if _RELOJ.search(linea)
-    ]
+    fuente = SCHEMA_PY.read_text(encoding="utf-8")
 
-    # Control: si el barrido dejara de encontrar columnas, la lista vacía
-    # pasaría por verde y este test no diría nada nunca más.
-    assert len(lineas) >= 25, f"el barrido encontró sólo {len(lineas)} columnas con reloj"
+    # Control: si el barrido dejara de encontrar columnas, la lista vacía de
+    # abajo pasaría por verde y este test no diría nada nunca más.
+    assert len(defaults_con_reloj(fuente)) >= 25
 
-    fuera = [
-        linea for linea in lineas
-        if "datetime('now','-3 hours')" not in linea and linea not in SIN_OFFSET_FIJO
-    ]
-    assert fuera == [], "columnas que estampan una hora que no es la de Argentina:\n" + "\n".join(fuera)
+    assert defaults_fuera_de_hora_ar(fuente) == []
+
+
+def test_el_barrido_encuentra_las_dos_formas_del_defecto():
+    """Control positivo del barrido mismo: que sepa fallar.
+
+    Las dos formas que la familia tiene escritas —la de LibraCore y la de
+    LibraCommerce— y una sana, para que no pase por el atajo de reportar todo.
+    """
+    assert defaults_fuera_de_hora_ar("a TEXT DEFAULT (datetime('now'))") != []
+    assert defaults_fuera_de_hora_ar("a TEXT DEFAULT CURRENT_TIMESTAMP") != []
+    assert defaults_fuera_de_hora_ar("a TEXT DEFAULT (datetime('now','-3 hours'))") == []
 
 
 # ── PostgreSQL: el valor no sale de la zona de la sesión ─────────────────────

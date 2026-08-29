@@ -18,6 +18,7 @@ origen, confirmado columna por columna idéntico a Restolibra salvo estos
 dos casos) como parte de la Fase 3 de LibraCore — ver
 wiki/entities/libracore.md.
 """
+import re
 import sqlite3
 
 from .core import Conexion, is_postgres
@@ -44,6 +45,58 @@ from .core import Conexion, is_postgres
 #: La forma la vigila `tests/db/test_created_at_en_hora_de_argentina.py`: si
 #: una tabla nueva nace con el DEFAULT viejo, la suite lo dice.
 AHORA_AR = "datetime('now','-3 hours')"
+
+
+#: Una DECLARACION DE COLUMNA cuyo DEFAULT estampa la hora, en cualquiera de las
+#: formas que usa la familia.
+#:
+#: Se busca la CATEGORIA ("este DEFAULT tiene un reloj adentro") y no el patron
+#: viejo: buscar `datetime('now')` dejaria pasar una columna nueva escrita como
+#: `DEFAULT CURRENT_TIMESTAMP`, que es lo que usa LibraCommerce y que tiene el
+#: mismo problema con otra cara.
+#:
+#: 🔴 Y se exige el **nombre y el tipo** de la columna delante, no el `DEFAULT`
+#: suelto. Sin eso el barrido se cuenta a si mismo: los comentarios y docstrings
+#: que explican la convencion nombran las dos formas —estan pegados a quien la
+#: implementa, que es de donde salen— y aparecian como hallazgos.
+_DEFAULT_CON_RELOJ = re.compile(
+    r"^\s*\"?\w+\"?\s+(?:TEXT|TIMESTAMP|DATETIME|INTEGER|NUMERIC|VARCHAR)\b[^,]*?"
+    r"DEFAULT\s*(?:\(\s*(?:datetime|date)\s*\(\s*'now'|CURRENT_TIMESTAMP)",
+    re.IGNORECASE,
+)
+
+#: Las formas que SI estampan hora de Argentina. `'localtime'` entra porque es
+#: lo que usa `auth_log.ts`, cuya columna la crea el modelo de libraauth y no
+#: este DDL (ver `db/logs.py`).
+_FORMAS_AR = (AHORA_AR, "datetime('now','localtime')", "datetime('now', 'localtime')")
+
+
+def defaults_con_reloj(texto_sql: str) -> list[str]:
+    """Las lineas de un DDL que declaran un DEFAULT con la hora adentro.
+
+    Devuelve las lineas normalizadas (un espacio entre palabras), para que el
+    llamador pueda listarlas en el mensaje de error y, sobre todo, para que
+    pueda comprobar que el barrido **encontro algo**: una lista vacia pasaria
+    por verde y el control no diria nada nunca mas.
+    """
+    return [
+        " ".join(linea.split())
+        for linea in texto_sql.splitlines()
+        if _DEFAULT_CON_RELOJ.search(linea)
+    ]
+
+
+def defaults_fuera_de_hora_ar(texto_sql: str) -> list[str]:
+    """De las anteriores, las que estampan una hora que no es la de Argentina.
+
+    Es el chequeo que usan las suites del motor y de los productos: vive aca y
+    no copiado en cada repo, por la misma razon por la que `_ar_now()` vive en
+    un solo lugar. Un DDL sano devuelve `[]`.
+    """
+    return [
+        linea for linea in defaults_con_reloj(texto_sql)
+        if not any(forma in linea for forma in _FORMAS_AR)
+    ]
 
 
 def init_core_schema(conn: Conexion):
