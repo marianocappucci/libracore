@@ -23,6 +23,7 @@ from . import (
     client_from_config, forward_host_from_config, le_email_from_config, npm_available,
     check_venv_sync, build_image_tagged, deploy_version,
 )
+from . import mail_cuentas
 
 
 # Huso horario del ecosistema: Argentina, UTC-3 fijo, sin horario de verano
@@ -240,6 +241,31 @@ def _rollback_alta(client_dir: Path, log) -> None:
         log(f"[OK] Rollback: se borró {client_dir}")
     except Exception as e:  # noqa: BLE001
         log(f"[ERROR] Rollback incompleto — revisá {client_dir} a mano: {e}")
+
+
+def _rollback_casilla(cuenta, log) -> None:
+    """Borra la casilla de correo de un alta que falló. Nunca levanta.
+
+    `cuenta` es `None` cuando el alta falló antes de crearla, o cuando este
+    entorno no tiene servidor de correo configurado — los dos casos normales, y
+    por eso el `return` temprano no es defensivo sino el camino habitual.
+
+    Que no levante es la razón de que exista como función aparte: esto corre
+    adentro de un `except` que va a re-lanzar el error REAL del alta, y una
+    excepción escapándose de acá lo reemplazaría por una sobre el servidor de
+    correo — el error de arriba se perdería y nadie sabría por qué falló el
+    alta.
+    """
+    if cuenta is None:
+        return
+    try:
+        mail_cuentas.borrar_cuenta(cuenta.direccion)
+        log(f"[OK] Rollback: se borró la casilla {cuenta.direccion}")
+    except Exception as e:  # noqa: BLE001
+        # Queda una casilla con credencial viva y nadie la va a usar, pero el
+        # compose que la usaba ya no existe. Se avisa con la dirección para
+        # poder borrarla a mano.
+        log(f"[ERROR] Rollback: quedó la casilla {cuenta.direccion} sin borrar: {e}")
 
 
 class AltaIncompleta(ClienteError):
@@ -620,10 +646,25 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
     # `=` o `+` obligan a pensar en encoding cada vez que alguien la copia.
     panel_token = secrets.token_hex(32)
 
+    # — contraseña de la casilla de correo saliente —
+    #
+    # Se genera acá, junto al resto de los secretos del alta, y no adentro de
+    # `mail_cuentas`: que todas las credenciales de una instancia nueva salgan
+    # del mismo lugar es lo que permite leer de un vistazo qué se le entrega.
+    # `token_urlsafe` y no `token_hex` porque esta viaja como contraseña SASL,
+    # no adentro de una URL ni de un header.
+    smtp_password = secrets.token_urlsafe(24)
+
     # A partir de acá el alta escribe en disco, así que todo lo que sigue va
     # bajo rollback: si algo falla a mitad, `client_dir` se borra entero. Es
     # seguro borrarlo porque existe sólo porque lo creamos nosotros — el
     # chequeo de slug duplicado de más arriba garantiza que no había nada.
+    #
+    # La casilla de correo también entra al rollback, aunque no sea un archivo:
+    # se lleva en `cuenta_de_correo` y el `except` de abajo la borra. Sin eso,
+    # un alta que falla después de crearla deja una casilla huérfana con
+    # credencial viva en el servidor de correo.
+    cuenta_de_correo = None
     try:
         # — directorios —
         data_dir = client_dir / "data"
@@ -731,6 +772,36 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         # entorno del proceso que corre el alta tenga nada puesto.
         token_env += f"      - LIBRA_PANEL_TOKEN={panel_token}\n"
 
+        # — casilla de correo saliente, una por instancia —
+        #
+        # Va ANTES de escribir el compose porque su credencial son seis
+        # variables de ese archivo. La instancia nace mandando correo: sin
+        # esto `/auth/forgot-password` contesta `503` hasta que alguien entre
+        # al backoffice a cargarle un servidor, que es como está hoy el parque
+        # entero.
+        #
+        # 🔴 **Un fallo acá NO aborta el alta**, igual que con NPM: una
+        # instancia sin correo es una instancia a la que le falta una pantalla
+        # de configuración, y la pantalla existe. Que el alta entera fallara
+        # porque el servidor de correo no contesta sería peor que el problema.
+        # `smtp_ok` viaja en la respuesta para que el backoffice lo pueda
+        # mostrar en vez de que se descubra el día que un cliente pide un reset.
+        smtp_env = ""
+        smtp_ok = None
+        if mail_cuentas.configurado():
+            try:
+                cuenta_de_correo = mail_cuentas.crear_cuenta(
+                    slug, nombre, smtp_password
+                )
+                smtp_env = mail_cuentas.env_para_compose(cuenta_de_correo)
+                smtp_ok = True
+                # La dirección sí, la contraseña NO — este stream termina en la
+                # respuesta del alta del backoffice y en los logs del contenedor.
+                log(f"[OK] Casilla de correo: {cuenta_de_correo.direccion}")
+            except mail_cuentas.MailError as e:
+                log(f"[ERROR] Correo saliente: {e}")
+                smtp_ok = False
+
         # — versión de imagen — el compose nace pineado a una versión concreta,
         # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
         version   = version_para_cliente_nuevo(rebuild)
@@ -802,7 +873,7 @@ services:
       - ADMIN_PASSWORD={admin_password}
 {admin_env}      - ADMIN_NOMBRE={admin_nombre}
       - DOCS_AUTH_SECRET={cfg.docs_auth_secret}
-{token_env}{pg_env}{service_net}{pg_service}{top_net}{pg_volume}"""
+{token_env}{smtp_env}{pg_env}{service_net}{pg_service}{top_net}{pg_volume}"""
         (client_dir / "docker-compose.yml").write_text(compose)
 
         # — metadata del cliente —
@@ -938,6 +1009,18 @@ services:
             "admin_password": admin_password, "plan": plan, "proxy_ok": proxy_ok,
             "dir": str(client_dir),
             "empresa_nombre": empresa_nombre, "empresa_cuit": empresa_cuit,
+            # Misma semántica que `proxy_ok`: `None` = no se intentó (no hay
+            # servidor de correo configurado en este entorno), `True` = la
+            # casilla se creó y la instancia nace mandando correo, `False` = se
+            # intentó y falló, así que la instancia existe pero no manda hasta
+            # que alguien le cargue el SMTP por la pantalla del backoffice.
+            "smtp_ok": smtp_ok,
+            # La dirección no es secreta —es el remitente que va a ver todo el
+            # que reciba un correo de esta instancia— y saberla es lo que
+            # permite ir a buscar la casilla al servidor de correo. La
+            # contraseña, en cambio, sale sólo por el compose, igual que
+            # `panel_token`.
+            "smtp_user": cuenta_de_correo.direccion if cuenta_de_correo else "",
             # 🔴 Vuelve por acá y **no se escribe en `cliente.json`**, a
             # diferencia de `admin_password`. Esa metadata la lee
             # `load_clients()` y viaja entera a quien pregunte por la instancia
@@ -963,6 +1046,11 @@ services:
         # 25s que espera la DB llega con el contenedor ya arriba y sano, y
         # borrarlo ahí sería peor que dejarlo.
         _rollback_alta(client_dir, log)
+        # La casilla se borra DESPUÉS del rollback del directorio, no antes: si
+        # borrar la casilla fallara y esto se abortara ahí, quedaría el
+        # directorio de un alta fallida con el slug tomado, que es el estado
+        # peor. `_rollback_casilla` no levanta nada por su cuenta.
+        _rollback_casilla(cuenta_de_correo, log)
         raise
 
 
