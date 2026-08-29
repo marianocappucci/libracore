@@ -181,7 +181,7 @@ def anular_recibo(recibo_id: int, motivo: str = "", usuario_id=None) -> bool:
     with get_connection() as conn:
         cur = conn.execute(
             "UPDATE recibos SET anulado=1, anulado_motivo=?, "
-            "anulado_at=datetime('now'), usuario_id=COALESCE(?, usuario_id) "
+            "anulado_at=datetime('now','-3 hours'), usuario_id=COALESCE(?, usuario_id) "
             "WHERE id=? AND anulado=0",
             (motivo, usuario_id, recibo_id),
         )

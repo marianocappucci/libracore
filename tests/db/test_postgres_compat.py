@@ -59,6 +59,30 @@ def test_sqlite_dialect_translation():
     assert "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')" in ddl
 
 
+def test_el_modificador_de_intervalo_se_traduce_a_un_interval():
+    """`datetime('now','-3 hours')` es el DEFAULT con el que el schema estampa
+    la hora de Argentina (ver `schema.AHORA_AR`).
+
+    Sale del MISMO instante UTC que `datetime('now')` a secas y no de
+    `LOCALTIMESTAMP`, para que el valor no dependa de la zona de la sesion del
+    servidor -- que se fija en el `initdb` y que `TZ` no mueve.
+    """
+    assert _paramstyle("SELECT datetime('now','-3 hours')") == (
+        "SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC' + interval '-3 hours', "
+        "'YYYY-MM-DD HH24:MI:SS')"
+    )
+    assert _paramstyle("SELECT date('now','-3 hours')") == (
+        "SELECT to_char((CURRENT_TIMESTAMP AT TIME ZONE 'UTC' + interval '-3 hours')::date, "
+        "'YYYY-MM-DD')"
+    )
+    # Un modificador que no tiene forma de intervalo pasa TAL CUAL, para que
+    # falle en el motor con su nombre a la vista en vez de traducirse a
+    # cualquier cosa -- mismo criterio que `_traducir_strftime`.
+    assert _paramstyle("SELECT datetime('now','start of month')") == (
+        "SELECT datetime('now','start of month')"
+    )
+
+
 def test_round_de_dos_argumentos_castea_cualquier_expresion():
     """🔴 `round(double precision, integer)` no existe en PostgreSQL.
 

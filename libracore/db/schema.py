@@ -18,9 +18,156 @@ origen, confirmado columna por columna idéntico a Restolibra salvo estos
 dos casos) como parte de la Fase 3 de LibraCore — ver
 wiki/entities/libracore.md.
 """
+import re
 import sqlite3
 
 from .core import Conexion, is_postgres
+
+
+#: El "ahora" que estampan los `created_at`/`updated_at` de este schema.
+#:
+#: 🔴 **Es `-3 hours`, no `'localtime'`, y no es un capricho.** `datetime('now')`
+#: de SQLite es UTC, y el adaptador de PostgreSQL lo traduce a UTC a propósito
+#: para que las dos bases guarden el mismo texto. El resultado era que **todas**
+#: las columnas con este DEFAULT quedaban 3 h adelantadas: un comprobante creado
+#: a las 22:00 de Argentina se guardaba con fecha del día siguiente. Se midió en
+#: la instancia `compulibra` de Contalibra el 2026-08-29 — las 112 filas de
+#: `caja_movimientos` y las 81 de `facturas`, no sólo las del cron nocturno.
+#:
+#: `'localtime'` (que es lo que usa `auth_log.ts`) arregla el reloj **si** el
+#: entorno está bien puesto: en SQLite lee la TZ del proceso y en PostgreSQL la
+#: de la sesión del servidor. Son dos perillas distintas, las dos fáciles de
+#: perder — la del servidor se escribe en el `initdb` y `TZ` no la mueve
+#: (2026-08-23). El offset fijo no depende de ninguna de las dos y es
+#: exactamente el mismo que `_ar_now()` (`timezone(timedelta(hours=-3))`):
+#: Argentina no aplica DST desde 2009.
+#:
+#: La forma la vigila `tests/db/test_created_at_en_hora_de_argentina.py`: si
+#: una tabla nueva nace con el DEFAULT viejo, la suite lo dice.
+AHORA_AR = "datetime('now','-3 hours')"
+
+
+#: Una DECLARACION DE COLUMNA cuyo DEFAULT estampa la hora, en cualquiera de las
+#: formas que usa la familia.
+#:
+#: Se busca la CATEGORIA ("este DEFAULT tiene un reloj adentro") y no el patron
+#: viejo: buscar `datetime('now')` dejaria pasar una columna nueva escrita como
+#: `DEFAULT CURRENT_TIMESTAMP`, que es lo que usa LibraCommerce y que tiene el
+#: mismo problema con otra cara.
+#:
+#: 🔴 Y se exige el **nombre y el tipo** de la columna delante, no el `DEFAULT`
+#: suelto. Sin eso el barrido se cuenta a si mismo: los comentarios y docstrings
+#: que explican la convencion nombran las dos formas —estan pegados a quien la
+#: implementa, que es de donde salen— y aparecian como hallazgos.
+_DEFAULT_CON_RELOJ = re.compile(
+    r"^\s*\"?\w+\"?\s+(?:TEXT|TIMESTAMP|DATETIME|INTEGER|NUMERIC|VARCHAR)\b[^,]*?"
+    r"DEFAULT\s*(?:\(\s*(?:datetime|date)\s*\(\s*'now'|CURRENT_TIMESTAMP)",
+    re.IGNORECASE,
+)
+
+#: Las formas que SI estampan hora de Argentina. `'localtime'` entra porque es
+#: lo que usa `auth_log.ts`, cuya columna la crea el modelo de libraauth y no
+#: este DDL (ver `db/logs.py`).
+_FORMAS_AR = (AHORA_AR, "datetime('now','localtime')", "datetime('now', 'localtime')")
+
+
+def defaults_con_reloj(texto_sql: str) -> list[str]:
+    """Las lineas de un DDL que declaran un DEFAULT con la hora adentro.
+
+    Devuelve las lineas normalizadas (un espacio entre palabras), para que el
+    llamador pueda listarlas en el mensaje de error y, sobre todo, para que
+    pueda comprobar que el barrido **encontro algo**: una lista vacia pasaria
+    por verde y el control no diria nada nunca mas.
+    """
+    return [
+        " ".join(linea.split())
+        for linea in texto_sql.splitlines()
+        if _DEFAULT_CON_RELOJ.search(linea)
+    ]
+
+
+def defaults_fuera_de_hora_ar(texto_sql: str) -> list[str]:
+    """De las anteriores, las que estampan una hora que no es la de Argentina.
+
+    Es el chequeo que usan las suites del motor y de los productos: vive aca y
+    no copiado en cada repo, por la misma razon por la que `_ar_now()` vive en
+    un solo lugar. Un DDL sano devuelve `[]`.
+    """
+    return [
+        linea for linea in defaults_con_reloj(texto_sql)
+        if not any(forma in linea for forma in _FORMAS_AR)
+    ]
+
+
+#: Las columnas de texto del esquema actual. La consulta es la misma para los
+#: dos tipos de conexion; lo que cambia es como se la ejecuta.
+_SQL_COLUMNAS_DE_TEXTO = (
+    "SELECT table_name, column_name FROM information_schema.columns "
+    "WHERE table_schema = current_schema() AND data_type = 'text'"
+)
+
+
+def _columnas_de_texto(conexion) -> set[tuple[str, str]]:
+    """Acepta un `bind` de SQLAlchemy (las revisiones de Alembic) o una
+    `Conexion` de esta casa (las migraciones propias de LibraCommerce).
+
+    Son dos APIs distintas para lo mismo y las dos aparecen en los cinco repos
+    que corren este arreglo, asi que la diferencia se resuelve aca y no en cada
+    llamador.
+    """
+    if hasattr(conexion, "dialect"):
+        import sqlalchemy as sa
+
+        filas = conexion.execute(sa.text(_SQL_COLUMNAS_DE_TEXTO))
+    else:
+        filas = conexion.execute(_SQL_COLUMNAS_DE_TEXTO).fetchall()
+    return {(fila[0], fila[1]) for fila in filas}
+
+
+def _es_postgres(conexion) -> bool:
+    if hasattr(conexion, "dialect"):
+        return conexion.dialect.name == "postgresql"
+    return is_postgres()
+
+
+def alters_para_hora_ar(conexion, columnas, expresion: str = AHORA_AR) -> list[str]:
+    """Los `ALTER TABLE ... SET DEFAULT` que pasan a hora de Argentina las
+    `columnas` —pares `(tabla, columna)`— de la base a la que apunta `conexion`.
+
+    Lo usan la revision `0003` del motor y las revisiones equivalentes de los
+    cuatro productos con DDL propio. Vive aca por las dos partes que tienen que
+    decir lo mismo en los cinco repos, y que no son obvias:
+
+    1. **La expresion exacta.** Sale de la misma traduccion que usa el adaptador
+       en cada consulta. Estas columnas son TEXT, hay codigo que las parsea con
+       `strptime` y los rangos de fecha se comparan lexicograficamente: el
+       formato tiene que ser identico, byte por byte, al que escribe el DEFAULT.
+
+    2. 🔴 **Saltear las columnas que no son TEXT.** El DEFAULT nuevo es texto
+       (`to_char(...)`): ponerselo a una columna `timestamp` corta con *"default
+       expression is of type text"* y **aborta el `upgrade` entero**. No es
+       hipotetico — LibraDesk llego al motor desde sus propios modelos de
+       SQLAlchemy y en sus seis bases `depositos`, `proveedores` y `usuarios`
+       tienen `created_at` como `timestamp` (medido en el VPS el 2026-08-29).
+       Esas columnas ademas no necesitan el arreglo: `CURRENT_TIMESTAMP` sale de
+       la zona de la sesion, y los 21 servidores estan en hora de Argentina
+       desde el 2026-08-24.
+
+    Devuelve `[]` en SQLite, que no tiene `ALTER COLUMN ... SET DEFAULT`: alla
+    el DEFAULT nuevo llega al crear la tabla, no al migrarla.
+    """
+    if not _es_postgres(conexion):
+        return []
+
+    from ._postgres import _paramstyle
+
+    sql_default = _paramstyle(f"SELECT {expresion}").removeprefix("SELECT ")
+    de_texto = _columnas_de_texto(conexion)
+    return [
+        f'ALTER TABLE "{tabla}" ALTER COLUMN "{columna}" SET DEFAULT {sql_default}'
+        for tabla, columna in columnas
+        if (tabla, columna) in de_texto
+    ]
 
 
 def init_core_schema(conn: Conexion):
@@ -33,7 +180,7 @@ def init_core_schema(conn: Conexion):
             email         TEXT,
             phone         TEXT,
             iva_condition TEXT DEFAULT '',
-            created_at    TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS remitos (
@@ -53,7 +200,7 @@ def init_core_schema(conn: Conexion):
             total          REAL NOT NULL,
             observations   TEXT,
             pdf_path       TEXT,
-            created_at     TEXT DEFAULT (datetime('now'))
+            created_at     TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS presupuestos (
@@ -76,7 +223,7 @@ def init_core_schema(conn: Conexion):
             observations    TEXT,
             pdf_path        TEXT,
             remito_id       INTEGER REFERENCES remitos(id),
-            created_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS facturas (
@@ -97,7 +244,7 @@ def init_core_schema(conn: Conexion):
             cae_vto         TEXT,
             observaciones   TEXT,
             pdf_path        TEXT,
-            created_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS cajas (
@@ -111,7 +258,7 @@ def init_core_schema(conn: Conexion):
             -- sucursales viven en la base del PRODUCTO. Ver la nota de las
             -- migraciones defensivas, más abajo.
             sucursal_id INTEGER,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS caja_movimientos (
@@ -122,7 +269,7 @@ def init_core_schema(conn: Conexion):
             monto       REAL NOT NULL,
             referencia  TEXT DEFAULT '',
             factura_id  INTEGER,
-            created_at  TEXT DEFAULT (datetime('now')),
+            created_at  TEXT DEFAULT (datetime('now','-3 hours')),
             turno_id    INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL,
             anulado     INTEGER NOT NULL DEFAULT 0
         );
@@ -135,7 +282,7 @@ def init_core_schema(conn: Conexion):
             payer_email     TEXT,
             payer_name      TEXT,
             factura_id      INTEGER,
-            created_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS mp_movimientos (
@@ -154,7 +301,7 @@ def init_core_schema(conn: Conexion):
             payer_id_number TEXT,
             estado_factura  TEXT DEFAULT 'pendiente',
             factura_id      INTEGER,
-            created_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS facturacion_alias (
@@ -163,7 +310,7 @@ def init_core_schema(conn: Conexion):
             valor       TEXT NOT NULL,
             cliente_id  INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
             activo      INTEGER NOT NULL DEFAULT 1,
-            created_at  TEXT DEFAULT (datetime('now')),
+            created_at  TEXT DEFAULT (datetime('now','-3 hours')),
             UNIQUE (tipo, valor)
         );
 
@@ -177,8 +324,8 @@ def init_core_schema(conn: Conexion):
             ambiente        TEXT DEFAULT 'homologacion',
             activo          INTEGER DEFAULT 1,
             alias           TEXT,
-            created_at      TEXT DEFAULT (datetime('now')),
-            updated_at      TEXT DEFAULT (datetime('now'))
+            created_at      TEXT DEFAULT (datetime('now','-3 hours')),
+            updated_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS usuarios (
@@ -215,7 +362,7 @@ def init_core_schema(conn: Conexion):
             -- declarado. Es inocuo -- SQLite no aplica el tipo, y libraauth ya
             -- les escribe True/False hoy -- y no vale un rebuild de tabla.
             activo        BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at    TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS modulos (
@@ -235,7 +382,7 @@ def init_core_schema(conn: Conexion):
             unidad       TEXT NOT NULL DEFAULT 'u',
             categoria    TEXT DEFAULT '',
             activo       INTEGER NOT NULL DEFAULT 1,
-            created_at   TEXT DEFAULT (datetime('now')),
+            created_at   TEXT DEFAULT (datetime('now','-3 hours')),
             stock_minimo REAL NOT NULL DEFAULT 0,
             estacion     TEXT DEFAULT '',
             vendible     INTEGER NOT NULL DEFAULT 1,
@@ -248,7 +395,7 @@ def init_core_schema(conn: Conexion):
             descripcion TEXT DEFAULT '',
             activo      INTEGER NOT NULL DEFAULT 1,
             es_default  INTEGER NOT NULL DEFAULT 0,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS categorias_producto (
@@ -269,7 +416,7 @@ def init_core_schema(conn: Conexion):
             phone         TEXT DEFAULT '',
             address       TEXT DEFAULT '',
             iva_condition TEXT DEFAULT '',
-            created_at    TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS egresos (
@@ -288,7 +435,7 @@ def init_core_schema(conn: Conexion):
             estado           TEXT NOT NULL DEFAULT 'pendiente',
             observaciones    TEXT DEFAULT '',
             usuario_id       INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at       TEXT DEFAULT (datetime('now'))
+            created_at       TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS egresos_pagos (
@@ -300,7 +447,7 @@ def init_core_schema(conn: Conexion):
             medio_pago  TEXT DEFAULT '',
             referencia  TEXT DEFAULT '',
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS turnos_caja (
@@ -313,7 +460,7 @@ def init_core_schema(conn: Conexion):
             monto_esperado_cierre  REAL,
             estado                 TEXT NOT NULL DEFAULT 'abierto',
             notas                  TEXT DEFAULT '',
-            created_at             TEXT DEFAULT (datetime('now'))
+            created_at             TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS movimientos_stock (
@@ -325,7 +472,7 @@ def init_core_schema(conn: Conexion):
             venta_id    INTEGER REFERENCES ventas(id) ON DELETE SET NULL,
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
             fecha       TEXT NOT NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS ventas (
@@ -343,7 +490,7 @@ def init_core_schema(conn: Conexion):
             remito_id       INTEGER REFERENCES remitos(id) ON DELETE SET NULL,
             usuario_id      INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
             observaciones   TEXT DEFAULT '',
-            created_at      TEXT DEFAULT (datetime('now')),
+            created_at      TEXT DEFAULT (datetime('now','-3 hours')),
             turno_id        INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL,
             mp_order_id     TEXT DEFAULT '',
             mp_payment_id   TEXT DEFAULT ''
@@ -355,7 +502,7 @@ def init_core_schema(conn: Conexion):
             medio      TEXT NOT NULL,
             monto      REAL NOT NULL,
             referencia TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now'))
+            created_at TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS cuentas_tesoreria (
@@ -368,7 +515,7 @@ def init_core_schema(conn: Conexion):
             saldo_inicial REAL NOT NULL DEFAULT 0,
             activa        INTEGER NOT NULL DEFAULT 1,
             orden         INTEGER NOT NULL DEFAULT 0,
-            created_at    TEXT DEFAULT (datetime('now'))
+            created_at    TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS movimientos_tesoreria (
@@ -382,7 +529,7 @@ def init_core_schema(conn: Conexion):
             cuenta_destino_id INTEGER REFERENCES cuentas_tesoreria(id) ON DELETE SET NULL,
             transferencia_id  INTEGER,
             usuario_id        INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at        TEXT DEFAULT (datetime('now'))
+            created_at        TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS auth_log (
@@ -400,7 +547,7 @@ def init_core_schema(conn: Conexion):
             descripcion TEXT DEFAULT '',
             es_default  INTEGER NOT NULL DEFAULT 0,
             activa      INTEGER NOT NULL DEFAULT 1,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS lista_precio_items (
@@ -420,7 +567,7 @@ def init_core_schema(conn: Conexion):
             medio_pago  TEXT DEFAULT 'efectivo',
             caja_id     INTEGER REFERENCES cajas(id) ON DELETE SET NULL,
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         -- Deuda que NO nace de una venta de esta base. Existe porque
@@ -437,7 +584,7 @@ def init_core_schema(conn: Conexion):
             concepto    TEXT DEFAULT '',
             referencia  TEXT DEFAULT '',
             usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         CREATE TABLE IF NOT EXISTS cc_resumenes_enviados (
@@ -451,7 +598,7 @@ def init_core_schema(conn: Conexion):
             estado       TEXT NOT NULL DEFAULT 'ok',
             detalle      TEXT DEFAULT '',
             automatico   INTEGER NOT NULL DEFAULT 1,
-            created_at   TEXT DEFAULT (datetime('now'))
+            created_at   TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         -- El comprobante de que se recibió plata. Hasta acá el recibo era un
@@ -492,7 +639,7 @@ def init_core_schema(conn: Conexion):
             anulado_motivo    TEXT DEFAULT '',
             anulado_at        TEXT DEFAULT '',
             usuario_id        INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-            created_at        TEXT DEFAULT (datetime('now'))
+            created_at        TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         -- La bandeja de lo que **otro producto de la familia** dejó para
@@ -544,7 +691,7 @@ def init_core_schema(conn: Conexion):
             motivo_descarte   TEXT DEFAULT '',
             resuelto_at       TEXT DEFAULT '',
             resuelto_por      TEXT DEFAULT '',
-            created_at        TEXT DEFAULT (datetime('now'))
+            created_at        TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
         -- 🔴 **La constraint que hace seguro el reenvío.** El modo de falla
