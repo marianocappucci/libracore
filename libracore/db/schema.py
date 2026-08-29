@@ -139,9 +139,22 @@ def _columnas_de_texto(conexion) -> set[tuple[str, str]]:
 
 
 def _es_postgres(conexion) -> bool:
+    """Si LA CONEXION habla PostgreSQL, y no si el proceso esta configurado asi.
+
+    🔴 La version anterior preguntaba `is_postgres()`, que es global del proceso,
+    y se rompia justo donde los dos no coinciden: la suite de un producto
+    configura una URL de PostgreSQL y despues corre las migraciones de
+    LibraCommerce sobre una `sqlite3.Connection` de memoria. El global decia que
+    si, la consulta a `information_schema` salia contra SQLite y moria con
+    *"no such table: information_schema.columns"*. Lo encontro el CI de
+    VentaLibra el 2026-08-29.
+
+    El wrapper de PostgreSQL de esta casa no es una `sqlite3.Connection`, asi que
+    la pregunta sobre el objeto alcanza y no depende de ningun estado de afuera.
+    """
     if hasattr(conexion, "dialect"):
         return conexion.dialect.name == "postgresql"
-    return is_postgres()
+    return not isinstance(conexion, sqlite3.Connection)
 
 
 def alters_para_hora_ar(conexion, columnas, expresion: str = AHORA_AR) -> list[str]:

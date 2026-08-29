@@ -369,3 +369,30 @@ def test_el_render_offline_no_explota():
     revisión; el deploy de esta familia corre `upgrade` en línea, no `--sql`.
     """
     assert alters_para_hora_ar(_BindOffline(), [("clients", "created_at")]) == []
+
+
+def test_una_conexion_sqlite_no_se_confunde_con_el_proceso_configurado_en_postgres(
+    tmp_path, monkeypatch
+):
+    """🔴 El proceso puede estar configurado en PostgreSQL y la conexión ser SQLite.
+
+    Es exactamente lo que pasa en la suite de un producto: configura la URL de
+    PostgreSQL y después corre las migraciones de LibraCommerce sobre una
+    `sqlite3.Connection` de memoria. Preguntando por el `is_postgres()` **global**
+    —que es lo que hacía la primera versión— la consulta a `information_schema`
+    salía contra SQLite y moría con *"no such table:
+    information_schema.columns"*. Lo encontró el CI de VentaLibra el 2026-08-29.
+
+    Se monta el desacople a propósito: global en PostgreSQL, conexión SQLite.
+    """
+    import sqlite3
+
+    monkeypatch.setattr(core, "_database_url", "postgresql://x/y")
+    monkeypatch.setattr(core, "_db_path", "postgresql://x/y")
+    assert core.is_postgres()
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        assert alters_para_hora_ar(conn, [("clients", "created_at")]) == []
+    finally:
+        conn.close()
