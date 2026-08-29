@@ -299,14 +299,14 @@ def backup_cliente(slug: str) -> str:
 # ── eliminación ─────────────────────────────────────────────────────────────────
 
 def eliminar_cliente(slug: str, hacer_backup: bool = True) -> dict:
-    """Baja: backup previo (opcional), elimina proxy NPM, baja el contenedor con
-    su volumen y borra el directorio del cliente."""
+    """Baja: backup previo (opcional), elimina proxy NPM y la casilla de correo,
+    baja el contenedor con su volumen y borra el directorio del cliente."""
     pa = _pa()
     c = pa.find_client(slug)
     if not c:
         raise ServiceError(f"Cliente '{slug}' no encontrado.")
 
-    resultado = {"slug": slug, "backup": None, "npm": None}
+    resultado = {"slug": slug, "backup": None, "npm": None, "correo": None}
     if hacer_backup:
         resultado["backup"] = backup_cliente(slug)
 
@@ -315,11 +315,39 @@ def eliminar_cliente(slug: str, hacer_backup: bool = True) -> dict:
     if domain:
         resultado["npm"] = _npm_eliminar_proxy(domain)
 
+    # Casilla de correo (best-effort, igual que NPM)
+    resultado["correo"] = _correo_eliminar_casilla(slug)
+
     # Contenedor + volumen
     pa.compose(slug, "down", "-v")
     # Directorio del cliente
     shutil.rmtree(c["dir"])
     return resultado
+
+
+def _correo_eliminar_casilla(slug: str) -> bool | None:
+    """Da de baja la casilla de correo saliente de una instancia.
+
+    🔴 **Esto no es prolijidad: una casilla huérfana es una credencial viva.**
+    El compose de la instancia se borra en esta misma función, pero cualquiera
+    que tenga una copia —un backup, un `docker-compose.yml` que alguien guardó—
+    puede seguir mandando correo como esa instancia hasta que la casilla no
+    exista.
+
+    Best-effort como el proxy de NPM, y por el mismo motivo: la baja tiene que
+    poder completarse con el servidor de correo caído. Devuelve `None` si no
+    había servidor configurado (nunca hubo casilla que borrar), `True`/`False`
+    según haya podido.
+    """
+    from ..provisioning import mail_cuentas
+
+    if not mail_cuentas.configurado():
+        return None
+    try:
+        mail_cuentas.borrar_cuenta(mail_cuentas.direccion_de(slug))
+        return True
+    except mail_cuentas.MailError:
+        return False
 
 
 # ── NPM helpers (best-effort, no rompen la operación si NPM no está) ─────────────

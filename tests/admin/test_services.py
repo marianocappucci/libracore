@@ -294,6 +294,57 @@ def test_eliminar_cliente_borra_directorio(fake_scripts):
     assert not Path(c["dir"]).exists()
 
 
+def test_la_baja_sin_servidor_de_correo_no_intenta_borrar_ninguna_casilla(
+        fake_scripts, monkeypatch):
+    monkeypatch.delenv("LIBRA_MAIL_ADMIN_SSH", raising=False)
+    monkeypatch.delenv("LIBRA_MAIL_DOMINIO", raising=False)
+    fake_scripts["mkclient"]("Cliente Nueve", "cliente-nueve")
+
+    resultado = services.eliminar_cliente("cliente-nueve", hacer_backup=False)
+    assert resultado["correo"] is None
+
+
+def test_la_baja_borra_la_casilla_de_correo_de_la_instancia(fake_scripts, monkeypatch):
+    """🔴 Una casilla huérfana es una credencial viva.
+
+    El compose que la usaba se borra en esta misma función, pero cualquiera que
+    tenga una copia —un backup, un archivo que alguien guardó— podría seguir
+    mandando correo como esa instancia mientras la casilla exista.
+    """
+    from libracore.provisioning import mail_cuentas
+
+    monkeypatch.setenv("LIBRA_MAIL_ADMIN_SSH", "libra-mail@mail.testprod.com.ar")
+    monkeypatch.setenv("LIBRA_MAIL_DOMINIO", "testprod.com.ar")
+    borradas = []
+    monkeypatch.setattr(mail_cuentas, "borrar_cuenta", borradas.append)
+    fake_scripts["mkclient"]("Cliente Diez", "cliente-diez")
+
+    resultado = services.eliminar_cliente("cliente-diez", hacer_backup=False)
+
+    assert borradas == ["cliente-diez@testprod.com.ar"]
+    assert resultado["correo"] is True
+
+
+def test_un_servidor_de_correo_caido_no_impide_dar_de_baja(fake_scripts, monkeypatch):
+    """Best-effort como el proxy de NPM: la baja tiene que poder completarse
+    con el servidor de correo caído, avisando que la casilla quedó."""
+    from libracore.provisioning import mail_cuentas
+    from pathlib import Path
+
+    monkeypatch.setenv("LIBRA_MAIL_ADMIN_SSH", "libra-mail@mail.testprod.com.ar")
+    monkeypatch.setenv("LIBRA_MAIL_DOMINIO", "testprod.com.ar")
+    monkeypatch.setattr(
+        mail_cuentas, "borrar_cuenta",
+        lambda *a: (_ for _ in ()).throw(mail_cuentas.MailError("no contesta")),
+    )
+    c = fake_scripts["mkclient"]("Cliente Once", "cliente-once")
+
+    resultado = services.eliminar_cliente("cliente-once", hacer_backup=False)
+
+    assert resultado["correo"] is False
+    assert not Path(c["dir"]).exists()
+
+
 def test_planes_info(fake_scripts):
     info = services.planes_info()
     assert {p["key"] for p in info} == {"basico", "pro"}
