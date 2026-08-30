@@ -142,26 +142,94 @@ def calcular_totales(items: list[dict], tax_rate: float) -> dict:
     }
 
 
-def smtp_configurado() -> bool:
+#: Los seis campos del SMTP, resueltos.
+#:
+#: 🔴 **Hay DOS configuraciones de SMTP en la familia, y esto es lo que las une.**
+#:
+#: - La de **libraauth** (`smtp_settings`, cifrada) manda el mail de
+#:   recuperacion de contrasena. La tienen los ocho productos, y es la que
+#:   configura la pantalla compartida de `libra-ui`.
+#: - La de **`config.json`** (`email_smtp_*`) manda **los comprobantes**, que es
+#:   lo que hace este router. La usan los tres productos que lo montan:
+#:   Contalibra, Restolibra y LibraClub.
+#:
+#: Que sean dos no era un diseno: la de comprobantes nacio antes que la otra y
+#: quedo leyendo `config.json`. El sintoma es que el cliente carga su contrasena
+#: de aplicacion en la pantalla, la pantalla dice "Guardado", y los comprobantes
+#: siguen sin salir --porque configuro el OTRO store.
+#:
+#: `smtp_config` es como el producto le pasa el resolver de libraauth. Se inyecta
+#: y no se importa porque **LibraCore no depende de libraauth**: es el mismo
+#: criterio que `registrar_cobro` y `al_emitir`.
+def smtp_efectivo(resolver) -> dict:
+    """El SMTP a usar: el del resolver del producto si lo hay, `config.json` si no.
+
+    🔑 **Publica a proposito.** En cada producto esto se resuelve en tres
+    lugares --el envio de comprobantes de acá, el de presupuestos, y el
+    endpoint que prueba la conexion-- y los tres tienen que dar lo mismo. Que
+    cada uno lo resuelva por su cuenta es exactamente como aparecieron los dos
+    stores que este cambio viene a unificar.
+
+    ⚠️ La caida a `config.json` es una **red de seguridad medida**, no un
+    default de diseno. Se relevaron las 7 instancias de la flota que montan
+    este router antes de escribirla:
+
+    - En 6 de 7, `config.json` esta **vacio** y el SMTP sale del entorno. En
+      esas, mandar un comprobante por mail **hoy falla con un 400**, aunque la
+      instancia tiene un SMTP perfectamente usable en `LIBRAAUTH_SMTP_*`. Este
+      cambio tambien las arregla.
+    - La unica con datos en `config.json` es `contalibra` de produccion, y sus
+      valores son **identicos** a los del entorno --la misma casilla--. Por eso
+      no hace falta migrar nada: copiarlos a la base solo agregaria una tercera
+      copia cifrada de las mismas credenciales.
+
+    O sea que hoy esta rama **no se ejecuta en ninguna instancia**. Se deja
+    igual porque es la direccion segura: si a `contalibra` le sacaran las
+    variables de entorno, sus comprobantes seguirian saliendo por donde salen
+    hoy en vez de cortarse **sin ningun sintoma** --nadie se entera hasta que
+    un cliente reclama una factura que no le llego--.
+    """
+    if resolver is not None:
+        cfg = resolver()
+        if cfg.configurado:
+            return {
+                "host": cfg.host, "port": int(cfg.port or 587), "user": cfg.user,
+                "password": cfg.password,
+                "from_email": cfg.from_email or cfg.user,
+                "from_name": cfg.from_name,
+            }
     cfg = config_manager.load()
-    return bool(cfg.get("email_smtp_host") and cfg.get("email_smtp_user"))
+    return {
+        "host": cfg.get("email_smtp_host", ""),
+        "port": int(cfg.get("email_smtp_port", 587) or 587),
+        "user": cfg.get("email_smtp_user", ""),
+        "password": cfg.get("email_smtp_password", ""),
+        "from_email": cfg.get("email_from") or cfg.get("email_smtp_user", ""),
+        "from_name": cfg.get("email_from_name", ""),
+    }
+
+
+def smtp_configurado(resolver=None) -> bool:
+    smtp = smtp_efectivo(resolver)
+    return bool(smtp["host"] and smtp["user"])
 
 
 def enviar_comprobante_por_mail(
     *, to_email: str, to_name: str, pdf_path: str, factura_label: str, total: float,
+    resolver=None,
 ) -> None:
-    """Manda el PDF con la config SMTP guardada. Era `email_helper` de cada producto."""
-    cfg = config_manager.load()
+    """Manda el PDF con la config SMTP resuelta. Ver `smtp_efectivo`."""
+    smtp = smtp_efectivo(resolver)
     email_sender.enviar_comprobante(
         to_email=to_email, to_name=to_name, pdf_path=pdf_path,
-        empresa_nombre=cfg.get("empresa_nombre", ""),
+        empresa_nombre=config_manager.load().get("empresa_nombre", ""),
         factura_label=factura_label, total=total,
-        smtp_host=cfg["email_smtp_host"],
-        smtp_port=int(cfg.get("email_smtp_port", 587)),
-        smtp_user=cfg["email_smtp_user"],
-        smtp_password=cfg.get("email_smtp_password", ""),
-        from_email=cfg.get("email_from") or cfg["email_smtp_user"],
-        from_name=cfg.get("email_from_name", ""),
+        smtp_host=smtp["host"],
+        smtp_port=smtp["port"],
+        smtp_user=smtp["user"],
+        smtp_password=smtp["password"],
+        from_email=smtp["from_email"],
+        from_name=smtp["from_name"],
         asunto="", cuerpo="",
     )
 
@@ -345,6 +413,7 @@ def build_comprobantes_router(
     al_emitir: Callable[[int, dict, dict], None] | None = None,
     registrar_cobro: Callable[..., None] | None = None,
     donde_configurar_smtp: str = "Configuración → Email",
+    smtp_config: Callable[[], Any] | None = None,
 ) -> APIRouter:
     """Los doce endpoints de comprobantes, con lo del producto inyectado.
 
@@ -654,7 +723,7 @@ def build_comprobantes_router(
     @router.post("/{factura_id}/enviar-email")
     def enviar_email(factura_id: int, payload: EmailPayload):
         factura = _exigir(factura_id)
-        if not smtp_configurado():
+        if not smtp_configurado(smtp_config):
             raise HTTPException(
                 400, f"Configurá el servidor SMTP en {donde_configurar_smtp}."
             )
@@ -676,6 +745,7 @@ def build_comprobantes_router(
             enviar_comprobante_por_mail(
                 to_email=payload.email.strip(), to_name=factura["cliente_razon"],
                 pdf_path=pdf_path, factura_label=etiqueta, total=factura["total"],
+                resolver=smtp_config,
             )
         except Exception as e:
             raise HTTPException(502, f"Error al enviar: {e}") from e
