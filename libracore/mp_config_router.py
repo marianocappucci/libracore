@@ -31,6 +31,9 @@ from libracore import config_manager
 
 #: Los campos de MercadoPago que la pantalla edita. El resto de `config.json`
 #: no se toca desde acá.
+#:
+#: `mp_auto_facturar_ventas` NO está en esta tupla: es el único cuyo nombre en
+#: `config.json` cambia de producto en producto. Ver `CAMPO_AUTO_FACTURAR`.
 CAMPOS = (
     "mp_access_token",
     "mp_webhook_secret",
@@ -38,8 +41,23 @@ CAMPOS = (
     "mp_iva_rate",
     "mp_user_id",
     "mp_pos_id",
-    "mp_auto_facturar_ventas",
 )
+
+#: Con qué clave de `config.json` se guarda el interruptor de facturación
+#: automática, por defecto.
+#:
+#: 🔴 **El nombre en la API es siempre `mp_auto_facturar_ventas`; el que cambia
+#: es el de la base.** LibraClub guarda `mp_auto_facturar_reservas` —lo que
+#: cobra el QR de su mostrador es un turno de cancha, no una venta— y su
+#: `servicios/cobro_qr` lee esa clave para decidir si emite. Montar este router
+#: ahí con la clave de ventas dejaría el interruptor escribiendo en un lugar
+#: que nadie lee: la pantalla diría que está prendido y no se emitiría ninguna
+#: factura, sin ningún error.
+#:
+#: Se parametriza la clave y no se renombra la de LibraClub porque el valor ya
+#: está guardado en las instancias vivas: renombrarla apagaría la facturación
+#: automática de todo complejo que la tuviera prendida, en el deploy.
+CAMPO_AUTO_FACTURAR = "mp_auto_facturar_ventas"
 
 #: Los que no pueden salir en claro por la API.
 SECRETOS = ("mp_access_token", "mp_webhook_secret")
@@ -71,25 +89,35 @@ def enmascarar(valor: str) -> str:
     return f"{valor[:4]}…{valor[-4:]}"
 
 
-def _visible(cfg: dict) -> dict:
+def _visible(cfg: dict, campo_auto: str = CAMPO_AUTO_FACTURAR) -> dict:
     salida = {k: cfg.get(k, "") for k in CAMPOS}
     for k in SECRETOS:
         salida[k] = enmascarar(cfg.get(k, ""))
         salida[f"{k}_cargado"] = bool((cfg.get(k) or "").strip())
-    salida["mp_auto_facturar_ventas"] = bool(cfg.get("mp_auto_facturar_ventas"))
+    # Sale SIEMPRE con el nombre de la API, venga de la clave que venga.
+    salida["mp_auto_facturar_ventas"] = bool(cfg.get(campo_auto))
     return salida
 
 
-def build_mp_config_router(*, prefix: str = "/api/config/mercadopago") -> APIRouter:
+def build_mp_config_router(
+    *,
+    prefix: str = "/api/config/mercadopago",
+    campo_auto_facturar: str = CAMPO_AUTO_FACTURAR,
+) -> APIRouter:
     """Va detrás del gate de admin del producto. **Todo el router**, incluida la
     lectura: aunque el token salga enmascarado, saber si hay credenciales
     cargadas y con qué CUIT cobra el negocio no es información de cualquier
-    usuario logueado."""
+    usuario logueado.
+
+    `campo_auto_facturar` es la clave de `config.json` donde vive el
+    interruptor de facturación automática. El nombre en la API no cambia — ver
+    `CAMPO_AUTO_FACTURAR`.
+    """
     router = APIRouter(prefix=prefix, tags=["mercadopago"])
 
     @router.get("")
     def obtener():
-        return _visible(config_manager.load())
+        return _visible(config_manager.load(), campo_auto_facturar)
 
     @router.put("")
     def guardar(payload: MpPayload):
@@ -100,8 +128,9 @@ def build_mp_config_router(*, prefix: str = "/api/config/mercadopago") -> APIRou
                 # Vacío = no lo toqués. La pantalla muestra el enmascarado.
                 continue
             cfg[campo] = valor
+        cfg[campo_auto_facturar] = bool(payload.mp_auto_facturar_ventas)
         config_manager.save(cfg)
-        return _visible(config_manager.load())
+        return _visible(config_manager.load(), campo_auto_facturar)
 
     @router.delete("/credenciales")
     def borrar_credenciales():
@@ -111,7 +140,7 @@ def build_mp_config_router(*, prefix: str = "/api/config/mercadopago") -> APIRou
         for campo in SECRETOS:
             cfg[campo] = ""
         config_manager.save(cfg)
-        return _visible(config_manager.load())
+        return _visible(config_manager.load(), campo_auto_facturar)
 
     @router.post("/probar")
     async def probar():
