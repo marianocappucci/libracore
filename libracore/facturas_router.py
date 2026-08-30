@@ -448,14 +448,27 @@ def build_comprobantes_router(
     # ── Catálogo y listado ────────────────────────────────────────────────
 
     @router.get("/tipos")
-    def tipos():
-        """Qué puede emitir este emisor, y con qué opciones. Lo lee el formulario."""
+    def tipos(usuario: dict = Depends(usuario_actual)):
+        """Qué puede emitir este emisor, y con qué opciones. Lo lee el formulario.
+
+        🔑 **El `punto_venta` que devuelve es el del POS donde está parado quien
+        pregunta**, no el de la empresa: sale de la caja de su turno abierto. Un
+        cliente con varios mostradores necesita numeración fiscal separada por
+        mostrador, porque ARCA numera por (tipo, punto de venta).
+
+        Si esa caja no tiene uno propio —o no hay turno abierto— cae al de la
+        empresa, que es como funcionó siempre y es el caso de todas las
+        instancias existentes.
+        """
         tipos_emisor = _tipos_emisor()
         return {
             "tipos": tipos_emisor,
             "conceptos": CONCEPTOS,
             "condiciones_venta": CONDICIONES_VENTA,
-            "punto_venta": _arca_punto_venta(),
+            "punto_venta": (
+                db_caja.resolver_punto_venta((usuario or {}).get("id"))
+                or _arca_punto_venta()
+            ),
             "es_monotributista": (
                 len(tipos_emisor) == 1 and tipos_emisor[0]["value"] == 11
             ),
