@@ -164,11 +164,24 @@ def calcular_totales(items: list[dict], tax_rate: float) -> dict:
 def _smtp_efectivo(resolver) -> dict:
     """El SMTP a usar: el del resolver del producto si lo hay, `config.json` si no.
 
-    ⚠️ La caida a `config.json` es **transitoria** y no un default de diseno.
-    Existe para que una instancia que todavia no migro sus datos siga mandando
-    comprobantes: sin ella, el dia del deploy los comprobantes dejarian de salir
-    **sin ningun sintoma** --nadie se entera hasta que un cliente reclama una
-    factura que no le llego--. Se saca cuando las instancias esten migradas.
+    ⚠️ La caida a `config.json` es una **red de seguridad medida**, no un
+    default de diseno. Se relevaron las 7 instancias de la flota que montan
+    este router antes de escribirla:
+
+    - En 6 de 7, `config.json` esta **vacio** y el SMTP sale del entorno. En
+      esas, mandar un comprobante por mail **hoy falla con un 400**, aunque la
+      instancia tiene un SMTP perfectamente usable en `LIBRAAUTH_SMTP_*`. Este
+      cambio tambien las arregla.
+    - La unica con datos en `config.json` es `contalibra` de produccion, y sus
+      valores son **identicos** a los del entorno --la misma casilla--. Por eso
+      no hace falta migrar nada: copiarlos a la base solo agregaria una tercera
+      copia cifrada de las mismas credenciales.
+
+    O sea que hoy esta rama **no se ejecuta en ninguna instancia**. Se deja
+    igual porque es la direccion segura: si a `contalibra` le sacaran las
+    variables de entorno, sus comprobantes seguirian saliendo por donde salen
+    hoy en vez de cortarse **sin ningun sintoma** --nadie se entera hasta que
+    un cliente reclama una factura que no le llego--.
     """
     if resolver is not None:
         cfg = resolver()

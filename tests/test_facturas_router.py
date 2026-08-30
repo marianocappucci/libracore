@@ -810,12 +810,14 @@ def test_manda_con_el_SMTP_del_producto_y_no_con_el_de_config_json(tmp_path, mon
 
 
 def test_una_instancia_sin_migrar_sigue_mandando_por_config_json(tmp_path, monkeypatch):
-    """⚠️ La caída transitoria, y por qué existe.
+    """⚠️ La red de seguridad, y por qué existe.
 
-    El resolver contesta —el producto lo inyectó— pero la instancia todavía no
-    tiene nada cargado en el store nuevo. Sin esta caída, el día del deploy los
-    comprobantes dejarían de salir **sin ningún síntoma**: el endpoint contesta
-    400 y el que factura no mira la respuesta del mail.
+    El resolver contesta —el producto lo inyectó— pero no tiene nada: ni base
+    ni entorno. Se relevó la flota antes de escribir esta rama y **hoy no se
+    ejecuta en ninguna instancia**; se deja porque es la dirección segura. Sin
+    ella, una instancia con datos sólo en `config.json` dejaría de mandar
+    comprobantes **sin ningún síntoma**: el endpoint contesta 400 y el que
+    factura no mira la respuesta del mail.
     """
     from libracore import config_manager as cm
 
