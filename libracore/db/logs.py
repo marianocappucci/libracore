@@ -233,31 +233,43 @@ def contar_login_fallidos_recientes(ip: str, minutos: int = 15) -> int:
     # 🔴 El corte de la ventana se calcula distinto segun el motor, y no es un
     # capricho: `auth_log.ts` NO tiene el mismo tipo en todos los productos.
     #
-    # Donde la tabla la crea ESTE DDL la columna es TEXT, y ahi lo correcto es
-    # comparar lexicograficamente contra el texto de `datetime('now',
-    # 'localtime')` -- que es justo lo que emite el adaptador. Pero donde la
-    # crea el modelo de libraauth (porque `db_usuarios` se importa antes de que
-    # corra este DDL) la columna es `timestamp`, y `timestamp >= text` no existe
-    # en PostgreSQL. Era el error que trababa las suites de Contalibra y
-    # Restolibra: 266 y 122 apariciones, la mayoria de sus rojos, el 2026-08-10.
+    # Donde la tabla la crea ESTE DDL la columna es TEXT. Pero donde la crea el
+    # modelo de libraauth (porque `db_usuarios` se importa antes de que corra
+    # este DDL) la columna es `timestamp`, y `timestamp >= text` no existe en
+    # PostgreSQL. Era el error que trababa las suites de Contalibra y Restolibra:
+    # 266 y 122 apariciones, la mayoria de sus rojos, el 2026-08-10. Por eso el
+    # `::timestamp` sobre la columna: sirve para los dos tipos --sobre una
+    # columna que ya es timestamp no hace nada-- y deja una sola consulta.
     #
-    # Pasando un `datetime` de Python la comparacion es timestamp contra
-    # timestamp y anda con la columna de cualquiera de los dos tipos -- si es
-    # TEXT, PostgreSQL castea. `datetime.now()` es hora local, igual que
-    # `LOCALTIMESTAMP` y que el `datetime('now','localtime')` de SQLite.
+    # 🔴 **Y el corte lo calcula la BASE, no el proceso.** Hasta el 2026-08-30
+    # esto pasaba un `datetime.now()` de Python, o sea el reloj del PROCESO,
+    # contra un `ts` que escribe el DEFAULT de la tabla con el reloj de la BASE
+    # (`datetime('now','localtime')`, que el adaptador traduce a
+    # `to_char(LOCALTIMESTAMP, ...)`). Si las dos zonas no coinciden, los
+    # intentos recientes parecen viejos y la funcion devuelve **cero**: el rate
+    # limiting de `/login` se apaga sin que nada avise.
     #
-    # En SQLite la consulta queda como estaba: `sqlite3` no adapta objetos
-    # `datetime` desde Python 3.12, y alla la columna siempre es TEXT.
+    # Medido: con la base en `America/Argentina/Buenos_Aires` --la zona que el
+    # estandar de la familia manda para produccion-- y el proceso en UTC, contaba
+    # 0 en vez de 1. Contra una base en UTC pasaba, que es por lo que el CI no lo
+    # veia. Hoy produccion tiene las dos alineadas, pero ya se desalinearon una
+    # vez (el barrido de huso del 2026-08-23, donde el contenedor se movio y la
+    # base no).
+    #
+    # Con `LOCALTIMESTAMP` el mismo reloj escribe y compara, asi que la funcion
+    # deja de depender de que nadie desalinee nada.
+    #
+    # En SQLite la consulta queda como estaba, y por el mismo motivo:
+    # `datetime('now','localtime', ?)` **ya** se evalua del lado de la base.
     from . import core
 
     with get_connection() as conn:
         if core.is_postgres():
-            from datetime import datetime as _dt, timedelta as _td
-
             row = conn.execute(
                 """SELECT COUNT(*) FROM auth_log
-                   WHERE evento='login_fallido' AND ip=? AND ts >= ?""",
-                (ip, _dt.now() - _td(minutes=int(minutos))),
+                   WHERE evento='login_fallido' AND ip=?
+                     AND ts::timestamp >= LOCALTIMESTAMP - make_interval(mins => ?)""",
+                (ip, int(minutos)),
             ).fetchone()
         else:
             row = conn.execute(
