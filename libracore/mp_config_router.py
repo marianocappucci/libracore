@@ -21,13 +21,27 @@ botón que dice si el token sirve.
 Y una del mismo tipo: **un token vacío no borra el que estaba.** La pantalla
 muestra el valor enmascarado, así que mandar el campo tal como se ve borraría la
 credencial. Vacío significa "no lo toqués", igual que la contraseña de SMTP.
+
+## De qué ambiente es la credencial
+
+MercadoPago **no tiene un ambiente de homologación** como ARCA: no hay host de
+sandbox, es el mismo `api.mercadopago.com` para los dos y **lo que define el
+ambiente es el token**. Hasta que esto existió, la pantalla no lo decía en
+ningún lado, y las dos fallas eran mudas: un token de producción en una `dev`
+cobra plata de verdad, y uno de prueba en la instancia de un cliente no cobra
+nada. Las dos "funcionan": el QR se genera y la orden se crea igual.
+
+Ver `clasificar_ambiente` para por qué mirar el prefijo del token no alcanza.
 """
+
+import hashlib
 
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from libracore import config_manager
+from libracore.db.core import _ar_now
 
 #: Los campos de MercadoPago que la pantalla edita. El resto de `config.json`
 #: no se toca desde acá.
@@ -64,6 +78,77 @@ SECRETOS = ("mp_access_token", "mp_webhook_secret")
 
 URL_USERS_ME = "https://api.mercadopago.com/users/me"
 
+#: Los tres valores que puede tomar el ambiente, más el vacío de "no hay
+#: credencial cargada". `INDETERMINADO` no es un error: es "hay un token y
+#: todavía nadie le preguntó a MercadoPago de quién es".
+PRUEBA        = "prueba"
+PRODUCCION    = "produccion"
+INDETERMINADO = "indeterminado"
+
+#: Las claves derivadas que este router escribe en `config.json`. **No están en
+#: `CAMPOS`** a propósito: el ambiente no se elige desde la pantalla, se deriva.
+CAMPOS_AMBIENTE = ("mp_ambiente", "mp_ambiente_verificado", "mp_ambiente_huella")
+
+
+def huella(token: str) -> str:
+    """Identifica al token sin guardarlo de nuevo. Es lo que hace que la
+    clasificación se descarte sola cuando la credencial cambia."""
+    token = (token or "").strip()
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
+
+
+def clasificar_ambiente(token: str, nickname: str | None = None) -> str:
+    """De qué ambiente es una credencial de MercadoPago.
+
+    🔴 **Mirar el prefijo del token NO alcanza**, y esa es toda la dificultad de
+    esta función. Hay dos formas de tener credenciales de prueba:
+
+    1. Las **credenciales de prueba de la aplicación**, que salen con sólo
+       crearla y empiezan con `TEST-`. Esas sí se reconocen sin red.
+    2. Un **usuario de prueba** — una cuenta ficticia completa. Para tener sus
+       credenciales hay que entrar a MercadoPago con esa cuenta y crear una
+       aplicación adentro, y las que salen de ahí empiezan con **`APP_USR-`**,
+       igual que las reales. Lo único que las delata es el `nickname` de
+       `/users/me`, que en las cuentas de prueba es del tipo `TEST45I5GYIH`.
+
+    De ahí que el `nickname` sea un parámetro y no algo que esta función salga a
+    buscar: con él clasifica del todo, y sin él sólo puede reconocer el caso 1.
+    """
+    token = (token or "").strip()
+    if not token:
+        return ""
+    if token.upper().startswith("TEST-"):
+        return PRUEBA
+    if nickname is None:
+        return INDETERMINADO
+    return PRUEBA if str(nickname).upper().startswith("TEST") else PRODUCCION
+
+
+def ambiente_de(cfg: dict) -> tuple[str, str]:
+    """El ambiente que hay que mostrar, y desde cuándo se sabe.
+
+    🔴 **La huella es la que impide que esto mienta.** La clasificación guardada
+    vale para el token sobre el que se determinó y para ningún otro; si el
+    `mp_access_token` de al lado cambió —por la pantalla, por `panel_admin`
+    escribiendo `config.json`, por restaurar un backup— deja de coincidir y acá
+    se responde `INDETERMINADO`. Sin ese cotejo, pasar una instancia de prueba a
+    producción dejaría el cartel diciendo "prueba" sobre una credencial real:
+    justo la falla que el cartel viene a evitar, ahora confirmada por escrito.
+    """
+    token = (cfg.get("mp_access_token") or "").strip()
+    if not token:
+        return "", ""
+    sin_red = clasificar_ambiente(token)
+    if sin_red == PRUEBA:
+        # El prefijo `TEST-` es concluyente por sí solo: no hay nada que
+        # verificar contra MercadoPago, ni caché que pueda quedar viejo.
+        return PRUEBA, ""
+    if cfg.get("mp_ambiente") and cfg.get("mp_ambiente_huella") == huella(token):
+        return cfg["mp_ambiente"], cfg.get("mp_ambiente_verificado", "")
+    return INDETERMINADO, ""
+
 
 class MpPayload(BaseModel):
     """⚠️ Los secretos son `str` con default vacío **a propósito**: vacío quiere
@@ -96,7 +181,15 @@ def _visible(cfg: dict, campo_auto: str = CAMPO_AUTO_FACTURAR) -> dict:
         salida[f"{k}_cargado"] = bool((cfg.get(k) or "").strip())
     # Sale SIEMPRE con el nombre de la API, venga de la clave que venga.
     salida["mp_auto_facturar_ventas"] = bool(cfg.get(campo_auto))
+    salida["mp_ambiente"], salida["mp_ambiente_verificado"] = ambiente_de(cfg)
     return salida
+
+
+def _olvidar_ambiente(cfg: dict) -> None:
+    """Deja el `config.json` sin clasificación. Muta el dict que se le pasa,
+    para poder llamarla en el medio del cargar-actualizar-guardar."""
+    for campo in CAMPOS_AMBIENTE:
+        cfg[campo] = ""
 
 
 def build_mp_config_router(
@@ -122,6 +215,7 @@ def build_mp_config_router(
     @router.put("")
     def guardar(payload: MpPayload):
         cfg = config_manager.load()
+        token_anterior = cfg.get("mp_access_token", "")
         for campo in CAMPOS:
             valor = getattr(payload, campo)
             if campo in SECRETOS and not str(valor).strip():
@@ -129,6 +223,13 @@ def build_mp_config_router(
                 continue
             cfg[campo] = valor
         cfg[campo_auto_facturar] = bool(payload.mp_auto_facturar_ventas)
+        if cfg.get("mp_access_token", "") != token_anterior:
+            # Que el `config.json` no quede con la clasificación de la
+            # credencial anterior al lado de la nueva. Quien impide que eso se
+            # muestre es el cotejo de huella de `ambiente_de()` —esto es
+            # limpieza, no la defensa—, pero un archivo que se lee a mano no
+            # tiene por qué decir algo que ya no es cierto.
+            _olvidar_ambiente(cfg)
         config_manager.save(cfg)
         return _visible(config_manager.load(), campo_auto_facturar)
 
@@ -139,6 +240,7 @@ def build_mp_config_router(
         cfg = config_manager.load()
         for campo in SECRETOS:
             cfg[campo] = ""
+        _olvidar_ambiente(cfg)
         config_manager.save(cfg)
         return _visible(config_manager.load(), campo_auto_facturar)
 
@@ -166,6 +268,17 @@ def build_mp_config_router(
             raise HTTPException(502, f"MercadoPago respondió {r.status_code}: {r.text[:200]}")
 
         datos = r.json()
+
+        # Este es el único momento en que se sabe de quién es el token, así que
+        # es acá donde se clasifica el ambiente y se anota. Pintar la pantalla
+        # no puede depender de que MercadoPago conteste.
+        cfg = config_manager.load()
+        ambiente = clasificar_ambiente(token, datos.get("nickname"))
+        cfg["mp_ambiente"] = ambiente
+        cfg["mp_ambiente_verificado"] = _ar_now()
+        cfg["mp_ambiente_huella"] = huella(token)
+        config_manager.save(cfg)
+
         return {
             "ok": True,
             "user_id": datos.get("id"),
@@ -173,6 +286,7 @@ def build_mp_config_router(
             "email": datos.get("email"),
             "site_id": datos.get("site_id"),
             "pais": datos.get("country_id"),
+            "ambiente": ambiente,
         }
 
     return router
