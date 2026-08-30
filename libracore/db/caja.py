@@ -122,23 +122,89 @@ def get_default_caja_id() -> int | None:
     return row[0] if row else None
 
 
+class PuntoDeVentaRepetido(ValueError):
+    """Otra caja ya tiene ese punto de venta de ARCA."""
+
+
+def _validar_punto_venta(conn, punto_venta, cid: int | None = None) -> None:
+    """🔴 Dos cajas no pueden compartir el punto de venta de ARCA.
+
+    ARCA numera por **(tipo, punto de venta)**, así que dos mostradores con el
+    mismo punto de venta comparten la serie y compiten por el próximo número. Y
+    el choque no lo detectamos nosotros: lo detecta ARCA, rechazando el segundo
+    comprobante — con el cliente esperando el ticket.
+
+    `None` no cuenta como repetido: es lo que dice "esta caja usa el punto de
+    venta de la empresa", y es el estado de todas las cajas que existen hoy.
+    """
+    if punto_venta is None:
+        return
+    fila = conn.execute(
+        "SELECT nombre FROM cajas WHERE punto_venta = ? AND id <> ?",
+        (punto_venta, cid if cid is not None else -1),
+    ).fetchone()
+    if fila:
+        raise PuntoDeVentaRepetido(
+            f"El punto de venta {punto_venta} ya lo usa la caja {fila[0]!r}. "
+            f"ARCA numera por punto de venta: dos cajas con el mismo comparten "
+            f"la serie, y el segundo comprobante lo rechaza ARCA."
+        )
+
+
 def create_caja_config(nombre: str, descripcion: str, medios_pago: list,
-                       sucursal_id: int | None = None) -> int:
+                       sucursal_id: int | None = None,
+                       punto_venta: int | None = None) -> int:
     with get_connection() as conn:
+        _validar_punto_venta(conn, punto_venta)
         cur = conn.execute(
-            "INSERT INTO cajas (nombre, descripcion, medios_pago, sucursal_id)"
-            " VALUES (?,?,?,?)",
-            (nombre, descripcion, json.dumps(medios_pago), sucursal_id),
+            "INSERT INTO cajas (nombre, descripcion, medios_pago, sucursal_id, punto_venta)"
+            " VALUES (?,?,?,?,?)",
+            (nombre, descripcion, json.dumps(medios_pago), sucursal_id, punto_venta),
         )
         return cur.lastrowid
 
 
-def update_caja_config(cid: int, nombre: str, descripcion: str, medios_pago: list, activo: int):
+def update_caja_config(cid: int, nombre: str, descripcion: str, medios_pago: list,
+                       activo: int, punto_venta: int | None = None):
+    """`punto_venta=None` deja la caja usando el de la empresa.
+
+    Va con default para no romper a los llamadores que ya existen: los productos
+    que no tienen varios POS lo llaman con cinco argumentos y siguen igual.
+    """
     with get_connection() as conn:
+        _validar_punto_venta(conn, punto_venta, cid)
         conn.execute(
-            "UPDATE cajas SET nombre=?, descripcion=?, medios_pago=?, activo=? WHERE id=?",
-            (nombre, descripcion, json.dumps(medios_pago), activo, cid),
+            "UPDATE cajas SET nombre=?, descripcion=?, medios_pago=?, activo=?,"
+            " punto_venta=? WHERE id=?",
+            (nombre, descripcion, json.dumps(medios_pago), activo, punto_venta, cid),
         )
+
+
+def resolver_punto_venta(usuario_id: int | None) -> int | None:
+    """El punto de venta de ARCA del POS donde está parado este usuario.
+
+    La cadena es **usuario → turno abierto → caja → punto de venta**. No hace
+    falta ningún concepto nuevo de "terminal": el turno ya sabe en qué caja está
+    abierto. Es la misma razón por la que cada POS necesita su propio usuario
+    logueado — si dos comparten usuario, comparten turno, y entonces comparten
+    punto de venta.
+
+    Devuelve `None` cuando no hay usuario, cuando no hay turno abierto, o cuando
+    la caja no tiene punto de venta propio. **`None` significa "usá el de la
+    empresa"**, que es el caso de toda instancia que hoy funciona con uno solo —
+    o sea todas.
+    """
+    if not usuario_id:
+        return None
+    with get_connection() as conn:
+        fila = conn.execute(
+            """SELECT c.punto_venta
+                 FROM turnos_caja t JOIN cajas c ON c.id = t.caja_id
+                WHERE t.usuario_id = ? AND t.estado = 'abierto'
+                ORDER BY t.id DESC LIMIT 1""",
+            (usuario_id,),
+        ).fetchone()
+    return fila[0] if fila and fila[0] else None
 
 
 def set_default_caja(cid: int):
