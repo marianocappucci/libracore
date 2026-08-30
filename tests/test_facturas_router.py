@@ -27,7 +27,8 @@ from libracore.db.schema import init_core_schema
 USUARIO = {"id": 1, "username": "admin", "nombre": "Administrador"}
 
 
-def _montar(tmp_path, monkeypatch, *, al_emitir=None, registrar_cobro=None, dev=True):
+def _montar(tmp_path, monkeypatch, *, al_emitir=None, registrar_cobro=None, dev=True,
+            smtp_config=None):
     """Una app con el router montado, como lo haría un producto."""
     core.configure(db_path=str(tmp_path / "comprobantes.db"))
     conn = core.get_connection()
@@ -71,6 +72,7 @@ def _montar(tmp_path, monkeypatch, *, al_emitir=None, registrar_cobro=None, dev=
             al_emitir=al_emitir,
             registrar_cobro=registrar_cobro,
             donde_configurar_smtp="Configuración → Integraciones",
+            smtp_config=smtp_config,
         )
     )
     return TestClient(app)
@@ -743,3 +745,107 @@ def test_sin_reemplazo_el_cobro_sigue_siendo_el_de_siempre(tmp_path, monkeypatch
     assert r.status_code == 200, r.text
     assert r.json()["pendiente"] == 0.0
     assert len(r.json()["cobros"]) == 1
+
+
+# ── De dónde sale el SMTP con el que se manda ─────────────────────────────
+#
+# 🔴 En la familia hay DOS configuraciones de SMTP: la de libraauth —cifrada,
+# la que configura la pantalla compartida— y la de `config.json`, que es la que
+# este router leía. El producto le pasa la primera vía `smtp_config`; lo que se
+# prueba acá es que **le haga caso**, y que una instancia sin migrar siga
+# mandando.
+
+
+class _SmtpFalso:
+    """Duck-type de `libraauth.email_sender.SmtpConfig`, que LibraCore no importa."""
+
+    def __init__(self, **kw):
+        self.host = kw.get("host", "")
+        self.port = kw.get("port", 587)
+        self.user = kw.get("user", "")
+        self.password = kw.get("password", "")
+        self.from_email = kw.get("from_email", "")
+        self.from_name = kw.get("from_name", "")
+
+    @property
+    def configurado(self) -> bool:
+        return bool(self.host and self.user)
+
+
+def test_manda_con_el_SMTP_del_producto_y_no_con_el_de_config_json(tmp_path, monkeypatch):
+    """🔑 Los dos stores están cargados, **y con datos distintos**.
+
+    Ese es el punto: con `config.json` vacío, un router que ignorara el resolver
+    pasaría este test igual —las dos ramas darían el mismo mail sin mandar—. La
+    única forma de ver cuál de los dos ganó es que digan cosas diferentes.
+    """
+    from libracore import config_manager as cm
+
+    resolver = lambda: _SmtpFalso(
+        host="smtp.libraauth", port=465, user="cifrado@example.com",
+        password="el-bueno", from_email="facturas@example.com", from_name="Ventas",
+    )
+    client = _montar(tmp_path, monkeypatch, smtp_config=resolver)
+    cm.save({
+        "email_smtp_host": "smtp.viejo", "email_smtp_user": "viejo@example.com",
+        "email_smtp_password": "el-viejo", "empresa_nombre": "Complejo Centro",
+    })
+
+    llamado = {}
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", lambda **kw: llamado.update(kw))
+
+    factura = _emitir(client)
+    r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "c@example.com"})
+    assert r.status_code == 200, r.text
+
+    assert llamado["smtp_host"] == "smtp.libraauth"
+    assert llamado["smtp_port"] == 465
+    assert llamado["smtp_user"] == "cifrado@example.com"
+    assert llamado["smtp_password"] == "el-bueno"
+    assert llamado["from_email"] == "facturas@example.com"
+    assert llamado["from_name"] == "Ventas"
+    # El nombre de la empresa NO viaja en el SMTP: sigue saliendo de la config
+    # del producto, y el cliente lo lee en el cuerpo del mail.
+    assert llamado["empresa_nombre"] == "Complejo Centro"
+
+
+def test_una_instancia_sin_migrar_sigue_mandando_por_config_json(tmp_path, monkeypatch):
+    """⚠️ La caída transitoria, y por qué existe.
+
+    El resolver contesta —el producto lo inyectó— pero la instancia todavía no
+    tiene nada cargado en el store nuevo. Sin esta caída, el día del deploy los
+    comprobantes dejarían de salir **sin ningún síntoma**: el endpoint contesta
+    400 y el que factura no mira la respuesta del mail.
+    """
+    from libracore import config_manager as cm
+
+    client = _montar(tmp_path, monkeypatch, smtp_config=lambda: _SmtpFalso())
+    cm.save({
+        "email_smtp_host": "smtp.viejo", "email_smtp_user": "viejo@example.com",
+        "email_smtp_password": "el-viejo",
+    })
+
+    llamado = {}
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", lambda **kw: llamado.update(kw))
+
+    factura = _emitir(client)
+    r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "c@example.com"})
+    assert r.status_code == 200, r.text
+    assert llamado["smtp_host"] == "smtp.viejo"
+    # Sin `email_from`, el remitente es el propio usuario del SMTP.
+    assert llamado["from_email"] == "viejo@example.com"
+
+
+def test_sin_SMTP_en_ninguno_de_los_dos_el_400_dice_donde_configurarlo(tmp_path, monkeypatch):
+    """El control negativo: que el 400 siga saliendo, y con el texto del producto."""
+    client = _montar(tmp_path, monkeypatch, smtp_config=lambda: _SmtpFalso())
+
+    def sender_que_no_deberia_correr(**kw):
+        raise AssertionError("no tendría que haberse llamado")
+
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", sender_que_no_deberia_correr)
+
+    factura = _emitir(client)
+    r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "c@example.com"})
+    assert r.status_code == 400, r.text
+    assert "Configuración → Integraciones" in r.json()["detail"]
