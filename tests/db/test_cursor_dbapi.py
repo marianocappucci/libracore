@@ -105,8 +105,15 @@ def test_el_rate_limit_no_depende_del_reloj_del_proceso(conn, monkeypatch):
     `auth_log.ts` lo escribe el DEFAULT de la tabla, con el reloj de la **base**.
     Hasta el 2026-08-30 la ventana se calculaba con `datetime.now()`, el reloj
     del **proceso**. Con las dos zonas desalineadas los intentos recientes
-    parecían viejos y la función devolvía 0: **el rate limiting de `/login` se
-    apagaba sin que nada avisara.**
+    parecían viejos y la función devolvía 0, que significa "nadie agotó
+    intentos".
+
+    ⚠️ **Sin exagerar el alcance**: el barrido del 2026-08-30 sobre los 12 repos
+    no encontró un solo call site de esta función —sólo el `def`, los tests y el
+    re-export de `app/db_logs.py` en Contalibra y Restolibra—. El rate limiting
+    que corre en los productos es el de `libraauth.auth_events`, coherente
+    consigo mismo. Esto deja sana una función exportada como API pública, no
+    cierra un agujero vivo. El detalle, en el comentario de `db/logs.py`.
 
     Se descubrió corriendo la suite contra un PostgreSQL con
     `America/Argentina/Buenos_Aires` —la zona que el estándar de la familia manda

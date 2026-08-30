@@ -246,18 +246,43 @@ def contar_login_fallidos_recientes(ip: str, minutos: int = 15) -> int:
     # contra un `ts` que escribe el DEFAULT de la tabla con el reloj de la BASE
     # (`datetime('now','localtime')`, que el adaptador traduce a
     # `to_char(LOCALTIMESTAMP, ...)`). Si las dos zonas no coinciden, los
-    # intentos recientes parecen viejos y la funcion devuelve **cero**: el rate
-    # limiting de `/login` se apaga sin que nada avise.
+    # intentos recientes parecen viejos y la funcion devuelve **cero**, que
+    # significa "nadie agoto intentos".
     #
     # Medido: con la base en `America/Argentina/Buenos_Aires` --la zona que el
     # estandar de la familia manda para produccion-- y el proceso en UTC, contaba
     # 0 en vez de 1. Contra una base en UTC pasaba, que es por lo que el CI no lo
-    # veia. Hoy produccion tiene las dos alineadas, pero ya se desalinearon una
-    # vez (el barrido de huso del 2026-08-23, donde el contenedor se movio y la
-    # base no).
+    # veia. Y ya se desalinearon una vez de verdad: el barrido de huso del
+    # 2026-08-23, donde el contenedor se movio y la base no.
     #
     # Con `LOCALTIMESTAMP` el mismo reloj escribe y compara, asi que la funcion
     # deja de depender de que nadie desalinee nada.
+    #
+    # ⚠️ **PERO NADIE LA LLAMA, y el commit que la arreglo decia otra cosa.**
+    # Barrido del 2026-08-30 sobre los 12 repos: los unicos usos de esta funcion
+    # y de `registrar_auth_event` son el `def` de aca, los tests, y el re-export
+    # de `app/db_logs.py` en Contalibra y Restolibra --que reexporta, no llama--.
+    # Cero call sites.
+    #
+    # El rate limiting que SI corre en los productos es el de
+    # `libraauth.auth_events`, que llega por `session_auth.py` desde el router de
+    # login del motor. Ese tiene su propio par escritor/lector y los dos usan el
+    # reloj del PROCESO (`default=datetime.now` en el modelo, `datetime.now()` en
+    # `contar_fallidos_recientes`), asi que es coherente consigo mismo: el
+    # desfasaje de zona no lo afecta.
+    #
+    # O sea que el arreglo de arriba **no cerro un agujero vivo**: dejo sana una
+    # funcion que hoy no defiende nada. Vale igual, porque esta exportada como
+    # API publica de dos productos y el proximo que la enchufe no tiene por que
+    # heredar el defecto. Pero no leerlo como que /login estaba desprotegido.
+    #
+    # 🔴 Y ojo con el detalle que hace que las dos implementaciones no sean
+    # intercambiables: escriben `ts` con relojes distintos sobre LA MISMA tabla.
+    # El modelo de libraauth declara `default=datetime.now` (proceso) **y**
+    # `server_default=LOCALTIMESTAMP` (base); cual de los dos gana depende de si
+    # la fila entra por el ORM o por SQL crudo, que es justo lo que distingue a
+    # los dos escritores. Mezclarlos en una misma instancia reintroduce el
+    # problema por la puerta de al lado.
     #
     # En SQLite la consulta queda como estaba, y por el mismo motivo:
     # `datetime('now','localtime', ?)` **ya** se evalua del lado de la base.
