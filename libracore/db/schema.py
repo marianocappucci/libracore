@@ -773,6 +773,17 @@ def init_core_schema(conn: Conexion):
     cols_cajas = [r[1] for r in conn.execute("PRAGMA table_info(cajas)").fetchall()]
     if "sucursal_id" not in cols_cajas:
         conn.execute("ALTER TABLE cajas ADD COLUMN sucursal_id INTEGER")
+    # El punto de venta de ARCA de este mostrador. **Nullable a propósito**: hasta
+    # hoy había uno solo por instancia —el de `arca_config`— y las instancias que
+    # sigan así no cambian en nada: una caja sin punto de venta propio usa el de
+    # la empresa. Ver `resolver_punto_venta()` en `db/cajas.py`.
+    #
+    # Existe porque un cliente con varios POS necesita numeración fiscal separada
+    # por mostrador: ARCA numera por (tipo, punto de venta), así que dos cajas
+    # compartiendo punto de venta comparten la serie y compiten por el próximo
+    # número — con el agravante de que el choque lo detecta ARCA, no nosotros.
+    if "punto_venta" not in cols_cajas:
+        conn.execute("ALTER TABLE cajas ADD COLUMN punto_venta INTEGER")
 
     cols = [r[1] for r in conn.execute("PRAGMA table_info(clients)").fetchall()]
     if "iva_condition" not in cols:
