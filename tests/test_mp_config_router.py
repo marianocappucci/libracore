@@ -147,6 +147,79 @@ def test_los_campos_que_no_son_secretos_se_guardan_como_vienen(cliente, cm):
     assert datos["mp_auto_facturar_ventas"] is True
 
 
+# ── La clave del interruptor de facturación automática ───────────────────────
+
+@pytest.fixture
+def cliente_con_clave_propia(cm):
+    """Un producto que guarda el interruptor con OTRO nombre. El caso vivo es
+    LibraClub: lo que cobra el QR de su mostrador es un turno de cancha, no una
+    venta, y su `servicios/cobro_qr` lee `mp_auto_facturar_reservas`."""
+    import libracore.mp_config_router as mcr
+    importlib.reload(mcr)
+
+    def gate(x_rol: str = Header(default="")):
+        if x_rol != "admin":
+            raise HTTPException(403, "solo administradores")
+
+    aplicacion = FastAPI()
+    aplicacion.include_router(
+        mcr.build_mp_config_router(campo_auto_facturar="mp_auto_facturar_reservas"),
+        dependencies=[Depends(gate)],
+    )
+    return TestClient(aplicacion)
+
+
+def test_el_interruptor_se_guarda_en_la_clave_que_pide_el_producto(
+    cliente_con_clave_propia, cm,
+):
+    """🔴 Con la clave equivocada el interruptor escribe donde nadie lee: la
+    pantalla diría que está prendido y no se emitiría ninguna factura, sin un
+    solo error. Es la forma de fallar que este parámetro existe para impedir."""
+    cliente_con_clave_propia.put(RUTA, headers=ADMIN, json={
+        "mp_user_id": "555", "mp_auto_facturar_ventas": True,
+    })
+    guardado = cm.load()
+    assert guardado["mp_auto_facturar_reservas"] is True
+    # Y NO deja además la clave de ventas prendida: dos fuentes de verdad para
+    # el mismo interruptor es peor que una equivocada.
+    assert guardado.get("mp_auto_facturar_ventas") is not True
+
+
+def test_el_nombre_en_la_API_no_cambia_aunque_cambie_el_de_la_base(
+    cliente_con_clave_propia, cm,
+):
+    """La pantalla es la misma en los ocho productos: si el JSON cambiara de
+    nombre según el producto, el interruptor quedaría muerto en uno de ellos."""
+    cm.save({**cm.load(), "mp_auto_facturar_reservas": True})
+    datos = cliente_con_clave_propia.get(RUTA, headers=ADMIN).json()
+    assert datos["mp_auto_facturar_ventas"] is True
+    assert "mp_auto_facturar_reservas" not in datos
+
+
+def test_el_control_por_defecto_sigue_usando_la_clave_de_ventas(cliente, cm):
+    """El control del caso de arriba. Sin esto, un `campo_auto_facturar` que se
+    ignorara —o que se escribiera SIEMPRE en `..._reservas`— dejaría los dos
+    tests anteriores en verde y rompería los siete productos que no pasan el
+    parámetro."""
+    cliente.put(RUTA, headers=ADMIN, json={
+        "mp_user_id": "555", "mp_auto_facturar_ventas": True,
+    })
+    guardado = cm.load()
+    assert guardado["mp_auto_facturar_ventas"] is True
+    assert guardado.get("mp_auto_facturar_reservas") is not True
+
+
+def test_apagar_el_interruptor_lo_apaga_de_verdad(cliente_con_clave_propia, cm):
+    """Un `False` tiene que llegar a la base. Si el guardado sólo escribiera los
+    valores "verdaderos" —que es lo que sale natural cuando se filtra por
+    "vino en el payload"— el interruptor se podría prender y no apagar."""
+    cm.save({**cm.load(), "mp_auto_facturar_reservas": True})
+    cliente_con_clave_propia.put(RUTA, headers=ADMIN, json={
+        "mp_user_id": "555", "mp_auto_facturar_ventas": False,
+    })
+    assert cm.load()["mp_auto_facturar_reservas"] is False
+
+
 def test_una_clave_de_mas_no_entra_en_config_json(cliente, cm):
     """El payload es declarado: un `PUT` con una clave extra no puede escribir
     cualquier cosa en `config.json`, donde también viven los secretos."""
