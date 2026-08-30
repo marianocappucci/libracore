@@ -341,3 +341,78 @@ def test_probar_cuando_arca_rechaza_devuelve_el_texto_de_arca(client, tmp_path, 
     r = client.post("/config/arca/probar", headers=ADMIN)
     assert r.status_code == 502
     assert "no autorizado" in r.json()["detail"]
+
+
+# ── El slug de la empresa lo pone el producto ────────────────────────────────
+
+
+@pytest.fixture
+def cliente_de_instancia_unica(tmp_path, monkeypatch):
+    """Un producto de instancia unica, que lee su facturacion con un slug fijo.
+
+    El caso vivo son cuatro: `negocio` en Gestiolibra, `consultorio` en
+    MedLibra, `venta` en VentaLibra, `complejo` en LibraClub.
+
+    Se arma igual que el fixture `app` --misma base temporal, mismo DATA_DIR--
+    pero declarando el default del producto y sin gate: lo que se prueba aca es
+    en que fila cae el guardado, no el permiso.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    import libracore.config_manager as cm
+    importlib.reload(cm)
+    import libracore.arca_router as ar
+    importlib.reload(ar)
+
+    core.configure(db_path=str(tmp_path / "arca_slug_test.db"))
+    conn = core.get_connection()
+    init_core_schema(conn)
+    conn.commit()
+
+    aplicacion = FastAPI()
+    aplicacion.include_router(ar.build_arca_router(empresa_por_defecto="venta"))
+    yield TestClient(aplicacion)
+    conn.close()
+    core._db_path = None
+
+
+def test_la_fila_nueva_se_crea_con_el_slug_del_producto(cliente_de_instancia_unica):
+    """🔴 La falla que esto cierra es muda: con la fila creada como `default`, el
+    PUT contesta 200 y la pantalla dice "Guardado", pero el servicio de
+    facturacion del producto --que lee `venta`-- no la ve nunca. Se descubre al
+    emitir el primer comprobante."""
+    r = cliente_de_instancia_unica.put("/config/arca", json={"cuit": "30111111118", "punto_venta": 3})
+    assert r.status_code == 200
+    assert r.json()["empresa"] == "venta"
+
+
+def test_subir_el_certificado_primero_tambien_cae_en_el_slug_del_producto(
+    cliente_de_instancia_unica,
+):
+    """El primer movimiento puede ser subir el certificado, no guardar el CUIT:
+    ahi la fila la crea `_guardar_path`, y tiene que caer en el mismo lugar."""
+    r = cliente_de_instancia_unica.post(
+        "/config/arca/certificado", files={"archivo": ("x.pem", b"no soy un certificado", "text/plain")},
+    )
+    # Se rechaza por invalido --que es lo correcto-- y no llega a crear fila.
+    assert r.status_code == 422
+
+
+def test_una_fila_que_YA_existe_le_gana_al_default(cliente_de_instancia_unica):
+    """El default es para la instancia SIN fila. Si ya hay una --por ejemplo,
+    creada con la razon social-- pisarla con el slug del producto crearia una
+    segunda al lado de la que la instancia venia usando."""
+    from libracore.db import arca_config as db_arca_config
+    db_arca_config.crear_arca_config(
+        empresa="razon-social-real", cuit="20111111119", punto_venta=1,
+        clave_path="", certificado_path="",
+    )
+    r = cliente_de_instancia_unica.put("/config/arca", json={"cuit": "20111111119", "punto_venta": 9})
+    assert r.json()["empresa"] == "razon-social-real"
+
+
+def test_el_control__sin_declararlo_sigue_siendo_default(client):
+    """Contalibra y Restolibra son multi-empresa y no declaran nada. Sin este
+    control, un router que escribiera SIEMPRE `venta` pasaria los tres tests de
+    arriba y les crearia la fila con el nombre de otro producto."""
+    r = client.put("/config/arca", headers=ADMIN, json={"cuit": "30111111118", "punto_venta": 3})
+    assert r.json()["empresa"] == "default"

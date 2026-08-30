@@ -55,7 +55,11 @@ class ArcaPayload(BaseModel):
     """Lo que la pantalla edita. **Los paths no están acá a propósito**: los
     pone el servidor al recibir el archivo, no el cliente en un JSON."""
 
-    empresa: str = "default"
+    #: 🔴 Vacío y no `"default"`: con `"default"` como valor del campo, "no lo
+    #: mandaron" y "lo mandaron como default" son indistinguibles, y el router
+    #: no puede caer en la fila que ya existe ni en el slug del producto. Ver
+    #: `empresa_por_defecto` en `build_arca_router`.
+    empresa: str = ""
     cuit: str = ""
     punto_venta: int = Field(default=1, ge=1)
     ambiente: str = "homologacion"
@@ -109,12 +113,35 @@ def _guardar_path(empresa: str, *, certificado_path=None, clave_path=None) -> di
     return db_arca_config.obtener_arca_config(empresa)
 
 
-def build_arca_router(*, prefix: str = "/config/arca") -> APIRouter:
+def build_arca_router(
+    *,
+    prefix: str = "/config/arca",
+    empresa_por_defecto: str = "default",
+) -> APIRouter:
     """El router de configuración de ARCA. Sin gate propio: lo pone el producto.
 
     `prefix` existe porque los productos ya publicaron rutas distintas y un
     cambio de prefijo rompe el frontend desplegado. La normalización de la ruta
     se hace producto por producto, no de prepo desde acá.
+
+    ## `empresa_por_defecto`, y la falla muda que cierra
+
+    🔴 **Cuatro productos leen su configuración de facturación con un slug
+    FIJO** —`negocio` en Gestiolibra, `consultorio` en MedLibra, `venta` en
+    VentaLibra, `complejo` en LibraClub—, porque son de instancia única y no
+    tienen lista de empresas.
+
+    En una instancia que todavía no facturó no hay fila, y el primer `PUT` la
+    crea. Sin este parámetro la creaba como `default`: el `PUT` contesta 200, la
+    pantalla dice "Guardado", y el servicio de facturación de esos cuatro **no
+    lee esa fila nunca**. Se descubre al emitir el primer comprobante, con un
+    "ARCA no está configurado" sobre una pantalla que muestra el certificado
+    cargado.
+
+    Se resuelve acá y no en cada llamador a propósito: la pantalla compartida ya
+    manda el slug, pero un script, el backoffice o un `curl` no tienen por qué
+    saberlo. El default correcto es del producto, y el producto lo declara una
+    vez al montar el router.
     """
     router = APIRouter(prefix=prefix, tags=["arca"])
 
@@ -143,7 +170,7 @@ def build_arca_router(*, prefix: str = "/config/arca") -> APIRouter:
 
     @router.put("")
     def guardar(payload: ArcaPayload):
-        empresa = payload.empresa.strip() or "default"
+        empresa = payload.empresa.strip() or _empresa_de("", empresa_por_defecto)
         ambiente = payload.ambiente if payload.ambiente in AMBIENTES else "homologacion"
         existente = db_arca_config.obtener_arca_config(empresa)
         if existente:
@@ -173,7 +200,7 @@ def build_arca_router(*, prefix: str = "/config/arca") -> APIRouter:
         except arca_certificados.ArchivoInvalido as e:
             raise HTTPException(422, f"El certificado {e}") from None
 
-        empresa = _empresa_de(empresa or "")
+        empresa = _empresa_de(empresa or "", empresa_por_defecto)
         _, clave_path = _paths(_resolver(empresa))
         if _existe(clave_path):
             with open(clave_path, "rb") as f:
@@ -201,7 +228,7 @@ def build_arca_router(*, prefix: str = "/config/arca") -> APIRouter:
         except arca_certificados.ArchivoInvalido as e:
             raise HTTPException(422, f"La clave privada {e}") from None
 
-        empresa = _empresa_de(empresa or "")
+        empresa = _empresa_de(empresa or "", empresa_por_defecto)
         cert_path, _ = _paths(_resolver(empresa))
         if _existe(cert_path):
             with open(cert_path, "rb") as f:
@@ -324,14 +351,14 @@ def build_arca_router(*, prefix: str = "/config/arca") -> APIRouter:
     return router
 
 
-def _empresa_de(empresa: str) -> str:
+def _empresa_de(empresa: str, por_defecto: str = "default") -> str:
     """La empresa sobre la que operar cuando el request no la nombró.
 
-    La de la fila activa si hay una —para no crear una segunda fila "default"
-    al lado de la que la instancia ya venía usando— y "default" si no hay
-    ninguna.
+    La de la fila activa si hay una —para no crear una segunda fila al lado de
+    la que la instancia ya venía usando— y el default del producto si no hay
+    ninguna. Ver `empresa_por_defecto` en `build_arca_router`.
     """
     if empresa.strip():
         return empresa.strip()
     activas = db_arca_config.obtener_todas_arca_configs()
-    return activas[0]["empresa"] if activas else "default"
+    return activas[0]["empresa"] if activas else por_defecto
