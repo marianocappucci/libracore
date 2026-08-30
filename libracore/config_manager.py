@@ -41,6 +41,18 @@ DEFAULTS = {
     # MercadoPago QR Dinámico (punto de venta presencial)
     "mp_user_id":             "",   # ID numérico del vendedor en MP
     "mp_pos_id":              "",   # External ID del POS creado en MP
+    # De que ambiente es la credencial cargada: "prueba" | "produccion" | "".
+    # NO se elige a mano — lo DERIVA el "probar" de la pantalla preguntandole a
+    # MercadoPago quien es el dueño del token. Ver `mp_config_router`.
+    #
+    # La huella es el sha256 recortado del token sobre el que se determino: si
+    # el token de al lado cambia por cualquier via —la pantalla, panel_admin
+    # escribiendo config.json, restaurar un backup— deja de coincidir y la
+    # clasificacion se descarta sola. Sin ella, cambiar de prueba a produccion
+    # dejaria el cartel diciendo "prueba" sobre una credencial real.
+    "mp_ambiente":            "",
+    "mp_ambiente_verificado": "",   # 'YYYY-MM-DD HH:MM:SS' en hora AR
+    "mp_ambiente_huella":     "",
     # Email / SMTP
     "email_smtp_host":        "",
     "email_smtp_port":        "587",

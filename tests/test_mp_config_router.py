@@ -281,3 +281,152 @@ def test_un_token_que_mp_rechaza_devuelve_lo_que_dijo_mp(cliente, cm, monkeypatc
     r = cliente.post(f"{RUTA}/probar", headers=ADMIN)
     assert r.status_code == 502
     assert "invalid_token" in r.json()["detail"]
+
+
+# ── De qué ambiente es la credencial ─────────────────────────────────────────
+#
+# 🔴 El defecto que estos tests fijan: hasta que esto existió, la pantalla
+# mostraba igual un token de prueba y uno real, y las dos fallas eran mudas —
+# producción en una `dev` cobra plata de verdad, prueba en la instancia de un
+# cliente no cobra nada, y las dos "funcionan".
+
+TOKEN_TEST = "TEST-1234567890abcdef"
+#: El token de un **usuario de prueba**: empieza con `APP_USR-`, igual que uno
+#: real. Es el caso que una implementación por prefijo clasifica al revés.
+NICK_DE_PRUEBA = "TEST45I5GYIH"
+
+
+def _mp_responde(cliente, monkeypatch, nickname):
+    _mockear_mp(cliente, monkeypatch, httpx.Response(200, json={
+        "id": 555, "nickname": nickname, "email": "yo@test",
+        "site_id": "MLA", "country_id": "AR",
+    }))
+
+
+def test_sin_credencial_el_ambiente_no_es_ninguno(cliente):
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == ""
+
+
+def test_el_prefijo_test_se_reconoce_sin_salir_a_la_red(cliente, cm):
+    """Las credenciales de prueba de la aplicación se delatan solas. Este caso
+    no necesita `probar`, ni caché que pueda quedar viejo."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN_TEST})
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == "prueba"
+
+
+def test_un_app_usr_sin_verificar_no_se_da_por_produccion(cliente, cm):
+    """🔑 Que no empiece con `TEST-` NO lo hace de producción: el token de un
+    usuario de prueba también empieza con `APP_USR-`. Hasta preguntar, no se
+    sabe, y decir "producción" acá sería el mismo cartel mentiroso al revés."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == "indeterminado"
+
+
+def test_probar_reconoce_al_usuario_de_prueba_por_el_nickname(cliente, cm, monkeypatch):
+    """🔑 **El test que distingue esta implementación de la ingenua.** Token
+    `APP_USR-`, cuenta de prueba: la única señal es el nickname."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mp_responde(cliente, monkeypatch, NICK_DE_PRUEBA)
+
+    assert cliente.post(f"{RUTA}/probar", headers=ADMIN).json()["ambiente"] == "prueba"
+    visible = cliente.get(RUTA, headers=ADMIN).json()
+    assert visible["mp_ambiente"] == "prueba"
+    assert visible["mp_ambiente_verificado"], "tiene que decir desde cuándo se sabe"
+
+
+def test_probar_con_una_cuenta_real_dice_produccion(cliente, cm, monkeypatch):
+    """El control del de arriba. Sin él, una clasificación que devolviera
+    siempre "prueba" dejaría al anterior en verde."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mp_responde(cliente, monkeypatch, "MICOMERCIO")
+
+    assert cliente.post(f"{RUTA}/probar", headers=ADMIN).json()["ambiente"] == "produccion"
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == "produccion"
+
+
+def test_la_clasificacion_sobrevive_a_una_lectura_posterior(cliente, cm, monkeypatch):
+    """El positivo que le da sentido a los dos tests de invalidación de abajo:
+    sin esto, una implementación que devolviera SIEMPRE "indeterminado" los
+    dejaría a los dos en verde."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mp_responde(cliente, monkeypatch, NICK_DE_PRUEBA)
+    cliente.post(f"{RUTA}/probar", headers=ADMIN)
+
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == "prueba"
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == "prueba"
+
+
+def test_la_huella_descarta_una_clasificacion_de_otro_token(cliente, cm):
+    """🔴 **La defensa, medida sola.** El `config.json` se escribe a mano —como
+    lo haría `panel_admin`, o restaurar un backup— con la clasificación de una
+    credencial y el token de otra. Sin el cotejo de huella, la pantalla diría
+    "prueba" sobre un token que nunca se verificó.
+
+    Va sin pasar por el `PUT` a propósito: el `PUT` además limpia, así que un
+    test que entrara por ahí pasaría igual con el cotejo roto.
+    """
+    cm.save({**cm.load(),
+             "mp_access_token": TOKEN,
+             "mp_ambiente": "prueba",
+             "mp_ambiente_verificado": "2026-08-30 10:00:00",
+             "mp_ambiente_huella": "huelladeotrotoken"})
+
+    visible = cliente.get(RUTA, headers=ADMIN).json()
+    assert visible["mp_ambiente"] == "indeterminado"
+    assert visible["mp_ambiente_verificado"] == ""
+
+
+def test_guardar_otro_token_deja_de_decir_prueba(cliente, cm, monkeypatch):
+    """El camino que de verdad se recorre: la instancia se verificó contra una
+    cuenta de prueba y después le cargan la credencial real del cliente."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mp_responde(cliente, monkeypatch, NICK_DE_PRUEBA)
+    cliente.post(f"{RUTA}/probar", headers=ADMIN)
+
+    r = cliente.put(RUTA, headers=ADMIN, json={"mp_access_token": "APP_USR-el-real-del-cliente"})
+
+    assert r.json()["mp_ambiente"] != "prueba"
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == "indeterminado"
+    assert cm.load()["mp_ambiente"] == "", "el archivo tampoco puede quedar diciéndolo"
+
+
+def test_guardar_otra_cosa_no_pierde_la_clasificacion(cliente, cm, monkeypatch):
+    """El control del de arriba: el `PUT` olvida cuando **el token** cambia, no
+    en cada guardado. Si olvidara siempre, el cartel se apagaría al tocar
+    cualquier campo de la pantalla y habría que re-verificar por nada."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mp_responde(cliente, monkeypatch, NICK_DE_PRUEBA)
+    cliente.post(f"{RUTA}/probar", headers=ADMIN)
+
+    # El token va vacío, que en esta pantalla significa "no lo toqués".
+    r = cliente.put(RUTA, headers=ADMIN, json={"mp_user_id": "555"})
+    assert r.json()["mp_ambiente"] == "prueba"
+
+
+def test_borrar_las_credenciales_borra_la_clasificacion(cliente, cm, monkeypatch):
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mp_responde(cliente, monkeypatch, NICK_DE_PRUEBA)
+    cliente.post(f"{RUTA}/probar", headers=ADMIN)
+
+    assert cliente.delete(f"{RUTA}/credenciales", headers=ADMIN).json()["mp_ambiente"] == ""
+    assert cm.load()["mp_ambiente_huella"] == ""
+
+
+def test_el_ambiente_no_se_puede_poner_a_mano(cliente, cm):
+    """Se deriva. Un `PUT` que lo aceptara convertiría el cartel en una
+    declaración del usuario, que es exactamente lo que no sirve."""
+    cliente.put(RUTA, headers=ADMIN, json={"mp_user_id": "555", "mp_ambiente": "produccion"})
+    assert cm.load()["mp_ambiente"] == ""
+
+
+def test_un_config_json_sin_las_claves_nuevas_se_lee_igual(cliente, cm, tmp_path):
+    """Las instancias vivas tienen un `config.json` escrito antes de que estas
+    claves existieran. Leerlo no puede romper la pantalla."""
+    import json
+    (tmp_path / "config.json").write_text(
+        json.dumps({"mp_access_token": TOKEN, "empresa_nombre": "Sin las claves"}),
+        encoding="utf-8",
+    )
+    r = cliente.get(RUTA, headers=ADMIN)
+    assert r.status_code == 200, r.text
+    assert r.json()["mp_ambiente"] == "indeterminado"
