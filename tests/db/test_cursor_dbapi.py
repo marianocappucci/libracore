@@ -99,6 +99,63 @@ def test_el_rate_limit_cuenta_contra_una_columna_timestamp(conn):
     assert contar_login_fallidos_recientes("9.9.9.9", minutos=15) == 0
 
 
+def test_el_rate_limit_no_depende_del_reloj_del_proceso(conn, monkeypatch):
+    """🔴 Si el proceso y la base no coinciden de zona, contaba CERO.
+
+    `auth_log.ts` lo escribe el DEFAULT de la tabla, con el reloj de la **base**.
+    Hasta el 2026-08-30 la ventana se calculaba con `datetime.now()`, el reloj
+    del **proceso**. Con las dos zonas desalineadas los intentos recientes
+    parecían viejos y la función devolvía 0: **el rate limiting de `/login` se
+    apagaba sin que nada avisara.**
+
+    Se descubrió corriendo la suite contra un PostgreSQL con
+    `America/Argentina/Buenos_Aires` —la zona que el estándar de la familia manda
+    para producción— con el proceso en UTC. Contra una base en UTC pasaba, que es
+    por lo que el CI no lo veía.
+
+    Este test lo fija **sin depender de cómo esté configurada la base que lo
+    corra**: mueve el reloj del proceso tres horas y verifica que la cuenta no
+    cambie. Antes del arreglo, sólo eso bastaba para romperlo.
+    """
+    import libracore.db.logs as _logs
+
+    conn.execute("""
+        CREATE TABLE auth_log (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts       TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP,
+            evento   TEXT NOT NULL,
+            username TEXT NOT NULL,
+            ip       TEXT,
+            detalle  TEXT
+        )
+    """)
+    conn.execute(
+        "INSERT INTO auth_log (evento, username, ip)"
+        " VALUES ('login_fallido','x','1.2.3.4')"
+    )
+    conn.commit()
+
+    assert _logs.contar_login_fallidos_recientes("1.2.3.4", minutos=15) == 1, (
+        "el control: con los relojes como están, cuenta bien"
+    )
+
+    import datetime as _dt_mod
+
+    class RelojCorrido(_dt_mod.datetime):
+        """El proceso cree que son tres horas más tarde que la base."""
+
+        @classmethod
+        def now(cls, tz=None):
+            return _dt_mod.datetime.now(tz) + _dt_mod.timedelta(hours=3)
+
+    monkeypatch.setattr(_dt_mod, "datetime", RelojCorrido)
+
+    assert _logs.contar_login_fallidos_recientes("1.2.3.4", minutos=15) == 1, (
+        "la ventana se calculó con el reloj del proceso: un desfasaje de zona "
+        "apaga el rate limiting en silencio"
+    )
+
+
 def test_en_sqlite_el_rate_limit_sigue_igual(tmp_path):
     """La columna ahí es TEXT y la comparación lexicográfica no se toca."""
     from libracore.db.logs import contar_login_fallidos_recientes
