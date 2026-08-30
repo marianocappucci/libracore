@@ -161,8 +161,14 @@ def calcular_totales(items: list[dict], tax_rate: float) -> dict:
 #: `smtp_config` es como el producto le pasa el resolver de libraauth. Se inyecta
 #: y no se importa porque **LibraCore no depende de libraauth**: es el mismo
 #: criterio que `registrar_cobro` y `al_emitir`.
-def _smtp_efectivo(resolver) -> dict:
+def smtp_efectivo(resolver) -> dict:
     """El SMTP a usar: el del resolver del producto si lo hay, `config.json` si no.
+
+    🔑 **Publica a proposito.** En cada producto esto se resuelve en tres
+    lugares --el envio de comprobantes de acá, el de presupuestos, y el
+    endpoint que prueba la conexion-- y los tres tienen que dar lo mismo. Que
+    cada uno lo resuelva por su cuenta es exactamente como aparecieron los dos
+    stores que este cambio viene a unificar.
 
     ⚠️ La caida a `config.json` es una **red de seguridad medida**, no un
     default de diseno. Se relevaron las 7 instancias de la flota que montan
@@ -204,7 +210,7 @@ def _smtp_efectivo(resolver) -> dict:
 
 
 def smtp_configurado(resolver=None) -> bool:
-    smtp = _smtp_efectivo(resolver)
+    smtp = smtp_efectivo(resolver)
     return bool(smtp["host"] and smtp["user"])
 
 
@@ -212,8 +218,8 @@ def enviar_comprobante_por_mail(
     *, to_email: str, to_name: str, pdf_path: str, factura_label: str, total: float,
     resolver=None,
 ) -> None:
-    """Manda el PDF con la config SMTP resuelta. Ver `_smtp_efectivo`."""
-    smtp = _smtp_efectivo(resolver)
+    """Manda el PDF con la config SMTP resuelta. Ver `smtp_efectivo`."""
+    smtp = smtp_efectivo(resolver)
     email_sender.enviar_comprobante(
         to_email=to_email, to_name=to_name, pdf_path=pdf_path,
         empresa_nombre=config_manager.load().get("empresa_nombre", ""),
