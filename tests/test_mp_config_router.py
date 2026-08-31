@@ -430,3 +430,70 @@ def test_un_config_json_sin_las_claves_nuevas_se_lee_igual(cliente, cm, tmp_path
     r = cliente.get(RUTA, headers=ADMIN)
     assert r.status_code == 200, r.text
     assert r.json()["mp_ambiente"] == "indeterminado"
+
+
+# ── `tags` manda sobre `nickname` ────────────────────────────────────────────
+#
+# 🔴 El defecto que estos fijan: clasificar por el NOMBRE de la cuenta es una
+# heuristica sobre un string, y falla en las dos direcciones. MercadoPago
+# declara el dato en `tags: ["test_user", "normal"]` — medido contra una cuenta
+# real el 2026-08-30, con un token `APP_USR-` que era de prueba.
+
+TAGS_DE_PRUEBA = ["test_user", "normal"]
+TAGS_REALES = ["normal"]
+
+
+def test_el_tag_reconoce_una_cuenta_de_prueba_con_nickname_cualquiera(cliente, cm, monkeypatch):
+    """🔑 Lo que el nickname no puede: la cuenta es de prueba y no se llama
+    TEST nada. Con la implementación anterior esto daba "produccion"."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mockear_mp(cliente, monkeypatch, httpx.Response(200, json={
+        "id": 555, "nickname": "MICOMERCIO", "tags": TAGS_DE_PRUEBA,
+    }))
+
+    assert cliente.post(f"{RUTA}/probar", headers=ADMIN).json()["ambiente"] == "prueba"
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == "prueba"
+
+
+def test_el_tag_le_gana_a_un_nickname_que_empieza_con_test(cliente, cm, monkeypatch):
+    """🔑 La otra dirección, y la razón de que `tags` MANDE en vez de sumar: un
+    comercio real que se llame `TESTORE` no es una cuenta de prueba. Si el
+    nickname siguiera pudiendo decir "prueba" por su cuenta, la pantalla diría
+    que no se cobra plata real en una instancia que sí la cobra."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mockear_mp(cliente, monkeypatch, httpx.Response(200, json={
+        "id": 555, "nickname": "TESTORE", "tags": TAGS_REALES,
+    }))
+
+    assert cliente.post(f"{RUTA}/probar", headers=ADMIN).json()["ambiente"] == "produccion"
+
+
+def test_sin_tags_el_nickname_sigue_siendo_el_respaldo(cliente, cm, monkeypatch):
+    """`tags` puede no venir. Perder el criterio viejo al agregar el nuevo
+    dejaría sin reconocer a los usuarios de prueba clásicos."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mockear_mp(cliente, monkeypatch, httpx.Response(200, json={
+        "id": 555, "nickname": NICK_DE_PRUEBA,
+    }))
+
+    assert cliente.post(f"{RUTA}/probar", headers=ADMIN).json()["ambiente"] == "prueba"
+
+
+def test_el_prefijo_test_no_necesita_ni_tags_ni_red(cliente, cm):
+    """El control de que las tres señales conviven: la vieja de todas sigue
+    resolviendo sola, sin preguntarle nada a MercadoPago."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN_TEST})
+    assert cliente.get(RUTA, headers=ADMIN).json()["mp_ambiente"] == "prueba"
+
+
+def test_una_lista_de_tags_vacia_no_es_una_cuenta_de_prueba(cliente, cm, monkeypatch):
+    """Una lista vacía es una respuesta, no una ausencia: `[]` significa que
+    MercadoPago contestó y no puso la marca. Tratarla como "no vino" mandaría
+    al respaldo del nickname justo cuando hay un dato declarado que dice que
+    no."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    _mockear_mp(cliente, monkeypatch, httpx.Response(200, json={
+        "id": 555, "nickname": "TESTORE", "tags": [],
+    }))
+
+    assert cliente.post(f"{RUTA}/probar", headers=ADMIN).json()["ambiente"] == "produccion"

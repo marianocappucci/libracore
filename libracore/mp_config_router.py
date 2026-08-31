@@ -99,28 +99,57 @@ def huella(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
-def clasificar_ambiente(token: str, nickname: str | None = None) -> str:
+#: La marca con la que MercadoPago declara que una cuenta es de prueba, en el
+#: `tags` de `/users/me`. Es un dato **declarado**, no una inferencia sobre un
+#: nombre: por eso manda sobre el `nickname`.
+TAG_DE_PRUEBA = "test_user"
+
+
+def clasificar_ambiente(
+    token: str,
+    nickname: str | None = None,
+    tags: list | None = None,
+) -> str:
     """De qué ambiente es una credencial de MercadoPago.
 
     🔴 **Mirar el prefijo del token NO alcanza**, y esa es toda la dificultad de
-    esta función. Hay dos formas de tener credenciales de prueba:
+    esta función. Un token de prueba puede empezar con `APP_USR-`, igual que uno
+    real, en los dos casos que hay:
 
-    1. Las **credenciales de prueba de la aplicación**, que salen con sólo
-       crearla y empiezan con `TEST-`. Esas sí se reconocen sin red.
-    2. Un **usuario de prueba** — una cuenta ficticia completa. Para tener sus
-       credenciales hay que entrar a MercadoPago con esa cuenta y crear una
-       aplicación adentro, y las que salen de ahí empiezan con **`APP_USR-`**,
-       igual que las reales. Lo único que las delata es el `nickname` de
-       `/users/me`, que en las cuentas de prueba es del tipo `TEST45I5GYIH`.
+    1. Un **usuario de prueba** — la cuenta ficticia completa. Sus credenciales
+       salen de una aplicación creada adentro de esa cuenta y llevan `APP_USR-`.
+    2. Las **credenciales de prueba automáticas de la aplicación**. Hasta 2025
+       empezaban con `TEST-`; desde el cambio de MercadoPago de noviembre de
+       2025 —la app las recibe sola al crearse— también vienen con `APP_USR-`.
+       Medido contra una cuenta real el 2026-08-30: token `APP_USR-…` y cuenta
+       de prueba.
 
-    De ahí que el `nickname` sea un parámetro y no algo que esta función salga a
-    buscar: con él clasifica del todo, y sin él sólo puede reconocer el caso 1.
+    O sea que el prefijo `TEST-` sólo sirve para reconocer las viejas, y hay que
+    preguntarle a `/users/me` de quién es el token.
+
+    ## Qué se mira de la respuesta, y en qué orden
+
+    🔑 **`tags` manda sobre `nickname`.** MercadoPago devuelve
+    `tags: ["test_user", "normal"]` en las cuentas de prueba: es una marca
+    **declarada** por ellos. El `nickname` es una heurística sobre un string, y
+    falla en las dos direcciones — un comercio real llamado `TESTORE` quedaría
+    marcado como prueba, y basta con que cambien el formato del nickname (cosa
+    que acaban de hacer con los tokens) para dejar de reconocer las de prueba.
+
+    Por eso, **si `tags` vino, decide él y el nickname no se mira**. El nickname
+    queda como respaldo para el caso de que `tags` no venga.
+
+    `nickname` y `tags` son parámetros y no algo que esta función salga a
+    buscar: pintar una pantalla no puede depender de que MercadoPago conteste.
+    Sin ninguno de los dos, responde `INDETERMINADO` en vez de arriesgar.
     """
     token = (token or "").strip()
     if not token:
         return ""
     if token.upper().startswith("TEST-"):
         return PRUEBA
+    if tags is not None:
+        return PRUEBA if TAG_DE_PRUEBA in tags else PRODUCCION
     if nickname is None:
         return INDETERMINADO
     return PRUEBA if str(nickname).upper().startswith("TEST") else PRODUCCION
@@ -273,7 +302,8 @@ def build_mp_config_router(
         # es acá donde se clasifica el ambiente y se anota. Pintar la pantalla
         # no puede depender de que MercadoPago conteste.
         cfg = config_manager.load()
-        ambiente = clasificar_ambiente(token, datos.get("nickname"))
+        ambiente = clasificar_ambiente(
+            token, datos.get("nickname"), datos.get("tags"))
         cfg["mp_ambiente"] = ambiente
         cfg["mp_ambiente_verificado"] = _ar_now()
         cfg["mp_ambiente_huella"] = huella(token)
