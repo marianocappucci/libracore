@@ -529,7 +529,9 @@ def init_core_schema(conn: Conexion):
             medio      TEXT NOT NULL,
             monto      REAL NOT NULL,
             referencia TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now','-3 hours'))
+            created_at TEXT DEFAULT (datetime('now','-3 hours')),
+            estado     TEXT NOT NULL DEFAULT 'aprobado'
+                       CHECK (estado IN ('pendiente','aprobado','rechazado','vencido'))
         );
 
         CREATE TABLE IF NOT EXISTS cuentas_tesoreria (
@@ -784,6 +786,32 @@ def init_core_schema(conn: Conexion):
     # número — con el agravante de que el choque lo detecta ARCA, no nosotros.
     if "punto_venta" not in cols_cajas:
         conn.execute("ALTER TABLE cajas ADD COLUMN punto_venta INTEGER")
+
+    # 🔴 **Un pago puede existir y no haber entrado.** Hasta acá una línea de
+    # `ventas_pagos` no tenía estado: existía, y por lo tanto contaba. El POS de
+    # Contalibra crea la venta con la línea de MercadoPago cargada por el total
+    # y el estado sale `cobrada` en el acto, antes de que nadie escanee el QR —
+    # y `crear_venta_directa` escribe además el movimiento de caja, así que una
+    # venta que nadie paga mete plata en la caja que no entró.
+    # Ver `libracore/pagos.py` y el plan en el wiki.
+    #
+    # 🔑 **El default `'aprobado'` es para las filas que YA existen**, y ése es
+    # todo su motivo: lo que está guardado hoy ya cobró, así que el backfill no
+    # puede mover un solo número. La contracara es que un `INSERT` que se olvide
+    # la columna también queda en `aprobado` — el default peligroso que
+    # `pagos.estado_de()` se niega a tomar. **Lo que cierra ese hueco es el
+    # camino de escritura**, en `db/ventas.py`, donde el estado pasa a ser
+    # obligatorio; no se puede cerrar acá sin romper la migración de las filas
+    # viejas.
+    #
+    # El `CHECK` sí es de acá: un estado inventado no entra ni por error de
+    # tipeo, y el vocabulario queda declarado en la base.
+    cols_pagos = [r[1] for r in conn.execute("PRAGMA table_info(ventas_pagos)").fetchall()]
+    if "estado" not in cols_pagos:
+        conn.execute(
+            "ALTER TABLE ventas_pagos ADD COLUMN estado TEXT NOT NULL DEFAULT 'aprobado' "
+            "CHECK (estado IN ('pendiente','aprobado','rechazado','vencido'))"
+        )
 
     cols = [r[1] for r in conn.execute("PRAGMA table_info(clients)").fetchall()]
     if "iva_condition" not in cols:

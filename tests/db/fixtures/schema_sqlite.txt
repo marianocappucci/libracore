@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (370)
+## tablas (371)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -348,6 +348,7 @@ usuarios|password_hash|TEXT|NN|
 usuarios|role|TEXT|NN|'operador'
 usuarios|username|TEXT|NN|
 ventas_pagos|created_at|TEXT||datetime('now','-3 hours')
+ventas_pagos|estado|TEXT|NN|'aprobado'
 ventas_pagos|id|INTEGER||
 ventas_pagos|medio|TEXT|NN|
 ventas_pagos|monto|REAL|NN|
