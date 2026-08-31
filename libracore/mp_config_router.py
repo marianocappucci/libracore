@@ -38,9 +38,10 @@ import hashlib
 
 import httpx
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
-from libracore import config_manager
+from libracore import config_manager, mp_api
 from libracore.db.core import _ar_now
 
 #: Los campos de MercadoPago que la pantalla edita. El resto de `config.json`
@@ -318,5 +319,127 @@ def build_mp_config_router(
             "pais": datos.get("country_id"),
             "ambiente": ambiente,
         }
+
+    # ── El QR de la caja ────────────────────────────────────────────────────
+    #
+    # 🔴 **Por qué esto es una pantalla y no una instrucción.** El QR de
+    # mostrador es un cartel impreso, y hasta hoy conseguirlo era entrar al
+    # panel de MercadoPago, encontrar la caja entre las de todos los productos y
+    # bajar el archivo. Con diez cajas que se llaman parecido —`CONTADEV`,
+    # `CONTADEMO`, `RESTODEV`…— bajar la del vecino no da ningún error: da un
+    # cartel que cobra en la caja equivocada.
+    #
+    # Acá la caja no se elige: es **la que esta instancia tiene configurada**.
+
+    async def _caja_configurada() -> dict:
+        """La caja de esta instancia, o el error que explica qué falta.
+
+        Los tres errores son distintos a propósito. `sin token`, `sin POS ID` y
+        `la caja no existe en esta cuenta` se arreglan en lugares distintos, y
+        el tercero es el que de verdad pasa: un token de producción con el
+        `pos_id` de la caja de prueba —o al revés— es exactamente lo que queda
+        cuando se migra una instancia de dev a un cliente.
+        """
+        cfg = config_manager.load()
+        token = (cfg.get("mp_access_token") or "").strip()
+        pos_id = (cfg.get("mp_pos_id") or "").strip()
+        if not token:
+            raise HTTPException(400, "No hay Access Token configurado.")
+        if not pos_id:
+            raise HTTPException(
+                400,
+                "No hay POS ID configurado: es el identificador externo de la "
+                "caja en MercadoPago, y sin él no se sabe cuál QR mostrar.",
+            )
+        try:
+            caja = await mp_api.obtener_pos(pos_id, token)
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                502,
+                f"MercadoPago respondió {e.response.status_code}: "
+                f"{e.response.text[:200]}",
+            ) from None
+        except httpx.RequestError as e:
+            raise HTTPException(502, f"Sin conexión con MercadoPago: {e}") from None
+        if caja is None:
+            raise HTTPException(
+                404,
+                f"La cuenta de este Access Token no tiene ninguna caja "
+                f"«{pos_id}». Puede ser que el POS ID esté mal escrito, o que "
+                f"la caja se haya creado en la otra cuenta (la de prueba o la "
+                f"real).",
+            )
+        return caja
+
+    @router.get("/qr")
+    async def qr_de_la_caja():
+        """Qué QR tiene esta instancia, sin traer todavía ningún archivo.
+
+        Devuelve el **`external_id` canónico de MercadoPago**, no el que está
+        escrito en la configuración: el filtro de MP no distingue mayúsculas, y
+        una caja configurada `contadev` se vería igual que una bien escrita.
+
+        Y devuelve el **ambiente**: un QR de una cuenta de prueba se ve idéntico
+        a uno real, no cobra nada, y el error se descubre recién con el cartel
+        pegado en el mostrador.
+        """
+        caja = await _caja_configurada()
+        cfg = config_manager.load()
+        ambiente, _ = ambiente_de(cfg)
+        archivos = caja.get("qr") or {}
+        return {
+            "pos_id": caja.get("external_id") or "",
+            "pos_nombre": caja.get("name") or "",
+            "pos_numero": caja.get("id"),
+            "ambiente": ambiente,
+            # Cuáles de los tres formatos tiene ESTA caja. No se asume que los
+            # tres vengan siempre: lo que no está no se ofrece para descargar,
+            # en vez de ofrecerlo y fallar al hacer clic.
+            "formatos": [
+                nombre for nombre, (clave, _ct, _ext) in mp_api.FORMATOS_QR.items()
+                if (archivos.get(clave) or "").strip()
+            ],
+        }
+
+    @router.get("/qr/{formato}")
+    async def archivo_del_qr(formato: str):
+        """Los bytes de uno de los archivos del QR.
+
+        Los trae el motor y no el navegador: la URL de MercadoPago **es** el
+        cartel —quien la tenga puede imprimir el QR que cobra en esa cuenta—, y
+        además así el archivo baja con un nombre que se entiende en vez del hash
+        de 64 caracteres que le pone MercadoPago.
+
+        `inline` y no `attachment`: la pantalla lo muestra con un `<img>` y el
+        navegador igual deja bajarlo. Un `attachment` haría que verlo fuera
+        imposible sin descargarlo.
+        """
+        if formato not in mp_api.FORMATOS_QR:
+            raise HTTPException(404, f"No existe el formato «{formato}».")
+        clave, content_type, extension = mp_api.FORMATOS_QR[formato]
+
+        caja = await _caja_configurada()
+        url = ((caja.get("qr") or {}).get(clave) or "").strip()
+        if not url:
+            raise HTTPException(
+                404,
+                f"La caja «{caja.get('external_id')}» no tiene el archivo "
+                f"«{formato}» publicado en MercadoPago.",
+            )
+        try:
+            contenido = await mp_api.descargar_archivo_qr(url)
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                502, f"MercadoPago respondió {e.response.status_code} al bajar el archivo."
+            ) from None
+        except httpx.RequestError as e:
+            raise HTTPException(502, f"Sin conexión con MercadoPago: {e}") from None
+
+        nombre = f"qr-{caja.get('external_id') or 'caja'}-{formato}.{extension}"
+        return Response(
+            content=contenido,
+            media_type=content_type,
+            headers={"Content-Disposition": f'inline; filename="{nombre}"'},
+        )
 
     return router

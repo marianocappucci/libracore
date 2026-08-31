@@ -497,3 +497,239 @@ def test_una_lista_de_tags_vacia_no_es_una_cuenta_de_prueba(cliente, cm, monkeyp
     }))
 
     assert cliente.post(f"{RUTA}/probar", headers=ADMIN).json()["ambiente"] == "produccion"
+
+
+# -- El QR de la caja --------------------------------------------------------
+#
+# 🔴 El defecto que esto cierra no es que faltara un botón: es que conseguir el
+# cartel del mostrador obligaba a entrar al panel de MercadoPago y encontrar la
+# caja entre las de todos los productos. Con diez cajas que se llaman parecido
+# —`CONTADEV`, `CONTADEMO`, `RESTODEV`…— bajar la del vecino **no da ningún
+# error**: da un cartel que cobra en la caja equivocada.
+
+#: La caja tal como la devuelve MercadoPago. Los tres archivos y el
+#: `external_id` en MAYÚSCULAS son los de la respuesta real, medida contra la
+#: cuenta el 2026-08-31.
+CAJA = {
+    "id": 137400058,
+    "name": "Caja dev de contalibra",
+    "external_id": "CONTADEV",
+    "fixed_amount": True,
+    "qr": {
+        "image": "https://www.mercadopago.com/instore/merchant/qr/137400058/abc.png",
+        "template_image": "https://www.mercadopago.com/instore/merchant/qr/137400058/t_abc.png",
+        "template_document": "https://www.mercadopago.com/instore/merchant/qr/137400058/t_abc.pdf",
+    },
+}
+
+PNG = b"\x89PNG\r\n\x1a\nlos-bytes-del-qr"
+PDF = b"%PDF-1.4 el-cartel-para-imprimir"
+
+
+def _mockear_por_url(cliente, monkeypatch, rutas, *, defecto=None):
+    """Despacha **por URL**, y guarda todos los pedidos.
+
+    🔑 El `_mockear_mp` de arriba devuelve la MISMA respuesta a cualquier
+    llamada, y este flujo hace dos —buscar la caja y bajar el archivo—. Con una
+    respuesta única el test del PDF pasaría recibiendo el JSON de la caja, que
+    es justo lo que no se quiere afirmar.
+
+    Y despachar por URL es además lo que deja **afirmar a qué URL se llamó**:
+    una implementación que le pegue a otro endpoint de MercadoPago no matchea
+    ninguna ruta y revienta, en vez de recibir la respuesta de otra cosa.
+    """
+    cliente.pedidos = []
+
+    class Transporte(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            cliente.pedidos.append(request)
+            for fragmento, respuesta in rutas.items():
+                if fragmento in str(request.url):
+                    return respuesta
+            if defecto is not None:
+                return defecto
+            raise AssertionError("URL no esperada: %s" % request.url)
+
+    def fabricar(*a, **kw):
+        kw["transport"] = Transporte()
+        return _ASYNC_CLIENT_REAL(*a, **kw)
+
+    monkeypatch.setattr(cliente.modulo.httpx, "AsyncClient", fabricar)
+
+
+def _con_caja(cm, pos_id="CONTADEV", token=TOKEN):
+    cm.save({**cm.load(), "mp_access_token": token,
+             "mp_user_id": "3392230021", "mp_pos_id": pos_id})
+
+
+def _pos(resultados):
+    return {"/pos": httpx.Response(200, json={"results": resultados})}
+
+
+def test_sin_token_no_sale_a_buscar_ningun_qr(cliente, cm):
+    cm.save({**cm.load(), "mp_pos_id": "CONTADEV"})
+    r = cliente.get(RUTA + "/qr", headers=ADMIN)
+    assert r.status_code == 400
+    assert "Access Token" in r.json()["detail"]
+
+
+def test_sin_pos_id_lo_dice_en_vez_de_pedir_la_lista_entera(cliente, cm):
+    """🔑 `GET /pos` sin `external_id` devuelve **todas** las cajas de la
+    cuenta. Salir a buscar con el campo vacío y quedarse con la primera es
+    mostrar el QR de otro producto de la familia."""
+    cm.save({**cm.load(), "mp_access_token": TOKEN})
+    r = cliente.get(RUTA + "/qr", headers=ADMIN)
+    assert r.status_code == 400
+    assert "POS ID" in r.json()["detail"]
+
+
+def test_la_caja_que_no_esta_en_esta_cuenta_nombra_a_la_otra_cuenta(cliente, cm, monkeypatch):
+    """El caso vivo: un token de producción con el `pos_id` de la caja de
+    prueba —o al revés—, que es lo que queda al migrar una instancia de dev a
+    un cliente. Un "no encontrado" pelado manda a buscar el error donde no
+    está."""
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch, _pos([]))
+    r = cliente.get(RUTA + "/qr", headers=ADMIN)
+    assert r.status_code == 404
+    detalle = r.json()["detail"]
+    assert "CONTADEV" in detalle
+    assert "prueba" in detalle and "real" in detalle
+
+
+def test_el_qr_dice_de_que_caja_es_y_de_que_ambiente(cliente, cm, monkeypatch):
+    """El ambiente va acá y no sólo en la tarjeta: un QR de una cuenta de
+    prueba se ve **idéntico** a uno real y no cobra nada. Sin decirlo, el error
+    se descubre con el cartel ya pegado en el mostrador."""
+    _con_caja(cm, token=TOKEN_TEST)
+    _mockear_por_url(cliente, monkeypatch, _pos([CAJA]))
+    r = cliente.get(RUTA + "/qr", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["pos_id"] == "CONTADEV"
+    assert d["pos_nombre"] == "Caja dev de contalibra"
+    assert d["pos_numero"] == 137400058
+    assert d["ambiente"] == "prueba"
+    assert sorted(d["formatos"]) == ["cartel", "pdf", "qr"]
+
+
+def test_el_external_id_que_se_muestra_es_el_de_mercadopago(cliente, cm, monkeypatch):
+    """🔑 El filtro de MercadoPago **no distingue mayúsculas** —medido:
+    `?external_id=contadev` devuelve `CONTADEV`—. Se acepta la caja, pero lo
+    que se muestra es el nombre canónico: devolver el texto tipeado haría que
+    una configuración mal escrita se viera idéntica a una bien escrita."""
+    _con_caja(cm, pos_id="contadev")
+    _mockear_por_url(cliente, monkeypatch, _pos([CAJA]))
+    assert cliente.get(RUTA + "/qr", headers=ADMIN).json()["pos_id"] == "CONTADEV"
+
+
+def test_no_se_queda_con_la_primera_de_la_lista(cliente, cm, monkeypatch):
+    """🔑 El riesgo real de esta cuenta: **las diez cajas de la familia viven
+    juntas**. Si el filtro de MercadoPago no acota —porque cambió, porque el
+    parámetro llegó vacío— la respuesta es la lista entera, y quedarse con la
+    primera devuelve el QR de otro producto sin ningún error.
+
+    Por eso la caja se elige **por su `external_id`** y no por su posición. La
+    lista de acá abajo arranca con `CONTADEMO` a propósito: una implementación
+    que tome `results[0]` pasa el resto de los tests y falla éste.
+    """
+    demo = {**CAJA, "id": 137400060, "external_id": "CONTADEMO",
+            "name": "Caja demo de contalibra"}
+    resto = {**CAJA, "id": 137400064, "external_id": "RESTODEV",
+             "name": "Caja dev de restolibra"}
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch, _pos([demo, resto, CAJA]))
+    d = cliente.get(RUTA + "/qr", headers=ADMIN).json()
+    assert d["pos_id"] == "CONTADEV"
+    assert d["pos_numero"] == 137400058
+
+
+def test_dos_cajas_con_el_mismo_nombre_no_eligen_una(cliente, cm, monkeypatch):
+    """El caso que el filtro **no** puede desempatar. Como MercadoPago no
+    distingue mayúsculas, `CONTADEV` y `contadev` son la misma búsqueda y las
+    dos matchean: no hay forma de saber cuál quiso el operador, y son cajas
+    distintas —cobran en lugares distintos—. Mejor decirlo que elegir al azar.
+    """
+    gemela = {**CAJA, "id": 999, "external_id": "contadev"}
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch, _pos([CAJA, gemela]))
+    assert cliente.get(RUTA + "/qr", headers=ADMIN).status_code == 404
+
+
+def test_solo_se_ofrecen_los_formatos_que_la_caja_tiene(cliente, cm, monkeypatch):
+    """Ofrecer un formato que no está publicado es un botón que falla al
+    hacerle clic."""
+    sin_pdf = {**CAJA, "qr": {k: v for k, v in CAJA["qr"].items()
+                              if k != "template_document"}}
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch, _pos([sin_pdf]))
+    formatos = cliente.get(RUTA + "/qr", headers=ADMIN).json()["formatos"]
+    assert sorted(formatos) == ["cartel", "qr"]
+
+
+def test_un_formato_inventado_no_sale_a_la_red(cliente, cm, monkeypatch):
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch, _pos([CAJA]))
+    assert cliente.get(RUTA + "/qr/gif", headers=ADMIN).status_code == 404
+    assert cliente.pedidos == []
+
+
+def test_el_qr_baja_como_png_con_un_nombre_que_se_entiende(cliente, cm, monkeypatch):
+    """El nombre importa: MercadoPago lo publica como un hash de 64 caracteres,
+    y un cartel impreso que hay que volver a encontrar entre diez descargas
+    iguales no sirve."""
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch,
+                     {**_pos([CAJA]), "/137400058/abc.png": httpx.Response(200, content=PNG)})
+    r = cliente.get(RUTA + "/qr/qr", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    assert r.content == PNG
+    assert r.headers["content-type"] == "image/png"
+    assert 'filename="qr-CONTADEV-qr.png"' in r.headers["content-disposition"]
+
+
+def test_el_pdf_del_cartel_baja_como_pdf(cliente, cm, monkeypatch):
+    """El control positivo del de arriba: si los dos formatos devolvieran lo
+    mismo, el test del PNG pasaría igual con el mapa de formatos roto."""
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch,
+                     {**_pos([CAJA]), "t_abc.pdf": httpx.Response(200, content=PDF)})
+    r = cliente.get(RUTA + "/qr/pdf", headers=ADMIN)
+    assert r.status_code == 200, r.text
+    assert r.content == PDF
+    assert r.headers["content-type"] == "application/pdf"
+    assert 'filename="qr-CONTADEV-pdf.pdf"' in r.headers["content-disposition"]
+
+
+def test_la_busqueda_va_firmada_y_la_descarga_no(cliente, cm, monkeypatch):
+    """Los dos lados de la misma decisión. La búsqueda de la caja necesita el
+    token; el archivo es **público** —medido contra la cuenta real— y mandarle
+    el token a un CDN es filtrar la credencial a un servidor que no la pidió."""
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch,
+                     {**_pos([CAJA]), "abc.png": httpx.Response(200, content=PNG)})
+    cliente.get(RUTA + "/qr/qr", headers=ADMIN)
+
+    busqueda, descarga = cliente.pedidos
+    assert "/pos" in str(busqueda.url)
+    assert busqueda.headers["authorization"] == "Bearer " + TOKEN
+    assert "authorization" not in descarga.headers
+
+
+def test_la_url_de_mercadopago_no_llega_al_navegador(cliente, cm, monkeypatch):
+    """🔴 La URL **es** el cartel: se sirve sin autenticación, así que quien la
+    tenga puede imprimir el QR que cobra en esa cuenta. Por eso el motor trae
+    los bytes en vez de devolver el link."""
+    _con_caja(cm)
+    _mockear_por_url(cliente, monkeypatch, _pos([CAJA]))
+    cuerpo = cliente.get(RUTA + "/qr", headers=ADMIN).text
+    assert "mercadopago.com" not in cuerpo
+    assert "abc.png" not in cuerpo
+
+
+def test_el_qr_esta_detras_del_gate_de_admin(cliente, cm):
+    """Todo el router va detrás del gate; los endpoints nuevos no son la
+    excepción."""
+    _con_caja(cm)
+    assert cliente.get(RUTA + "/qr").status_code == 403
+    assert cliente.get(RUTA + "/qr/qr").status_code == 403

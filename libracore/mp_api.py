@@ -164,6 +164,78 @@ async def eliminar_orden_qr(user_id: str, pos_id: str, access_token: str) -> Non
         await client.delete(_url_orden_qr(user_id, pos_id), headers=headers)
 
 
+#: Los tres archivos que MercadoPago publica por cada caja, y con qué nombre los
+#: expone esta familia.
+#:
+#: 🔑 Las tres URLs son **públicas**: se sirven sin `Authorization` (medido
+#: contra la cuenta real el 2026-08-31). Eso es coherente con lo que son —un
+#: cartel para pegar en el mostrador—, pero significa que la URL **es** el
+#: cartel: quien la tenga puede imprimir el QR que cobra en esa cuenta. Por eso
+#: el router no la devuelve al navegador, sino que trae los bytes él.
+FORMATOS_QR: dict[str, tuple[str, str, str]] = {
+    # nombre nuestro   clave en MP           content-type       extensión
+    "qr":     ("image",             "image/png",       "png"),
+    "cartel": ("template_image",    "image/png",       "png"),
+    "pdf":    ("template_document", "application/pdf", "pdf"),
+}
+
+
+async def obtener_pos(external_id: str, access_token: str) -> dict | None:
+    """La caja de MercadoPago, buscada por su `external_id`.
+
+    `external_id` es lo único que guarda la configuración del producto
+    (`mp_pos_id`), y es además lo que va en la URL de la orden — ver
+    `crear_orden_qr`. El **id numérico** de la caja no se guarda en ningún lado,
+    así que para llegar al QR hay que pasar por acá.
+
+    Devuelve el dict de la caja, o `None` si esa cuenta no tiene ninguna con ese
+    `external_id`. **`None` no es un error de red**: es el caso vivo de un token
+    de producción con el `pos_id` de la caja de prueba (o al revés), y quien
+    llama tiene que poder decirlo con esas palabras.
+
+    🔴 **El filtro de MercadoPago es exacto pero NO distingue mayúsculas**
+    —medido: `?external_id=contadev` devuelve `CONTADEV`—. Se acepta, porque es
+    la caja que el operador quiso nombrar, pero **se devuelve la de MercadoPago
+    con su `external_id` canónico**: si la pantalla mostrara el texto tipeado,
+    una configuración con la caja escrita distinto se vería idéntica a una bien
+    escrita.
+
+    Y se exige **un solo resultado**: hoy el filtro devuelve 0 ó 1, pero un
+    `external_id` vacío devuelve la lista entera, y "tomar el primero" ahí es
+    mostrar el QR de una caja cualquiera de la cuenta —que en esta familia
+    significa el de otro producto—.
+    """
+    external_id = (external_id or "").strip()
+    if not external_id:
+        return None
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(
+            f"{MP_API_BASE}/pos",
+            params={"external_id": external_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        r.raise_for_status()
+        cajas = [
+            c for c in (r.json().get("results") or [])
+            if str(c.get("external_id") or "").casefold() == external_id.casefold()
+        ]
+    return cajas[0] if len(cajas) == 1 else None
+
+
+async def descargar_archivo_qr(url: str) -> bytes:
+    """Trae los bytes de uno de los archivos del QR de la caja.
+
+    Va sin `Authorization`: son públicas. Existe para que **el motor** sea quien
+    salga a buscarlas y no el navegador — así la URL no viaja a la pantalla, el
+    archivo baja con un nombre que se entiende, y una instancia detrás de una
+    red que no llega a `mercadopago.com` sigue pudiendo imprimir el cartel.
+    """
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        return r.content
+
+
 async def buscar_pago_por_referencia(
     external_reference: str, access_token: str
 ) -> dict | None:
