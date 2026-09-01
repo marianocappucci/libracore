@@ -7,14 +7,20 @@ LibraCore, ver wiki/entities/libracore.md).
 import json
 
 from libracore.db.core import get_connection
+from libracore.db.facturas import sql_solo_fiscales
 
 
 def get_facturas_para_iva(desde: str, hasta: str) -> list[dict]:
-    """Todas las facturas del período para Libro IVA Ventas."""
+    """Las facturas **reales** del período para Libro IVA Ventas.
+
+    🔴 **Excluye las emitidas contra homologación.** Traen CAE y numeración del
+    WSFE de homologación: en el libro rompen la correlatividad y declaran ante
+    ARCA comprobantes que ARCA (la de verdad) no emitió.
+    """
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT * FROM facturas
-               WHERE fecha >= ? AND fecha <= ?
+            f"""SELECT * FROM facturas
+               WHERE fecha >= ? AND fecha <= ? AND {sql_solo_fiscales()}
                ORDER BY fecha, punto_venta, numero""",
             (desde, hasta),
         ).fetchall()

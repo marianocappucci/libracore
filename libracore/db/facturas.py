@@ -12,12 +12,45 @@ from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 
-def get_next_factura_numero(punto_venta, tipo):
-    """Devuelve el próximo número correlativo para tipo+punto_venta."""
+#: Los comprobantes que cuentan para los libros y los totales.
+#:
+#: 🔴 **Un comprobante emitido contra homologación NO es del cliente.** Trae CAE
+#: y numeración del WSFE de homologación: si entra al libro IVA rompe la
+#: correlatividad, y si entra a los totales infla la facturación del período con
+#: plata que no existe.
+#:
+#: Es un fragmento y no ocho literales sueltos a propósito: repetir
+#: `ambiente = 'produccion'` en cada consulta es de donde sale la que se olvida.
+SOLO_FISCALES = "ambiente = 'produccion'"
+
+
+def sql_solo_fiscales(alias: str = "") -> str:
+    """El filtro, con el alias de la tabla si la consulta usa uno."""
+    return f"{alias}.{SOLO_FISCALES}" if alias else SOLO_FISCALES
+
+
+def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion"):
+    """El próximo número correlativo para tipo+punto_venta **en ese ambiente**.
+
+    🔴 **El ambiente parte la secuencia, y es lo más peligroso de todo esto.**
+    ARCA lleva numeraciones **independientes** en homologación y en producción.
+    Sin separarlas acá, un comprobante de prueba numerado 500 —el que le tocaba
+    en homologación— haría que el próximo real salga 501, cuando producción va
+    por 84. La numeración local quedaría desalineada de la de ARCA y cada
+    emisión posterior chocaría contra el "último autorizado" real.
+
+    Es el defecto que **más caro sale** de los que abre poder probar desde una
+    instancia viva: los totales mal se ven, un salto de numeración se descubre
+    en la próxima presentación.
+
+    El default `produccion` es el caso normal —quien no sabe de ambientes está
+    facturando de verdad— y mantiene la firma vieja andando.
+    """
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT MAX(numero) FROM facturas WHERE punto_venta=? AND tipo=?",
-            (punto_venta, tipo),
+            "SELECT MAX(numero) FROM facturas "
+            "WHERE punto_venta=? AND tipo=? AND ambiente=?",
+            (punto_venta, tipo, ambiente),
         ).fetchone()
         return (row[0] or 0) + 1
 
@@ -77,7 +110,7 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
         except sqlite3.IntegrityError:
             if intento == MAX_INTENTOS - 1:
                 raise
-            numero = get_next_factura_numero(punto_venta, tipo)
+            numero = get_next_factura_numero(punto_venta, tipo, ambiente)
 
 
 _TIPOS_FACTURA = (1, 6, 11)

@@ -71,7 +71,10 @@ async def get_next_numero_with_arca(punto_venta: int, tipo: int):
     En prod: intenta ARCA, cae a local si falla.
     """
     if _es_dev():
-        numero = db_facturas.get_next_factura_numero(punto_venta, tipo)
+        # Sin ARCA la secuencia es la de la propia instancia, que es la real:
+        # `ambiente_de("_dev_mock_")` da `produccion` por lo mismo.
+        numero = db_facturas.get_next_factura_numero(
+            punto_venta, tipo, ambiente_de("_dev_mock_"))
         return numero, "_dev_mock_", "_dev_mock_"
 
     arca_cfg = db_arca_config.obtener_todas_arca_configs()
@@ -97,9 +100,15 @@ async def get_next_numero_with_arca(punto_venta: int, tipo: int):
                 "cae a numeracion local: %s", punto_venta, tipo, e,
             )
             ta     = None
-            numero = db_facturas.get_next_factura_numero(punto_venta, tipo)
+            # 🔴 **En LA MISMA secuencia que se estaba pidiendo.** ARCA lleva
+            # numeraciones independientes por ambiente: caer a la local sin
+            # decir cuál desalinea la secuencia contra la de ARCA, y el próximo
+            # comprobante choca con el "último autorizado" real.
+            numero = db_facturas.get_next_factura_numero(
+                punto_venta, tipo, ambiente_de(arca))
     else:
-        numero = db_facturas.get_next_factura_numero(punto_venta, tipo)
+        numero = db_facturas.get_next_factura_numero(
+            punto_venta, tipo, ambiente_de(arca))
 
     return numero, ta, arca
 
