@@ -81,10 +81,12 @@ async def get_next_numero_with_arca(punto_venta: int, tipo: int):
     arca     = arca_cfg[0] if arca_cfg else None
     ta       = None
 
-    if arca and arca.get("certificado_path") and arca.get("clave_path"):
-        cert_path, clave_path = config_manager.resolve_cert_paths(
-            arca["certificado_path"], arca["clave_path"]
-        )
+    cert_cfg, clave_cfg = db_arca_config.paths_de(arca)
+    if arca and cert_cfg and clave_cfg:
+        # 🔑 `paths_de` y no las columnas directo: **el par de producción vive
+        # en las columnas SIN sufijo**, y esa asimetría vive en un solo lugar.
+        # Leerlas acá sería la segunda copia de esa regla.
+        cert_path, clave_path = config_manager.resolve_cert_paths(cert_cfg, clave_cfg)
         try:
             ta = await arca_wsaa.autenticar(
                 cert_path, clave_path, arca["ambiente"]

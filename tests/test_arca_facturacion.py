@@ -60,8 +60,16 @@ def test_prod_without_arca_config_uses_local_numbering(conn):
 
 
 def test_prod_with_arca_config_calls_wsaa_and_wsfe(conn, monkeypatch):
+    # 🔑 El par va a las columnas de SU ambiente. Con las credenciales en las
+    # de produccion y el selector en homologacion, `paths_de()` devuelve
+    # ("", "") y la instancia no puede emitir -- que es exactamente el caso que
+    # la migracion 0007 arregla para las instancias vivas.
     db_arca_config.crear_arca_config(
-        "Empresa Test", "20123456789", 1, "clave.key", "cert.crt", ambiente="homologacion",
+        "Empresa Test", "20123456789", 1, "", "", ambiente="homologacion",
+    )
+    db_arca_config.actualizar_arca_config(
+        "Empresa Test", clave_path_homologacion="clave.key",
+        certificado_path_homologacion="cert.crt",
     )
 
     async def fake_autenticar(cert_path, key_path, ambiente):
@@ -80,8 +88,16 @@ def test_prod_with_arca_config_calls_wsaa_and_wsfe(conn, monkeypatch):
 
 
 def test_prod_arca_failure_falls_back_to_local_numbering(conn, monkeypatch, caplog):
+    # 🔑 El par va a las columnas de SU ambiente. Con las credenciales en las
+    # de produccion y el selector en homologacion, `paths_de()` devuelve
+    # ("", "") y la instancia no puede emitir -- que es exactamente el caso que
+    # la migracion 0007 arregla para las instancias vivas.
     db_arca_config.crear_arca_config(
-        "Empresa Test", "20123456789", 1, "clave.key", "cert.crt", ambiente="homologacion",
+        "Empresa Test", "20123456789", 1, "", "", ambiente="homologacion",
+    )
+    db_arca_config.actualizar_arca_config(
+        "Empresa Test", clave_path_homologacion="clave.key",
+        certificado_path_homologacion="cert.crt",
     )
 
     async def failing_autenticar(cert_path, key_path, ambiente):

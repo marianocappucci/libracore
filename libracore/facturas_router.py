@@ -694,14 +694,17 @@ def build_comprobantes_router(
 
         configs = db_arca.obtener_todas_arca_configs()
         arca = configs[0] if configs else None
-        if not arca or not arca.get("certificado_path") or not arca.get("clave_path"):
+        cert_cfg, clave_cfg = db_arca.paths_de(arca)
+        # 🔑 `paths_de` y no las columnas directo: el par de produccion vive
+        # en las columnas SIN sufijo, y esa asimetria vive en un solo lugar.
+        if not arca or not cert_cfg or not clave_cfg:
             raise HTTPException(
                 400,
                 "ARCA no está configurado. Cargá los certificados en Configuración.",
             )
 
         cert_path, clave_path = config_manager.resolve_cert_paths(
-            arca["certificado_path"], arca["clave_path"]
+            cert_cfg, clave_cfg
         )
         try:
             ta = await arca_wsaa.autenticar(cert_path, clave_path, arca["ambiente"])

@@ -1,10 +1,12 @@
 # motor: sqlite
 
-## tablas (372)
+## tablas (374)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
+arca_config|certificado_path_homologacion|TEXT|NN|''
 arca_config|certificado_path|TEXT|NN|
+arca_config|clave_path_homologacion|TEXT|NN|''
 arca_config|clave_path|TEXT|NN|
 arca_config|created_at|TEXT||datetime('now','-3 hours')
 arca_config|cuit|TEXT|NN|
