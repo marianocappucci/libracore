@@ -191,6 +191,14 @@ async def generar_factura_mp(
     numero, ta, arca = await arca_facturacion.get_next_numero_with_arca(punto_venta, tipo)
 
     factura_id = db_facturas.create_factura(
+                # 🔑 El ambiente con el que se emitió, que es lo que separa un
+        # comprobante real de uno de prueba en el libro IVA.
+        #
+        # Sin ARCA configurado no hay CAE y el número es el de la propia
+        # instancia: ese comprobante **es** el real del cliente, así que va
+        # como `produccion`. No es un default silencioso — es la respuesta a
+        # "¿contra qué se emitió?" cuando no se emitió contra nada.
+        ambiente=arca_facturacion.ambiente_de(arca),
         tipo=tipo, punto_venta=punto_venta, numero=numero,
         fecha=fecha_hoy,
         cliente_cuit=client.get("cuit_dni", ""),

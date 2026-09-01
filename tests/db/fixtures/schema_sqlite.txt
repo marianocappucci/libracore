@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (371)
+## tablas (372)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -157,6 +157,7 @@ facturacion_alias|created_at|TEXT||datetime('now','-3 hours')
 facturacion_alias|id|INTEGER||
 facturacion_alias|tipo|TEXT|NN|
 facturacion_alias|valor|TEXT|NN|
+facturas|ambiente|TEXT|NN|'produccion'
 facturas|cae_vto|TEXT||
 facturas|cae|TEXT||
 facturas|cbte_asoc_nro|INTEGER||0

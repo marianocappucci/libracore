@@ -34,6 +34,36 @@ def _mock_cae() -> dict:
     return {"cae": cae, "cae_vto": vto}
 
 
+#: Los dos ambientes de ARCA. Cualquier otra cosa no es un ambiente.
+AMBIENTES = ("homologacion", "produccion")
+
+
+def ambiente_de(arca) -> str:
+    """Contra qué ambiente se emitió, a partir de lo que devuelve
+    `get_next_numero_with_arca`.
+
+    🔴 **Ese tercer valor NO es siempre un dict.** En dev devuelve el string
+    `"_dev_mock_"`, y sin ARCA configurado devuelve `None`. Un `.get()` derecho
+    revienta con `AttributeError: 'str' object has no attribute 'get'` —pasó al
+    escribir esto, y lo delataron 64 tests—. El nombre de la variable no dice de
+    qué tipo es.
+
+    🔑 **Sin ARCA, `produccion`.** No hay CAE y el número es el de la propia
+    instancia: ese comprobante **es** el real del cliente. No es un default
+    silencioso, es la respuesta a *"¿contra qué se emitió?"* cuando no se emitió
+    contra nada — y es lo que hace que entre al libro IVA, que es donde tiene
+    que estar.
+
+    Existe para que los tres call sites de `create_factura` no repitan el mismo
+    guard: tres copias de esta decisión es de donde salen las divergencias.
+    """
+    if isinstance(arca, dict):
+        ambiente = str(arca.get("ambiente") or "").strip().lower()
+        if ambiente in AMBIENTES:
+            return ambiente
+    return "produccion"
+
+
 async def get_next_numero_with_arca(punto_venta: int, tipo: int):
     """
     Devuelve (numero, ta, arca).

@@ -101,6 +101,7 @@ def test_solicitar_cae_dev_mock(conn):
     fid = db_facturas.create_factura(
         6, 1, 1, "2026-07-22", "20123456789", "Cliente Test", "Consumidor Final",
         [], 100.0, 21.0, 121.0,
+        ambiente="produccion",
     )
     factura = db_facturas.get_factura(fid)
     result = asyncio.run(arca_facturacion.solicitar_cae(fid, factura, "_dev_mock_", "_dev_mock_"))
@@ -118,6 +119,7 @@ def test_solicitar_cae_prod_success(conn, monkeypatch):
     fid = db_facturas.create_factura(
         6, 1, 1, "2026-07-22", "20123456789", "Cliente Test", "Consumidor Final",
         [], 100.0, 21.0, 121.0,
+        ambiente="produccion",
     )
     factura = db_facturas.get_factura(fid)
 
@@ -137,6 +139,7 @@ def test_solicitar_cae_prod_failure_returns_original_factura(conn, monkeypatch, 
     fid = db_facturas.create_factura(
         6, 1, 1, "2026-07-22", "20123456789", "Cliente Test", "Consumidor Final",
         [], 100.0, 21.0, 121.0,
+        ambiente="produccion",
     )
     factura = db_facturas.get_factura(fid)
 

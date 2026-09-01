@@ -120,6 +120,7 @@ def test_vincular_venta_factura_y_remito(conn):
     factura_id = facturas.create_factura(
         1, 1, 1, "2026-07-14", "20111111111", "Cliente Test", "RI",
         [{"nombre": "Item", "qty": 1, "precio": 100}], 100, 21, 121,
+        ambiente="produccion",
     )
     remito_id = remitos_presupuestos.create_remito(
         remitos_presupuestos.get_next_remito_number(), "2026-07-14", None, "Cliente Test",

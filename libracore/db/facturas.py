@@ -27,7 +27,7 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                    concepto=1, cae="", cae_vto="", observaciones="", pdf_path="",
                    cliente_domicilio="", fch_serv_desde="", fch_serv_hasta="",
                    fch_vto_pago="", cbte_asoc_tipo=0, cbte_asoc_pv=0, cbte_asoc_nro=0,
-                   condicion_venta="", usuario_id=None):
+                   condicion_venta="", usuario_id=None, *, ambiente: str):
     """Crea una nueva factura electrónica. `numero` es el número calculado por el
     caller (local o vía ARCA) pero puede haber quedado obsoleto si otra factura
     concurrente para el mismo tipo+punto_venta se creó en el medio (no había
@@ -35,7 +35,24 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
     "race condition en numeración"). Si el INSERT choca contra
     idx_facturas_numero_unico, se recalcula el número y se reintenta — el
     caller debe releer la factura por id (`get_factura`) para conocer el
-    número real, nunca asumir que es el que pasó."""
+    número real, nunca asumir que es el que pasó.
+
+    🔴 **`ambiente` es obligatorio y va por nombre.** La columna tiene default
+    `'produccion'` en la base —lo necesita el backfill de las filas viejas, ver
+    la revisión `0006`— así que un `INSERT` que la omitiera declararía real un
+    comprobante que puede no serlo, y entraría al libro IVA del cliente.
+
+    Los dos defaults posibles mienten en direcciones opuestas y las dos duelen:
+    marcar de producción un comprobante de prueba ensucia los libros; marcar de
+    prueba uno real lo **saca** del libro IVA en silencio, que es peor. Por eso
+    no hay default: acá el ambiente **se declara**, o no se escribe la fila.
+    """
+    ambiente = (ambiente or "").strip().lower()
+    if ambiente not in ("homologacion", "produccion"):
+        raise ValueError(
+            f"ambiente inválido para un comprobante: {ambiente!r}. "
+            "Tiene que ser 'homologacion' o 'produccion'."
+        )
     MAX_INTENTOS = 5
     for intento in range(MAX_INTENTOS):
         try:
@@ -46,13 +63,15 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                         cliente_iva_cond, items, subtotal, iva_amount, total, concepto,
                         cae, cae_vto, observaciones, pdf_path, cliente_domicilio,
                         fch_serv_desde, fch_serv_hasta, fch_vto_pago,
-                        cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
+                        ambiente)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
                      cliente_iva_cond, json.dumps(items, ensure_ascii=False), subtotal,
                      iva_amount, total, concepto, cae, cae_vto, observaciones, pdf_path,
                      cliente_domicilio, fch_serv_desde, fch_serv_hasta, fch_vto_pago,
-                     cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id),
+                     cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
+                     ambiente),
                 )
                 return cur.lastrowid
         except sqlite3.IntegrityError:

@@ -271,6 +271,18 @@ def init_core_schema(conn: Conexion):
             cae_vto         TEXT,
             observaciones   TEXT,
             pdf_path        TEXT,
+            -- 🔴 **Contra qué ambiente de ARCA se emitió este comprobante.**
+            --
+            -- Un comprobante emitido contra homologación trae CAE y numeración
+            -- del WSFE de homologación. Sin esta columna es **indistinguible**
+            -- de uno real: cae en la misma tabla, entra al libro IVA y rompe la
+            -- correlatividad de los libros del cliente.
+            --
+            -- Es lo que permite que una instancia de producción pruebe con el
+            -- cliente antes del corte a facturación real, que es para lo que
+            -- existe. Ver `wiki/concepts/facturacion-electronica-arca.md`.
+            ambiente        TEXT NOT NULL DEFAULT 'produccion'
+                            CHECK (ambiente IN ('homologacion','produccion')),
             created_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
@@ -811,6 +823,28 @@ def init_core_schema(conn: Conexion):
         conn.execute(
             "ALTER TABLE ventas_pagos ADD COLUMN estado TEXT NOT NULL DEFAULT 'aprobado' "
             "CHECK (estado IN ('pendiente','aprobado','rechazado','vencido'))"
+        )
+
+    # 🔴 **El default `produccion` es el peligroso, y va igual.** Lo necesita el
+    # backfill: `ALTER TABLE ... ADD COLUMN NOT NULL` exige un default, y ese
+    # default lo hereda cada fila vieja.
+    #
+    # Elegirlo al revés sería peor: marcar de prueba comprobantes reales los
+    # saca del libro IVA en silencio, y un libro al que le faltan comprobantes
+    # es un problema fiscal. Marcar de producción un comprobante de prueba, en
+    # cambio, es el estado de hoy — no empeora nada.
+    #
+    # ⚠️ **Y por eso la migración corrige el backfill mirando `arca_config`**:
+    # una instancia que hoy está en homologación emitió en homologación. Ver la
+    # revisión `0006`.
+    #
+    # El hueco del default lo cierra el camino de ESCRITURA: `create_factura()`
+    # exige el ambiente por nombre. Acá no se puede cerrar sin romper el ALTER.
+    cols_f = [r[1] for r in conn.execute("PRAGMA table_info(facturas)").fetchall()]
+    if "ambiente" not in cols_f:
+        conn.execute(
+            "ALTER TABLE facturas ADD COLUMN ambiente TEXT NOT NULL DEFAULT 'produccion' "
+            "CHECK (ambiente IN ('homologacion','produccion'))"
         )
 
     cols = [r[1] for r in conn.execute("PRAGMA table_info(clients)").fetchall()]
