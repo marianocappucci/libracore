@@ -18,6 +18,7 @@ from .db import arca_config as db_arca_config
 from .db import facturas as db_facturas
 from . import config_manager
 from . import arca_wsaa
+from . import arca_credenciales
 from . import arca_wsfe
 
 logger = logging.getLogger(__name__)
@@ -81,12 +82,12 @@ async def get_next_numero_with_arca(punto_venta: int, tipo: int):
     arca     = arca_cfg[0] if arca_cfg else None
     ta       = None
 
-    cert_cfg, clave_cfg = db_arca_config.paths_de(arca)
-    if arca and cert_cfg and clave_cfg:
-        # 🔑 `paths_de` y no las columnas directo: **el par de producción vive
-        # en las columnas SIN sufijo**, y esa asimetría vive en un solo lugar.
-        # Leerlas acá sería la segunda copia de esa regla.
-        cert_path, clave_path = config_manager.resolve_cert_paths(cert_cfg, clave_cfg)
+    # 🔑 Una llamada y no el baile de dos pasos: `paths_de` elige el par del
+    # ambiente y el rescate necesita saber cuál es. Separados, el segundo
+    # deshace al primero y esto termina firmando con el certificado real
+    # creyendo que prueba — que es lo que pasaba acá hasta el 2026-09-01.
+    cert_path, clave_path = arca_credenciales.paths_en_disco(arca)
+    if arca and cert_path and clave_path:
         try:
             ta = await arca_wsaa.autenticar(
                 cert_path, clave_path, arca["ambiente"]
