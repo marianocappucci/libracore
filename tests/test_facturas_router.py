@@ -569,8 +569,12 @@ def test_autorizar_pide_el_CAE_a_ARCA_y_lo_guarda(tmp_path, monkeypatch):
     clave = tmp_path / "clave.key"
     cert.write_text("x")
     clave.write_text("x")
-    db_arca.crear_arca_config(
-        "empresa", "30712345679", 1, str(clave), str(cert), "homologacion"
+    # El par va a las columnas de SU ambiente: con el selector en homologacion
+    # y las credenciales en las de produccion, `paths_de()` devuelve ("", "").
+    db_arca.crear_arca_config("empresa", "30712345679", 1, "", "", "homologacion")
+    db_arca.actualizar_arca_config(
+        "empresa", clave_path_homologacion=str(clave),
+        certificado_path_homologacion=str(cert),
     )
 
     async def autenticar_falso(*a, **kw):

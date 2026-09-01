@@ -88,7 +88,7 @@ def _certs_dir() -> str:
 def _paths(cfg: dict | None) -> tuple[str, str]:
     cfg = cfg or {}
     return config_manager.resolve_cert_paths(
-        cfg.get("certificado_path", ""), cfg.get("clave_path", "")
+        *db_arca_config.paths_de(cfg)
     )
 
 

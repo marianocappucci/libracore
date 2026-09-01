@@ -140,7 +140,12 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
-        # 372 desde el 2026-09-01, cuando entró `facturas.ambiente` — lo que
+        # 374 desde el 2026-09-01, cuando entraron las columnas del segundo par
+        # de credenciales de ARCA (`clave_path_homologacion` y
+        # `certificado_path_homologacion`) — lo que permite tener cargados los
+        # dos pares a la vez y probar con el cliente sin pisar el de producción.
+        #
+        # Era 372 el mismo día con `facturas.ambiente` — lo que
         # distingue un comprobante emitido contra homologación de uno real, y
         # sin lo cual los de prueba entran al libro IVA del cliente (era 371
         # desde el 2026-08-31 con `ventas_pagos.estado`, que distingue un pago
@@ -150,7 +155,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (373)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (375)"}
     finally:
         conn.close()
         _liberar()

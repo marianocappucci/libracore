@@ -1,10 +1,12 @@
 # motor: postgresql
 
-## tablas (372)
+## tablas (374)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
+arca_config|certificado_path_homologacion|text|NN|''::text
 arca_config|certificado_path|text|NN|
+arca_config|clave_path_homologacion|text|NN|''::text
 arca_config|clave_path|text|NN|
 arca_config|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
 arca_config|cuit|text|NN|
