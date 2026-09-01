@@ -117,20 +117,57 @@ def resolve_logo_path(cfg=None):
     return ""
 
 
-def resolve_cert_paths(cert_path="", key_path=""):
+#: Con que nombre se guarda en disco el par de cada ambiente.
+#:
+#: 🔴 **Los dos pares NO pueden compartir archivo.** Hasta el 2026-09-01 el
+#: upload escribia siempre `certificado.crt`, asi que subir el de homologacion
+#: **pisaba el de produccion** — medido, no supuesto. Es exactamente la
+#: operacion destructiva que separar las columnas venia a evitar.
+#:
+#: Produccion conserva los nombres historicos: son los que ya estan en el
+#: volumen de cada instancia viva, y son los que busca el rescate de abajo.
+ARCHIVOS_POR_AMBIENTE = {
+    "produccion":   ("certificado.crt", "clave_privada.key"),
+    "homologacion": ("certificado_homologacion.crt", "clave_privada_homologacion.key"),
+}
+
+
+def resolve_cert_paths(cert_path="", key_path="", ambiente="produccion"):
     """Devuelve (certificado, clave_privada) ARCA auto-corrigiendo rutas obsoletas.
 
     Analogo a resolve_logo_path: si un path guardado no apunta a un archivo
-    existente, se cae al nombre estandar dentro de CERTS_DIR. Si tampoco
-    existe el fallback, se devuelve el path original tal cual para que el
-    llamador reporte el error habitual.
+    existente, se cae al nombre estandar **del ambiente pedido** dentro de
+    CERTS_DIR. Si tampoco existe el fallback, se devuelve el path original tal
+    cual para que el llamador reporte el error habitual.
+
+    ## 🔴 Por que el rescate tiene que saber el ambiente
+
+    Cae a un nombre fijo, asi que sin saber el ambiente cae **al de
+    produccion**. Eso deshace la garantia de `arca_config.paths_de()`, que
+    devuelve ("", "") justamente para NO entregar las credenciales reales
+    cuando falta el par de homologacion: se reponian una capa mas abajo.
+
+    Medido el 2026-09-01: una instancia pasada a `homologacion` sin haber
+    subido todavia su par terminaba autenticando **con el certificado de
+    produccion del cliente**.
+
+    El default es `produccion` por los llamadores que no saben de ambientes —
+    los dos productos que consultan el padron—, y para ellos es el valor
+    correcto: sin selector, lo que hay es la credencial real. Quien si lo sabe
+    lo pasa.
     """
+    nombres = ARCHIVOS_POR_AMBIENTE.get((ambiente or "").strip().lower())
+
     def _resolve(p, filename):
         p = (p or "").strip()
+        if not filename:
+            # Ambiente desconocido: no hay a que caer. Devolver el path tal cual
+            # es lo mismo que hace el final del rescate, y no inventa un archivo.
+            return p
         if p and os.path.exists(p):
             return p
         fallback = os.path.join(CERTS_DIR, filename)
         return fallback if os.path.exists(fallback) else p
 
-    return (_resolve(cert_path, "certificado.crt"),
-            _resolve(key_path, "clave_privada.key"))
+    return (_resolve(cert_path, nombres[0] if nombres else ""),
+            _resolve(key_path, nombres[1] if nombres else ""))

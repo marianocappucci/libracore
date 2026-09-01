@@ -333,6 +333,7 @@ def test_reenviar_sin_smtp_lo_dice(armar):
         tipo=11, punto_venta=1, numero=1, fecha="2026-08-20",
         cliente_cuit="", cliente_razon="X", cliente_iva_cond=5,
         items=[], subtotal=1.0, iva_amount=0.0, total=1.0,
+        ambiente="produccion",
     )
     r = armar().post(f"/api/mp-bandeja/facturas/{factura_id}/reenviar", headers=ADMIN)
     assert r.status_code == 400

@@ -18,8 +18,15 @@ from cryptography.x509.oid import NameOID
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
+from libracore.config_manager import ARCHIVOS_POR_AMBIENTE
 from libracore.db import core
 from libracore.db.schema import init_core_schema
+
+#: Los nombres de archivo salen del mapa del codigo, no de literales
+#: repartidos por el test: con dos copias, cambiar el del codigo deja
+#: estos tests verdes midiendo un nombre que ya nadie escribe.
+CERT_HOMO, CLAVE_HOMO = ARCHIVOS_POR_AMBIENTE["homologacion"]
+CERT_PROD, CLAVE_PROD = ARCHIVOS_POR_AMBIENTE["produccion"]
 
 ADMIN = {"x-rol": "admin"}
 
@@ -132,7 +139,7 @@ def test_el_csr_se_rechaza_y_no_deja_nada_en_el_disco(client, app):
     r = _subir_cert(client, _csr())
     assert r.status_code == 422
     assert ".csr" in r.json()["detail"]
-    assert not os.path.exists(os.path.join(app.state.certs_dir, "certificado.crt"))
+    assert not os.path.exists(os.path.join(app.state.certs_dir, CERT_HOMO))
     assert client.get("/config/arca", headers=ADMIN).json() is None
 
 
@@ -222,8 +229,8 @@ def test_borrar_credenciales_borra_los_archivos_y_los_paths(client, tmp_path, ap
     leido = r.json()
     assert leido["tiene_certificado"] is False
     assert leido["tiene_clave"] is False
-    assert not os.path.exists(os.path.join(app.state.certs_dir, "certificado.crt"))
-    assert not os.path.exists(os.path.join(app.state.certs_dir, "clave_privada.key"))
+    assert not os.path.exists(os.path.join(app.state.certs_dir, CERT_HOMO))
+    assert not os.path.exists(os.path.join(app.state.certs_dir, CLAVE_HOMO))
 
 
 def test_borrar_sin_configuracion_es_404(client):
@@ -257,8 +264,10 @@ def test_estado_marca_el_certificado_vencido(client, tmp_path, app):
     tenía cuando venció."""
     cert_path, key_path = make_expired_cert_key(tmp_path)
     os.makedirs(app.state.certs_dir, exist_ok=True)
-    destino_cert = os.path.join(app.state.certs_dir, "certificado.crt")
-    destino_clave = os.path.join(app.state.certs_dir, "clave_privada.key")
+    # El PUT de abajo no manda ambiente, asi que la fila queda en el default
+    # "homologacion": los archivos van con los nombres de ESE ambiente.
+    destino_cert = os.path.join(app.state.certs_dir, CERT_HOMO)
+    destino_clave = os.path.join(app.state.certs_dir, CLAVE_HOMO)
     for origen, destino in ((cert_path, destino_cert), (key_path, destino_clave)):
         with open(origen, "rb") as f, open(destino, "wb") as g:
             g.write(f.read())
@@ -282,7 +291,7 @@ def test_probar_con_el_par_cruzado_no_llama_a_arca(client, tmp_path, app, monkey
     buscar el problema al lado equivocado."""
     cert_path, clave_ajena = make_mismatched_key(tmp_path)
     os.makedirs(app.state.certs_dir, exist_ok=True)
-    for origen, nombre in ((cert_path, "certificado.crt"), (clave_ajena, "clave_privada.key")):
+    for origen, nombre in ((cert_path, CERT_HOMO), (clave_ajena, CLAVE_HOMO)):
         with open(origen, "rb") as f, open(os.path.join(app.state.certs_dir, nombre), "wb") as g:
             g.write(f.read())
     client.put("/config/arca", headers=ADMIN, json={"cuit": "20289933604"})

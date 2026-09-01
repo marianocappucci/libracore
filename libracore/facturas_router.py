@@ -58,6 +58,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
 
 from libracore import arca_wsaa, arca_wsfe, config_manager, email_sender
+from libracore import arca_facturacion
 from libracore import pdf_generator as pdf_gen
 from libracore.arca_facturacion import get_next_numero_with_arca, solicitar_cae
 from libracore.cobros import MedioNoEsDeCobro, registrar_cobro_factura
@@ -383,6 +384,14 @@ async def _crear_nota(
     numero, ta, arca = await get_next_numero_with_arca(punto_venta, nuevo_tipo)
 
     nota_id = db_facturas.create_factura(
+        # 🔑 El ambiente con el que se emitió, que es lo que separa un
+        # comprobante real de uno de prueba en el libro IVA.
+        #
+        # Sin ARCA configurado no hay CAE y el número es el de la propia
+        # instancia: ese comprobante **es** el real del cliente, así que va
+        # como `produccion`. No es un default silencioso — es la respuesta a
+        # "¿contra qué se emitió?" cuando no se emitió contra nada.
+        ambiente=arca_facturacion.ambiente_de(arca),
         tipo=nuevo_tipo, punto_venta=punto_venta, numero=numero, fecha=fecha_hoy,
         cliente_cuit=orig["cliente_cuit"], cliente_razon=orig["cliente_razon"],
         cliente_iva_cond=orig.get("cliente_iva_cond") or 0, items=orig["items"],
@@ -579,6 +588,14 @@ def build_comprobantes_router(
             payload.punto_venta, payload.tipo
         )
         factura_id = db_facturas.create_factura(
+            # 🔑 El ambiente con el que se emitió, que es lo que separa un
+            # comprobante real de uno de prueba en el libro IVA.
+            #
+            # Sin ARCA configurado no hay CAE y el número es el de la propia
+            # instancia: ese comprobante **es** el real del cliente, así que va
+            # como `produccion`. No es un default silencioso — es la respuesta a
+            # "¿contra qué se emitió?" cuando no se emitió contra nada.
+            ambiente=arca_facturacion.ambiente_de(arca),
             tipo=payload.tipo, punto_venta=payload.punto_venta, numero=numero,
             fecha=payload.fecha, cliente_cuit=cliente["client_cuit"],
             cliente_razon=cliente["client_name"],
@@ -677,14 +694,17 @@ def build_comprobantes_router(
 
         configs = db_arca.obtener_todas_arca_configs()
         arca = configs[0] if configs else None
-        if not arca or not arca.get("certificado_path") or not arca.get("clave_path"):
+        cert_cfg, clave_cfg = db_arca.paths_de(arca)
+        # 🔑 `paths_de` y no las columnas directo: el par de produccion vive
+        # en las columnas SIN sufijo, y esa asimetria vive en un solo lugar.
+        if not arca or not cert_cfg or not clave_cfg:
             raise HTTPException(
                 400,
                 "ARCA no está configurado. Cargá los certificados en Configuración.",
             )
 
         cert_path, clave_path = config_manager.resolve_cert_paths(
-            arca["certificado_path"], arca["clave_path"]
+            cert_cfg, clave_cfg
         )
         try:
             ta = await arca_wsaa.autenticar(cert_path, clave_path, arca["ambiente"])

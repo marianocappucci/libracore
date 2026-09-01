@@ -180,6 +180,7 @@ def test_la_caja_nombra_el_numero_que_quedo_no_el_que_se_pidio(
         tipo=11, punto_venta=1, numero=1, fecha="2026-08-01",
         cliente_cuit="", cliente_razon="Ocupa el 1", cliente_iva_cond=5,
         items=[], subtotal=1.0, iva_amount=0.0, total=1.0,
+        ambiente="produccion",
     )
 
     async def numero_ya_ocupado(punto_venta, tipo):
