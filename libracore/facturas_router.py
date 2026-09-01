@@ -57,7 +57,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
 
-from libracore import arca_wsaa, arca_wsfe, config_manager, email_sender
+from libracore import arca_credenciales, arca_wsaa, arca_wsfe, config_manager, email_sender
 from libracore import arca_facturacion
 from libracore import pdf_generator as pdf_gen
 from libracore.arca_facturacion import get_next_numero_with_arca, solicitar_cae
@@ -694,18 +694,15 @@ def build_comprobantes_router(
 
         configs = db_arca.obtener_todas_arca_configs()
         arca = configs[0] if configs else None
-        cert_cfg, clave_cfg = db_arca.paths_de(arca)
-        # 🔑 `paths_de` y no las columnas directo: el par de produccion vive
-        # en las columnas SIN sufijo, y esa asimetria vive en un solo lugar.
-        if not arca or not cert_cfg or not clave_cfg:
+        # 🔑 Una llamada: elegir el par del ambiente y resolver dónde está en
+        # disco son dos decisiones encadenadas, y separarlas hace que la segunda
+        # deshaga a la primera. Ver `arca_credenciales`.
+        cert_path, clave_path = arca_credenciales.paths_en_disco(arca)
+        if not arca or not cert_path or not clave_path:
             raise HTTPException(
                 400,
                 "ARCA no está configurado. Cargá los certificados en Configuración.",
             )
-
-        cert_path, clave_path = config_manager.resolve_cert_paths(
-            cert_cfg, clave_cfg
-        )
         try:
             ta = await arca_wsaa.autenticar(cert_path, clave_path, arca["ambiente"])
             cae_data = await arca_wsfe.solicitar_cae(
