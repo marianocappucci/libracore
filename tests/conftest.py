@@ -109,3 +109,25 @@ def make_mismatched_key(tmp_path):
     cert_path, _ = _write_cert_key(tmp_path, "pairA")
     _, other_key_path = _write_cert_key(tmp_path, "pairB")
     return cert_path, other_key_path
+
+
+def head_de_la_cadena() -> str:
+    """La revision `head` de la cadena de LibraCore, leida de alembic.
+
+    🔑 **Los tests que verifican una migracion afirman que la cadena llego al
+    head ANTES de mirar los datos** — sin ese control, "los datos siguen ahi"
+    pasa perfecto cuando la migracion no corrio. Pero escribir el numero a mano
+    hace que ese control se pudra: al entrar la `0008`, los tres tests de la
+    `0007` se pusieron rojos afirmando `== "0007_..."` sobre una cadena que ya
+    iba mas lejos, y el rojo no decia nada sobre lo que median.
+
+    Derivarlo de alembic mantiene el control y lo hace inmune a la revision
+    siguiente.
+    """
+    import pathlib
+
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    raiz = pathlib.Path(__file__).resolve().parents[1]
+    return ScriptDirectory.from_config(Config(str(raiz / "alembic.ini"))).get_current_head()

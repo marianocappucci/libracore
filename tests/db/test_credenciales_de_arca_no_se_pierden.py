@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import head_de_la_cadena
 
 from libracore.db import arca_config as db_arca
 from libracore.db import core
@@ -28,10 +29,16 @@ from libracore.db.schema import init_core_schema
 
 RAIZ = Path(__file__).resolve().parents[2]
 
-#: La revisión que hace el movimiento. Se afirma que la cadena llegó **hasta
+#: La revisión a la que tiene que llegar la cadena. Se afirma que llegó **hasta
 #: acá** antes de mirar los datos: sin ese control, "las credenciales siguen
 #: donde estaban" pasa perfecto cuando la migración no corrió.
-REVISION = "0007_par_arca_por_ambiente"
+#:
+#: 🔑 **Sale de alembic, no de un literal.** Estuvo escrita a mano como
+#: `"0007_par_arca_por_ambiente"`, y al entrar la `0008` estos tres tests se
+#: pusieron rojos afirmando una revisión que la cadena ya había pasado: el
+#: control se pudría con cada revisión nueva, y el rojo no decía nada sobre lo
+#: que median.
+REVISION = head_de_la_cadena()
 
 CERT = "/certs/el-certificado.crt"
 CLAVE = "/certs/la-clave.key"
