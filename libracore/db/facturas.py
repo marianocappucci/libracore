@@ -12,12 +12,45 @@ from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 
-def get_next_factura_numero(punto_venta, tipo):
-    """Devuelve el próximo número correlativo para tipo+punto_venta."""
+#: Los comprobantes que cuentan para los libros y los totales.
+#:
+#: 🔴 **Un comprobante emitido contra homologación NO es del cliente.** Trae CAE
+#: y numeración del WSFE de homologación: si entra al libro IVA rompe la
+#: correlatividad, y si entra a los totales infla la facturación del período con
+#: plata que no existe.
+#:
+#: Es un fragmento y no ocho literales sueltos a propósito: repetir
+#: `ambiente = 'produccion'` en cada consulta es de donde sale la que se olvida.
+SOLO_FISCALES = "ambiente = 'produccion'"
+
+
+def sql_solo_fiscales(alias: str = "") -> str:
+    """El filtro, con el alias de la tabla si la consulta usa uno."""
+    return f"{alias}.{SOLO_FISCALES}" if alias else SOLO_FISCALES
+
+
+def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion"):
+    """El próximo número correlativo para tipo+punto_venta **en ese ambiente**.
+
+    🔴 **El ambiente parte la secuencia, y es lo más peligroso de todo esto.**
+    ARCA lleva numeraciones **independientes** en homologación y en producción.
+    Sin separarlas acá, un comprobante de prueba numerado 500 —el que le tocaba
+    en homologación— haría que el próximo real salga 501, cuando producción va
+    por 84. La numeración local quedaría desalineada de la de ARCA y cada
+    emisión posterior chocaría contra el "último autorizado" real.
+
+    Es el defecto que **más caro sale** de los que abre poder probar desde una
+    instancia viva: los totales mal se ven, un salto de numeración se descubre
+    en la próxima presentación.
+
+    El default `produccion` es el caso normal —quien no sabe de ambientes está
+    facturando de verdad— y mantiene la firma vieja andando.
+    """
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT MAX(numero) FROM facturas WHERE punto_venta=? AND tipo=?",
-            (punto_venta, tipo),
+            "SELECT MAX(numero) FROM facturas "
+            "WHERE punto_venta=? AND tipo=? AND ambiente=?",
+            (punto_venta, tipo, ambiente),
         ).fetchone()
         return (row[0] or 0) + 1
 
@@ -27,7 +60,7 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                    concepto=1, cae="", cae_vto="", observaciones="", pdf_path="",
                    cliente_domicilio="", fch_serv_desde="", fch_serv_hasta="",
                    fch_vto_pago="", cbte_asoc_tipo=0, cbte_asoc_pv=0, cbte_asoc_nro=0,
-                   condicion_venta="", usuario_id=None):
+                   condicion_venta="", usuario_id=None, *, ambiente: str):
     """Crea una nueva factura electrónica. `numero` es el número calculado por el
     caller (local o vía ARCA) pero puede haber quedado obsoleto si otra factura
     concurrente para el mismo tipo+punto_venta se creó en el medio (no había
@@ -35,7 +68,24 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
     "race condition en numeración"). Si el INSERT choca contra
     idx_facturas_numero_unico, se recalcula el número y se reintenta — el
     caller debe releer la factura por id (`get_factura`) para conocer el
-    número real, nunca asumir que es el que pasó."""
+    número real, nunca asumir que es el que pasó.
+
+    🔴 **`ambiente` es obligatorio y va por nombre.** La columna tiene default
+    `'produccion'` en la base —lo necesita el backfill de las filas viejas, ver
+    la revisión `0006`— así que un `INSERT` que la omitiera declararía real un
+    comprobante que puede no serlo, y entraría al libro IVA del cliente.
+
+    Los dos defaults posibles mienten en direcciones opuestas y las dos duelen:
+    marcar de producción un comprobante de prueba ensucia los libros; marcar de
+    prueba uno real lo **saca** del libro IVA en silencio, que es peor. Por eso
+    no hay default: acá el ambiente **se declara**, o no se escribe la fila.
+    """
+    ambiente = (ambiente or "").strip().lower()
+    if ambiente not in ("homologacion", "produccion"):
+        raise ValueError(
+            f"ambiente inválido para un comprobante: {ambiente!r}. "
+            "Tiene que ser 'homologacion' o 'produccion'."
+        )
     MAX_INTENTOS = 5
     for intento in range(MAX_INTENTOS):
         try:
@@ -46,19 +96,21 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                         cliente_iva_cond, items, subtotal, iva_amount, total, concepto,
                         cae, cae_vto, observaciones, pdf_path, cliente_domicilio,
                         fch_serv_desde, fch_serv_hasta, fch_vto_pago,
-                        cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
+                        ambiente)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
                      cliente_iva_cond, json.dumps(items, ensure_ascii=False), subtotal,
                      iva_amount, total, concepto, cae, cae_vto, observaciones, pdf_path,
                      cliente_domicilio, fch_serv_desde, fch_serv_hasta, fch_vto_pago,
-                     cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id),
+                     cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
+                     ambiente),
                 )
                 return cur.lastrowid
         except sqlite3.IntegrityError:
             if intento == MAX_INTENTOS - 1:
                 raise
-            numero = get_next_factura_numero(punto_venta, tipo)
+            numero = get_next_factura_numero(punto_venta, tipo, ambiente)
 
 
 _TIPOS_FACTURA = (1, 6, 11)

@@ -97,10 +97,48 @@ def test_prod_arca_failure_falls_back_to_local_numbering(conn, monkeypatch, capl
     assert "ARCA no disponible" in caplog.text
 
 
+def test_el_fallback_local_numera_en_EL_MISMO_ambiente(conn, monkeypatch, caplog):
+    """🔴 Cuando ARCA no contesta se numera local — y tiene que ser en la
+    secuencia del ambiente que se estaba pidiendo.
+
+    ARCA lleva numeraciones **independientes** por ambiente. Si el fallback
+    mirara todas las filas, un comprobante de prueba numerado 500 haria que el
+    proximo real salga 501 cuando produccion va por 84: la secuencia local
+    queda desalineada de la de ARCA y cada emision posterior choca contra el
+    "ultimo autorizado" real.
+
+    🔑 Nacio de una mutacion que SOBREVIVIO: el test de arriba ya cubria el
+    fallback, pero con la tabla vacia --numero == 1 sale igual mirando o no el
+    ambiente--. Lo que distingue es que haya filas de LOS DOS.
+    """
+    db_arca_config.crear_arca_config(
+        "Empresa Test", "20123456789", 1, "clave.key", "cert.crt",
+        ambiente="homologacion",
+    )
+    # 83 reales y 500 de prueba: los dos numeros son distintos y ninguno es 1.
+    for numero, ambiente in ((83, "produccion"), (500, "homologacion")):
+        db_facturas.create_factura(
+            6, 1, numero, "2026-09-01", "20123456789", "Cliente", "Consumidor Final",
+            [], 100.0, 21.0, 121.0, ambiente=ambiente,
+        )
+
+    async def failing_autenticar(cert_path, key_path, ambiente):
+        raise RuntimeError("ARCA caido")
+
+    monkeypatch.setattr(arca_facturacion.arca_wsaa, "autenticar", failing_autenticar)
+    with caplog.at_level("ERROR"):
+        numero, ta, arca = asyncio.run(arca_facturacion.get_next_numero_with_arca(1, 6))
+
+    # La instancia esta en homologacion: sigue SU secuencia, no la real.
+    assert numero == 501, (
+        "el fallback numero %s: mezclo las secuencias de los dos ambientes" % numero)
+
+
 def test_solicitar_cae_dev_mock(conn):
     fid = db_facturas.create_factura(
         6, 1, 1, "2026-07-22", "20123456789", "Cliente Test", "Consumidor Final",
         [], 100.0, 21.0, 121.0,
+        ambiente="produccion",
     )
     factura = db_facturas.get_factura(fid)
     result = asyncio.run(arca_facturacion.solicitar_cae(fid, factura, "_dev_mock_", "_dev_mock_"))
@@ -118,6 +156,7 @@ def test_solicitar_cae_prod_success(conn, monkeypatch):
     fid = db_facturas.create_factura(
         6, 1, 1, "2026-07-22", "20123456789", "Cliente Test", "Consumidor Final",
         [], 100.0, 21.0, 121.0,
+        ambiente="produccion",
     )
     factura = db_facturas.get_factura(fid)
 
@@ -137,6 +176,7 @@ def test_solicitar_cae_prod_failure_returns_original_factura(conn, monkeypatch, 
     fid = db_facturas.create_factura(
         6, 1, 1, "2026-07-22", "20123456789", "Cliente Test", "Consumidor Final",
         [], 100.0, 21.0, 121.0,
+        ambiente="produccion",
     )
     factura = db_facturas.get_factura(fid)
 

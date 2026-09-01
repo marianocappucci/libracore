@@ -154,6 +154,7 @@ def test_facturas_numeracion_con_retry(conn):
     fid = facturas.create_factura(
         1, 1, n, "2026-07-14", "20111111111", "Cliente Test", "RI",
         [{"nombre": "Item", "qty": 1, "precio": 100}], 100, 21, 121,
+        ambiente="produccion",
     )
     assert facturas.get_factura(fid)["numero"] == n
 

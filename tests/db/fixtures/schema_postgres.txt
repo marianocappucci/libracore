@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (371)
+## tablas (372)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -157,6 +157,7 @@ facturacion_alias|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC
 facturacion_alias|id|bigint|NN|nextval('facturacion_alias_id_seq'::regclass)
 facturacion_alias|tipo|text|NN|
 facturacion_alias|valor|text|NN|
+facturas|ambiente|text|NN|'produccion'::text
 facturas|cae_vto|text||
 facturas|cae|text||
 facturas|cbte_asoc_nro|integer||0
@@ -516,8 +517,9 @@ ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON public.ventas USING btr
 ventas|ventas_numero_key|CREATE UNIQUE INDEX ventas_numero_key ON public.ventas USING btree (numero)
 ventas|ventas_pkey|CREATE UNIQUE INDEX ventas_pkey ON public.ventas USING btree (id)
 
-## checks (4)
+## checks (5)
 clients|clients_cc_resumen_frecuencia_check|CHECK ((cc_resumen_frecuencia = ANY (ARRAY['semanal'::text, 'quincenal'::text, 'mensual'::text])))
 facturacion_alias|facturacion_alias_tipo_check|CHECK ((tipo = ANY (ARRAY['cuit'::text, 'email'::text])))
+facturas|facturas_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
 productos|productos_tipo_check|CHECK ((tipo = ANY (ARRAY['producto'::text, 'servicio'::text])))
 ventas_pagos|ventas_pagos_estado_check|CHECK ((estado = ANY (ARRAY['pendiente'::text, 'aprobado'::text, 'rechazado'::text, 'vencido'::text])))
