@@ -39,7 +39,7 @@ import os
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from libracore import arca_certificados, arca_wsaa, config_manager
+from libracore import arca_certificados, arca_credenciales, arca_wsaa, config_manager
 from libracore.db import arca_config as db_arca_config
 
 #: Los nombres con los que se guardan. Son fijos a propósito: `resolve_cert_paths`
@@ -107,15 +107,12 @@ def _ambiente_de(cfg: dict | None, pedido: str = "") -> str:
 def _paths(cfg: dict | None, ambiente: str = "") -> tuple[str, str]:
     """El par en disco del ambiente pedido.
 
-    🔴 **El `ambiente` viaja hasta el rescate**, y no es un detalle: sin él,
-    `resolve_cert_paths` cae al nombre de producción y repone las credenciales
-    reales que `paths_de` acababa de negar. Medido el 2026-09-01.
+    Envuelve a `arca_credenciales.paths_en_disco` sólo para aplicar el default
+    de la pantalla: acá un ambiente vacío o raro cae en `homologacion`, que es
+    el menos peligroso de los dos para una pantalla de configuración.
     """
     cfg = cfg or {}
-    amb = _ambiente_de(cfg, ambiente)
-    return config_manager.resolve_cert_paths(
-        *db_arca_config.paths_de(cfg, amb), ambiente=amb
-    )
+    return arca_credenciales.paths_en_disco(cfg, _ambiente_de(cfg, ambiente))
 
 
 def _existe(path: str) -> bool:
