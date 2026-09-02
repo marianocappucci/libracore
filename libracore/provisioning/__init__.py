@@ -77,6 +77,28 @@ LIBRAAUTH_SSH_KEY = os.environ.get(
 )
 
 
+def _como_se_declara(paquete: str) -> str:
+    """El nombre del paquete tal como puede aparecer en una dependencia.
+
+    🔴 **Con o sin extras.** `libracore` y `libracore[migrations]` son la misma
+    dependencia; el segundo es el que trae alembic, y lo declaran cuatro
+    productos —Contalibra, LibraCargo, Restolibra y VentaLibra— porque su deploy
+    corre `libracore-migrar`.
+
+    Existe porque los dos lectores de dependencias de este módulo se lo perdían,
+    cada uno a su manera, y eso los dejaba **mudos**: `_pin_declarado` devolvía
+    `None` para esos cuatro y `check_venv_sync` no avisaba nada. Medido el
+    2026-09-02 sobre las ocho instalaciones del VPS: los cuatro que declaran el
+    extra son exactamente los cuatro sin pin detectado.
+
+    Es la tercera vez que este módulo se calla por leer la forma equivocada de
+    una dependencia —antes fue `requirements.txt` contra `pyproject.toml`, dos
+    veces— y por eso ahora la forma vive **acá y en ningún otro lado**. Si
+    aparece un cuarto lector, que use esto.
+    """
+    return rf"{re.escape(paquete)}(?:\[[^\]]*\])?"
+
+
 def _depende_de(repo_root: Path, paquete: str) -> bool:
     """True si el producto declara una dependencia de `paquete` (paquete
     interno privado) vía git+, ya sea en requirements.txt (Contalibra/
@@ -93,7 +115,10 @@ def _depende_de(repo_root: Path, paquete: str) -> bool:
     ):
         return True
     pyproject = repo_root / "pyproject.toml"
-    if pyproject.exists() and f"{paquete} @ git+" in pyproject.read_text(encoding="utf-8"):
+    if pyproject.exists() and re.search(
+        _como_se_declara(paquete) + r"\s*@\s*git\+",
+        pyproject.read_text(encoding="utf-8"),
+    ):
         return True
     return False
 
@@ -197,13 +222,14 @@ def _pin_declarado(repo_root: Path) -> tuple[str, str] | None:
     justamente la mitad que faltaba.
     """
     # En pyproject el pin es un elemento de lista: viene entre comillas y
-    # con coma final (`"libracore @ git+https://…@v1.8.0",`). Exigir
-    # `@ git+` es lo que evita agarrar los comentarios que nombran al motor
-    # — en estos pyproject hay varios, justo encima de la línea del pin.
+    # con coma final (`"libracore @ git+https://…@v1.8.0",`), y puede traer
+    # extras (`"libracore[migrations] @ git+…"`) — ver `_como_se_declara`.
+    # Exigir `@ git+` es lo que evita agarrar los comentarios que nombran al
+    # motor — en estos pyproject hay varios, justo encima de la línea del pin.
     pyproject = repo_root / "pyproject.toml"
     if pyproject.exists():
         m = re.search(
-            r"""libracore\s*@\s*git\+\S+?@v([0-9][^"'\s,]*)""",
+            _como_se_declara("libracore") + r"""\s*@\s*git\+\S+?@v([0-9][^"'\s,]*)""",
             pyproject.read_text(encoding="utf-8"),
         )
         if m:
