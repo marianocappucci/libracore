@@ -9,6 +9,25 @@ dependencia de rol**, porque el vocabulario de roles no es el mismo en los seis.
 
     app.include_router(build_arca_router(), dependencies=[Depends(require_admin)])
 
+## Quién subió la clave privada
+
+Este router no escribía **ningún** registro de quién cambiaba qué, y es la
+pantalla donde se sube una clave privada. LibraCargo sí lo hacía, con su router
+propio, y al normalizar contra éste lo perdió — lo que puso el hueco a la vista.
+
+`al_cambiar(accion, detalle, usuario)` corre **después** de cada cambio, con el
+usuario que devuelve la dependencia `usuario_actual` del producto. Las dos son
+opcionales: los seis productos que ya lo montan siguen andando sin pasarlas, y
+el que quiera auditoría la conecta.
+
+    app.include_router(
+        build_arca_router(
+            usuario_actual=get_current_user,
+            al_cambiar=lambda accion, detalle, usuario: ...,
+        ),
+        dependencies=[Depends(require_admin)],
+    )
+
 ## Los dos defectos que este router cierra, y que ninguno tenía solo
 
 1. 🔴 **Se subía el certificado sin mirarlo.** Contalibra y Restolibra escriben
@@ -34,13 +53,38 @@ el primero en correr definiría dónde. Se lee adentro de cada endpoint.
 
 from __future__ import annotations
 
+import logging
 import os
+from collections.abc import Callable
+from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from libracore import arca_certificados, arca_credenciales, arca_wsaa, config_manager
 from libracore.db import arca_config as db_arca_config
+
+logger = logging.getLogger(__name__)
+
+#: Lo que puede pasarle `al_cambiar` como `accion`. Está acá para que un
+#: consumidor pueda mapearlas sin repetir literales, y para que agregar una sea
+#: un cambio visible en vez de un string nuevo suelto en un endpoint.
+#:
+#: 🔑 **`probar` no está**, y no es un olvido: autentica contra ARCA y **no
+#: cambia nada**. Un log de auditoría que registre lecturas se llena de ruido y
+#: esconde las cuatro líneas que importan.
+ACCIONES = ("configurar", "certificado", "clave", "borrar")
+
+
+def _sin_identidad() -> None:
+    """La dependencia de usuario por omisión: no hay quién, y está bien.
+
+    Un producto que no pasa `usuario_actual` recibe `None` en el hook. No se
+    exige junto con `al_cambiar` a propósito: un backoffice o un script pueden
+    querer el registro del cambio aunque no haya sesión de por medio, y
+    obligarlos a inventar un usuario sería peor que un `None` explícito.
+    """
+    return None
 
 #: Los nombres con los que se guardan. Son fijos a propósito: `resolve_cert_paths`
 #: cae a estos dos si el path guardado quedó obsoleto (ej. una migración de
@@ -187,6 +231,8 @@ def build_arca_router(
     *,
     prefix: str = "/config/arca",
     empresa_por_defecto: str = "default",
+    usuario_actual: Callable[..., Any] | None = None,
+    al_cambiar: Callable[[str, dict, Any], None] | None = None,
 ) -> APIRouter:
     """El router de configuración de ARCA. Sin gate propio: lo pone el producto.
 
@@ -212,8 +258,41 @@ def build_arca_router(
     manda el slug, pero un script, el backoffice o un `curl` no tienen por qué
     saberlo. El default correcto es del producto, y el producto lo declara una
     vez al montar el router.
+
+    ## `al_cambiar`, y por qué es *best-effort*
+
+    Se llama con una de las cuatro `ACCIONES`, un `detalle` y el usuario. **Lo
+    que levante no tumba la request**, igual que el `al_emitir` de
+    `facturas_router` y por el mismo motivo: para cuando corre, el archivo ya
+    está escrito en `CERTS_DIR` y la fila ya está guardada, así que un error no
+    lo desharía — dejaría al operador creyendo que la subida falló mientras el
+    certificado está puesto. Se registra en el log de la app con `exception`.
+
+    🔴 **Eso lo hace distinto de una auditoría transaccional**, que es lo que un
+    producto con ORM escribe para sus propias tablas: ahí el asiento y el cambio
+    entran o no entran juntos. Acá no se puede, porque el cambio es un archivo
+    en disco. Quien conecte esto tiene que saber que el peor caso es un cambio
+    aplicado sin su registro, no un registro sin cambio.
+
+    🔑 **El `detalle` no lleva NUNCA el contenido del par.** Lleva de qué
+    empresa y de qué ambiente es, y —para el certificado— lo que ya es público
+    de él: sujeto, vencimiento y número de serie. Un log de auditoría con la
+    clave privada adentro es peor que no tener log. Hay un test que lo fija.
     """
     router = APIRouter(prefix=prefix, tags=["arca"])
+    identidad = usuario_actual or _sin_identidad
+
+    def _avisar(accion: str, detalle: dict, usuario: Any) -> None:
+        if al_cambiar is None:
+            return
+        try:
+            al_cambiar(accion, detalle, usuario)
+        except Exception:
+            logger.exception(
+                "El hook de auditoría de ARCA falló para %r sobre %r. El cambio "
+                "SÍ se aplicó; lo que quedó sin registrar es quién lo hizo.",
+                accion, detalle.get("empresa", ""),
+            )
 
     @router.get("")
     def obtener(empresa: str = ""):
@@ -244,7 +323,7 @@ def build_arca_router(
         }
 
     @router.put("")
-    def guardar(payload: ArcaPayload):
+    def guardar(payload: ArcaPayload, usuario: Any = Depends(identidad)):
         empresa = payload.empresa.strip() or _empresa_de("", empresa_por_defecto)
         ambiente = payload.ambiente if payload.ambiente in AMBIENTES else "homologacion"
         existente = db_arca_config.obtener_arca_config(empresa)
@@ -259,6 +338,11 @@ def build_arca_router(
                 clave_path="", certificado_path="", ambiente=ambiente,
                 alias=payload.alias,
             )
+        _avisar("configurar", {
+            "empresa": empresa, "cuit": payload.cuit,
+            "punto_venta": payload.punto_venta, "ambiente": ambiente,
+            "alias": payload.alias,
+        }, usuario)
         return obtener(empresa)
 
     def _ambiente_del_pedido(cfg: dict | None, ambiente: str) -> str:
@@ -279,7 +363,8 @@ def build_arca_router(
 
     @router.post("/certificado")
     async def subir_certificado(archivo: UploadFile = File(...), empresa: str = "",
-                                ambiente: str = ""):
+                                ambiente: str = "",
+                                usuario: Any = Depends(identidad)):
         """Sube el `.crt` **del ambiente indicado**. Se valida antes de escribirlo.
 
         Y si ya hay una clave cargada **para ese mismo ambiente**, se chequea que
@@ -314,12 +399,20 @@ def build_arca_router(
         with open(destino, "wb") as f:
             f.write(contenido)
         _guardar_path(empresa, amb, certificado_path=destino)
+        # 🔑 Los datos del certificado y no el certificado: son los que dicen
+        # **cuál** se subió —el modo de fallar que este registro cubre es
+        # "alguien lo cambió y nadie sabe por cuál"— y ninguno es secreto.
+        _avisar("certificado", {
+            "empresa": empresa, "ambiente": amb, "archivo": archivo.filename or "",
+            "sujeto": datos.sujeto, "numero_de_serie": datos.numero_de_serie,
+            "vence": datos.vence.strftime("%d-%m-%Y"),
+        }, usuario)
         return {**obtener(empresa), "vence": datos.vence.strftime("%d-%m-%Y"),
                 "dias_para_vencer": datos.dias_para_vencer}
 
     @router.post("/clave")
     async def subir_clave(archivo: UploadFile = File(...), empresa: str = "",
-                          ambiente: str = ""):
+                          ambiente: str = "", usuario: Any = Depends(identidad)):
         """Sube el `.key` del ambiente indicado. Mismas validaciones, del otro lado."""
         contenido = await archivo.read()
         try:
@@ -345,10 +438,16 @@ def build_arca_router(
         with open(destino, "wb") as f:
             f.write(contenido)
         _guardar_path(empresa, amb, clave_path=destino)
+        # De la clave no va NADA más que de cuál ambiente es. No hay un dato
+        # público equivalente al sujeto del certificado, y el nombre del archivo
+        # que subieron no dice nada que valga el riesgo de acostumbrarse a
+        # copiar campos desde acá.
+        _avisar("clave", {"empresa": empresa, "ambiente": amb}, usuario)
         return obtener(empresa)
 
     @router.delete("/credenciales")
-    def borrar_credenciales(empresa: str = "", ambiente: str = ""):
+    def borrar_credenciales(empresa: str = "", ambiente: str = "",
+                            usuario: Any = Depends(identidad)):
         """Saca el par **de un ambiente**. Sin `ambiente`, el del selector.
 
         Se borran los dos archivos **y** se vacían los paths de la fila: dejar
@@ -376,6 +475,7 @@ def build_arca_router(
         db_arca_config.actualizar_arca_config(
             cfg["empresa"], **{campo_cert: "", campo_clave: ""},
         )
+        _avisar("borrar", {"empresa": cfg["empresa"], "ambiente": amb}, usuario)
         return obtener(cfg["empresa"])
 
     @router.get("/estado")
