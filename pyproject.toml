@@ -15,6 +15,15 @@ dynamic = ["version"]
 dependencies = [
     "starlette",
     "fastapi>=0.111.0",
+    # 🔴 Piso de pydantic v2. LibraCore usa `model_dump()` (pydantic v2) en los
+    # routers, pero nunca declaraba el piso: con `starlette` sin pin y `fastapi`
+    # solo con piso, el resolver del CI —en un entorno limpio— backtrackeaba
+    # hasta fastapi 0.125 + pydantic 1.10, donde `model_dump` no existe y caían
+    # decenas de tests de routers. Un resolver moderno elegía el set nuevo, así
+    # que el rojo dependía del entorno. Este piso prohíbe pydantic v1 y corta el
+    # backtrack de raíz. Cubre también a los consumidores que heredan estas deps
+    # (Contalibra y el resto de la familia arrastran el `starlette` suelto de acá).
+    "pydantic>=2.9",
     "jinja2>=3.1.4",
     "fpdf2>=2.8.0",
     "qrcode>=7.4.2",
