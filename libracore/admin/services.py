@@ -17,6 +17,7 @@ del archivo de base de datos también es configurable por producto
 import json
 import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -238,6 +239,79 @@ def set_plan(slug: str, plan: str) -> None:
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     meta["plan"] = plan
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+# ── add-ons (módulos sueltos, fuera de los planes) ───────────────────────────────
+#
+# 🔴 Un add-on (`plans.ADDONS`, ej. `mayorista`) NO se aplica como el plan. El
+# `set_plan` de arriba escribe en un ARCHIVO SQLite (`aplicar_plan_en_db`), pero
+# el estado de módulos que lee la instancia viva está en su PostgreSQL. Para que
+# el toggle tenga efecto real hay que llegar a esa base, y desde el host la URL
+# no resuelve: se corre DENTRO del contenedor (`docker exec`), donde
+# `libracore.db.core` ya apunta al PostgreSQL de la instancia — mismo patrón que
+# el alta al aplicar el plan (`nuevo_cliente._aplicar_plan_en_contenedor`) y que
+# la CLI `panel_admin.py addon`. El efecto es inmediato: `require_module` relee
+# `get_modulos()` en cada request.
+#
+# El snippet usa `app.database.set_addon`/`get_modulos`, que existen en el
+# producto que tiene add-ons (el `set_addon` lo agrega ese producto; `get_modulos`
+# lo tienen todos). Para un producto sin add-ons (`plans.ADDONS` vacío) estas
+# funciones ni se llaman.
+
+
+def set_addon(slug: str, addon: str, habilitado: bool) -> None:
+    """Prende/apaga un add-on en la instancia de un cliente (efecto inmediato)."""
+    plans = _plans()
+    if addon not in getattr(plans, "ADDONS", set()):
+        raise ServiceError(f"Add-on desconocido: {addon!r}.")
+    c = _pa().find_client(slug)
+    if not c:
+        raise ServiceError(f"Cliente '{slug}' no encontrado.")
+    on = "True" if habilitado else "False"
+    codigo = (
+        "import sys; sys.path.insert(0, '/app'); "
+        f"from app.database import set_addon; set_addon({addon!r}, {on})"
+    )
+    r = subprocess.run(
+        ["docker", "exec", c["container"], "python3", "-c", codigo],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise ServiceError(
+            f"No se pudo aplicar el add-on en '{slug}': {(r.stderr or r.stdout).strip()[:200]}"
+        )
+
+
+def addons_de_instancia(slug: str) -> dict[str, bool]:
+    """Estado de los add-ons de la instancia, leído de su base viva (`docker exec`).
+
+    Devuelve `{addon: habilitado}` para cada add-on que declara el producto. `{}`
+    si el producto no tiene add-ons. Si la instancia no responde (contenedor
+    caído), los devuelve todos en `False` en vez de fallar: el backoffice puede
+    mostrar el toggle igual, apagado.
+    """
+    plans = _plans()
+    addons = sorted(getattr(plans, "ADDONS", set()))
+    if not addons:
+        return {}
+    c = _pa().find_client(slug)
+    if not c:
+        raise ServiceError(f"Cliente '{slug}' no encontrado.")
+    codigo = (
+        "import sys, json; sys.path.insert(0, '/app'); "
+        "from app.database import get_modulos; print(json.dumps(get_modulos()))"
+    )
+    r = subprocess.run(
+        ["docker", "exec", c["container"], "python3", "-c", codigo],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return {a: False for a in addons}
+    try:
+        mods = json.loads(r.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        return {a: False for a in addons}
+    return {a: bool(mods.get(a, False)) for a in addons}
 
 
 # ── estado / ciclo de vida del contenedor ───────────────────────────────────────
