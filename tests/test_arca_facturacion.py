@@ -11,10 +11,10 @@ import asyncio
 import pytest
 
 from libracore import arca_facturacion
-from libracore.db import core
-from libracore.db.schema import init_core_schema
 from libracore.db import arca_config as db_arca_config
+from libracore.db import core
 from libracore.db import facturas as db_facturas
+from libracore.db.schema import init_core_schema
 
 
 @pytest.fixture

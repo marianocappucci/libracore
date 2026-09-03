@@ -83,7 +83,7 @@ def load(extra_defaults: dict | None = None):
     if not os.path.exists(CONFIG_PATH):
         return defaults.copy()
     try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
             data = json.load(f)
         return {**defaults, **data}
     except Exception:

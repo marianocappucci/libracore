@@ -205,9 +205,10 @@ def test_el_cron_usa_el_registro(entorno, registro):
 def test_el_webhook_usa_el_registro(entorno, registro):
     import libracore.mp_webhook as mw
     importlib.reload(mw)
+    import json
+
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    import json
 
     registro.agregar("socio-4", name="WEBHOOK SA", cuit_dni=CUIT, email=EMAIL,
                      auto_facturar=True)

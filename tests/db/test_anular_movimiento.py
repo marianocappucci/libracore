@@ -16,9 +16,9 @@ from __future__ import annotations
 import pytest
 
 from libracore.db import caja as db_caja
+from libracore.db import core
 from libracore.db import dashboard as db_dashboard
 from libracore.db import reportes as db_reportes
-from libracore.db import core
 from libracore.db import turnos as db_turnos
 from libracore.db.schema import init_core_schema
 

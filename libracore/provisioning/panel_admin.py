@@ -8,19 +8,23 @@ función de acá. `npm_api.py` (idéntico entre productos, pero vive en
 `scripts/` de cada repo, no en LibraCore) se resuelve en tiempo de
 ejecución vía import diferido — ver `libracore.provisioning._npm_api()`.
 """
-import re
-import sys
 import json
+import re
+import shutil
 import sqlite3
 import subprocess
+import sys
 import tarfile
-import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import (
-    get_config, _npm_api,
-    check_venv_sync, build_image_tagged, contexto_de_build, deploy_version,
+    _npm_api,
+    build_image_tagged,
+    check_venv_sync,
+    contexto_de_build,
+    deploy_version,
+    get_config,
 )
 
 BACKUP_RETENTION_DIAS = 14
@@ -790,8 +794,8 @@ def cmd_estado_externo(slugs: list[str] | None = None):
 
     Sale con codigo 1 si algo esta mal, para que el cron lo pueda detectar.
     """
-    from . import resguardo_externo as rx
     from ..resguardo_estado import esta_al_dia
+    from . import resguardo_externo as rx
 
     clientes = load_clients()
     targets = [c for c in clientes if (not slugs or c["slug"] in slugs)]

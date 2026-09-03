@@ -6,7 +6,6 @@ wiki/entities/libracore.md).
 """
 from libracore.db.core import get_connection
 
-
 #: Los dos ambientes, y de qué columnas sale el par de cada uno.
 #:
 #: 🔴 **El par de producción vive en las columnas SIN sufijo.** Es una asimetría

@@ -41,13 +41,15 @@ from libracore import (
     arca_facturacion,
     config_manager,
     email_sender,
+)
+from libracore import (
     pdf_generator as pdf_gen,
 )
-from libracore.registro_de_clientes import RegistroDeClientes, el_registro
 from libracore.db import arca_config as db_arca_config
 from libracore.db import caja as db_caja
 from libracore.db import facturas as db_facturas
 from libracore.db import mp as db_mp
+from libracore.registro_de_clientes import RegistroDeClientes, el_registro
 
 logger = logging.getLogger(__name__)
 

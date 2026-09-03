@@ -4,7 +4,9 @@ de base, con fallback a los historicos mientras se actualizan las instancias.
 import pytest
 
 from libracore.db.url_de_instancia import (
-    nombre_normalizado, nombres_aceptados, url_de_instancia,
+    nombre_normalizado,
+    nombres_aceptados,
+    url_de_instancia,
 )
 
 

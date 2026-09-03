@@ -2,9 +2,9 @@ import asyncio
 
 import httpx
 import pytest
+from conftest import make_expired_cert_key, make_mismatched_key, make_valid_cert_key
 
 from libracore import arca_wsaa
-from conftest import make_valid_cert_key, make_expired_cert_key, make_mismatched_key
 
 _RealAsyncClient = httpx.AsyncClient
 

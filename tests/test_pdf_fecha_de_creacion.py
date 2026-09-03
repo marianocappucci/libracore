@@ -15,11 +15,12 @@ a byte va detrás, como la consecuencia que se busca.
 """
 import os
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
 
-from libracore import config_manager, pdf_generator as pg, ticket_generator
+from libracore import config_manager, ticket_generator
+from libracore import pdf_generator as pg
 
 
 def _creation_date(pdf: bytes) -> str:
@@ -37,13 +38,13 @@ def _bytes_del_archivo(path: str) -> bytes:
 # ── El parser de fechas ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("valor, esperado", [
-    ("2026-07-28",                    datetime(2026, 7, 28, tzinfo=timezone.utc)),
-    ("2026-07-28 14:30",              datetime(2026, 7, 28, 14, 30, tzinfo=timezone.utc)),
-    ("2026-07-28 14:30:09",           datetime(2026, 7, 28, 14, 30, 9, tzinfo=timezone.utc)),
-    ("2026-07-28T14:30:09Z",          datetime(2026, 7, 28, 14, 30, 9, tzinfo=timezone.utc)),
-    ("20260728",                      datetime(2026, 7, 28, tzinfo=timezone.utc)),  # ARCA
-    ("2026-07-28 14:30 hs",           datetime(2026, 7, 28, 14, 30, tzinfo=timezone.utc)),
-    (datetime(2026, 7, 28, 14, 30),   datetime(2026, 7, 28, 14, 30, tzinfo=timezone.utc)),
+    ("2026-07-28",                    datetime(2026, 7, 28, tzinfo=UTC)),
+    ("2026-07-28 14:30",              datetime(2026, 7, 28, 14, 30, tzinfo=UTC)),
+    ("2026-07-28 14:30:09",           datetime(2026, 7, 28, 14, 30, 9, tzinfo=UTC)),
+    ("2026-07-28T14:30:09Z",          datetime(2026, 7, 28, 14, 30, 9, tzinfo=UTC)),
+    ("20260728",                      datetime(2026, 7, 28, tzinfo=UTC)),  # ARCA
+    ("2026-07-28 14:30 hs",           datetime(2026, 7, 28, 14, 30, tzinfo=UTC)),
+    (datetime(2026, 7, 28, 14, 30),   datetime(2026, 7, 28, 14, 30, tzinfo=UTC)),
 ])
 def test_la_fecha_del_documento_se_interpreta_como_utc(valor, esperado):
     """Sin zona horaria se asume UTC: si se asumiera la local, el mismo
@@ -60,7 +61,7 @@ def test_una_fecha_con_zona_se_respeta():
     from datetime import timedelta
     arg = timezone(timedelta(hours=-3))
     assert pg.fecha_de_documento(datetime(2026, 7, 28, 14, 30, tzinfo=arg)) == \
-        datetime(2026, 7, 28, 17, 30, tzinfo=timezone.utc)
+        datetime(2026, 7, 28, 17, 30, tzinfo=UTC)
 
 
 # ── Tickets térmicos ──────────────────────────────────────────────────────────
@@ -111,6 +112,7 @@ def test_un_ticket_sin_fecha_igual_sale(_config_ticket):
 def pg2(tmp_path, monkeypatch):
     """Mismo aislamiento que `test_pdf_generator`: `DATA_DIR` propio."""
     import importlib
+
     from libracore import config_manager as cm
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     importlib.reload(cm)

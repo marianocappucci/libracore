@@ -23,7 +23,6 @@ import sqlite3
 
 from .core import Conexion, is_postgres
 
-
 #: El "ahora" que estampan los `created_at`/`updated_at` de este schema.
 #:
 #: 🔴 **Es `-3 hours`, no `'localtime'`, y no es un capricho.** `datetime('now')`

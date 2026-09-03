@@ -5,8 +5,8 @@ Contalibra/Restolibra, donde `email_sender.py` era byte-idéntico y activo
 `web/api/mp_bandeja.py` y `mp_facturacion.py` en ambos) — ver
 wiki/analyses/auditoria-duplicacion-familia-libra.md.
 """
-import smtplib
 import os
+import smtplib
 from email.message import EmailMessage
 
 

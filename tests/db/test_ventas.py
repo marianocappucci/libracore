@@ -8,9 +8,8 @@ wiki/entities/libracore.md.
 """
 import pytest
 
-from libracore.db import core
+from libracore.db import caja, core, facturas, productos, remitos_presupuestos, stock, turnos, ventas
 from libracore.db.schema import init_core_schema
-from libracore.db import caja, turnos, productos, stock, ventas, facturas, remitos_presupuestos
 
 # `crear_usuario` es una fixture de tests/db/conftest.py — reemplaza al
 # `usuarios.create_usuario` que se fue con el modulo de auth (2026-07-30).

@@ -11,8 +11,11 @@ sites, ver `libracore.auth`).
 """
 import sqlite3
 import threading
-from datetime import datetime as _datetime, timezone as _timezone, timedelta as _timedelta
-from typing import Callable, TYPE_CHECKING, TypeAlias
+from collections.abc import Callable
+from datetime import datetime as _datetime
+from datetime import timedelta as _timedelta
+from datetime import timezone as _timezone
+from typing import TYPE_CHECKING, TypeAlias
 
 _AR_TZ = _timezone(_timedelta(hours=-3))   # America/Argentina/Buenos_Aires (sin DST)
 

@@ -5,8 +5,8 @@ payer CUIT/email → cliente) y movimientos bancarios entrantes
 real, Tier 2 — el sistema de alias de facturación era solo de Contalibra
 y pasa a core, confirmado con el usuario — ver wiki/entities/libracore.md).
 """
+from libracore.db.clients import get_client, get_client_by_cuit, get_client_by_email
 from libracore.db.core import get_connection
-from libracore.db.clients import get_client, get_client_by_email, get_client_by_cuit
 
 
 def get_mp_pago(mp_payment_id: str):

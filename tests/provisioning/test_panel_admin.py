@@ -4,10 +4,10 @@ Tests de libracore.provisioning.panel_admin. Docker/subprocess se mockean
 sys.modules, mismo patrón que tests/admin/test_services.py.
 """
 import json
-from pathlib import Path
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import pytest
 

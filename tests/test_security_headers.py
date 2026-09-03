@@ -3,7 +3,7 @@ from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from libracore.security_headers import SecurityHeadersMiddleware, CSP
+from libracore.security_headers import CSP, SecurityHeadersMiddleware
 
 
 def _make_app():

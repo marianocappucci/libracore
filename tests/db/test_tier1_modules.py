@@ -7,11 +7,23 @@ comportan igual que antes.
 """
 import pytest
 
-from libracore.db import core
+from libracore.db import (
+    arca_config,
+    caja,
+    core,
+    cuenta_corriente,
+    dashboard,
+    egresos,
+    libros_iva,
+    listas_precio,
+    logs,
+    remitos_presupuestos,
+    reportes,
+    tesoreria,
+    turnos,
+)
+from libracore.db import modulos as modulos_mod
 from libracore.db.schema import init_core_schema
-from libracore.db import tesoreria, caja, egresos, modulos as modulos_mod
-from libracore.db import listas_precio, turnos, dashboard, logs, arca_config
-from libracore.db import cuenta_corriente, libros_iva, reportes, remitos_presupuestos
 
 
 @pytest.fixture

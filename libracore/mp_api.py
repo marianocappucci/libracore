@@ -4,8 +4,9 @@ principal de cada producto (Contalibra, Restolibra) — busqueda de pagos
 para reconciliacion (bandeja MP), consulta de pago puntual (webhooks) y
 QR Dinamico (crear/cancelar orden en el POS).
 """
-import httpx
 import datetime
+
+import httpx
 
 MP_API_BASE = "https://api.mercadopago.com"
 
