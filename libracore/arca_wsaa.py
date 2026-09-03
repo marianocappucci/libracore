@@ -7,7 +7,7 @@ import base64
 import contextlib
 import random
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from libracore import arca_certificados
 
@@ -51,7 +51,7 @@ def info_certificado(cert_path):
 
 
 def _generar_tra(servicio="wsfe"):
-    ahora = datetime.now(timezone.utc)
+    ahora = datetime.now(UTC)
     exp   = ahora + timedelta(minutes=10)
     fmt   = "%Y-%m-%dT%H:%M:%S+00:00"
     uid   = random.randint(1, 2**31)
@@ -70,9 +70,9 @@ def _generar_tra(servicio="wsfe"):
 
 def _firmar_tra(tra_bytes, cert_path, key_path):
     """Firma el TRA con openssl smime (SHA1, DER, contenido embebido)."""
+    import os
     import subprocess
     import tempfile
-    import os
 
     with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
         f.write(tra_bytes)

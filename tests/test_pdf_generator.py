@@ -6,6 +6,7 @@ from libracore import pdf_generator as pg
 def _set_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import importlib
+
     from libracore import config_manager as cm
     importlib.reload(cm)
     importlib.reload(pg)

@@ -28,7 +28,8 @@ import re
 
 import pytest
 
-from libracore.db import core, productos, remitos_presupuestos as rp, reportes
+from libracore.db import core, productos, reportes
+from libracore.db import remitos_presupuestos as rp
 from libracore.db.schema import init_core_schema
 
 ITEMS = json.dumps([{"desc": "Servicio", "cant": 1, "precio": 1000.0}])

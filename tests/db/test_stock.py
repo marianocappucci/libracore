@@ -8,9 +8,8 @@ y con resolver configurado (Restolibra) — ver wiki/entities/libracore.md.
 """
 import pytest
 
-from libracore.db import core
+from libracore.db import core, productos, stock
 from libracore.db.schema import init_core_schema
-from libracore.db import productos, stock
 
 
 @pytest.fixture

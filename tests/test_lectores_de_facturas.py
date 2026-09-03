@@ -16,7 +16,8 @@ import re
 
 import pytest
 
-from libracore.db import core, facturas as db_facturas, libros_iva
+from libracore.db import core, libros_iva
+from libracore.db import facturas as db_facturas
 from libracore.db.schema import init_core_schema
 
 DB = pathlib.Path(__file__).resolve().parents[1] / "libracore" / "db"

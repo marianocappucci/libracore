@@ -4,9 +4,8 @@ pueda facturar servicios sin catálogo/stock — ver wiki/entities/libracommerce
 para el contexto completo (empujado desde una necesidad real de Contalibra)."""
 import pytest
 
-from libracore.db import core
+from libracore.db import core, productos
 from libracore.db.schema import init_core_schema
-from libracore.db import productos
 
 
 @pytest.fixture

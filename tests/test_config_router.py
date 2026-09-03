@@ -320,6 +320,7 @@ def test_resguardo_externo_refleja_lo_que_dejo_el_host(client, app):
     """El host escribe el .externo.json; la app sólo lo cuenta. Nunca sube nada
     ni ve la credencial de la nube del cliente."""
     from datetime import datetime
+
     from libracore.resguardo_estado import escribir_estado
 
     escribir_estado(app.state.backups_dir, {
@@ -341,6 +342,7 @@ def test_resguardo_externo_refleja_lo_que_dejo_el_host(client, app):
 
 def test_resguardo_externo_muestra_la_falla(client, app):
     from datetime import datetime
+
     from libracore.resguardo_estado import escribir_estado
 
     escribir_estado(app.state.backups_dir, {

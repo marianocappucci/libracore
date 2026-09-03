@@ -23,7 +23,7 @@ dependencias del router antes que las de la ruta, asi que no alcanza con
 ponerle un guard distinto a cada endpoint.
 """
 import os
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse

@@ -20,6 +20,7 @@ from libracore.pdf_generator import _TextoSeguroPDF
 def _set_data_dir(tmp_path, monkeypatch, **cfg):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import importlib
+
     from libracore import config_manager as cm
     importlib.reload(cm)
     importlib.reload(pg)
@@ -114,6 +115,7 @@ def test_ticket_con_tipografia_de_procesador_de_texto(tmp_path, monkeypatch):
     """`TicketPDF` vive en otro módulo y heredaba de `FPDF` pelado."""
     _set_data_dir(tmp_path, monkeypatch, empresa_nombre=TIPOGRAFICOS)
     import importlib
+
     from libracore import ticket_generator as tg
     importlib.reload(tg)
     pdf = tg.TicketPDF(ancho_mm=58, fuente_size=8)

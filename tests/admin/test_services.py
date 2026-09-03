@@ -328,8 +328,9 @@ def test_la_baja_borra_la_casilla_de_correo_de_la_instancia(fake_scripts, monkey
 def test_un_servidor_de_correo_caido_no_impide_dar_de_baja(fake_scripts, monkeypatch):
     """Best-effort como el proxy de NPM: la baja tiene que poder completarse
     con el servidor de correo caído, avisando que la casilla quedó."""
-    from libracore.provisioning import mail_cuentas
     from pathlib import Path
+
+    from libracore.provisioning import mail_cuentas
 
     monkeypatch.setenv("LIBRA_MAIL_ADMIN_SSH", "libra-mail@mail.testprod.com.ar")
     monkeypatch.setenv("LIBRA_MAIL_DOMINIO", "testprod.com.ar")

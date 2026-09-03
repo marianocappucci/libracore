@@ -29,12 +29,13 @@ explícitamente al confirmar la venta fiada, con la misma forma que un
 `cc_pago` pero del otro signo. La tabla queda vacía en los productos que no
 la usan, así que suma cero y su saldo no cambia.
 """
-from .core import Conexion
 import contextlib
 from dataclasses import dataclass
 
 from libracore.db.caja import sql_es_cuenta_corriente, sql_no_anulado
 from libracore.db.core import get_connection
+
+from .core import Conexion
 
 _TIPO_LABEL = {
     1: "FACTURA A", 6: "FACTURA B", 11: "FACTURA C",

@@ -15,7 +15,6 @@ import pytest
 from libracore import medios_pago
 from libracore.db import caja, core
 
-
 # ── Las dos listas ─────────────────────────────────────────────────────────
 
 def test_los_seis_de_siempre_siguen_siendo_elegibles():

@@ -11,8 +11,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from libracore.geografia import (
-    LIMITE_POR_OMISION,
     _ARCHIVO,
+    LIMITE_POR_OMISION,
     build_geo_router,
     buscar,
     localidades,

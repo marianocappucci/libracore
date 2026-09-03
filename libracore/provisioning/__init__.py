@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-
 # requirements.txt de cada producto depende de libracore (paquete interno
 # privado, ver wiki/entities/libracore.md) vía git+ssh — el build necesita
 # BuildKit + --ssh con la deploy key dedicada. Misma ruta/variable de

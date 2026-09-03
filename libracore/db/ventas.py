@@ -10,16 +10,16 @@ Migrado a libracore.db (Fase 3 de LibraCore, migración real, Tier 2 —
 código ya idéntico entre productos, último módulo del corte — ver
 wiki/entities/libracore.md).
 """
+import contextlib
 import json
 import sqlite3
-import contextlib
 
-from libracore.db.core import Conexion, _ar_now, get_connection
 from libracore import medios_pago
 from libracore.db.caja import create_caja_movimiento
-from libracore.db.stock import descontar_stock_venta, add_movimiento_stock
-from libracore.db.turnos import get_turno_activo, vincular_venta_turno
+from libracore.db.core import Conexion, _ar_now, get_connection
 from libracore.db.cuenta_corriente import create_cc_pago
+from libracore.db.stock import add_movimiento_stock, descontar_stock_venta
+from libracore.db.turnos import get_turno_activo, vincular_venta_turno
 
 
 def get_next_venta_numero(conn: Conexion | None = None) -> str:

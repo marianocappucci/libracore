@@ -31,8 +31,9 @@ sería la quinta variante del mismo concepto.
 from __future__ import annotations
 
 import enum
+from collections.abc import Iterable
 from decimal import Decimal
-from typing import Any, Iterable
+from typing import Any
 
 
 class EstadoAcreditacion(str, enum.Enum):

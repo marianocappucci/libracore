@@ -1,10 +1,13 @@
-import os
-import json
 import base64
+import json
+import os
 import unicodedata
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
+
 from fpdf import FPDF  # fpdf2 >= 2.8
-from fpdf.enums import RenderStyle as _RS, Corner as _Cor
+from fpdf.enums import Corner as _Cor
+from fpdf.enums import RenderStyle as _RS
+
 from . import config_manager, medios_pago
 
 
@@ -20,9 +23,9 @@ def fecha_de_documento(valor) -> datetime | None:
     Devuelve `None` cuando no hay nada interpretable.
     """
     if isinstance(valor, datetime):
-        return valor if valor.tzinfo else valor.replace(tzinfo=timezone.utc)
+        return valor if valor.tzinfo else valor.replace(tzinfo=UTC)
     if isinstance(valor, date):
-        return datetime(valor.year, valor.month, valor.day, tzinfo=timezone.utc)
+        return datetime(valor.year, valor.month, valor.day, tzinfo=UTC)
     texto = str(valor or "").strip()
     # Recortar de a pedazos aguanta lo que viene con cola ("... 14:30 hs",
     # una fecha completa donde sólo se esperaba el día), quedándose siempre con
@@ -323,8 +326,9 @@ except ImportError:
     _HAS_QR = False
 
 try:
-    from PIL import Image as _PILImage
     import io as _io
+
+    from PIL import Image as _PILImage
     _HAS_PIL = True
 except ImportError:
     _HAS_PIL = False

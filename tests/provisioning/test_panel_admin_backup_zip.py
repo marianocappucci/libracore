@@ -26,7 +26,6 @@ from libracore.respaldo import BackupInvalido
 
 from .test_panel_admin import _mkclient, _reset_config, cfg, fake_docker  # noqa: F401
 
-
 PGDUMP_FALSO = b"PGDMP" + b"\x00" * 64
 
 

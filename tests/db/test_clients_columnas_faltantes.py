@@ -27,7 +27,6 @@ import pytest
 from libracore.db import clients as mod
 from libracore.db import core
 
-
 TABLA_VIEJA = """
     CREATE TABLE clients (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,

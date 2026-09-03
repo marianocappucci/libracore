@@ -7,7 +7,7 @@ producto, en vez de resolverlos por nombre de módulo genérico.
 """
 from typing import Annotated
 
-from fastapi import APIRouter, Request, Form, Depends
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 
 

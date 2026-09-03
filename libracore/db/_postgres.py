@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from decimal import Decimal
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -505,7 +505,7 @@ def _equivalente_sqlite3(clase: type) -> type:
 
 
 class Cursor:
-    def __init__(self, connection: "ConnectionWrapper"):
+    def __init__(self, connection: ConnectionWrapper):
         self._connection = connection
         from psycopg.rows import tuple_row
 
