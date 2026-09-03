@@ -8,8 +8,7 @@ wiki/entities/libracore.md, sección Tier 2).
 """
 import pytest
 
-from libracore.db import core
-from libracore.db import clients, mp, facturas, productos
+from libracore.db import clients, core, facturas, mp, productos
 
 
 @pytest.fixture

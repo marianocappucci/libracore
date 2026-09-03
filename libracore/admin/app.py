@@ -18,8 +18,8 @@ genérico dentro de LibraCore, todo explícito por parámetro.
 """
 import os
 
-from fastapi import FastAPI, Request, Form, Depends
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi import Depends, FastAPI, Form, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from libracore.security_headers import SecurityHeadersMiddleware

@@ -4,12 +4,13 @@ de database.py de Contalibra/Restolibra (idéntico en ambos) como parte de
 la migración real a libracore.db (Fase 3 de LibraCore, ver
 wiki/entities/libracore.md).
 """
-import json
-from .core import Conexion
 import contextlib
+import json
 
 from libracore import medios_pago
 from libracore.db.core import get_connection
+
+from .core import Conexion
 
 # 🔴 **La lista vive en `libracore.medios_pago`, no acá.** Esto es un alias para
 # no romper a los seis productos que importan este nombre desde hace meses; el

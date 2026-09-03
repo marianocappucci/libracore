@@ -4,8 +4,8 @@ database.py de Contalibra/Restolibra (idéntico en ambos) como parte de la
 migración real a libracore.db (Fase 3 de LibraCore, ver
 wiki/entities/libracore.md).
 """
-from libracore.db.core import get_connection
 from libracore.db.caja import get_default_caja_id
+from libracore.db.core import get_connection
 
 
 def get_categorias_egreso() -> list[dict]:

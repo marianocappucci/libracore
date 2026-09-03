@@ -10,8 +10,8 @@ Restolibra configura el hook con `db_recetas.get_receta` al arrancar;
 Contalibra no configura nada y preserva el comportamiento simple original
 — ver wiki/entities/libracore.md).
 """
-import json
 import contextlib
+import json
 
 from libracore.db.core import Conexion, get_connection, get_resolver_receta
 from libracore.db.productos import get_default_deposito_id

@@ -13,13 +13,15 @@ Restolibra, por ejemplo) puede construirlo sobre las piezas públicas de este
 módulo — `TicketPDF`, `cfg_ticket()`, `recortar_a_contenido()`,
 `fmt_fecha()` — en vez de copiar el archivo entero.
 """
-import os
-import json
 import base64
+import json
+import os
+
 from fpdf import FPDF  # noqa: F401  (lo usa _TextoSeguroPDF)
-from .pdf_generator import _TextoSeguroPDF
 
 from libracore import config_manager, medios_pago
+
+from .pdf_generator import _TextoSeguroPDF
 
 try:
     import qrcode as _qrlib

@@ -17,8 +17,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from libracore.feriados import (
-    FueraDeCobertura,
     _ARCHIVO,
+    FueraDeCobertura,
     anios_cubiertos,
     build_feriados_router,
     cubre,

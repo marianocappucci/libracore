@@ -11,7 +11,7 @@ pasa lo que solo el sabe contestar.
 Ver wiki/analyses/panel-del-dueno-multisucursal.md.
 """
 import datetime
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 

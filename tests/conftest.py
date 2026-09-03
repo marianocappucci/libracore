@@ -70,7 +70,7 @@ def _write_cert_key(tmp_path, name, days_valid=365, not_before_offset_days=0):
     subject = issuer = x509.Name(
         [x509.NameAttribute(NameOID.COMMON_NAME, f"test-{name}")]
     )
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     not_before = now + datetime.timedelta(days=not_before_offset_days)
     cert = (
         x509.CertificateBuilder()

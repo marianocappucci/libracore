@@ -115,7 +115,7 @@ def test_certificado_que_todavia_no_vale():
     vigente: `vencido` da `False` y la pantalla lo da por bueno."""
     clave = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     nombre = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "futuro")])
-    manana = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=10)
+    manana = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=10)
     cert = (
         x509.CertificateBuilder()
         .subject_name(nombre).issuer_name(nombre)

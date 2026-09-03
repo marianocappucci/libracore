@@ -14,7 +14,6 @@ Lo que fijan estos tests:
    aparezca en la tabla.
 """
 import importlib
-
 from io import BytesIO
 
 import pytest

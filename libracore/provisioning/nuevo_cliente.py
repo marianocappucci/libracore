@@ -9,22 +9,28 @@ Requiere `libracore.provisioning.configure()` antes de usar cualquier
 función de acá. `plans.py` (planes reales de cada producto) se resuelve en
 tiempo de ejecución vía import diferido — ver `libracore.provisioning._plans()`.
 """
+import json
 import os
 import re
 import secrets
 import shutil
 import subprocess
 import sys
-import json
 from pathlib import Path
 
 from . import (
-    get_config, _plans, _npm_api,
-    client_from_config, forward_host_from_config, le_email_from_config, npm_available,
-    check_venv_sync, build_image_tagged, deploy_version,
+    _npm_api,
+    _plans,
+    build_image_tagged,
+    check_venv_sync,
+    client_from_config,
+    deploy_version,
+    forward_host_from_config,
+    get_config,
+    le_email_from_config,
+    mail_cuentas,
+    npm_available,
 )
-from . import mail_cuentas
-
 
 # Huso horario del ecosistema: Argentina, UTC-3 fijo, sin horario de verano
 # (el país no aplica DST desde 2009). Ver `wiki/concepts/estandares-desarrollo.md`,
@@ -390,7 +396,8 @@ def _esperar_db_lista(db_path, timeout: int = 25) -> bool:
     Sólo para SQLite: contra PostgreSQL hay que preguntar desde adentro —ver
     `_esperar_tabla_en_sidecar`—.
     """
-    import sqlite3, time
+    import sqlite3
+    import time
 
     t0 = time.time()
     while time.time() - t0 < timeout:

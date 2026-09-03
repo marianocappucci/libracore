@@ -11,7 +11,6 @@ import sqlite3
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
-
 #: Los comprobantes que cuentan para los libros y los totales.
 #:
 #: 🔴 **Un comprobante emitido contra homologación NO es del cliente.** Trae CAE
