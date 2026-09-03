@@ -173,6 +173,42 @@ def test_el_saldo_combina_las_cuatro_fuentes(conn):
     assert periodo["saldo_final"] == 1450.0
 
 
+def test_el_cuit_con_guiones_del_cliente_matchea_la_factura_sin_guiones(conn):
+    """El incidente real: Municipalidad de Suipacha en Contalibra (2026-09-03).
+
+    `clients.cuit_dni` quedó cargado con guiones y `facturas.cliente_cuit` sin
+    ellos —las dos grafías conviven en la base real, ninguna se fuerza al
+    alta—. Antes del fix, la comparación `f.cliente_cuit = c.cuit_dni` sólo
+    matcheaba cuando los dos lados coincidían en formato por casualidad (como
+    en `test_el_saldo_combina_las_cuatro_fuentes`, que por eso no lo agarraba):
+    acá no coinciden, y la deuda de la factura quedaba invisible — el cliente
+    mostraba saldo a favor en vez de deudor.
+    """
+    cid = clients.create_client("Municipalidad Ficticia", cuit_dni="20-11111111-2")
+    conn.execute(
+        """INSERT INTO facturas (tipo, punto_venta, numero, fecha, cliente_cuit,
+                                 cliente_razon, items, subtotal, iva_amount, total)
+           VALUES (11, 5, 74, '2026-08-28', '20111111112', 'Municipalidad Ficticia',
+                   '[]', 760330.58, 159669.42, 920000.0)"""
+    )
+    conn.execute(
+        """INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago, factura_id)
+           VALUES ('2026-08-28', 'ingreso', 'Factura Factura C 0005-00000074', 920000.0,
+                   'Cuenta Corriente', 1)"""
+    )
+    conn.commit()
+
+    assert cuenta_corriente.get_cc_saldo(cid) == 920000.0
+
+    movs = cuenta_corriente.get_cc_movimientos(cid)
+    assert len(movs) == 1
+    assert movs[0]["tipo"] == "debito"
+    assert movs[0]["monto"] == 920000.0
+
+    deudores = cuenta_corriente.get_clientes_con_saldo_cc()
+    assert [(d["id"], d["saldo"]) for d in deudores] == [(cid, 920000.0)]
+
+
 # ── Débitos directos: las ventas que no están en esta base ───────────────────
 
 def test_un_debito_directo_suma_al_saldo(conn):

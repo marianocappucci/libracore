@@ -63,8 +63,21 @@ VENTAS_LIBRACOMMERCE = OrigenVentas("sales", "customer_party_id", "occurred_on",
 
 
 def _cuit_de(conn, cliente_id: int) -> str:
+    """El CUIT del cliente, **normalizado sin guiones**.
+
+    🔴 Los guiones no son cosméticos acá: `clients.cuit_dni` y
+    `facturas.cliente_cuit` conviven con y sin guiones en la misma base —el
+    alta de cliente no fuerza un formato, y la factura arrastra el que tenía
+    el cliente al momento de emitirse. Comparar los dos campos tal cual
+    (`f.cliente_cuit = c.cuit_dni`) sólo matchea cuando casualmente coinciden
+    en formato; para el resto, la deuda por facturas queda invisible y el
+    saldo da a favor en vez de deudor. Mismo criterio que
+    `clients.get_client_by_cuit` — ver el incidente de Municipalidad de
+    Suipacha en contalibra, wiki/entities/contalibra.md (2026-09-03).
+    """
     row = conn.execute("SELECT cuit_dni FROM clients WHERE id=?", (cliente_id,)).fetchone()
-    return (row["cuit_dni"] if row else "") or ""
+    cuit = (row["cuit_dni"] if row else "") or ""
+    return cuit.replace("-", "").strip()
 
 
 def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> float:
@@ -82,7 +95,7 @@ def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> fl
                 SELECT COALESCE(SUM(cm.monto), 0)
                 FROM caja_movimientos cm
                 JOIN facturas f ON cm.factura_id = f.id
-                WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
+                WHERE REPLACE(f.cliente_cuit, '-', '') = ? AND cm.tipo = 'ingreso'
                   AND {sql_es_cuenta_corriente('cm.medio_pago')}
                   AND {sql_no_anulado('cm')}
             """, (cuit,)).fetchone()[0]
@@ -127,7 +140,7 @@ def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE)
                 FROM caja_movimientos cm
                 JOIN facturas f ON cm.factura_id = f.id
                 LEFT JOIN usuarios u ON u.id = cm.usuario_id
-                WHERE f.cliente_cuit = ? AND cm.tipo = 'ingreso'
+                WHERE REPLACE(f.cliente_cuit, '-', '') = ? AND cm.tipo = 'ingreso'
                   AND {sql_es_cuenta_corriente('cm.medio_pago')}
                   AND {sql_no_anulado('cm')}
             """, (cuit,)).fetchall()
@@ -271,7 +284,7 @@ def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[d
                 SELECT c.id AS cid, SUM(cm.monto) AS total
                 FROM caja_movimientos cm
                 JOIN facturas f ON cm.factura_id = f.id
-                JOIN clients c ON c.cuit_dni = f.cliente_cuit
+                JOIN clients c ON REPLACE(c.cuit_dni, '-', '') = REPLACE(f.cliente_cuit, '-', '')
                 WHERE cm.tipo = 'ingreso'
                   AND {sql_es_cuenta_corriente('cm.medio_pago')}
                   AND {sql_no_anulado('cm')}
