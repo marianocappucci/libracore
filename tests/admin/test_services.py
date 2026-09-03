@@ -358,3 +358,76 @@ def test_configure_requerido_antes_de_usar():
     services._repo_root = None
     with pytest.raises(RuntimeError):
         services.listar_clientes()
+
+
+# ── add-ons ──────────────────────────────────────────────────────────────────
+
+class _R:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_set_addon_corre_el_toggle_en_el_contenedor(fake_scripts, monkeypatch):
+    fake_scripts["mkclient"]("Distri", "distri-1")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    llamadas = []
+    monkeypatch.setattr(services.subprocess, "run",
+                        lambda cmd, **kw: llamadas.append(cmd) or _R())
+
+    services.set_addon("distri-1", "mayorista", True)
+
+    cmd = llamadas[0]
+    assert cmd[:3] == ["docker", "exec", "distri-1"]   # container == slug en el doble
+    assert cmd[3:5] == ["python3", "-c"]
+    assert "from app.database import set_addon" in cmd[-1]
+    assert "set_addon('mayorista', True)" in cmd[-1]
+
+
+def test_set_addon_off_pasa_false(fake_scripts, monkeypatch):
+    fake_scripts["mkclient"]("Distri", "distri-2")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    codigos = []
+    monkeypatch.setattr(services.subprocess, "run",
+                        lambda cmd, **kw: codigos.append(cmd[-1]) or _R())
+    services.set_addon("distri-2", "mayorista", False)
+    assert "set_addon('mayorista', False)" in codigos[0]
+
+
+def test_set_addon_desconocido_lanza(fake_scripts):
+    fake_scripts["mkclient"]("Distri", "distri-3")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    with pytest.raises(services.ServiceError):
+        services.set_addon("distri-3", "inexistente", True)
+
+
+def test_set_addon_error_de_docker_lanza(fake_scripts, monkeypatch):
+    fake_scripts["mkclient"]("Distri", "distri-4")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    monkeypatch.setattr(services.subprocess, "run",
+                        lambda cmd, **kw: _R(returncode=1, stderr="boom"))
+    with pytest.raises(services.ServiceError):
+        services.set_addon("distri-4", "mayorista", True)
+
+
+def test_addons_de_instancia_lee_el_estado(fake_scripts, monkeypatch):
+    fake_scripts["mkclient"]("Distri", "distri-5")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    monkeypatch.setattr(services.subprocess, "run",
+                        lambda cmd, **kw: _R(stdout='{"mayorista": true, "caja": true}'))
+    assert services.addons_de_instancia("distri-5") == {"mayorista": True}
+
+
+def test_addons_de_instancia_sin_addons_da_vacio(fake_scripts):
+    fake_scripts["mkclient"]("Distri", "distri-6")
+    # fake_plans no define ADDONS → producto sin add-ons.
+    assert services.addons_de_instancia("distri-6") == {}
+
+
+def test_addons_de_instancia_contenedor_caido_los_da_apagados(fake_scripts, monkeypatch):
+    fake_scripts["mkclient"]("Distri", "distri-7")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    monkeypatch.setattr(services.subprocess, "run",
+                        lambda cmd, **kw: _R(returncode=1))
+    assert services.addons_de_instancia("distri-7") == {"mayorista": False}
