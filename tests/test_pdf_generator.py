@@ -112,3 +112,56 @@ def test_generate_pdf_resumen_cc_sin_movimientos(tmp_path, monkeypatch):
     }
     path = pg2.generate_pdf_resumen_cc(cliente, periodo, output_dir=str(tmp_path))
     _assert_valid_pdf_file(path)
+
+
+def _spy_precios(pg2, monkeypatch):
+    """Espía show_prices de _draw_items_table y si se dibujó la caja de totales."""
+    reg = {}
+    orig_items = pg2._draw_items_table
+
+    def spy_items(pdf, items, **kw):
+        reg["show_prices"] = kw.get("show_prices")
+        return orig_items(pdf, items, **kw)
+
+    monkeypatch.setattr(pg2, "_draw_items_table", spy_items)
+    orig_tot = pg2._draw_totals_and_notes
+
+    def spy_tot(*a, **kw):
+        reg["totales"] = True
+        return orig_tot(*a, **kw)
+
+    monkeypatch.setattr(pg2, "_draw_totals_and_notes", spy_tot)
+    return reg
+
+
+def test_generate_pdf_remito_valorizado(tmp_path, monkeypatch):
+    pg2 = _set_data_dir(tmp_path, monkeypatch)
+    reg = _spy_precios(pg2, monkeypatch)
+    remito = {
+        "number": "0001-00000002", "date": "2026-09-04",
+        "client_name": "Distribuidora Test", "client_cuit": "", "client_address": "",
+        "client_email": "", "client_phone": "",
+        "items": [{"description": "Prod A", "qty": 2, "unit_price": 100, "subtotal": 200}],
+        "subtotal": 200, "tax_rate": 0.21, "tax_amount": 42, "total": 242,
+        "observations": "entrega lunes",
+    }
+    path = pg2.generate_pdf(remito, output_dir=str(tmp_path), show_prices=True)
+    _assert_valid_pdf_file(path)
+    assert reg["show_prices"] is True     # muestra precios
+    assert reg.get("totales") is True     # dibujó la caja de totales
+
+
+def test_generate_pdf_remito_pelado_es_el_default(tmp_path, monkeypatch):
+    pg2 = _set_data_dir(tmp_path, monkeypatch)
+    reg = _spy_precios(pg2, monkeypatch)
+    remito = {
+        "number": "0001-00000003", "date": "2026-09-04",
+        "client_name": "Cliente Test", "client_cuit": "", "client_address": "",
+        "client_email": "", "client_phone": "",
+        "items": [{"description": "Item", "qty": 3}],
+        "observations": "",
+    }
+    path = pg2.generate_pdf(remito, output_dir=str(tmp_path))   # sin show_prices
+    _assert_valid_pdf_file(path)
+    assert reg["show_prices"] is False    # NO muestra precios
+    assert "totales" not in reg           # NO dibuja la caja de totales

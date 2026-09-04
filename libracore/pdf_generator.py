@@ -1099,7 +1099,7 @@ class PresupuestoPDF(_TextoSeguroPDF):
 
 # ── Funciones públicas de generación ─────────────────────────────────────────
 
-def generate_pdf(remito, output_dir=None):
+def generate_pdf(remito, output_dir=None, *, show_prices=False):
     os.makedirs(output_dir or PDF_DIR, exist_ok=True)
     safe = remito["number"].replace("/", "-")
     filepath = os.path.join(output_dir or PDF_DIR,
@@ -1117,7 +1117,26 @@ def generate_pdf(remito, output_dir=None):
         ("Teléfono",  remito.get("client_phone", "")),
     ]
     _draw_emisor_cliente(pdf, emp, client_fields)
-    _draw_items_table(pdf, remito["items"], show_prices=False)
+    _draw_items_table(pdf, remito["items"], show_prices=show_prices,
+                      tax_rate=remito.get("tax_rate", 0) or 0)
+    if show_prices:
+        # Remito VALORIZADO (Contalibra lo elige al convertir un presupuesto):
+        # columnas de precio + caja de totales + notas, anclada al pie, igual
+        # que el presupuesto. El remito pelado sigue el camino de abajo, intacto.
+        sub = remito.get("subtotal", 0)
+        tax = remito.get("tax_amount", 0)
+        tot = remito.get("total", 0)
+        pct = round((remito.get("tax_rate", 0) or 0) * 100)
+        target_y = pdf.h - 68
+        if pdf.get_y() > target_y:
+            pdf.add_page()
+            target_y = pdf.h - 68
+        pdf.set_y(target_y)
+        _draw_totals_and_notes(pdf, sub, tax, 0, tot, pct,
+                               remito.get("observations", ""))
+        _draw_no_fiscal_notice(pdf)
+        pdf.output(filepath)
+        return os.path.abspath(filepath)
     if remito.get("observations"):
         obs_w = _RX - _LX
         pdf.ln(3)
