@@ -97,3 +97,40 @@ def test_generar_pdf_recibe_el_remito_y_guarda_la_ruta(db):
     assert recibido["remito"]["items"] == pres["items"]
     # ... y la ruta del PDF quedó guardada en el remito
     assert rp.get_remito(remito["id"])["pdf_path"] == "/tmp/remito-fake.pdf"
+
+
+def test_crear_remito_callback_decide_como_se_crea(db):
+    # El callback controla la creación: acá crea un remito con un total RECOMPUTADO
+    # (999), no el del presupuesto (363). Prueba que con crear_remito no se copia
+    # verbatim — es el caso LibraDesk (recomputa IVA por línea).
+    pres = rp.get_presupuesto(_crear_presupuesto())
+
+    def crear(p):
+        return rp.create_remito(
+            number=rp.get_next_remito_number(), date=p["date"], client_id=p["client_id"],
+            client_name=p["client_name"], client_address="", client_cuit="", client_email="",
+            client_phone="", items=p["items"], subtotal=800.0, tax_rate=21.0,
+            tax_amount=168.0, total=999.0, observations="recomputado",
+        )
+
+    remito = rp.convertir_presupuesto_a_remito(pres, crear_remito=crear)
+    assert remito["total"] == 999.0
+    assert remito["observations"] == "recomputado"
+    assert rp.get_presupuesto(pres["id"])["remito_id"] == remito["id"]
+
+
+def test_al_convertir_corre_solo_en_conversion_nueva(db):
+    pres = rp.get_presupuesto(_crear_presupuesto())
+    llamadas = []
+
+    def al_convertir(pres_id, remito):
+        llamadas.append((pres_id, remito["id"]))
+
+    r1 = rp.convertir_presupuesto_a_remito(pres, idempotente=True, al_convertir=al_convertir)
+    assert llamadas == [(pres["id"], r1["id"])]
+
+    # segunda conversión idempotente: devuelve el existente y NO vuelve a llamar el hook
+    pres2 = rp.get_presupuesto(pres["id"])
+    r2 = rp.convertir_presupuesto_a_remito(pres2, idempotente=True, al_convertir=al_convertir)
+    assert r2["id"] == r1["id"]
+    assert llamadas == [(pres["id"], r1["id"])]
