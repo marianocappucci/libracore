@@ -145,21 +145,26 @@ def update_presupuesto_remito_id(presupuesto_id, remito_id):
         conn.execute("UPDATE presupuestos SET remito_id=? WHERE id=?", (remito_id, presupuesto_id))
 
 
-def convertir_presupuesto_a_remito(presupuesto, *, generar_pdf=None, idempotente=False):
-    """Crea un remito con los datos de un presupuesto, lo deja linkeado y lo devuelve.
+def convertir_presupuesto_a_remito(presupuesto, *, generar_pdf=None, idempotente=False,
+                                   crear_remito=None, al_convertir=None):
+    """Crea un remito a partir de un presupuesto, lo deja linkeado y lo devuelve.
 
-    Copia los importes verbatim (no recotiza): un ``number`` nuevo, y el resto de
-    los campos tal cual vienen del presupuesto. Es la lógica que estaba
-    reimplementada por producto —Contalibra/Restolibra byte-idénticas, LibraDesk
-    con su wrapper— y ahora vive acá; el template del PDF queda como arista del
-    producto, vía callback.
+    El esqueleto común de la conversión presupuesto→remito (idempotencia, crear,
+    PDF, link) vive acá; lo que varía entre productos entra por callbacks, no por
+    ramas ``if producto``:
 
+    - ``crear_remito``: callback ``(presupuesto) -> remito_id``. Cómo se crea el
+      remito. Default ``None`` = **copiar los importes verbatim** con un
+      ``number`` nuevo (Contalibra/Restolibra). LibraDesk pasa el suyo, que
+      **recomputa** los totales (IVA por línea) y conserva ``usuario_id``.
+    - ``al_convertir``: callback ``(presupuesto_id, remito) -> None`` que corre
+      **sólo en una conversión nueva** (no en el retorno idempotente), después de
+      linkear. LibraDesk marca ahí el presupuesto ``aceptado``.
     - ``idempotente``: si el presupuesto ya tiene ``remito_id`` y ese remito
-      existe, lo devuelve sin crear otro (evita un segundo remito por el mismo
-      trabajo). Es lo que hace LibraDesk; Contalibra/Restolibra pasan ``False``
-      para conservar su comportamiento actual (crear siempre).
-    - ``generar_pdf``: callback opcional ``(remito: dict) -> pdf_path``. Si se
-      pasa, se genera el PDF y se guarda su ruta.
+      existe, lo devuelve sin crear otro. Contalibra/Restolibra pasan ``False``
+      (crear siempre); LibraDesk ``True``.
+    - ``generar_pdf``: callback opcional ``(remito) -> pdf_path``. El template del
+      PDF es arista del producto.
 
     Devuelve el remito (dict): el recién creado, o el existente si fue idempotente.
     """
@@ -168,29 +173,35 @@ def convertir_presupuesto_a_remito(presupuesto, *, generar_pdf=None, idempotente
         if existente is not None:
             return existente
 
-    remito_id = create_remito(
-        number=get_next_remito_number(),
-        date=presupuesto["date"],
-        client_id=presupuesto["client_id"],
-        client_name=presupuesto["client_name"],
-        client_address=presupuesto.get("client_address", ""),
-        client_cuit=presupuesto.get("client_cuit", ""),
-        client_email=presupuesto.get("client_email", ""),
-        client_phone=presupuesto.get("client_phone", ""),
-        items=presupuesto["items"],
-        subtotal=presupuesto["subtotal"],
-        tax_rate=presupuesto["tax_rate"],
-        tax_amount=presupuesto["tax_amount"],
-        total=presupuesto["total"],
-        observations=presupuesto.get("observations", ""),
-    )
+    if crear_remito is not None:
+        remito_id = crear_remito(presupuesto)
+    else:
+        remito_id = create_remito(
+            number=get_next_remito_number(),
+            date=presupuesto["date"],
+            client_id=presupuesto["client_id"],
+            client_name=presupuesto["client_name"],
+            client_address=presupuesto.get("client_address", ""),
+            client_cuit=presupuesto.get("client_cuit", ""),
+            client_email=presupuesto.get("client_email", ""),
+            client_phone=presupuesto.get("client_phone", ""),
+            items=presupuesto["items"],
+            subtotal=presupuesto["subtotal"],
+            tax_rate=presupuesto["tax_rate"],
+            tax_amount=presupuesto["tax_amount"],
+            total=presupuesto["total"],
+            observations=presupuesto.get("observations", ""),
+        )
 
     if generar_pdf is not None:
         pdf_path = generar_pdf(get_remito(remito_id))
         update_remito_pdf_path(remito_id, pdf_path)
 
     update_presupuesto_remito_id(presupuesto["id"], remito_id)
-    return get_remito(remito_id)
+    remito = get_remito(remito_id)
+    if al_convertir is not None:
+        al_convertir(presupuesto["id"], remito)
+    return remito
 
 
 def get_all_presupuestos(limit=100, estado=None):
