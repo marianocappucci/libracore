@@ -145,6 +145,54 @@ def update_presupuesto_remito_id(presupuesto_id, remito_id):
         conn.execute("UPDATE presupuestos SET remito_id=? WHERE id=?", (remito_id, presupuesto_id))
 
 
+def convertir_presupuesto_a_remito(presupuesto, *, generar_pdf=None, idempotente=False):
+    """Crea un remito con los datos de un presupuesto, lo deja linkeado y lo devuelve.
+
+    Copia los importes verbatim (no recotiza): un ``number`` nuevo, y el resto de
+    los campos tal cual vienen del presupuesto. Es la lógica que estaba
+    reimplementada por producto —Contalibra/Restolibra byte-idénticas, LibraDesk
+    con su wrapper— y ahora vive acá; el template del PDF queda como arista del
+    producto, vía callback.
+
+    - ``idempotente``: si el presupuesto ya tiene ``remito_id`` y ese remito
+      existe, lo devuelve sin crear otro (evita un segundo remito por el mismo
+      trabajo). Es lo que hace LibraDesk; Contalibra/Restolibra pasan ``False``
+      para conservar su comportamiento actual (crear siempre).
+    - ``generar_pdf``: callback opcional ``(remito: dict) -> pdf_path``. Si se
+      pasa, se genera el PDF y se guarda su ruta.
+
+    Devuelve el remito (dict): el recién creado, o el existente si fue idempotente.
+    """
+    if idempotente and presupuesto.get("remito_id"):
+        existente = get_remito(presupuesto["remito_id"])
+        if existente is not None:
+            return existente
+
+    remito_id = create_remito(
+        number=get_next_remito_number(),
+        date=presupuesto["date"],
+        client_id=presupuesto["client_id"],
+        client_name=presupuesto["client_name"],
+        client_address=presupuesto.get("client_address", ""),
+        client_cuit=presupuesto.get("client_cuit", ""),
+        client_email=presupuesto.get("client_email", ""),
+        client_phone=presupuesto.get("client_phone", ""),
+        items=presupuesto["items"],
+        subtotal=presupuesto["subtotal"],
+        tax_rate=presupuesto["tax_rate"],
+        tax_amount=presupuesto["tax_amount"],
+        total=presupuesto["total"],
+        observations=presupuesto.get("observations", ""),
+    )
+
+    if generar_pdf is not None:
+        pdf_path = generar_pdf(get_remito(remito_id))
+        update_remito_pdf_path(remito_id, pdf_path)
+
+    update_presupuesto_remito_id(presupuesto["id"], remito_id)
+    return get_remito(remito_id)
+
+
 def get_all_presupuestos(limit=100, estado=None):
     auto_vencimiento_presupuestos()
     with get_connection() as conn:
