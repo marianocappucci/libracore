@@ -42,11 +42,11 @@ jobs:
     env:
       LIBRACORE_POSTGRES_URL: postgresql://libracore:libracore-ci@localhost:5432/libracore
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
