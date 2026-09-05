@@ -261,11 +261,13 @@ def versiones_disponibles() -> list[str]:
 # volver atrás; el tercero es margen para cuando el rollback también falla.
 IMAGE_RETENTION = 3
 
-_TAG_DEPLOY = re.compile(r"^v\d{4}\.\d{2}\.\d{2}-\d{4}$")
+# `-HHMM` (hasta el 2026-09-05) o `-HHMMSS` (desde entonces): la poda tiene que
+# seguir reconociendo los tags viejos que todavia corren.
+_TAG_DEPLOY = re.compile(r"^v\d{4}\.\d{2}\.\d{2}-\d{4}(\d{2})?$")
 
 
 def _es_tag_de_deploy(tag: str) -> bool:
-    """Si el tag lo acuñó `deploy_version()` (`vYYYY.MM.DD-HHMM`).
+    """Si el tag lo acuñó `deploy_version()` (`vYYYY.MM.DD-HHMM[SS]`).
 
     Los que no matchean se pusieron a mano —hitos de migración y puntos de
     rollback: `p7`, `pre-p8-cutover-rollback`, `pre-recibos-20260805-074659`—

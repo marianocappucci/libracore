@@ -380,12 +380,12 @@ def test_docker_build_ssh_args_sin_libraauth_no_lo_agrega(tmp_path):
 
 def test_deploy_version_usa_el_esquema_de_farmacia():
     from datetime import datetime
-    assert provisioning.deploy_version(datetime(2026, 7, 30, 21, 10)) == "v2026.07.30-2110"
+    assert provisioning.deploy_version(datetime(2026, 7, 30, 21, 10, 5)) == "v2026.07.30-211005"
 
 
 def test_deploy_version_sin_argumento_es_del_momento():
     v = provisioning.deploy_version()
-    assert v.startswith("v20") and len(v) == len("v2026.07.30-2110")
+    assert v.startswith("v20") and len(v) == len("v2026.07.30-211005")
 
 
 def test_image_repo_saca_el_tag(tmp_path):
