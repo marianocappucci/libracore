@@ -488,7 +488,7 @@ class ProductConfig:
 
 
 def deploy_version(now: datetime | None = None) -> str:
-    """Identificador de la versión de un deploy: `vYYYY.MM.DD-HHMM`.
+    """Identificador de la versión de un deploy: `vYYYY.MM.DD-HHMMSS`.
 
     Mismo esquema que `deploy.sh` de Farmacia (ver
     wiki/entities/farmacia-python.md), que es el único producto del
@@ -502,7 +502,11 @@ def deploy_version(now: datetime | None = None) -> str:
     código (rebuild por un bump de dependencia, por ejemplo), y lo que hay
     que poder distinguir es *el artefacto*, no el número de release.
     """
-    return (now or datetime.now()).strftime("v%Y.%m.%d-%H%M")
+    # Con segundos desde el 2026-09-05: dos `actualizar` de instancias
+    # distintas en el mismo minuto acuñaban el MISMO tag, y el segundo build
+    # le robaba el nombre al primero --la demo de LibraDesk quedó corriendo
+    # una imagen sin tag, indistinguible por versión de la de lagrace--.
+    return (now or datetime.now()).strftime("v%Y.%m.%d-%H%M%S")
 
 
 def _git_commit_corto(repo_root: Path) -> str | None:

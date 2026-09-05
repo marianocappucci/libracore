@@ -184,7 +184,7 @@ def test_crear_cliente_pinea_version_y_nunca_latest(cfg):
 
     compose_text = (cfg.clientes_dir / "cliente-uno" / "docker-compose.yml").read_text()
     assert "testprod:latest" not in compose_text
-    assert re.search(r"^\s*image: testprod:v20\d\d\.\d\d\.\d\d-\d{4}$",
+    assert re.search(r"^\s*image: testprod:v20\d\d\.\d\d\.\d\d-\d{4}(\d{2})?$",
                      compose_text, re.MULTILINE)
 
     meta = json.loads((cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text())
