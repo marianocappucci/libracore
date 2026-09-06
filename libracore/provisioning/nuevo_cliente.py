@@ -519,6 +519,13 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
     command: postgres -c timezone={_TZ}
     container_name: {sidecar}
     restart: unless-stopped
+    # F4 (2026-09-05): limite parejo para todos los sidecars, definido aca y no
+    # a mano por instancia. Medido antes: 5 demos con 256 MiB, el resto sin
+    # limite, y las bases de los clientes reales pesan megabytes. 512 MiB deja
+    # aire de sobra y evita que una consulta desbocada se lleve la RAM del host,
+    # que sirve a los ocho productos.
+    mem_limit: 512m
+    mem_reservation: 128m
     environment:
       POSTGRES_DB: {principal}
       POSTGRES_USER: {usuario}
