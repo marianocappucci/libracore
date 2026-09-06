@@ -231,6 +231,25 @@ def test_el_punto_de_venta_es_el_del_mostrador_donde_se_cobro(ventas):
     assert (_run(vf.facturar_venta(ventas.puerto(), 2)))["punto_venta"] == 1
 
 
+def test_el_producto_puede_poner_su_numerador(ventas):
+    """El ambiente de la factura sale del `arca` con el que se numeró: con el
+    numerador del producto parcheado a homologación, la factura queda marcada."""
+    ventas.alta(1, 100.0)
+
+    async def _homologacion(punto_venta, tipo):
+        return 501, None, {"ambiente": "homologacion", "cuit": "20111111119"}
+
+    factura = _run(vf.facturar_venta(ventas.puerto(numerar_comprobante=_homologacion), 1))
+    assert factura["numero"] == 501 and factura["ambiente"] == "homologacion"
+    # Sin ARCA (`arca=None`) el comprobante es real.
+    ventas.alta(2, 100.0)
+
+    async def _sin_arca(punto_venta, tipo):
+        return 7, None, None
+
+    assert _run(vf.facturar_venta(ventas.puerto(numerar_comprobante=_sin_arca), 2))["ambiente"] == "produccion"
+
+
 def test_facturar_si_esta_prendida(ventas, entorno):
     ventas.alta(1)
     assert _run(vf.facturar_si_esta_prendida(ventas.puerto(), 1)) is None

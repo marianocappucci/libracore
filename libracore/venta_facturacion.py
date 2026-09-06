@@ -127,6 +127,11 @@ class PuertoDeVentas:
     set_orden_mp: Callable[[int, str], None] = _nada
     #: La alícuota que trae la venta, o `None` para la default.
     alicuota_de: Callable[[int], float | None] = _sin_alicuota_propia
+    #: Quién numera el comprobante: `(punto_venta, tipo) -> (numero, ta, arca)`.
+    #: `None` es `arca_facturacion.get_next_numero_with_arca`. Existe para que el
+    #: producto lo intercepte —su suite fija el ambiente parcheando el numerador,
+    #: porque con `ENV=development` todo sale `produccion` y la marca es invisible—.
+    numerar_comprobante: Callable[[int, int], Awaitable[tuple]] | None = None
 
 
 def _tipo_comprobante(emisor_cond: str, cliente_cond: str) -> int:
@@ -256,7 +261,8 @@ async def facturar_venta(ventas: PuertoDeVentas, venta_id: int, *,
         raise VentaNoFacturable(f"La venta {venta_id} no tiene ítems.")
 
     punto_venta = _punto_venta(venta)
-    numero, ta, arca = await get_next_numero_with_arca(punto_venta, tipo)
+    numerar = ventas.numerar_comprobante or get_next_numero_with_arca
+    numero, ta, arca = await numerar(punto_venta, tipo)
 
     factura_id = db_facturas.create_factura(
         tipo=tipo, punto_venta=punto_venta, numero=numero,
