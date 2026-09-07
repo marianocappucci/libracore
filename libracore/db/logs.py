@@ -4,21 +4,27 @@ turnos/remitos/presupuestos) y log de autenticación (login/logout/intentos
 fallidos). Extraído de database.py de Contalibra/Restolibra (idéntico en
 ambos) como parte de la migración real a libracore.db (Fase 3 de
 LibraCore, ver wiki/entities/libracore.md).
+
+P9-M4 (2026-09-07): las siete partes del `UNION ALL` son **constantes con
+nombre** y `get_actividad_log` acepta `partes=`. Contalibra y Restolibra tenían
+copiada la función entera sólo para cambiar dos de las siete —ventas y stock
+leen `sales`/`stock_movements` de LibraCommerce— y el resto era idéntico byte a
+byte. Ahora `libracommerce.erp.actividad` arma la lista con sus dos partes y las
+cinco de acá; este módulo no sabe de LibraCommerce.
 """
+import contextlib
+
 from libracore.db.core import get_connection
 
 _LOG_TIPOS = ("venta", "caja", "stock", "factura", "turno", "remito", "presupuesto")
 
-def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
-                      desde="", hasta="", limit=200, offset=0) -> list[dict]:
-    """
-    Devuelve una línea de tiempo unificada de todos los movimientos del sistema.
-    Cada fila: {fecha, tipo, descripcion, monto, usuario, turno_id, ref_id, ref_tabla}
-    """
-    partes = []
+# Cada parte es un SELECT con las MISMAS nueve columnas, en este orden:
+# ts, fecha, tipo, descripcion, monto, usuario, turno_id, ref_id, ref_tabla.
+# `fecha` es TEXT en todas —PostgreSQL exige que las ramas de un UNION tengan
+# tipos compatibles, y la consulta entera moría con "UNION types text and date
+# cannot be matched" cuando la de turnos usaba `DATE(t.apertura)`—.
 
-    # — Ventas —
-    partes.append("""
+PARTE_VENTAS = """
         SELECT
             v.created_at AS ts,
             v.fecha,
@@ -33,10 +39,9 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
             'ventas'      AS ref_tabla
         FROM ventas v
         LEFT JOIN usuarios u ON u.id = v.usuario_id
-    """)
+"""
 
-    # — Caja —
-    partes.append("""
+PARTE_CAJA = """
         SELECT
             cm.created_at AS ts,
             cm.fecha,
@@ -49,10 +54,9 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
             'caja_movimientos' AS ref_tabla
         FROM caja_movimientos cm
         LEFT JOIN usuarios u ON u.id = cm.usuario_id
-    """)
+"""
 
-    # — Stock —
-    partes.append("""
+PARTE_STOCK = """
         SELECT
             ms.created_at AS ts,
             ms.fecha,
@@ -69,10 +73,9 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
         FROM movimientos_stock ms
         JOIN productos p ON p.id = ms.producto_id
         LEFT JOIN usuarios u ON u.id = ms.usuario_id
-    """)
+"""
 
-    # — Facturas —
-    partes.append("""
+PARTE_FACTURAS = """
         SELECT
             f.created_at  AS ts,
             f.fecha,
@@ -90,13 +93,17 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
             'facturas'    AS ref_tabla
         FROM facturas f
         LEFT JOIN usuarios u ON u.id = f.usuario_id
-    """)
+"""
 
-    # — Turnos (apertura y cierre como eventos separados) —
-    partes.append("""
+# `substr` y no `DATE()`: `apertura` es texto ISO (`2026-05-26 23:50:59`), así
+# que los primeros 10 caracteres son la misma fecha que devolvía `DATE()`, y
+# queda TEXT como las otras ramas. Con `DATE()` la pantalla de Logs no cargaba
+# NADA en PostgreSQL; SQLite no chequea tipos y por eso la suite vieja lo
+# dejaba pasar. Es el fix que los dos productos llevaban en su copia.
+PARTE_TURNOS = """
         SELECT
             t.created_at  AS ts,
-            DATE(t.apertura) AS fecha,
+            substr(t.apertura, 1, 10) AS fecha,
             'turno'       AS tipo,
             CASE t.estado
               WHEN 'abierto' THEN 'Turno #' || t.id || ' abierto — fondo $' || t.monto_inicial
@@ -110,10 +117,9 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
             'turnos_caja' AS ref_tabla
         FROM turnos_caja t
         JOIN usuarios u ON u.id = t.usuario_id
-    """)
+"""
 
-    # — Remitos —
-    partes.append("""
+PARTE_REMITOS = """
         SELECT
             r.created_at  AS ts,
             r.date        AS fecha,
@@ -126,10 +132,9 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
             'remitos'     AS ref_tabla
         FROM remitos r
         LEFT JOIN usuarios u ON u.id = r.usuario_id
-    """)
+"""
 
-    # — Presupuestos —
-    partes.append("""
+PARTE_PRESUPUESTOS = """
         SELECT
             p.created_at  AS ts,
             p.date        AS fecha,
@@ -143,20 +148,27 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
             'presupuestos' AS ref_tabla
         FROM presupuestos p
         LEFT JOIN usuarios u ON u.id = p.usuario_id
-    """)
+"""
 
-    # ── filtros post-UNION ──────────────────────────────────────────────────────
+#: Las cinco partes que son de este motor y no dependen de dónde viven las
+#: ventas ni el stock. Un consumidor cuyas ventas están en LibraCommerce arma
+#: `PARTES_CORE + (sus dos partes,)`.
+PARTES_CORE = (PARTE_CAJA, PARTE_FACTURAS, PARTE_TURNOS, PARTE_REMITOS, PARTE_PRESUPUESTOS)
+
+#: Las siete de siempre: las de arriba más ventas y stock sobre las tablas de
+#: este motor. Es el default, y lo que usan los productos sin LibraCommerce.
+PARTES_LIBRACORE = (PARTE_VENTAS, PARTE_CAJA, PARTE_STOCK, PARTE_FACTURAS, PARTE_TURNOS,
+                    PARTE_REMITOS, PARTE_PRESUPUESTOS)
+
+
+def armar_consulta(partes, tipos=None, usuario_id=None, turno_id=None,
+                   desde="", hasta="", limit=200, offset=0):
+    """El SQL de la línea de tiempo y sus parámetros, a partir de las partes."""
     where, params = [], []
-
     if tipos:
         marks = ",".join("?" * len(tipos))
         where.append(f"tipo IN ({marks})")
         params.extend(tipos)
-
-    if usuario_id:
-        # usuario solo está en ventas, stock, turnos; el resto da ''
-        where.append("usuario_id_filter = ?")
-        # se resuelve diferente — usamos subquery wrapper
     if desde:
         where.append("fecha >= ?"); params.append(desde)
     if hasta:
@@ -166,41 +178,49 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
 
     union_sql = "\nUNION ALL\n".join(partes)
 
-    # Para filtrar por usuario necesitamos un wrapper con un JOIN auxiliar
+    # Para filtrar por usuario hace falta el wrapper con la subconsulta.
     if usuario_id:
-        # Re-construir solo las tablas que tienen usuario
-        sql = f"""
-            SELECT * FROM (
-                {union_sql}
-            ) sub
-            WHERE usuario = (SELECT nombre FROM usuarios WHERE id=?)
-        """
+        sql = f"SELECT * FROM (\n{union_sql}\n) sub WHERE usuario = (SELECT nombre FROM usuarios WHERE id=?)"
         params_final = [usuario_id] + params
         if where:
             sql += " AND " + " AND ".join(where)
     else:
-        sql = f"""
-            SELECT * FROM (
-                {union_sql}
-            ) sub
-        """
+        sql = f"SELECT * FROM (\n{union_sql}\n) sub"
         if where:
             sql += " WHERE " + " AND ".join(where)
         params_final = params
 
     sql += " ORDER BY ts DESC, ref_id DESC LIMIT ? OFFSET ?"
     params_final += [limit, offset]
+    return sql, params_final
 
-    with get_connection() as conn:
-        rows = conn.execute(sql, params_final).fetchall()
+
+def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
+                      desde="", hasta="", limit=200, offset=0,
+                      partes=None, conn=None) -> list[dict]:
+    """
+    Devuelve una línea de tiempo unificada de todos los movimientos del sistema.
+    Cada fila: {fecha, tipo, descripcion, monto, usuario, turno_id, ref_id, ref_tabla}
+
+    `partes` son los SELECT del `UNION ALL` (default: las siete de este motor);
+    `conn` permite correrla dentro de una conexión ya abierta.
+    """
+    sql, params_final = armar_consulta(
+        partes or PARTES_LIBRACORE, tipos=tipos, usuario_id=usuario_id, turno_id=turno_id,
+        desde=desde, hasta=hasta, limit=limit, offset=offset,
+    )
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        rows = c.execute(sql, params_final).fetchall()
     return [dict(r) for r in rows]
 
 
 def get_actividad_count(tipos=None, usuario_id=None, turno_id=None,
-                        desde="", hasta="") -> int:
+                        desde="", hasta="", partes=None, conn=None) -> int:
     """Cuenta total de filas para paginación."""
     rows = get_actividad_log(tipos=tipos, usuario_id=usuario_id, turno_id=turno_id,
-                             desde=desde, hasta=hasta, limit=10000, offset=0)
+                             desde=desde, hasta=hasta, limit=10000, offset=0,
+                             partes=partes, conn=conn)
     return len(rows)
 
 
