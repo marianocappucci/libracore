@@ -5,7 +5,7 @@ migración real a libracore.db (Fase 3 de LibraCore, ver
 wiki/entities/libracore.md).
 """
 from libracore.db.caja import get_default_caja_id
-from libracore.db.core import get_connection
+from libracore.db.core import get_connection, sql_busqueda
 
 
 def get_categorias_egreso() -> list[dict]:
@@ -43,7 +43,9 @@ def search_proveedores(q: str) -> list[dict]:
     pat = f"%{q}%"
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT * FROM proveedores WHERE nombre LIKE ? OR cuit_dni LIKE ? ORDER BY nombre LIMIT 50",
+            "SELECT * FROM proveedores WHERE "
+            + sql_busqueda("nombre", "cuit_dni")
+            + " ORDER BY nombre LIMIT 50",
             (pat, pat),
         ).fetchall()
     return [dict(r) for r in rows]

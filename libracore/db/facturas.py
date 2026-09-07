@@ -9,7 +9,7 @@ import json
 import sqlite3
 
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
-from libracore.db.core import get_connection
+from libracore.db.core import get_connection, sql_busqueda
 
 #: Los comprobantes que cuentan para los libros y los totales.
 #:
@@ -152,7 +152,8 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
     if hasta:
         conds.append("f.fecha <= ?"); params.append(hasta)
     if q:
-        conds.append("(CAST(f.numero AS TEXT) LIKE ? OR f.cliente_razon LIKE ? OR f.observaciones LIKE ?)")
+        conds.append(sql_busqueda(
+            "CAST(f.numero AS TEXT)", "f.cliente_razon", "f.observaciones"))
         params += [f"%{q}%", f"%{q}%", f"%{q}%"]
     # 🔴 Los dos criterios juntos y en UNA variable: se usan en dos lugares de
     # esta función —la columna `total_cobrado` y el filtro `solo_sin_cobrar`— y
@@ -223,7 +224,7 @@ def search_facturas(query, vista="facturas"):
         rows = conn.execute(
             f"""SELECT * FROM facturas
                WHERE tipo IN ({placeholders})
-                 AND (numero LIKE ? OR cliente_razon LIKE ? OR observaciones LIKE ?)
+                 AND {sql_busqueda("CAST(numero AS TEXT)", "cliente_razon", "observaciones")}
                ORDER BY id DESC""",
             (*tipos, q, q, q),
         ).fetchall()
