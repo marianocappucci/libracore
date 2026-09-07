@@ -16,7 +16,7 @@ módulo sólo escribe y lee filas.
 import json
 import sqlite3
 
-from libracore.db.core import get_connection
+from libracore.db.core import get_connection, sql_busqueda
 
 # Los tres orígenes posibles. Un recibo siempre nace de una operación que ya
 # ocurrió: no se emite un recibo "suelto" porque el papel afirma que entró
@@ -132,8 +132,8 @@ def get_recibos(desde="", hasta="", q="", cliente_id=None, incluir_anulados=True
     if cliente_id is not None:
         conds.append("cliente_id = ?"); params.append(cliente_id)
     if q:
-        conds.append("(CAST(numero AS TEXT) LIKE ? OR cliente_razon LIKE ?"
-                     " OR cliente_cuit LIKE ? OR concepto LIKE ?)")
+        conds.append(sql_busqueda(
+            "CAST(numero AS TEXT)", "cliente_razon", "cliente_cuit", "concepto"))
         params += [f"%{q}%"] * 4
     if not incluir_anulados:
         conds.append("anulado = 0")
@@ -157,8 +157,8 @@ def contar_recibos(desde="", hasta="", q="", cliente_id=None,
     if cliente_id is not None:
         conds.append("cliente_id = ?"); params.append(cliente_id)
     if q:
-        conds.append("(CAST(numero AS TEXT) LIKE ? OR cliente_razon LIKE ?"
-                     " OR cliente_cuit LIKE ? OR concepto LIKE ?)")
+        conds.append(sql_busqueda(
+            "CAST(numero AS TEXT)", "cliente_razon", "cliente_cuit", "concepto"))
         params += [f"%{q}%"] * 4
     if not incluir_anulados:
         conds.append("anulado = 0")
