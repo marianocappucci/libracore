@@ -5,7 +5,7 @@ Tier 2 — `generar_codigo_producto` y el manejo de `estacion`/`vendible`
 eran solo de Restolibra y pasan a core, confirmado con el usuario — ver
 wiki/entities/libracore.md).
 """
-from libracore.db.core import get_connection
+from libracore.db.core import get_connection, sql_busqueda
 
 
 def get_all_depositos() -> list[dict]:
@@ -198,7 +198,7 @@ def get_all_productos(solo_activos: bool = False, q: str = "",
             where.append("tipo=?")
             params.append(tipo)
         if q:
-            where.append("(nombre LIKE ? OR codigo LIKE ? OR categoria LIKE ?)")
+            where.append(sql_busqueda("nombre", "codigo", "categoria"))
             params += [f"%{q}%", f"%{q}%", f"%{q}%"]
         sql = "SELECT * FROM productos"
         if where:

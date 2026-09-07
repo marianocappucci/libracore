@@ -6,7 +6,7 @@ real a libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
 import json
 
-from libracore.db.core import get_connection
+from libracore.db.core import get_connection, sql_busqueda
 
 
 def get_next_remito_number():
@@ -80,8 +80,8 @@ def search_remitos(query):
     q = f"%{query}%"
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT * FROM remitos
-               WHERE number LIKE ? OR client_name LIKE ? OR observations LIKE ?
+            f"""SELECT * FROM remitos
+               WHERE {sql_busqueda("number", "client_name", "observations")}
                ORDER BY id DESC""",
             (q, q, q),
         ).fetchall()
@@ -262,15 +262,15 @@ def search_presupuestos(query, estado=None):
     with get_connection() as conn:
         if estado:
             rows = conn.execute(
-                """SELECT * FROM presupuestos
-                   WHERE status=? AND (number LIKE ? OR client_name LIKE ? OR observations LIKE ?)
+                f"""SELECT * FROM presupuestos
+                   WHERE status=? AND {sql_busqueda("number", "client_name", "observations")}
                    ORDER BY id DESC""",
                 (estado, q, q, q),
             ).fetchall()
         else:
             rows = conn.execute(
-                """SELECT * FROM presupuestos
-                   WHERE number LIKE ? OR client_name LIKE ? OR observations LIKE ?
+                f"""SELECT * FROM presupuestos
+                   WHERE {sql_busqueda("number", "client_name", "observations")}
                    ORDER BY id DESC""",
                 (q, q, q),
             ).fetchall()

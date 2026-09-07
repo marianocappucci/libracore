@@ -16,7 +16,7 @@ import sqlite3
 
 from libracore import medios_pago
 from libracore.db.caja import create_caja_movimiento
-from libracore.db.core import Conexion, _ar_now, get_connection
+from libracore.db.core import Conexion, _ar_now, get_connection, sql_busqueda
 from libracore.db.cuenta_corriente import create_cc_pago
 from libracore.db.stock import add_movimiento_stock, descontar_stock_venta
 from libracore.db.turnos import get_turno_activo, vincular_venta_turno
@@ -143,7 +143,7 @@ def get_all_ventas(desde: str = "", hasta: str = "", q: str = "",
         if hasta:
             where.append("v.fecha <= ?"); params.append(hasta)
         if q:
-            where.append("(v.numero LIKE ? OR v.cliente_nombre LIKE ?)")
+            where.append(sql_busqueda("v.numero", "v.cliente_nombre"))
             params += [f"%{q}%", f"%{q}%"]
         if tab == "sin_facturar":
             where.append("v.factura_id IS NULL AND v.estado != 'anulada'")

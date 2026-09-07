@@ -147,6 +147,32 @@ def is_postgres() -> bool:
     return _database_url is not None
 
 
+def sql_busqueda(*columnas: str) -> str:
+    """El `OR` de LIKE de un buscador, insensible a mayusculas en los DOS motores.
+
+    🔴 **`LIKE` no significa lo mismo en SQLite y en PostgreSQL.** En SQLite es
+    insensible a mayusculas para ASCII; en PostgreSQL **no lo es**. Toda la capa
+    de busqueda de este motor se escribio sobre SQLite, asi que el corte a
+    PostgreSQL del 2026-08-12 la dejo silenciosamente mas estricta: buscar
+    `juan` dejo de encontrar a `Juan Perez` en las cinco superficies que usan
+    esto (comprobantes, recibos, remitos, proveedores y productos).
+
+    Se resuelve con `LOWER()` de los dos lados y no traduciendo `LIKE` a `ILIKE`
+    en el adaptador, por dos razones: `ILIKE` no existe en SQLite --que este
+    motor tiene que seguir pudiendo abrir, de eso vive `schema_dump`-- y una
+    traduccion a nivel de texto alcanzaria tambien a los `LIKE 'sqlite_%'` que
+    el propio adaptador usa para leer el catalogo, donde cambiar la semantica
+    seria un defecto nuevo.
+
+    No hay costo de indice que perder: estas busquedas van con comodin adelante
+    (`%q%`), que ningun btree puede usar igual.
+
+    Devuelve el parentesis entero, asi el call site no puede equivocarse en la
+    cuenta de placeholders: son tantos como columnas.
+    """
+    return "(" + " OR ".join(f"LOWER({c}) LIKE LOWER(?)" for c in columnas) + ")"
+
+
 # Hook opcional para comportamiento receta-aware de `descontar_stock_venta`
 # (ver libracore.db.stock). None = comportamiento simple (Contalibra: siempre
 # descuenta el producto vendido). Un producto con recetas (Restolibra) inyecta
