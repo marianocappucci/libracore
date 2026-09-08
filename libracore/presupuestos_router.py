@@ -34,6 +34,12 @@ class _ItemPayload(BaseModel):
     description: str
     qty: float
     unit_price: float
+    # Detalle opcional del renglon: una aclaracion corta que se imprime DEBAJO
+    # del nombre del item, en letra mas chica y mas clara (lo dibuja
+    # `pdf_generator._draw_items_table`). No es lo mismo que `observations`,
+    # que es del presupuesto entero: esto describe UN item, y la mayoria no lo
+    # necesita. Por eso viaja vacio por default y se guarda solo si tiene texto.
+    detalle: str = ""
 
 
 class _PresupuestoPayload(BaseModel):
@@ -72,11 +78,22 @@ def _resolver_cliente(client_id: int | None, client_name: str) -> dict:
 
 
 def _armar_items(items: list[_ItemPayload]) -> list[dict]:
-    return [
-        {"description": i.description.strip(), "qty": i.qty, "unit_price": i.unit_price,
-         "subtotal": round(i.qty * i.unit_price, 2)}
-        for i in items if i.description.strip()
-    ]
+    """Los items que se persisten (JSON en `presupuestos.items`).
+
+    `detalle` **solo entra si tiene texto**: la clave ausente y la clave vacia
+    significan lo mismo para todo lo que lee el item, y no escribirla deja los
+    presupuestos sin detalle exactamente como estaban antes de esta feature.
+    """
+    armados = []
+    for i in items:
+        if not i.description.strip():
+            continue
+        item = {"description": i.description.strip(), "qty": i.qty,
+                "unit_price": i.unit_price, "subtotal": round(i.qty * i.unit_price, 2)}
+        if i.detalle.strip():
+            item["detalle"] = i.detalle.strip()
+        armados.append(item)
+    return armados
 
 
 def build_presupuestos_router(
