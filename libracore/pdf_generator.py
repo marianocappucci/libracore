@@ -745,7 +745,17 @@ def _draw_items_table(pdf, items, show_iva_col=False, show_prices=True,
         raw_desc   = str(item.get("description", ""))
         parts      = raw_desc.split("\n", 1)
         title_txt  = parts[0].strip()
-        detail_txt = parts[1].strip() if len(parts) > 1 else item.get("detalle", "")
+        # El detalle del renglon: la aclaracion corta que se dibuja abajo del
+        # titulo, mas chica y mas clara. Dos origenes, y el explicito manda:
+        #
+        # - `item["detalle"]`, el campo propio del renglon (lo que carga el
+        #   formulario de presupuesto desde 2026-09-08).
+        # - lo que va DESPUES del primer salto de linea de la descripcion,
+        #   convencion anterior a que el campo existiera. Sigue andando para
+        #   los comprobantes ya guardados asi.
+        detail_txt = str(item.get("detalle", "")).strip() or (
+            parts[1].strip() if len(parts) > 1 else ""
+        )
         has_detail = bool(detail_txt)
 
         qty   = item.get("qty", 1)
