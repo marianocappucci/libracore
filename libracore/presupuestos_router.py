@@ -201,7 +201,20 @@ def build_presupuestos_router(
             )
         except Exception as e:
             raise HTTPException(502, f"Error al enviar: {e}")
-        return {"ok": True}
+        # 🔑 Mandarlo ES enviarlo: el estado sigue al hecho, sin que el usuario
+        # tenga que apretar despues "Marcar como enviado". Va DESPUES del envio
+        # a proposito: si el SMTP falla sale el 502 y el presupuesto se queda en
+        # borrador, que es la verdad de lo que paso.
+        #
+        # Solo desde borrador. Un presupuesto ya aceptado (o facturado) al que
+        # se le reenvia el PDF no retrocede a enviado: el ciclo avanza, y un
+        # reenvio no es un evento del ciclo.
+        if pres["status"] == "borrador":
+            _rp.update_presupuesto_status(pres_id, "enviado")
+        # Devuelve el presupuesto entero en vez del {"ok": True} de antes: la
+        # pantalla necesita el estado nuevo para repintar la insignia sin que
+        # haya que recargar a mano.
+        return _rp.get_presupuesto(pres_id)
 
     @router.delete("/{pres_id}")
     def eliminar(pres_id: int):
