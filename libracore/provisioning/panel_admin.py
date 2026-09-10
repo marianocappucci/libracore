@@ -669,7 +669,15 @@ def cmd_backup(slug: str, quiet: bool = False):
 
     El camino viejo (tar.gz + copia WAL-safe vía la Online Backup API de
     sqlite3, purgando a los `BACKUP_RETENTION_DIAS`) se conserva mientras
-    Contalibra y Restolibra no migren su pantalla al motor."""
+    Contalibra y Restolibra no migren su pantalla al motor.
+
+    **Devuelve `True` si el respaldo quedó hecho y `False` si no** —cliente
+    inexistente, sin `data/`, o sin base que respaldar—. Un fallo del dump o
+    del ZIP sale como excepción, igual que antes. Hasta el 2026-09-10 devolvía
+    `None` siempre, así que quien lo llamaba no podía distinguir "respaldado"
+    de "escribió un [ERROR] y siguió": `backup-all` imprimía `[OK]` a
+    continuación del error, y `actualizar` no tenía cómo exigir el respaldo
+    antes de migrar."""
     cfg = get_config()
 
     def _p(*a):
@@ -679,18 +687,18 @@ def cmd_backup(slug: str, quiet: bool = False):
     c = find_client(slug)
     if not c:
         print(f"[ERROR] Cliente '{slug}' no encontrado.")
-        return
+        return False
     data_dir = c["dir"] / "data"
     if not data_dir.exists():
         print(f"[ERROR] No existe {data_dir}")
-        return
+        return False
     # `docker inspect` una sola vez: lo necesitan los dos caminos.
     urls_postgres = _urls_postgres_del_contenedor(c)
 
     if cfg.backup_zip:
         _p(f"[*] Creando backup de {slug} ...")
         _backup_zip(c, cfg, urls_postgres, _p)
-        return
+        return True
 
     ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_file = cfg.clientes_dir / f"{slug}_backup_{ts}.tar.gz"
@@ -743,6 +751,8 @@ def cmd_backup(slug: str, quiet: bool = False):
         print(f"[ERROR] {slug}: no hay base que respaldar. No existe "
               f"{db_src} y el contenedor no declara una URL PostgreSQL. "
               f"El tar.gz quedo hecho pero **no tiene la base**.")
+        return False
+    return True
 
 
 def cmd_resguardo_externo(slugs: list[str] | None = None):
@@ -765,7 +775,7 @@ def cmd_resguardo_externo(slugs: list[str] | None = None):
     fallidos = 0
     for c in targets:
         try:
-            if rx.destino_de(c) is None:
+            if rx.destino_de(c, c["dir"] / "data" / "backups") is None:
                 continue
         except rx.ResguardoExternoError as e:
             print(f"[ERROR] {e}")
@@ -806,7 +816,7 @@ def cmd_estado_externo(slugs: list[str] | None = None):
 
     for c in targets:
         try:
-            if rx.destino_de(c) is None:
+            if rx.destino_de(c, c["dir"] / "data" / "backups") is None:
                 continue
         except rx.ResguardoExternoError as e:
             problemas.append((c["slug"], str(e)))
@@ -836,10 +846,16 @@ def cmd_backup_all():
     for c in clientes:
         print(f"[*] Backup de '{c['slug']}' ...")
         try:
-            cmd_backup(c["slug"], quiet=True)
-            print(f"[OK] '{c['slug']}' respaldado.")
+            ok = cmd_backup(c["slug"], quiet=True)
         except Exception as e:
             print(f"[ERROR] Falló el backup de '{c['slug']}': {e}")
+            continue
+        # 🔴 Antes se imprimía `[OK]` sin mirar: una instancia sin base dejaba
+        # su `[ERROR]` y, en la línea siguiente, "respaldado".
+        if ok is False:
+            print(f"[ERROR] '{c['slug']}' NO quedó respaldado (ver arriba).")
+        else:
+            print(f"[OK] '{c['slug']}' respaldado.")
 
 
 def cmd_list_backups(slug: str):
@@ -958,9 +974,26 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
         print("[OK] Contenedor reiniciado.")
 
 
+def _respaldo_previo(slug: str) -> bool:
+    """El respaldo que `cmd_actualizar` toma de cada instancia ANTES de tocarla.
+
+    Es el mismo `cmd_backup` que corre el cron —mismo formato, misma carpeta,
+    así que se lista y se restaura igual—, pero con el resultado **exigido**:
+    `True` sólo si el respaldo quedó hecho. Una excepción del dump o del ZIP
+    cuenta como fallo, no se propaga: quien decide qué hacer es el deploy.
+    """
+    print(f"    respaldo previo de '{slug}' ...")
+    try:
+        ok = cmd_backup(slug)
+    except Exception as e:
+        print(f"[ERROR] Falló el respaldo previo de '{slug}': {e}")
+        return False
+    return ok is not False
+
+
 def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
                    *, git_ref: str = "main", from_checkout: bool = False,
-                   dry_run: bool = False):
+                   dry_run: bool = False, respaldar: bool = True):
     """Construye una **versión nueva** de la imagen y mueve a ella los
     contenedores indicados (o todos), repineando el compose de cada uno.
 
@@ -979,6 +1012,15 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
     ya está pineado a la imagen nueva, así que la migración corre con el código
     nuevo mientras la instancia todavía sirve el viejo. Una migración que falla
     aborta el deploy de esa instancia y repinea el compose.
+
+    🔴 **Cada instancia se respalda antes de tocarla**, y si el respaldo falla
+    esa instancia no se actualiza. Va antes de pinear y antes de migrar, y
+    corre aunque el producto no declare `migraciones`: Contalibra, Restolibra
+    y VentaLibra cambian su esquema **al arrancar** (`init_core_schema()`), o
+    sea en el `up -d`. Hasta el 2026-09-10 no había respaldo en ningún punto de
+    este camino: lo tomaba a mano el script de deploy de cada sesión, y
+    `backup_zip=True` —que parecía cubrirlo— sólo fija el formato del cron.
+    `respaldar=False` (`--sin-respaldo`) lo saltea, y lo dice en la salida.
 
     `dry_run` resuelve el ref y materializa el contexto para probar que se
     puede, informa, y no construye ni despliega nada.
@@ -1023,6 +1065,8 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
             return False
         objetivo = ", ".join(slugs) if slugs else "todos los que estén corriendo"
         print(f"[DRY-RUN] No se construye ni se despliega nada. Objetivo: {objetivo}.")
+        print("[DRY-RUN] Respaldo previo de cada instancia: "
+              + ("sí" if respaldar else "NO (--sin-respaldo)") + ".")
         return True
 
     if not build_image_tagged(version, ref=git_ref, from_checkout=from_checkout):
@@ -1050,6 +1094,20 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
             print(f"[SKIP] {c['container']} no está en ejecución — sigue pineado "
                   f"en {leer_image_pineada(slug) or '?'}.")
             continue
+
+        # ── El respaldo, ANTES de pinear y de migrar ─────────────────────────
+        #
+        # Antes de pinear para que un respaldo fallido no deje nada que
+        # deshacer: la instancia queda exactamente como estaba.
+        if respaldar:
+            if not _respaldo_previo(slug):
+                print(f"[ERROR] {c['container']} no se actualiza: sin respaldo "
+                      "previo no se migra. Para forzarlo: --sin-respaldo.")
+                fallidos.append(slug)
+                continue
+        else:
+            print(f"[AVISO] {c['container']} se actualiza SIN respaldo previo "
+                  "(--sin-respaldo).")
 
         anterior = pinear_image(slug, ref)
         if anterior is None:
@@ -1558,13 +1616,14 @@ def interactive():
 # ── CLI directo ───────────────────────────────────────────────────────────────
 
 def _sacar_opciones_de_build(args: list[str]) -> tuple[list[str], dict]:
-    """Separa `--ref`, `--from-checkout` y `--dry-run` del resto.
+    """Separa `--ref`, `--from-checkout`, `--dry-run` y `--sin-respaldo` del resto.
 
     Se hace a mano y no con argparse porque este CLI es posicional
     (`comando [slug] [extra]`) y meterle un parser cambiaría la forma de todos
     los demás comandos. Las opciones se sacan de la lista, así que el slug
     sigue siendo `args[1]` aunque la opción venga antes."""
-    opciones = {"git_ref": "main", "from_checkout": False, "dry_run": False}
+    opciones = {"git_ref": "main", "from_checkout": False, "dry_run": False,
+                "respaldar": True}
     restantes: list[str] = []
     i = 0
     while i < len(args):
@@ -1581,6 +1640,8 @@ def _sacar_opciones_de_build(args: list[str]) -> tuple[list[str], dict]:
             opciones["from_checkout"] = True
         elif a == "--dry-run":
             opciones["dry_run"] = True
+        elif a == "--sin-respaldo":
+            opciones["respaldar"] = False
         else:
             restantes.append(a)
         i += 1
@@ -1637,7 +1698,8 @@ def cli():
     else:
         print(f"Comando desconocido: {cmd}")
         print("Comandos: listar | info | start | stop | restart | logs | backup | actualizar | eliminar")
-        print("Build:    actualizar [slug] [--ref <git-ref>] [--from-checkout] [--dry-run]")
+        print("Build:    actualizar [slug] [--ref <git-ref>] [--from-checkout] [--dry-run] [--sin-respaldo]")
+        print("          cada instancia se respalda antes de tocarla; --sin-respaldo lo saltea.")
         print("          --ref por defecto es main, o sea lo promovido — no el checkout.")
         print("Versión:  versiones | rollback <slug> [version] | podar-imagenes [--dry-run]")
         print("DB:       list-backups <slug> | restore-db <slug> [archivo.db]")

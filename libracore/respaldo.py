@@ -73,6 +73,16 @@ from pathlib import Path
 # alguno manual; mas que eso es llenar el disco del VPS, que ya viene ajustado.
 MAX_BACKUPS = 10
 
+#: Directorios que NUNCA entran al ZIP, esten donde esten dentro de los
+#: `directorios` de la instancia.
+#:
+#: 🔴 `.resguardo` guarda el token de la nube del cliente
+#: (`libracore.resguardo_enlace`). Si entrara, cada backup descargado llevaria
+#: el acceso a su Drive o su Dropbox — y un backup se manda por mail. No se
+#: confia en que el directorio de backups quede afuera de lo que declara cada
+#: producto: se poda por nombre, sin importar donde aparezca.
+NUNCA_EN_EL_ZIP = frozenset({".resguardo"})
+
 _MAGIC_SQLITE = b"SQLite format 3\x00"
 # Los dumps de `pg_dump -Fc` empiezan con esta firma. Sirve para el mismo
 # chequeo que `_MAGIC_SQLITE`: que el archivo del ZIP sea lo que dice ser antes
@@ -326,7 +336,10 @@ def crear_backup(
             for carpeta in instancia.directorios:
                 if not carpeta.is_dir():
                     continue
-                for raiz, _, archivos in os.walk(carpeta):
+                for raiz, subdirs, archivos in os.walk(carpeta):
+                    # Poda en el lugar: `os.walk` no entra a lo que se saca de
+                    # `subdirs`. Ver `NUNCA_EN_EL_ZIP`.
+                    subdirs[:] = [s for s in subdirs if s not in NUNCA_EN_EL_ZIP]
                     for a in archivos:
                         completo = Path(raiz) / a
                         relativo = completo.relative_to(carpeta.parent)

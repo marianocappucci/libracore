@@ -61,32 +61,51 @@ class ResguardoExternoError(Exception):
     `.externo.json`, asi que dice **que** fallo."""
 
 
-def destino_de(cliente: dict) -> dict | None:
+def destino_de(cliente: dict, backups_dir=None) -> dict | None:
     """La configuracion de resguardo externo de una instancia, o `None`.
 
-    Vive en `cliente.json` —que es metadata por instancia y no esta en git—
-    bajo la clave `resguardo_externo`:
+    Sale de uno de dos lugares, en este orden:
 
-        "resguardo_externo": {
-            "remoto": "drive_compulibra:",
-            "ruta": "libra-backups/contalibra/compulibra"
-        }
+    1. **`cliente.json`**, bajo la clave `resguardo_externo` — el alta hecha a
+       mano por una persona, con un remoto de la config global de rclone:
 
-    **Ausente significa "no contratado"**, y ese es el gate real del add-on: el
-    subidor sólo corre para quien esta en la tabla. `plans.py` sólo decide que
-    ve la pantalla.
+           "resguardo_externo": {
+               "remoto": "drive_compulibra:",
+               "ruta": "libra-backups/contalibra/compulibra"
+           }
+
+       Gana sobre el enlace a proposito: es lo que escribe el operador, y le
+       tiene que servir para pisar lo que haya hecho la pantalla.
+
+    2. **El enlace que hizo el cliente desde su pantalla**
+       (`libracore.resguardo_enlace`), si se pasa `backups_dir`. Trae su propio
+       `rclone.conf`, que va en `config`.
+
+    **Ninguno de los dos significa "no contratado"**: el subidor sólo corre para
+    quien tiene destino. Quien decide si la pantalla deja enlazar es el modulo
+    `resguardo_externo` del plan.
 
     El `remoto` es un NOMBRE de la config de rclone, no una credencial: se puede
-    loguear sin filtrar nada.
+    loguear sin filtrar nada. `config` es una ruta, tampoco.
     """
     cfg = cliente.get("resguardo_externo")
     if not cfg:
-        return None
+        if backups_dir is None:
+            return None
+        from ..resguardo_enlace import REMOTO, config_rclone, enlace_de
+        conf = config_rclone(backups_dir)
+        if conf is None:
+            return None
+        return {
+            "remoto": f"{REMOTO}:",
+            "ruta": str(enlace_de(backups_dir).get("carpeta") or "").strip("/"),
+            "config": str(conf),
+        }
     if not cfg.get("remoto"):
         raise ResguardoExternoError(
             f"'{cliente.get('slug')}' declara resguardo_externo sin 'remoto'"
         )
-    return {"remoto": cfg["remoto"], "ruta": cfg.get("ruta", "").strip("/")}
+    return {"remoto": cfg["remoto"], "ruta": cfg.get("ruta", "").strip("/"), "config": None}
 
 
 def _fecha_de(nombre: str) -> datetime | None:
@@ -173,10 +192,10 @@ def _rclone(*args, binario="rclone", timeout=1800):
     return r.stdout
 
 
-def _listar_remoto(destino: str, binario="rclone") -> dict[str, int]:
+def _listar_remoto(destino: str, *extra, binario="rclone") -> dict[str, int]:
     """`{nombre: bytes}` de lo que hay hoy en el destino."""
     try:
-        salida = _rclone("lsjson", destino, binario=binario)
+        salida = _rclone("lsjson", destino, *extra, binario=binario)
     except ResguardoExternoError as e:
         # Un destino que todavia no existe no es un error: la primera subida lo
         # crea. Cualquier otra cosa si.
@@ -195,11 +214,15 @@ def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print
     """
     ahora = ahora or datetime.now()
     slug = cliente.get("slug", "?")
-    cfg = destino_de(cliente)
+    cfg = destino_de(cliente, backups_dir)
     if cfg is None:
         return {"ok": None, "motivo": "sin resguardo externo contratado"}
 
     destino = f"{cfg['remoto']}{cfg['ruta']}" if cfg["ruta"] else cfg["remoto"]
+    # Un enlace hecho desde la pantalla trae su propio `rclone.conf`. Va como
+    # flag al final y no como parametro de `_rclone`, para que `args[0]` siga
+    # siendo el subcomando que nombra el mensaje de error.
+    extra = ("--config", cfg["config"]) if cfg.get("config") else ()
     estado = {
         "ok": False, "cuando": ahora.isoformat(timespec="seconds"),
         "destino": destino, "archivo": None, "bytes": 0, "error": None,
@@ -216,11 +239,11 @@ def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print
 
         log(f"[*] {slug}: subiendo {zip_local.name} "
             f"({estado['bytes'] / 1_048_576:.2f} MB) a {destino}")
-        _rclone("copy", str(zip_local), destino, "--no-traverse", binario=binario)
+        _rclone("copy", str(zip_local), destino, "--no-traverse", *extra, binario=binario)
 
         # 🔴 Que `rclone copy` no haya fallado NO alcanza. Es el mismo criterio
         # que `respaldo.verificar_backup`: se mira el producto, no el proceso.
-        remoto = _listar_remoto(destino, binario=binario)
+        remoto = _listar_remoto(destino, *extra, binario=binario)
         if zip_local.name not in remoto:
             raise ResguardoExternoError(
                 f"rclone dijo que copio pero {zip_local.name} no esta en el destino"
@@ -234,7 +257,7 @@ def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print
 
         sobran = a_borrar(remoto, ahora)
         for nombre in sobran:
-            _rclone("deletefile", f"{destino}/{nombre}", binario=binario)
+            _rclone("deletefile", f"{destino}/{nombre}", *extra, binario=binario)
         if sobran:
             log(f"[OK] {slug}: retencion, {len(sobran)} copia/s vieja/s borrada/s")
         estado["borrados"] = sobran
