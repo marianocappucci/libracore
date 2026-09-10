@@ -142,6 +142,19 @@ def get_connection():
     return conectar(_db_path, timeout=_timeout, extra_pragmas=_extra_pragmas)
 
 
+def esta_configurado() -> bool:
+    """Si alguien ya llamó a `configure()` en este proceso.
+
+    Lo necesita el código que puede correr **fuera del arranque de la app** y
+    tiene que apuntarla él mismo — el caso vivo son los shims de módulos que
+    cada producto expone en `app.database` para que el backoffice los invoque
+    por `docker exec`: ahí no hay `create_app()` que haya configurado nada. Sin
+    esto, ese código elegía entre leer el `_db_path` privado o llamar a
+    `configure()` a ciegas y pisarle la configuración a una app viva.
+    """
+    return _db_path is not None
+
+
 def is_postgres() -> bool:
     """Indica si el backend configurado es PostgreSQL."""
     return _database_url is not None
