@@ -765,7 +765,7 @@ def cmd_resguardo_externo(slugs: list[str] | None = None):
     fallidos = 0
     for c in targets:
         try:
-            if rx.destino_de(c) is None:
+            if rx.destino_de(c, c["dir"] / "data" / "backups") is None:
                 continue
         except rx.ResguardoExternoError as e:
             print(f"[ERROR] {e}")
@@ -806,7 +806,7 @@ def cmd_estado_externo(slugs: list[str] | None = None):
 
     for c in targets:
         try:
-            if rx.destino_de(c) is None:
+            if rx.destino_de(c, c["dir"] / "data" / "backups") is None:
                 continue
         except rx.ResguardoExternoError as e:
             problemas.append((c["slug"], str(e)))
