@@ -425,9 +425,66 @@ def test_addons_de_instancia_sin_addons_da_vacio(fake_scripts):
     assert services.addons_de_instancia("distri-6") == {}
 
 
-def test_addons_de_instancia_contenedor_caido_los_da_apagados(fake_scripts, monkeypatch):
+# 🔑 Los tres que siguen fijan que **"no sé" no se reporta como "no"**.
+#
+# Hasta el 2026-09-09 acá había un solo test —`..._contenedor_caido_los_da_apagados`—
+# que exigía `{"mayorista": False}` ante un `docker exec` fallido. O sea que el
+# defecto estaba consagrado en verde: la función devolvía "apagado" cuando no
+# había podido leer nada, y el backoffice mostraba el add-on destildado de una
+# instancia que lo tenía prendido (`libradesk-lagrace`, `modo_simple=true`).
+#
+# El caso "contenedor caído" sigue existiendo; lo que cambia es qué se espera.
+
+
+def test_addons_de_instancia_contenedor_caido_da_desconocido(fake_scripts, monkeypatch):
     fake_scripts["mkclient"]("Distri", "distri-7")
     fake_scripts["plans"].ADDONS = {"mayorista"}
     monkeypatch.setattr(services.subprocess, "run",
-                        lambda cmd, **kw: _R(returncode=1))
-    assert services.addons_de_instancia("distri-7") == {"mayorista": False}
+                        lambda cmd, **kw: _R(returncode=1, stderr="No such container"))
+    assert services.addons_de_instancia("distri-7") == {"mayorista": None}
+
+
+def test_addons_de_instancia_snippet_roto_da_desconocido(fake_scripts, monkeypatch):
+    """El caso real de LibraDesk: el contenedor está vivo y el snippet no importa.
+
+    `app.database` de LibraDesk es una engine factory de SQLAlchemy y no exporta
+    `get_modulos`, así que el `docker exec` sale con `ImportError`. Es
+    indistinguible de un contenedor caído desde acá, y las dos cosas son
+    "no pude leer" — nunca "está apagado".
+    """
+    fake_scripts["mkclient"]("Distri", "distri-8")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    monkeypatch.setattr(
+        services.subprocess, "run",
+        lambda cmd, **kw: _R(
+            returncode=1,
+            stderr="ImportError: cannot import name 'get_modulos' from 'app.database'",
+        ),
+    )
+    assert services.addons_de_instancia("distri-8") == {"mayorista": None}
+
+
+def test_addons_de_instancia_salida_no_json_da_desconocido(fake_scripts, monkeypatch):
+    """Salida con código 0 pero que no parsea: tampoco es "apagado"."""
+    fake_scripts["mkclient"]("Distri", "distri-9")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    monkeypatch.setattr(services.subprocess, "run",
+                        lambda cmd, **kw: _R(stdout="Traceback (most recent call last):"))
+    assert services.addons_de_instancia("distri-9") == {"mayorista": None}
+
+
+def test_addons_de_instancia_apagado_de_verdad_es_false(fake_scripts, monkeypatch):
+    """El control que hace falta para que los tres de arriba prueben algo.
+
+    Sin este, "devolver `None` siempre" también pasaría, y la pantalla nunca
+    volvería a mostrar un add-on apagado. `False` y `None` tienen que salir de
+    caminos distintos: uno lo dice la base, el otro es la ausencia de respuesta.
+    """
+    fake_scripts["mkclient"]("Distri", "distri-10")
+    fake_scripts["plans"].ADDONS = {"mayorista"}
+    monkeypatch.setattr(services.subprocess, "run",
+                        lambda cmd, **kw: _R(stdout='{"mayorista": false, "caja": true}'))
+    estado = services.addons_de_instancia("distri-10")
+    assert estado == {"mayorista": False}
+    assert estado["mayorista"] is False          # y no `None`
+    assert estado["mayorista"] is not None

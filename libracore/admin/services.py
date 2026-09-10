@@ -15,6 +15,7 @@ del archivo de base de datos también es configurable por producto
 (`contalibra.db` vs `restolibra.db`, antes hardcodeado).
 """
 import json
+import logging
 import shutil
 import sqlite3
 import subprocess
@@ -23,6 +24,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+_log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _repo_root: Path | None = None
 _db_filename: str = ""
@@ -253,10 +255,22 @@ def set_plan(slug: str, plan: str) -> None:
 # la CLI `panel_admin.py addon`. El efecto es inmediato: `require_module` relee
 # `get_modulos()` en cada request.
 #
-# El snippet usa `app.database.set_addon`/`get_modulos`, que existen en el
-# producto que tiene add-ons (el `set_addon` lo agrega ese producto; `get_modulos`
-# lo tienen todos). Para un producto sin add-ons (`plans.ADDONS` vacío) estas
-# funciones ni se llaman.
+# El snippet usa `app.database.set_addon`/`get_modulos`. Para un producto sin
+# add-ons (`plans.ADDONS` vacío) estas funciones ni se llaman.
+#
+# 🔴 **Ese contrato hay que cumplirlo, no darlo por cumplido.** Acá decía que
+# `get_modulos` "lo tienen todos" y que el `set_addon` "lo agrega ese producto".
+# Las dos mitades eran falsas: la única implementación de `set_addon` vivía en
+# Contalibra, y `app.database` de LibraDesk es una *engine factory* de
+# SQLAlchemy que no exporta ninguna de las dos. Cuando LibraDesk declaró
+# `ADDONS = {"modo_simple"}` (2026-09-09, para Lagrace), el `docker exec` pasó a
+# morir con `ImportError: cannot import name 'get_modulos' from 'app.database'`
+# — y como la lectura devolvía todo en `False` ante cualquier error, el
+# backoffice mostró el add-on **destildado con el add-on prendido en la base**.
+#
+# Un producto que declare `plans.ADDONS` tiene que exportar las dos en
+# `app.database`, aunque sea delegando en `libracore.db.modulos` (que es donde
+# viven desde `v1.34`). Si no lo hace, ahora se ve: la lectura devuelve `None`.
 
 
 def set_addon(slug: str, addon: str, habilitado: bool) -> None:
@@ -282,13 +296,25 @@ def set_addon(slug: str, addon: str, habilitado: bool) -> None:
         )
 
 
-def addons_de_instancia(slug: str) -> dict[str, bool]:
+def addons_de_instancia(slug: str) -> dict[str, bool | None]:
     """Estado de los add-ons de la instancia, leído de su base viva (`docker exec`).
 
-    Devuelve `{addon: habilitado}` para cada add-on que declara el producto. `{}`
-    si el producto no tiene add-ons. Si la instancia no responde (contenedor
-    caído), los devuelve todos en `False` en vez de fallar: el backoffice puede
-    mostrar el toggle igual, apagado.
+    Devuelve `{addon: habilitado}` para cada add-on que declara el producto, y
+    `{}` si el producto no tiene ninguno.
+
+    🔑 **`None` significa "no se pudo leer", y NO es lo mismo que `False`.**
+    Hasta el 2026-09-09 esta función devolvía `False` ante cualquier fallo del
+    `docker exec` —contenedor caído, `ImportError` del snippet, salida que no
+    parsea— con el argumento de que así el backoffice podía "mostrar el toggle
+    igual, apagado". El resultado fue una pantalla que afirmaba de más: en
+    `libradesk-lagrace` el add-on `modo_simple` estaba en `true` en la base y el
+    backoffice lo mostraba destildado, sin ninguna señal de que la lectura había
+    fallado. Un "no sé" disfrazado de "no" es peor que un error visible, porque
+    el que mira decide con él.
+
+    Quien consume esto tiene que distinguir los tres estados. El motivo concreto
+    del fallo va al log del proceso: no viaja en el valor de retorno para no
+    cambiarle la forma al JSON que ya consume el backoffice.
     """
     plans = _plans()
     addons = sorted(getattr(plans, "ADDONS", set()))
@@ -306,11 +332,19 @@ def addons_de_instancia(slug: str) -> dict[str, bool]:
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        return {a: False for a in addons}
+        _log.warning(
+            "No se pudo leer los add-ons de %r (%s): %s",
+            slug, c["container"], (r.stderr or r.stdout).strip()[:300],
+        )
+        return {a: None for a in addons}
     try:
         mods = json.loads(r.stdout.strip() or "{}")
     except json.JSONDecodeError:
-        return {a: False for a in addons}
+        _log.warning(
+            "Los add-ons de %r (%s) llegaron sin JSON parseable: %r",
+            slug, c["container"], r.stdout.strip()[:300],
+        )
+        return {a: None for a in addons}
     return {a: bool(mods.get(a, False)) for a in addons}
 
 
