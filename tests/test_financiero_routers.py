@@ -181,6 +181,34 @@ def test_tesoreria(client):
     assert client.delete("/api/tesoreria/cuentas/999").status_code == 404
 
 
+def test_tesoreria_los_saldos(client):
+    """El saldo de cada cuenta despues de cada operacion.
+
+    El test de arriba fija el contrato HTTP --que la transferencia aparezca en
+    las dos cuentas-- pero no mira un solo saldo. Los que si los miraban eran
+    `tests/test_tesoreria.py` de Contalibra y Restolibra, escritos dos veces
+    --byte a byte-- contra este mismo router, y de ahi viene esto: saldo
+    inicial, ingreso, egreso y las dos patas de una transferencia.
+    """
+    def saldo(cid):
+        return client.get(f"/api/tesoreria/cuentas/{cid}").json()["cuenta"]["saldo"]
+
+    a = client.post("/api/tesoreria/cuentas", json={"nombre": "Banco Nacion", "tipo": "banco", "saldo_inicial": 10000.0}).json()
+    assert saldo(a["id"]) == 10000.0, "el saldo inicial cuenta"
+
+    client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json={"tipo": "ingreso", "monto": 500.0, "concepto": "Cobranza", "fecha": HOY})
+    assert saldo(a["id"]) == 10500.0
+    client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json={"tipo": "egreso", "monto": 300.0, "concepto": "Pago proveedor", "fecha": HOY})
+    assert saldo(a["id"]) == 10200.0, "el egreso resta"
+
+    b = client.post("/api/tesoreria/cuentas", json={"nombre": "Destino", "tipo": "banco", "saldo_inicial": 0.0}).json()
+    r = client.post("/api/tesoreria/transferencia", json={
+        "cuenta_origen_id": a["id"], "cuenta_destino_id": b["id"], "monto": 2000.0, "fecha": HOY})
+    assert r.status_code == 200, r.text
+    assert saldo(a["id"]) == 8200.0, "la salida resta del origen"
+    assert saldo(b["id"]) == 2000.0, "la entrada suma al destino"
+
+
 # ── Cuenta corriente ─────────────────────────────────────────────────────
 
 
