@@ -24,6 +24,7 @@ Lo que sí se filtra es distinto y no tiene ese riesgo: los cobros de **otro
 collector** (o sea, de otra cuenta) y los que ya están registrados.
 """
 
+import asyncio
 import datetime
 import logging
 import os
@@ -163,8 +164,15 @@ def build_mp_bandeja_router(
             "mp_concepto_default": cfg.get("mp_concepto_descripcion", "") or "",
         }
 
+    # 🔴 `sincronizar` y los dos `facturar` son `def` y no `async def`, a
+    # propósito: uvicorn corre con UN solo proceso, y las tres escriben la
+    # base entre medio de lo que esperan de la red —facturar, además, firma el
+    # TRA con `openssl` por subproceso y arma el PDF—. Como corrutinas
+    # frenaban el loop entero. Como `def` corren en el threadpool, y la
+    # corrutina del motor va con `asyncio.run` en un loop propio de ese hilo.
+
     @router.post("/sincronizar")
-    async def sincronizar(payload: SincronizarPayload):
+    def sincronizar(payload: SincronizarPayload):
         """Trae de MercadoPago lo que no llegó por webhook.
 
         🔑 **Es la misma función que corre el cron nocturno** (`mp_sync.ingerir`),
@@ -173,11 +181,11 @@ def build_mp_bandeja_router(
         comprobantes emitidos al CUIT equivocado.
         """
         try:
-            nuevos = await mp_sync.ingerir(
+            nuevos = asyncio.run(mp_sync.ingerir(
                 config_manager.load(),
                 dias=payload.dias,
                 referencias_a_omitir=referencias_a_omitir,
-            )
+            ))
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
         except mp_sync.MercadoPagoNoContesta:
@@ -199,7 +207,7 @@ def build_mp_bandeja_router(
         return {"ok": True}
 
     @router.post("/pagos/{mp_pago_id}/facturar")
-    async def facturar_pago(mp_pago_id: int, payload: FacturarPayload):
+    def facturar_pago(mp_pago_id: int, payload: FacturarPayload):
         pago = db_mp.get_mp_pago_by_id(mp_pago_id)
         if not pago or pago.get("estado_factura") != "pendiente":
             # 404 y no 409: para la pantalla, un pago ya facturado no está en
@@ -207,7 +215,7 @@ def build_mp_bandeja_router(
             # vieja, y el mensaje tiene que mandar a refrescar.
             raise HTTPException(404, "Pago no encontrado o ya procesado")
 
-        factura_id, numero, tipo_label, mail = await mp_facturacion.generar_factura_mp(
+        factura_id, numero, tipo_label, mail = asyncio.run(mp_facturacion.generar_factura_mp(
             monto=float(pago["monto"]),
             payer_email=pago["payer_email"] or "",
             payer_name=pago["payer_name"] or "",
@@ -218,7 +226,7 @@ def build_mp_bandeja_router(
             # puede resolver. Es lo que le faltaba a la copia de Restolibra.
             payer_cuit=pago.get("payer_id_number") or "",
             registro=registro,
-        )
+        ))
         db_mp.update_mp_pago_estado(mp_pago_id, "facturado", factura_id=factura_id)
         return {"factura_id": factura_id, "numero": numero,
                 "tipo_label": tipo_label, "email_sent": mail}
@@ -259,12 +267,12 @@ def build_mp_bandeja_router(
         return {"ok": True}
 
     @router.post("/movimientos/{mov_id}/facturar")
-    async def facturar_movimiento(mov_id: int, payload: FacturarPayload):
+    def facturar_movimiento(mov_id: int, payload: FacturarPayload):
         mov = db_mp.get_mp_movimiento_by_id(mov_id)
         if not mov or mov.get("estado_factura") != "pendiente":
             raise HTTPException(404, "Movimiento no encontrado o ya procesado")
 
-        factura_id, numero, tipo_label, mail = await mp_facturacion.generar_factura_mp(
+        factura_id, numero, tipo_label, mail = asyncio.run(mp_facturacion.generar_factura_mp(
             monto=float(mov["monto"]),
             payer_email=mov["payer_email"] or "",
             payer_name=mov["payer_name"] or mov["origen_nombre"] or "",
@@ -273,7 +281,7 @@ def build_mp_bandeja_router(
             payment_type=mov.get("tipo") or "",
             payer_cuit=mov.get("payer_id_number") or "",
             registro=registro,
-        )
+        ))
         db_mp.update_mp_movimiento_estado(mov_id, "facturado", factura_id=factura_id)
         return {"factura_id": factura_id, "numero": numero,
                 "tipo_label": tipo_label, "email_sent": mail}

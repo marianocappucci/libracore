@@ -48,6 +48,7 @@ tolerable.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 import os
@@ -499,10 +500,19 @@ def build_comprobantes_router(
             "page": page,
         }
 
+    # 🔴 Las rutas que emiten —`crear`, `autorizar`, las dos notas— y el
+    # borrador son `def` y no `async def`, a propósito: uvicorn corre con UN
+    # solo proceso. La numeración y el CAE son async sólo en los bordes de
+    # red: entre medio va la base y la firma del TRA con `openssl` por
+    # subproceso, y después el PDF, que es CPU. Como corrutinas, emitir un
+    # comprobante frenaba a la instancia entera. Como `def` corren en el
+    # threadpool, y cada corrutina del motor va con `asyncio.run` en un loop
+    # propio de ese hilo.
+    #
     # ── Emisión ───────────────────────────────────────────────────────────
 
     @router.post("/borrador-pdf")
-    async def borrador_pdf(payload: FacturaPayload):
+    def borrador_pdf(payload: FacturaPayload):
         """El PDF de lo que se está por emitir, **sin guardar ni llamar a ARCA**.
 
         Es lo que deja mirar el comprobante antes de quemarle un número a la
@@ -563,7 +573,7 @@ def build_comprobantes_router(
         )
 
     @router.post("")
-    async def crear(payload: FacturaPayload, usuario: dict = Depends(usuario_actual)):
+    def crear(payload: FacturaPayload, usuario: dict = Depends(usuario_actual)):
         cliente = _resolve_cliente(payload)
         if not cliente["client_name"]:
             raise HTTPException(422, "El nombre/razón social del cliente es requerido.")
@@ -583,9 +593,9 @@ def build_comprobantes_router(
         tax_rate = 0.0 if payload.tipo == 11 else payload.tax_rate
         totales = calcular_totales(items, tax_rate)
 
-        numero, ta, arca = await get_next_numero_with_arca(
+        numero, ta, arca = asyncio.run(get_next_numero_with_arca(
             payload.punto_venta, payload.tipo
-        )
+        ))
         factura_id = db_facturas.create_factura(
             # 🔑 El ambiente con el que se emitió, que es lo que separa un
             # comprobante real de uno de prueba en el libro IVA.
@@ -609,7 +619,7 @@ def build_comprobantes_router(
             condicion_venta=payload.condicion_venta, usuario_id=usuario["id"],
         )
         factura = db_facturas.get_factura(factura_id)
-        factura = await solicitar_cae(factura_id, factura, ta, arca)
+        factura = asyncio.run(solicitar_cae(factura_id, factura, ta, arca))
 
         pdf_path = pdf_gen.generate_pdf_factura(factura)
         db_facturas.update_factura_pdf_path(factura_id, pdf_path)
@@ -679,7 +689,7 @@ def build_comprobantes_router(
         return armar_borrador(_exigir(factura_id))
 
     @router.post("/{factura_id}/autorizar")
-    async def autorizar(factura_id: int):
+    def autorizar(factura_id: int):
         """Reintenta el CAE de un comprobante que quedó sin autorizar.
 
         🔑 **Lo que se reintenta es el CAE, no la emisión.** El comprobante ya
@@ -703,10 +713,10 @@ def build_comprobantes_router(
                 "ARCA no está configurado. Cargá los certificados en Configuración.",
             )
         try:
-            ta = await arca_wsaa.autenticar(cert_path, clave_path, arca["ambiente"])
-            cae_data = await arca_wsfe.solicitar_cae(
+            ta = asyncio.run(arca_wsaa.autenticar(cert_path, clave_path, arca["ambiente"]))
+            cae_data = asyncio.run(arca_wsfe.solicitar_cae(
                 factura, arca["cuit"], ta["token"], ta["sign"], arca["ambiente"]
-            )
+            ))
             db_facturas.update_factura_cae(
                 factura_id, cae_data["cae"], cae_data["cae_vto"]
             )
@@ -802,12 +812,12 @@ def build_comprobantes_router(
     # ── Notas ─────────────────────────────────────────────────────────────
 
     @router.post("/{factura_id}/nota-credito", dependencies=admin)
-    async def nota_credito(factura_id: int, usuario: dict = Depends(usuario_actual)):
+    def nota_credito(factura_id: int, usuario: dict = Depends(usuario_actual)):
         orig = _exigir(factura_id)
         nc_tipo = TIPO_NC.get(orig["tipo"])
         if not nc_tipo:
             raise HTTPException(400, "Tipo de comprobante no admite nota de crédito")
-        nota_id = await _crear_nota(orig, nc_tipo, "Anula", usuario["id"])
+        nota_id = asyncio.run(_crear_nota(orig, nc_tipo, "Anula", usuario["id"]))
 
         # Si el original era a crédito, la deuda del cliente se cancela: quedó
         # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
@@ -829,12 +839,12 @@ def build_comprobantes_router(
         return db_facturas.get_factura(nota_id)
 
     @router.post("/{factura_id}/nota-debito", dependencies=admin)
-    async def nota_debito(factura_id: int, usuario: dict = Depends(usuario_actual)):
+    def nota_debito(factura_id: int, usuario: dict = Depends(usuario_actual)):
         orig = _exigir(factura_id)
         nd_tipo = TIPO_ND.get(orig["tipo"])
         if not nd_tipo:
             raise HTTPException(400, "Tipo de comprobante no admite nota de débito")
-        nota_id = await _crear_nota(orig, nd_tipo, "Referencia", usuario["id"])
+        nota_id = asyncio.run(_crear_nota(orig, nd_tipo, "Referencia", usuario["id"]))
         return db_facturas.get_factura(nota_id)
 
     return router
