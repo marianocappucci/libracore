@@ -56,6 +56,33 @@ from . import (
 # venga.
 _TZ = "America/Argentina/Buenos_Aires"
 
+# — credenciales OAuth de la copia externa (Google Drive / Dropbox) —
+#
+# `libracore/resguardo_enlace.py` ofrece un proveedor sólo si tiene sus DOS
+# variables (`RESGUARDO_GDRIVE_CLIENT_ID`/`_SECRET`,
+# `RESGUARDO_DROPBOX_APP_KEY`/`_SECRET`). Sin ellas no hay error: el proveedor
+# simplemente no aparece en Configuración. Por eso una instancia que nace sin
+# este `env_file` queda sin copia externa **en silencio**.
+#
+# Las credenciales son UNA app por proveedor para todo el parque, así que viven
+# en un solo archivo del host (600, dir 700) y no se copian al compose de cada
+# instancia, que se escribe con `write_text` y queda con permisos por defecto.
+# El 2026-09-11 se agregó a mano en las 12 instancias existentes; esta
+# plantilla no lo tenía y cada alta nueva lo perdía.
+#
+# Se emite SÓLO si el proceso del alta puede LEERLO: un `env_file` que apunta
+# a un archivo ausente hace fallar `docker compose config` y `up`, así que en
+# cualquier host sin ese archivo (una PC de desarrollo, un nodo LibraEdge) el
+# alta entera moriría por una función opcional.
+#
+# 🔴 `os.access` y no `Path.exists()`. En Python 3.12 `exists()` sólo se traga
+# el "no existe": si el proceso no puede atravesar `/root` —cualquier usuario
+# que no sea root, el runner del CI incluido— LANZA `PermissionError`, y el
+# alta muere igual. Pasó al escribir esto: 69 tests de la suite en rojo. Y
+# "leíble" es además el criterio correcto: el `docker compose` que lee el
+# `env_file` lo corre este mismo proceso, con este mismo usuario.
+RESGUARDO_OAUTH_ENV = Path("/root/secretos/resguardo_oauth.env")
+
 
 def slugify(name: str) -> str:
     s = name.lower().strip()
@@ -822,6 +849,16 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         image_ref = cfg.image_ref(version)
         log(f"[OK] Imagen para este cliente: {image_ref}")
 
+        # — copia externa (ver RESGUARDO_OAUTH_ENV) — el aviso queda en el log
+        # del alta porque es la única pista de que la instancia no va a ofrecer
+        # Drive ni Dropbox: la pantalla de Configuración no da error, calla.
+        resguardo_env = ""
+        if os.access(RESGUARDO_OAUTH_ENV, os.R_OK):
+            resguardo_env = f"    env_file:\n      - {RESGUARDO_OAUTH_ENV}\n"
+        else:
+            log(f"[WARN] No se puede leer {RESGUARDO_OAUTH_ENV}: la instancia "
+                "no va a ofrecer copia externa a Google Drive ni a Dropbox.")
+
         # — docker-compose.yml —
         #
         # `name:` explícito y no el default de Compose, que es el nombre del
@@ -879,7 +916,7 @@ services:
       - "{port}:8000"
 {pg_depends}    volumes:
       - ./data:/app/data
-    environment:
+{resguardo_env}    environment:
       - DATA_DIR=/app/data
       - TZ={_TZ}
       - SECRET_KEY={secret_key}
