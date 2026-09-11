@@ -42,6 +42,7 @@ Lo que no es igual en todos los productos entra por parámetro, no por copia:
   y no tiene por qué vivir en el motor.
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -50,6 +51,7 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from libracore import config_manager, mp_api, mp_facturacion
 from libracore.db import mp as db_mp
@@ -118,7 +120,20 @@ def build_mp_webhook_router(
 
     @router.post(ruta, include_in_schema=False)
     async def webhook_mercadopago(request: Request):
+        # 🔴 Sigue `async` sólo por el `await request.body()`. Todo lo demás
+        # —la base, y al auto-facturar la firma del TRA con `openssl` por
+        # subproceso y el PDF— es sincrónico, y con un solo proceso de
+        # uvicorn frenaba a la instancia entera cada vez que MercadoPago
+        # notificaba un pago. Va al threadpool, y lo que espera de la red
+        # corre con `asyncio.run` en un loop propio de ese hilo.
         body = await request.body()
+        return await run_in_threadpool(
+            _procesar, body,
+            request.headers.get("x-signature", ""),
+            request.headers.get("x-request-id", ""),
+        )
+
+    def _procesar(body: bytes, firma: str, pedido: str) -> JSONResponse:
         cfg = config_manager.load()
         access_token = cfg.get("mp_access_token", "")
         secret = cfg.get("mp_webhook_secret", "")
@@ -142,8 +157,6 @@ def build_mp_webhook_router(
             return JSONResponse({"ok": False, "error": "no payment id"}, status_code=400)
 
         if secret:
-            firma = request.headers.get("x-signature", "")
-            pedido = request.headers.get("x-request-id", "")
             if not firma or not verificar_firma(firma, pedido, payment_id, secret):
                 logger.warning("Firma de MercadoPago invalida para %s — rechazado", payment_id)
                 return JSONResponse({"ok": False, "error": "invalid signature"}, status_code=400)
@@ -152,7 +165,7 @@ def build_mp_webhook_router(
             return JSONResponse({"ok": True, "msg": "already processed"}, status_code=200)
 
         try:
-            pago = await mp_api.obtener_pago(payment_id, access_token)
+            pago = asyncio.run(mp_api.obtener_pago(payment_id, access_token))
         except Exception as e:
             logger.error("Error obteniendo el pago %s de MercadoPago: %s", payment_id, e)
             return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
@@ -173,7 +186,7 @@ def build_mp_webhook_router(
             factura_id = None
             if estado == "approved":
                 try:
-                    factura_id = await manejador(identificador, payment_id, pago, cfg)
+                    factura_id = asyncio.run(manejador(identificador, payment_id, pago, cfg))
                 except Exception as e:
                     # El cobro ya está hecho: perderlo sería peor que quedarse
                     # sin la factura, que se puede emitir después a mano.
@@ -217,7 +230,7 @@ def build_mp_webhook_router(
 
         if client and debe_auto_facturar(client, contexto):
             try:
-                factura_id, numero, tipo_lb, _ = await mp_facturacion.generar_factura_mp(
+                factura_id, numero, tipo_lb, _ = asyncio.run(mp_facturacion.generar_factura_mp(
                     monto=monto,
                     payer_email=client.get("email") or datos["payer_email"],
                     payer_name=client["name"],
@@ -227,7 +240,7 @@ def build_mp_webhook_router(
                     cliente_override=client,
                     payment_type=payment_type,
                     registro=registro,
-                )
+                ))
                 db_mp.update_mp_pago_estado(
                     db_mp.get_mp_pago(payment_id)["id"], "facturado", factura_id,
                 )

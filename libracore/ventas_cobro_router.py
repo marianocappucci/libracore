@@ -31,6 +31,7 @@ intercepte. Un producto cuya suite parchea su propio shim pasa el suyo.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -88,19 +89,29 @@ def build_cobro_de_ventas_router(
             raise HTTPException(404, "Venta no encontrada")
         return venta
 
+    # 🔴 Las tres rutas son `def` y no `async def`, a propósito: uvicorn corre
+    # con UN solo proceso. Como corrutinas, el puerto de ventas —la base del
+    # producto—, `config.json` y, al facturar, la firma del TRA con `openssl`
+    # por subproceso y el PDF frenaban el loop entero mientras duraban; y
+    # `mp-status` se consulta cada pocos segundos mientras el cliente escanea.
+    # Como `def` corren en el threadpool. Lo asincrónico de verdad
+    # —MercadoPago, y `facturar_venta`, que es async sólo en los bordes de
+    # red— va con `asyncio.run` en un loop propio de ese hilo: lo sincrónico
+    # de adentro bloquea a ese hilo y a nadie más.
+
     @router.post("/{vid}/facturar")
-    async def facturar(vid: int, user: dict = Depends(usuario_actual)):
+    def facturar(vid: int, user: dict = Depends(usuario_actual)):
         """Emite la factura de la venta y las vincula. Es el mismo camino que
         usa el webhook con la automática prendida, así que sirve también para
         reintentar una venta cuyo CAE falló. Idempotente."""
         try:
-            factura = await facturar_venta(ventas, vid, usuario_id=user.get("id"))
+            factura = asyncio.run(facturar_venta(ventas, vid, usuario_id=user.get("id")))
         except VentaNoFacturable as e:
             raise HTTPException(422, str(e)) from None
         return {"venta": ventas.obtener(vid), "factura": factura}
 
     @router.post("/{vid}/mp-qr")
-    async def venta_mp_qr(vid: int, user: dict = Depends(usuario_actual)):
+    def venta_mp_qr(vid: int, user: dict = Depends(usuario_actual)):
         """Pone el monto de esta venta a cobrar en el QR de la caja.
 
         🔑 **No devuelve ninguna imagen, y no es un olvido.** Es el modelo de
@@ -122,11 +133,11 @@ def build_cobro_de_ventas_router(
 
         referencia = f"venta-{vid}"
         try:
-            resultado = await mp.crear_orden_qr(
+            resultado = asyncio.run(mp.crear_orden_qr(
                 user_id=user_id, pos_id=pos_id, access_token=access_token,
                 external_reference=referencia, titulo=f"Venta {venta['numero']}",
                 items=venta["items"], total=venta["total"],
-            )
+            ))
         except Exception as e:
             raise HTTPException(502, f"MercadoPago rechazó la orden: {e}") from None
 
@@ -140,7 +151,7 @@ def build_cobro_de_ventas_router(
         return {"ok": True, "total": venta["total"], "pos_id": pos_id}
 
     @router.get("/{vid}/mp-status")
-    async def venta_mp_status(vid: int, user: dict = Depends(usuario_actual)):
+    def venta_mp_status(vid: int, user: dict = Depends(usuario_actual)):
         """¿Ya entró la plata del QR de esta venta?
 
         Es un GET **con efectos**: cuando MercadoPago dice `approved`, acredita
@@ -158,7 +169,7 @@ def build_cobro_de_ventas_router(
             # CAE la primera vez.
             ventas.acreditar(vid, venta["mp_payment_id"], usuario_id)
             factura_id = (venta.get("factura_id")
-                          or await facturar_si_esta_prendida(ventas, vid))
+                          or asyncio.run(facturar_si_esta_prendida(ventas, vid)))
             return {"status": "approved", "payment_id": venta["mp_payment_id"],
                     "factura_id": factura_id}
 
@@ -168,7 +179,7 @@ def build_cobro_de_ventas_router(
             raise HTTPException(400, "Access Token de MercadoPago no configurado.")
 
         try:
-            pago = await mp.buscar_pago_por_referencia(f"venta-{vid}", access_token)
+            pago = asyncio.run(mp.buscar_pago_por_referencia(f"venta-{vid}", access_token))
         except Exception as e:
             raise HTTPException(502, f"Sin respuesta de MercadoPago: {e}") from None
 
@@ -186,7 +197,7 @@ def build_cobro_de_ventas_router(
         # 🔴 Acá entra la plata a la caja, y no antes.
         ventas.acreditar(vid, payment_id, usuario_id)
         ventas.sellar_referencia_mp(vid, payment_id)
-        factura_id = await facturar_si_esta_prendida(ventas, vid, cfg)
+        factura_id = asyncio.run(facturar_si_esta_prendida(ventas, vid, cfg))
         return {"status": "approved", "payment_id": payment_id, "factura_id": factura_id}
 
     return router

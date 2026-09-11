@@ -108,7 +108,12 @@ def build_empresa_admin_router(*, prefix: str = "/api/config") -> APIRouter:
         return _solo_empresa(config_manager.load())
 
     @router.post("/empresa/logo")
-    async def subir_logo(logo: UploadFile = File(...)):
+    def subir_logo(logo: UploadFile = File(...)):
+        # `def` y no `async def`: todo lo de acá es disco —borrar los logos
+        # viejos, escribir el nuevo, `config.json`— y con un solo proceso de
+        # uvicorn frenaba el loop mientras duraba. Como `def` corre en el
+        # threadpool, y el archivo subido se lee de su `SpooledTemporaryFile`
+        # directo, sin `await`.
         ext = os.path.splitext(logo.filename or "")[1].lower()
         if ext not in _EXTS_LOGO:
             raise HTTPException(422, "El logo debe ser PNG o JPG.")
@@ -128,7 +133,7 @@ def build_empresa_admin_router(*, prefix: str = "/api/config") -> APIRouter:
 
         destino = os.path.join(config_manager.LOGO_DIR, f"logo{ext}")
         with open(destino, "wb") as f:
-            f.write(await logo.read())
+            f.write(logo.file.read())
 
         cfg = config_manager.load()
         cfg["logo_path"] = destino
@@ -222,10 +227,16 @@ def build_backup_router(
         return resumen_resguardo(backups_dir)
 
     @router.post("/restore")
-    async def restaurar(backup_file: UploadFile = File(...)):
+    def restaurar(backup_file: UploadFile = File(...)):
+        # 🔴 `def` y no `async def`: restaurar es descomprimir el zip, cerrar
+        # las conexiones y reemplazar la base —segundos de trabajo
+        # sincrónico—, y con un solo proceso de uvicorn la instancia entera no
+        # le contestaba a nadie mientras tanto. Como `def` corre en el
+        # threadpool; el archivo se lee de su `SpooledTemporaryFile`, sin
+        # `await`.
         try:
             return restaurar_backup(
-                _resolver(), await backup_file.read(), backups_dir,
+                _resolver(), backup_file.file.read(), backups_dir,
                 cerrar_conexiones=cerrar_conexiones,
                 reabrir_conexiones=reabrir_conexiones,
             )

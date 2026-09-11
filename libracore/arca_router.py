@@ -53,6 +53,7 @@ el primero en correr definiría dónde. Se lee adentro de cada endpoint.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable
@@ -361,8 +362,16 @@ def build_arca_router(
             )
         return _ambiente_de(cfg, pedido)
 
+    # 🔴 Subir el certificado, la clave y `probar` son `def` y no `async def`:
+    # uvicorn corre con UN solo proceso, y las tres van a la base y al disco
+    # —`probar` además firma el TRA con `openssl` por subproceso—. Como
+    # corrutinas frenaban el loop entero mientras duraban. Como `def` corren
+    # en el threadpool: el archivo subido se lee de su `SpooledTemporaryFile`
+    # sin `await`, y la autenticación va con `asyncio.run` en un loop propio
+    # del hilo.
+
     @router.post("/certificado")
-    async def subir_certificado(archivo: UploadFile = File(...), empresa: str = "",
+    def subir_certificado(archivo: UploadFile = File(...), empresa: str = "",
                                 ambiente: str = "",
                                 usuario: Any = Depends(identidad)):
         """Sube el `.crt` **del ambiente indicado**. Se valida antes de escribirlo.
@@ -375,7 +384,7 @@ def build_arca_router(
         archivo**: hasta el 2026-09-01 los dos iban a `certificado.crt` y subir
         el de homologación pisaba el de producción.
         """
-        contenido = await archivo.read()
+        contenido = archivo.file.read()
         try:
             datos = arca_certificados.leer_certificado(contenido)
         except arca_certificados.ArchivoInvalido as e:
@@ -411,10 +420,10 @@ def build_arca_router(
                 "dias_para_vencer": datos.dias_para_vencer}
 
     @router.post("/clave")
-    async def subir_clave(archivo: UploadFile = File(...), empresa: str = "",
+    def subir_clave(archivo: UploadFile = File(...), empresa: str = "",
                           ambiente: str = "", usuario: Any = Depends(identidad)):
         """Sube el `.key` del ambiente indicado. Mismas validaciones, del otro lado."""
-        contenido = await archivo.read()
+        contenido = archivo.file.read()
         try:
             arca_certificados.leer_clave(contenido)
         except arca_certificados.ArchivoInvalido as e:
@@ -525,7 +534,7 @@ def build_arca_router(
         return arca_wsaa.info_certificado(cert_path)
 
     @router.post("/probar")
-    async def probar(empresa: str = ""):
+    def probar(empresa: str = ""):
         """Autentica de verdad contra WSAA. Es el único chequeo que dice que el
         certificado además está **habilitado para el servicio** en ARCA.
 
@@ -544,7 +553,7 @@ def build_arca_router(
 
         ambiente = cfg.get("ambiente", "homologacion")
         try:
-            await arca_wsaa.autenticar(cert_path, clave_path, ambiente)
+            asyncio.run(arca_wsaa.autenticar(cert_path, clave_path, ambiente))
         except Exception as e:
             # El texto de ARCA va tal cual: es el que dice si el problema es el
             # certificado, la relación con el servicio o la hora del servidor.
