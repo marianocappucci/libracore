@@ -6,6 +6,7 @@ tests/admin/test_services.py. Docker/subprocess se mockean: crear_cliente()
 no debe tocar Docker real.
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1598,3 +1599,92 @@ def test_si_borrar_la_casilla_falla_el_error_que_llega_es_el_del_alta(
     with pytest.raises(RuntimeError, match="la causa verdadera"):
         nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
                          setup_npm=False)
+
+
+# — copia externa: el `env_file` con las credenciales OAuth —
+
+
+def _app(cfg, slug="cliente-uno"):
+    return yaml.safe_load(_compose(cfg, slug))["services"][f"testprod-{slug}"]
+
+
+def test_con_el_archivo_de_oauth_la_app_lo_carga_antes_de_environment(
+        cfg, tmp_path, monkeypatch):
+    """Sin estas variables `resguardo_enlace` no ofrece Drive ni Dropbox, y no
+    da error: la instancia nueva quedaba sin copia externa en silencio. El
+    2026-09-11 se cargo a mano en las 12 instancias existentes y esta plantilla
+    seguia sin tenerlo.
+
+    Sobre el YAML resuelto y no por substring: lo que importa es que el
+    `env_file` sea del servicio de la APP, y un `in texto` no distingue de que
+    servicio es cada linea.
+    """
+    secretos = tmp_path / "resguardo_oauth.env"
+    secretos.write_text("RESGUARDO_GDRIVE_CLIENT_ID=no-se-copia\n")
+    monkeypatch.setattr(nc, "RESGUARDO_OAUTH_ENV", secretos)
+
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    app = _app(cfg)
+    assert app["env_file"] == [str(secretos)]
+    claves = list(app)
+    assert claves.index("env_file") == claves.index("environment") - 1, claves
+    # El compose NOMBRA el archivo; los valores se quedan en el host.
+    assert "no-se-copia" not in _compose(cfg)
+
+
+def test_sin_el_archivo_de_oauth_el_compose_no_lo_nombra(cfg, tmp_path, monkeypatch):
+    """Un `env_file` a un archivo ausente hace fallar `docker compose up`: en
+    un host sin las credenciales, el alta moriria entera por una funcion
+    opcional."""
+    monkeypatch.setattr(nc, "RESGUARDO_OAUTH_ENV", tmp_path / "no-existe.env")
+
+    lineas = []
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno",
+                     setup_npm=False, log=lineas.append)
+
+    assert "env_file" not in _compose(cfg)
+    assert "DATA_DIR=/app/data" in _app(cfg)["environment"]
+    # Y lo avisa: es la unica pista de que la instancia no va a ofrecer Drive
+    # ni Dropbox.
+    assert any("[WARN]" in ln and "no-existe.env" in ln for ln in lineas), lineas
+
+
+def test_el_env_file_de_oauth_no_va_al_sidecar(cfg_pg, tmp_path, monkeypatch):
+    """Las credenciales son de la app; el PostgreSQL de la instancia no tiene
+    por que verlas."""
+    secretos = tmp_path / "resguardo_oauth.env"
+    secretos.write_text("")
+    monkeypatch.setattr(nc, "RESGUARDO_OAUTH_ENV", secretos)
+    monkeypatch.setattr(nc, "network_exists", lambda *a, **k: True)
+
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+
+    doc = yaml.safe_load(_compose(cfg_pg))
+    assert doc["services"]["testprod-cliente-uno"]["env_file"] == [str(secretos)]
+    assert "env_file" not in doc["services"]["testprod-cliente-uno-postgres"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root atraviesa cualquier permiso")
+def test_un_archivo_de_oauth_que_no_se_puede_leer_no_tumba_el_alta(
+        cfg, tmp_path, monkeypatch):
+    """El caso real de cualquier usuario que no sea root: `/root/secretos` no
+    se puede atravesar. `Path.exists()` en Python 3.12 LANZA `PermissionError`
+    ahi en vez de devolver `False` — la primera version de este cambio usaba
+    `exists()` y puso 69 tests en rojo. El alta tiene que seguir, sin
+    `env_file`: el `docker compose` que lo leeria corre con este mismo usuario.
+    """
+    secretos_dir = tmp_path / "secretos"
+    secretos_dir.mkdir()
+    (secretos_dir / "resguardo_oauth.env").write_text("")
+    secretos_dir.chmod(0o000)
+    monkeypatch.setattr(nc, "RESGUARDO_OAUTH_ENV", secretos_dir / "resguardo_oauth.env")
+    try:
+        lineas = []
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno",
+                         setup_npm=False, log=lineas.append)
+    finally:
+        secretos_dir.chmod(0o700)
+
+    assert "env_file" not in _compose(cfg)
+    assert any("[WARN]" in ln and "resguardo_oauth.env" in ln for ln in lineas), lineas
