@@ -188,6 +188,47 @@ def test_editar_cliente_actualiza_metadata(fake_scripts):
     assert c["domain"] == "nuevo.dominio.com"
 
 
+def _npm_falso(fake_scripts, monkeypatch):
+    """Prende NPM en el `panel_admin` falso y anota lo que se le pide crear."""
+    creados = []
+
+    class FakeNPM:
+        def get_proxy_host_by_domain(self, domain):
+            return None
+
+        def create_proxy_host(self, **kwargs):
+            creados.append(kwargs)
+            return {"id": 1}
+
+    pa = fake_scripts["pa"]
+    monkeypatch.setattr(pa, "_NPM_AVAILABLE", True, raising=False)
+    monkeypatch.setattr(pa, "client_from_config", lambda: FakeNPM(), raising=False)
+    monkeypatch.setattr(pa, "le_email_from_config", lambda: "ssl@test.com", raising=False)
+    # La puerta de enlace de la config: el proxy NO tiene que salir de acá.
+    monkeypatch.setattr(pa, "forward_host_from_config", lambda: "10.0.0.1", raising=False)
+    return creados
+
+
+def test_editar_dominio_crea_el_proxy_por_nombre_de_contenedor(fake_scripts, monkeypatch):
+    """🔑 Por nombre de contenedor y el puerto de la app (NPM y la instancia
+    comparten `stack_stack-net`), no por la puerta de enlace más el puerto del
+    host. El `cliente.json` del doble no trae `container`: el nombre sale de
+    `find_client`, que es el respaldo para una instancia vieja."""
+    creados = _npm_falso(fake_scripts, monkeypatch)
+    fake_scripts["mkclient"]("Cliente Cinco", "cliente-cinco", domain="", port=8089)
+    services.editar_cliente("cliente-cinco", "Cliente Cinco", "cinco.dominio.com")
+    assert len(creados) == 1
+    assert creados[0]["domain"] == "cinco.dominio.com"
+    assert creados[0]["forward_host"] == "cliente-cinco"
+    assert creados[0]["forward_port"] == 8000
+
+
+def test_sin_nombre_de_contenedor_no_se_inventa_un_destino(fake_scripts, monkeypatch):
+    creados = _npm_falso(fake_scripts, monkeypatch)
+    assert services._npm_crear_proxy("x.dominio.com", "") is False
+    assert creados == []
+
+
 def test_set_plan_aplica_y_persiste(fake_scripts):
     fake_scripts["mkclient"]("Cliente Tres", "cliente-tres")
     services.set_plan("cliente-tres", "pro")

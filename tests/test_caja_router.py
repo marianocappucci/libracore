@@ -73,6 +73,37 @@ def test_movimientos_de_caja(client):
     assert len(listado["movimientos"]) == 2 and listado["resumen"]["ingresos"] == 0.0
 
 
+def test_anular_marca_la_fila_y_no_resta_dos_veces(client):
+    """Anular no borra: la fila queda marcada y el arqueo deja de contarla.
+
+    Viene de `tests/test_anular_movimiento_caja.py` de Contalibra y Restolibra,
+    que lo tenian escrito dos veces contra este mismo router. De ahi quedan
+    las dos mitades que el test de arriba no fija:
+
+    - la marca: `anulado == 1` en la fila. Una lista que esconde los anulados
+      no se distingue de una que los borra, que es lo que se vino a arreglar
+      el 2026-08-28;
+    - la idempotencia: un doble click en el boton no puede descontar dos
+      veces, ni --lo que hace un `anulado = 1 - anulado`-- volver a sumar lo
+      que se dio de baja.
+
+    El otro movimiento es el control del total: sin el, "ingresos == 0" pasaria
+    igual con un resumen que no suma nada.
+    """
+    mid = client.post("/api/caja", json={"fecha": HOY, "tipo": "ingreso", "concepto": "Se anula", "monto": 3000.0, "medio_pago": "efectivo"}).json()["id"]
+    client.post("/api/caja", json={"fecha": HOY, "tipo": "ingreso", "concepto": "Queda", "monto": 1000.0, "medio_pago": "efectivo"})
+    assert client.get(f"/api/caja?desde={HOY}&hasta={HOY}").json()["resumen"]["ingresos"] == 4000.0, "el control del total"
+
+    client.delete(f"/api/caja/{mid}")
+    client.delete(f"/api/caja/{mid}")
+
+    listado = client.get(f"/api/caja?desde={HOY}&hasta={HOY}").json()
+    filas = [m for m in listado["movimientos"] if m["id"] == mid]
+    assert len(filas) == 1, "el movimiento anulado tiene que seguir en la lista, una sola vez"
+    assert filas[0]["anulado"] == 1
+    assert listado["resumen"]["ingresos"] == 1000.0, "el arqueo cuenta lo que hay en el cajon, sin el anulado"
+
+
 @pytest.mark.parametrize("cuerpo", [
     {"fecha": HOY, "tipo": "ingreso", "concepto": "  ", "monto": 10},
     {"fecha": HOY, "tipo": "prestamo", "concepto": "X", "monto": 10},

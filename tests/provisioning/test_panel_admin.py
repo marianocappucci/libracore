@@ -208,6 +208,10 @@ def test_cmd_npm_crear_usa_dominio_del_cliente(cfg, monkeypatch):
 
     pa.cmd_npm_crear("cliente-uno")
     assert created["domain"] == "cliente-uno.test"
+    # Por nombre de contenedor y el puerto de la app, no por la puerta de enlace
+    # de la config ("10.0.0.1") más el puerto del host (9000 en `_mkclient`).
+    assert created["forward_host"] == "testprod-cliente-uno"
+    assert created["forward_port"] == 8000
 
 
 def test_menu_incluye_nombre_del_producto(cfg):
