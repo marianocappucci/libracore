@@ -1400,8 +1400,12 @@ def cmd_npm_crear(slug: str):
     npm, npm_mod = _npm_client()
     if not npm:
         return
-    fwd_host = npm_mod.forward_host_from_config()
-    port     = c.get("port", cfg.base_port)
+    # Por nombre de contenedor, igual que el alta (`nuevo_cliente._setup_npm_proxy`):
+    # NPM y la instancia comparten `stack_stack-net`. No el `forward_host` del
+    # `.npm_config.json` más el puerto publicado en el host.
+    from .nuevo_cliente import PUERTO_DE_LA_APP
+    fwd_host = c.get("container") or f"{cfg.container_prefix}-{slug}"
+    port     = PUERTO_DE_LA_APP
     le_email = npm_mod.le_email_from_config()
     print(f"[*] Creando proxy: {domain} → {fwd_host}:{port} ...")
     try:
