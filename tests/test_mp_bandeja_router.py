@@ -371,3 +371,54 @@ def test_la_siembra_es_idempotente(armar):
     datos = cliente.get("/api/mp-bandeja", headers=ADMIN).json()
     assert len(datos["pendientes"]) == 1
     assert len(datos["transferencias"]) == 1, "las dos solapas, no una"
+
+
+# Lo que sigue viene de `tests/test_mp_bandeja_demo.py` de Contalibra y
+# Restolibra, que lo tenian escrito dos veces --byte a byte-- sobre el armado
+# de cuatro lineas que cada producto hace de este router. Lo que prueban es de
+# aca: la decision de armar o no la ruta, y lo que la siembra deja escrito.
+#
+# 🔑 Los tres primeros van por `DEMO_MODE` y NO por `permitir_siembra_de_demo`,
+# a proposito: los productos no pasan el parametro, asi que el camino que corre
+# en la instancia de un cliente es el del entorno.
+
+ITEMS_DE_DEMO = [
+    {"mp_payment_id": "test-1", "monto": 1000, "payer_name": "Alguien", "clase": "pago"},
+    {"mp_payment_id": "test-2", "monto": 2000, "payer_name": "Otro", "clase": "transferencia"},
+]
+
+
+def test_sin_demo_mode_la_siembra_ni_aparece_en_el_openapi(armar):
+    """Que de 404 podria ser un `if` adentro del endpoint; que no este en el
+    openapi prueba que el router directamente no la registro."""
+    rutas = armar().get("/openapi.json").json()["paths"]
+    assert "/api/mp-bandeja" in rutas, "el control: el openapi trae las rutas del router"
+    assert not any("demo/sembrar" in r for r in rutas)
+
+
+def test_con_demo_mode_la_siembra_existe(armar, monkeypatch):
+    """La otra mitad, por el mismo camino: sin esta, "sin DEMO_MODE no existe"
+    pasaria igual con una ruta que no se arma nunca."""
+    monkeypatch.setenv("DEMO_MODE", "1")
+    cliente = armar()
+    r = cliente.post("/api/mp-bandeja/demo/sembrar", headers=ADMIN, json=ITEMS_DE_DEMO)
+    assert r.status_code == 200, r.text
+    assert r.json()["creados"] == 2
+
+
+def test_un_valor_raro_de_demo_mode_no_la_enciende(armar, monkeypatch):
+    """`DEMO_MODE=0` es lo que escribiria alguien para apagarla."""
+    monkeypatch.setenv("DEMO_MODE", "0")
+    assert armar().post("/api/mp-bandeja/demo/sembrar",
+                        headers=ADMIN, json=ITEMS_DE_DEMO).status_code == 404
+
+
+def test_lo_sembrado_queda_pendiente_y_no_facturado(armar):
+    """Lo que la pantalla tiene que mostrar es la accion disponible --el boton
+    de facturar--, no un historial cerrado."""
+    cliente = armar(permitir_siembra_de_demo=True)
+    cliente.post("/api/mp-bandeja/demo/sembrar", headers=ADMIN, json=ITEMS_DE_DEMO)
+
+    bandeja = cliente.get("/api/mp-bandeja", headers=ADMIN).json()
+    assert [p["estado_factura"] for p in bandeja["pendientes"]] == ["pendiente"]
+    assert bandeja["historial"] == []

@@ -271,7 +271,11 @@ def test_crear_cliente_con_dominio_y_npm_crea_proxy(cfg, monkeypatch):
                             domain="cliente-cuatro.test", setup_npm=True)
     assert info["proxy_ok"] is True
     assert created["domain"] == "cliente-cuatro.test"
-    assert created["forward_host"] == "10.0.0.1"
+    # 🔑 Por nombre de contenedor y el puerto de la app, no por la puerta de enlace
+    # del `.npm_config.json` ("10.0.0.1" acá) más el puerto publicado en el host.
+    assert created["forward_host"] == "testprod-cliente-cuatro"
+    assert created["forward_port"] == nc.PUERTO_DE_LA_APP == 8000
+    assert created["forward_host"] != npm_mod.forward_host_from_config()
 
 
 def _build_cmd(calls):

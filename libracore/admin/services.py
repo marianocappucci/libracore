@@ -219,7 +219,9 @@ def editar_cliente(slug: str, nombre: str, domain: str) -> dict:
 
     # Si cambió el dominio, (re)crear el proxy NPM al nuevo dominio.
     if meta["domain"] and meta["domain"] != dominio_prev:
-        _npm_crear_proxy(meta["domain"], meta.get("port", 0))
+        # El contenedor sale del `cliente.json` (lo escribe el alta) y, si una
+        # instancia vieja no lo tiene, de lo que resuelve `find_client`.
+        _npm_crear_proxy(meta["domain"], meta.get("container") or c.get("container", ""))
     return meta
 
 
@@ -470,17 +472,23 @@ def _npm():
         return None
 
 
-def _npm_crear_proxy(domain: str, port) -> bool | None:
+def _npm_crear_proxy(domain: str, container: str) -> bool | None:
+    """El proxy de la instancia **por nombre de contenedor** y el puerto de la app,
+    igual que el alta (`nuevo_cliente._setup_npm_proxy`). Sin nombre de contenedor
+    no se inventa un destino: devuelve `False` y el dominio queda sin proxy."""
     npm = _npm()
     if not npm:
         return None
+    if not container:
+        return False
     pa = _pa()
+    from libracore.provisioning.nuevo_cliente import PUERTO_DE_LA_APP
     try:
         if npm.get_proxy_host_by_domain(domain):
             return True
         npm.create_proxy_host(
-            domain=domain, forward_host=pa.forward_host_from_config(),
-            forward_port=int(port or 0), ssl=True, le_email=pa.le_email_from_config(),
+            domain=domain, forward_host=container,
+            forward_port=PUERTO_DE_LA_APP, ssl=True, le_email=pa.le_email_from_config(),
         )
         return True
     except Exception:
