@@ -208,8 +208,23 @@ def network_exists(name: str) -> bool:
                           capture_output=True).returncode == 0
 
 
-def _setup_npm_proxy(npm, domain: str, port: int):
-    fwd_host = forward_host_from_config()
+#: El puerto de la app ADENTRO del contenedor de la instancia (la plantilla publica
+#: `"{port}:8000"`). Es el que usa NPM al llegar por nombre.
+PUERTO_DE_LA_APP = 8000
+
+
+def _setup_npm_proxy(npm, domain: str, container: str):
+    """Crea el proxy host de la instancia **por nombre de contenedor**.
+
+    NPM y la instancia comparten `stack_stack-net`, así que el proxy llega a
+    `<contenedor>:8000` por el DNS de Docker. Hasta 2026-09 se armaba con el
+    `forward_host` del `.npm_config.json` (la puerta de enlace, `172.18.0.1`)
+    más el puerto publicado en el host: eso ataba el sitio a un puerto abierto
+    en todas las interfaces, y dos instancias nacieron así (`dev.medlibra` y
+    `lagrace`, repuntadas a mano el 2026-09-12). `forward_host_from_config`
+    queda sólo para compatibilidad de `npm_setup`; el alta ya no lo usa.
+    """
+    fwd_host, port = container, PUERTO_DE_LA_APP
     le_email = le_email_from_config()
     print(f"\n[*] Creando proxy en NPM: {domain} → {fwd_host}:{port} (SSL Let's Encrypt) ...")
     npm_mod = _npm_api()
@@ -1046,7 +1061,7 @@ services:
             npm = client_from_config()
             if npm:
                 try:
-                    _setup_npm_proxy(npm, domain, port)
+                    _setup_npm_proxy(npm, domain, container)
                     proxy_ok = True
                 except Exception as e:  # noqa: BLE001
                     log(f"[ERROR] NPM: {e}")
