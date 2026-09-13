@@ -114,6 +114,10 @@ def test_crear_cliente_genera_compose_con_datos_del_producto(cfg):
     compose_text = (cfg.clientes_dir / "cliente-uno" / "docker-compose.yml").read_text()
     assert "container_name: testprod-cliente-uno" in compose_text
     assert "ADMIN_PASSWORD=secreto123" in compose_text
+    # 🔑 El puerto sólo en localhost: NPM llega por nombre de contenedor, y publicar en
+    # todas las interfaces dejaba la app alcanzable por la IP pública sin pasar por NPM.
+    assert '- "127.0.0.1:9000:8000"' in compose_text
+    assert '- "9000:8000"' not in compose_text
 
     meta = json.loads((cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text())
     assert meta["container"] == "testprod-cliente-uno"
@@ -361,6 +365,14 @@ def test_used_ports_incluye_contenedores_de_otros_productos_parados(monkeypatch)
     con el puerto apenas alguien lo arranca — sale de `HostConfig.PortBindings`."""
     _fake_docker_host(monkeypatch, ps_ports="", port_bindings="8084 8085 \n")
     assert nc.used_ports() == {8084, 8085}
+
+
+def test_used_ports_cuenta_un_puerto_atado_a_localhost(monkeypatch):
+    """Desde 2026-09 las instancias publican `127.0.0.1:<puerto>:8000`. El puerto sigue
+    tomado en el host: si `used_ports()` no lo viera, el alta lo elegiría de nuevo y el
+    contenedor nuevo moriría con `port is already allocated`."""
+    _fake_docker_host(monkeypatch, ps_ports="127.0.0.1:8089->8000/tcp\n")
+    assert 8089 in nc.used_ports()
 
 
 def test_used_ports_expande_rangos(monkeypatch):

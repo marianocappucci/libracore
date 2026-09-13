@@ -928,7 +928,7 @@ services:
       retries: 3
       start_period: 10s
     ports:
-      - "{port}:8000"
+      - "127.0.0.1:{port}:8000"
 {pg_depends}    volumes:
       - ./data:/app/data
 {resguardo_env}    environment:
