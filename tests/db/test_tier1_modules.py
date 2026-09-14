@@ -10,6 +10,7 @@ import pytest
 from libracore.db import (
     arca_config,
     caja,
+    cierre_diario,
     core,
     cuenta_corriente,
     dashboard,
@@ -31,6 +32,9 @@ def conn(tmp_path):
     core.configure(db_path=str(tmp_path / "tier1_test.db"))
     c = core.get_connection()
     init_core_schema(c)
+    # `logs.get_actividad_count()` con sus partes por default lee
+    # `cierres_diarios` desde esta versión — ver `cierre_diario.crear_tablas`.
+    cierre_diario.crear_tablas(c)
     c.commit()
     yield c
     c.close()

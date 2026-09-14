@@ -16,7 +16,8 @@ import contextlib
 
 from libracore.db.core import get_connection
 
-_LOG_TIPOS = ("venta", "caja", "stock", "factura", "turno", "remito", "presupuesto")
+_LOG_TIPOS = ("venta", "caja", "stock", "factura", "turno", "remito", "presupuesto",
+             "cierre_diario")
 
 # Cada parte es un SELECT con las MISMAS nueve columnas, en este orden:
 # ts, fecha, tipo, descripcion, monto, usuario, turno_id, ref_id, ref_tabla.
@@ -150,15 +151,34 @@ PARTE_PRESUPUESTOS = """
         LEFT JOIN usuarios u ON u.id = p.usuario_id
 """
 
-#: Las cinco partes que son de este motor y no dependen de dónde viven las
+PARTE_CIERRES_DIARIOS = """
+        SELECT
+            cd.created_at AS ts,
+            cd.fecha,
+            'cierre_diario' AS tipo,
+            'Cierre diario #' || cd.numero ||
+              CASE WHEN cd.diferencia_total <> 0
+                   THEN ' — diferencia $' || cd.diferencia_total
+                   ELSE '' END AS descripcion,
+            cd.monto_declarado_total AS monto,
+            COALESCE(u.nombre, '') AS usuario,
+            NULL          AS turno_id,
+            cd.id         AS ref_id,
+            'cierres_diarios' AS ref_tabla
+        FROM cierres_diarios cd
+        LEFT JOIN usuarios u ON u.id = cd.usuario_id
+"""
+
+#: Las seis partes que son de este motor y no dependen de dónde viven las
 #: ventas ni el stock. Un consumidor cuyas ventas están en LibraCommerce arma
 #: `PARTES_CORE + (sus dos partes,)`.
-PARTES_CORE = (PARTE_CAJA, PARTE_FACTURAS, PARTE_TURNOS, PARTE_REMITOS, PARTE_PRESUPUESTOS)
+PARTES_CORE = (PARTE_CAJA, PARTE_FACTURAS, PARTE_TURNOS, PARTE_REMITOS, PARTE_PRESUPUESTOS,
+              PARTE_CIERRES_DIARIOS)
 
-#: Las siete de siempre: las de arriba más ventas y stock sobre las tablas de
+#: Las ocho de siempre: las de arriba más ventas y stock sobre las tablas de
 #: este motor. Es el default, y lo que usan los productos sin LibraCommerce.
 PARTES_LIBRACORE = (PARTE_VENTAS, PARTE_CAJA, PARTE_STOCK, PARTE_FACTURAS, PARTE_TURNOS,
-                    PARTE_REMITOS, PARTE_PRESUPUESTOS)
+                    PARTE_REMITOS, PARTE_PRESUPUESTOS, PARTE_CIERRES_DIARIOS)
 
 
 def armar_consulta(partes, tipos=None, usuario_id=None, turno_id=None,
@@ -202,17 +222,43 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
     Devuelve una línea de tiempo unificada de todos los movimientos del sistema.
     Cada fila: {fecha, tipo, descripcion, monto, usuario, turno_id, ref_id, ref_tabla}
 
-    `partes` son los SELECT del `UNION ALL` (default: las siete de este motor);
+    `partes` son los SELECT del `UNION ALL` (default: las ocho de este motor);
     `conn` permite correrla dentro de una conexión ya abierta.
+
+    🔴 **La parte de cierres diarios se saca sola si su tabla todavía no
+    existe.** La crea la migración `0009_cierre_diario`, y el deploy de un
+    `-dev` no corre migraciones: sin esto, subir el pin a esta versión sin
+    migrar rompía la línea de tiempo ENTERA en todos los consumidores (un
+    `UNION ALL` con una tabla que no existe no devuelve nada), no sólo la
+    fila del cierre. Con la tabla ausente no hay cierres que mostrar, así que
+    sacar la parte da exactamente el resultado correcto.
     """
-    sql, params_final = armar_consulta(
-        partes or PARTES_LIBRACORE, tipos=tipos, usuario_id=usuario_id, turno_id=turno_id,
-        desde=desde, hasta=hasta, limit=limit, offset=offset,
-    )
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
+        partes = tuple(partes or PARTES_LIBRACORE)
+        if PARTE_CIERRES_DIARIOS in partes and not _tabla_existe(c, "cierres_diarios"):
+            partes = tuple(p for p in partes if p is not PARTE_CIERRES_DIARIOS)
+        sql, params_final = armar_consulta(
+            partes, tipos=tipos, usuario_id=usuario_id, turno_id=turno_id,
+            desde=desde, hasta=hasta, limit=limit, offset=offset,
+        )
         rows = c.execute(sql, params_final).fetchall()
     return [dict(r) for r in rows]
+
+
+def _tabla_existe(conn, nombre: str) -> bool:
+    """Si la tabla `nombre` existe en la base de `conn`. Sin tocar la tabla:
+    en PostgreSQL un `SELECT` contra una tabla ausente aborta la transacción,
+    y esto corre adentro de la conexión del llamador."""
+    from . import core
+
+    if core.is_postgres():
+        fila = conn.execute("SELECT to_regclass(?) IS NOT NULL", (nombre,)).fetchone()
+        return bool(fila[0])
+    fila = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (nombre,)
+    ).fetchone()
+    return fila is not None
 
 
 def get_actividad_count(tipos=None, usuario_id=None, turno_id=None,

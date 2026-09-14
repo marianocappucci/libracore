@@ -6,6 +6,7 @@ wiki/entities/libracore.md).
 """
 import contextlib
 
+from libracore.db import cierre_diario
 from libracore.db.core import Conexion, _ar_now, get_connection
 
 
@@ -16,9 +17,20 @@ def create_turno(usuario_id: int, monto_inicial: float, notas: str = "",
     🔑 Opcional a propósito: los productos que no tienen cajas múltiples abren el
     turno suelto, como siempre. El que sí las tiene guarda la caja acá y no en
     cada movimiento, para que el arqueo del turno sea el de ESE mostrador.
+
+    🔴 **Guarda de cierre diario, acá y no en cada producto.** Éste es el
+    camino común: VentaLibra y LibraClub abren turnos llamando a esta función
+    directamente, así que la guarda los cubre a los dos sin que ninguno haya
+    tenido que tocar su alta de turnos. Para un producto sin sucursales
+    (Contalibra, Restolibra) `cierre_diario.dia_cerrado()` da siempre `False`
+    —esa tabla queda vacía si nadie llama a `cerrar_dia()`— así que no cambia
+    nada. Levanta `cierre_diario.DiaCerradoError` si el día operativo de la
+    sucursal de esa caja ya se cerró.
     """
     apertura = _ar_now()
     with get_connection() as conn:
+        sucursal_id = cierre_diario.sucursal_de_caja(caja_id, conn=conn) if caja_id is not None else None
+        cierre_diario.verificar_dia_abierto(apertura[:10], sucursal_id, conn=conn)
         cur = conn.execute(
             """INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial, notas, caja_id)
                VALUES (?,?,?,?,?)""",
