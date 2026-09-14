@@ -412,6 +412,22 @@ def test_listar_cierres_filtra_por_sucursal(conn):
     assert len(cd.listar_cierres(todas=True)) == 3
 
 
+def test_el_listado_trae_quien_cerro(conn):
+    """El listado es donde se lee "quién cerró": trae `cerrado_por_nombre`,
+    igual que `get_cierre()`, así ningún producto tiene que resolverlo aparte."""
+    admin = _usuario(conn, "admin1")
+    caja1 = _caja(conn, "Centro", sucursal_id=1)
+    _turno(conn, admin, "2026-09-13 08:00:00", "2026-09-13 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=caja1)
+    cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+
+    assert [c["cerrado_por_nombre"] for c in cd.listar_cierres(sucursal_id=1)] == ["Admin1"]
+    assert [c["cerrado_por_nombre"] for c in cd.listar_cierres(todas=True)] == ["Admin1"]
+    # Y sigue trayendo la cabecera entera.
+    assert cd.listar_cierres(sucursal_id=1)[0]["numero"] == 1
+
+
 def test_get_cierre_turno_para_reimprimir(conn):
     admin = _usuario(conn, "admin1")
     cajero = _usuario(conn, "cajero1")
