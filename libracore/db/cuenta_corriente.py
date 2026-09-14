@@ -28,6 +28,23 @@ alcanza. Para ese caso está `cc_debitos`: el producto registra el débito
 explícitamente al confirmar la venta fiada, con la misma forma que un
 `cc_pago` pero del otro signo. La tabla queda vacía en los productos que no
 la usan, así que suma cero y su saldo no cambia.
+
+## Cuando el id del party no es el id del cliente
+
+`VENTAS_LIBRACOMMERCE` asume `clients.id == parties.id` — invariante real en
+Contalibra y Restolibra porque `clients._espejar_party` crea el party con el
+MISMO id al dar de alta. En VentaLibra ese invariante no existe: sus
+clientes se dan de alta como party primero (autoincremento propio, y los
+proveedores también son parties) y el cliente de LibraCore se enlaza
+después por `clients.external_ref = 'party-<party_id>'` (ver
+`clients.resolver_cliente_externo`). Cruzar por `customer_party_id ==
+clients.id` ahí le pondría la deuda a otra persona, en silencio — medido en
+`ventalibra-dev`: 0 de 3 coinciden en nombre.
+
+Para ese caso está `VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF`: en vez de una
+tabla real, `tabla` es una subconsulta que resuelve el cliente por
+`external_ref` antes de que el resto del módulo la trate como si fuera
+`sales`. Decisión del humano, 2026-09-14.
 """
 import contextlib
 from dataclasses import dataclass
@@ -60,6 +77,20 @@ VENTAS_LIBRACORE = OrigenVentas("ventas", "cliente_id", "fecha", "numero")
 #: Productos con las ventas ya en `sales`, en esta misma base (Contalibra
 #: desde P7, Restolibra desde P8).
 VENTAS_LIBRACOMMERCE = OrigenVentas("sales", "customer_party_id", "occurred_on", "number")
+#: Igual que `VENTAS_LIBRACOMMERCE`, pero para cuando `sales.customer_party_id`
+#: NO coincide con `clients.id` (VentaLibra — ver la sección "Cuando el id del
+#: party no es el id del cliente" arriba). `tabla` es una subconsulta: resuelve
+#: el `clients.id` de cada venta por `external_ref` y expone las columnas con
+#: los mismos nombres que usan `get_cc_saldo`/`get_cc_movimientos`/
+#: `get_clientes_con_saldo_cc`, así que ninguna de las tres necesita saber que
+#: no está leyendo `sales` directamente. Una venta cuyo party no tiene cliente
+#: enlazado queda afuera del INNER JOIN — no rompe, y no le suma a nadie.
+VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF = OrigenVentas(
+    "(SELECT s.id, s.occurred_on, s.number, c.id AS cliente_id "
+    "FROM sales s "
+    "JOIN clients c ON c.external_ref = 'party-' || CAST(s.customer_party_id AS TEXT))",
+    "cliente_id", "occurred_on", "number",
+)
 
 
 def _cuit_de(conn, cliente_id: int) -> str:

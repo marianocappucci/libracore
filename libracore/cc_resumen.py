@@ -22,6 +22,8 @@ import logging
 from libracore import config_manager, email_sender, pdf_generator
 from libracore.db.clients import get_client, get_clients_cc_resumen_auto
 from libracore.db.cuenta_corriente import (
+    VENTAS_LIBRACORE,
+    OrigenVentas,
     get_cc_movimientos_periodo,
     registrar_resumen_enviado,
 )
@@ -105,10 +107,18 @@ def corresponde_enviar(cliente: dict, hoy: datetime.date, cfg: dict) -> bool:
     return True
 
 
-def calcular_periodo(cliente: dict, hoy: datetime.date, frecuencia: str = "") -> dict:
+def calcular_periodo(
+    cliente: dict, hoy: datetime.date, frecuencia: str = "",
+    origen: OrigenVentas = VENTAS_LIBRACORE,
+) -> dict:
     """Rango a informar: desde el día siguiente al último envío (o el arranque
     del ciclo si nunca se envió) hasta hoy. El corte en `hoy` es a propósito:
-    así el saldo final del resumen es el saldo real al momento del envío."""
+    así el saldo final del resumen es el saldo real al momento del envío.
+
+    `origen` dice de qué tabla salen los débitos por venta — mismo parámetro
+    que `cuenta_corriente_router.build_cuenta_corriente_router`, para el
+    producto cuyas ventas viven en LibraCommerce (u otra variante, como
+    `VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF`)."""
     frecuencia = (frecuencia or cliente.get("cc_resumen_frecuencia") or "mensual").strip()
     ultimo = _parse_fecha(cliente.get("cc_resumen_ultimo_envio"))
     if ultimo:
@@ -122,7 +132,7 @@ def calcular_periodo(cliente: dict, hoy: datetime.date, frecuencia: str = "") ->
         desde = (primero - datetime.timedelta(days=1)).replace(day=1)
     if desde > hoy:
         desde = hoy
-    return get_cc_movimientos_periodo(cliente["id"], desde.isoformat(), hoy.isoformat())
+    return get_cc_movimientos_periodo(cliente["id"], desde.isoformat(), hoy.isoformat(), origen)
 
 
 def _render(plantilla: str, cliente: dict, periodo: dict, empresa: str) -> str:
@@ -136,7 +146,8 @@ def _render(plantilla: str, cliente: dict, periodo: dict, empresa: str) -> str:
 
 
 def enviar_resumen(cliente_id: int, hoy: datetime.date | None = None,
-                   cfg: dict | None = None, automatico: bool = True) -> dict:
+                   cfg: dict | None = None, automatico: bool = True,
+                   origen: OrigenVentas = VENTAS_LIBRACORE) -> dict:
     """Genera y envía el resumen de un cliente. Deja rastro en
     `cc_resumenes_enviados` tanto si sale bien como si falla.
 
@@ -157,7 +168,7 @@ def enviar_resumen(cliente_id: int, hoy: datetime.date | None = None,
     if not (cfg.get("email_smtp_host") and cfg.get("email_smtp_user")):
         return {"ok": False, "motivo": "smtp_no_configurado"}
 
-    periodo = calcular_periodo(cliente, hoy)
+    periodo = calcular_periodo(cliente, hoy, origen=origen)
     periodo["emitido"] = hoy.isoformat()
     empresa = cfg.get("empresa_nombre", "")
 
@@ -206,12 +217,13 @@ def enviar_resumen(cliente_id: int, hoy: datetime.date | None = None,
 
 def enviar_resumenes_pendientes(hoy: datetime.date | None = None,
                                 dry_run: bool = False,
-                                forzar: bool = False) -> dict:
+                                forzar: bool = False,
+                                origen: OrigenVentas = VENTAS_LIBRACORE) -> dict:
     """Recorre los clientes con el toggle activo y envía a los que les toca hoy.
 
     `dry_run` lista a quién se le enviaría sin mandar nada (ni tocar la base);
     `forzar` ignora la frecuencia y el último envío (para pruebas y para el
-    "enviar ahora" masivo).
+    "enviar ahora" masivo). `origen`: ver `calcular_periodo`.
     """
     hoy = hoy or datetime.date.today()
     cfg = config_manager.load()
@@ -230,7 +242,7 @@ def enviar_resumenes_pendientes(hoy: datetime.date | None = None,
             resultado["omitidos"].append({"cliente": nombre, "motivo": "no_le_toca_hoy"})
             continue
 
-        periodo = calcular_periodo(cliente, hoy)
+        periodo = calcular_periodo(cliente, hoy, origen=origen)
         if solo_con_saldo and periodo["saldo_final"] <= 0:
             resultado["omitidos"].append({"cliente": nombre, "motivo": "sin_saldo"})
             continue
@@ -246,7 +258,7 @@ def enviar_resumenes_pendientes(hoy: datetime.date | None = None,
             })
             continue
 
-        r = enviar_resumen(cliente["id"], hoy=hoy, cfg=cfg, automatico=True)
+        r = enviar_resumen(cliente["id"], hoy=hoy, cfg=cfg, automatico=True, origen=origen)
         if r.get("ok"):
             resultado["enviados"].append(r)
         else:
