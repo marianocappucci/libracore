@@ -538,16 +538,24 @@ def listar_cierres(sucursal_id: int | None = None, *, todas: bool = False,
     notarlo era leer el docstring. "Todas" ahora es un pedido explícito: sin
     `todas=True`, `sucursal_id=None` filtra por `COALESCE(sucursal_id,0)=0`,
     igual que cualquier otra sucursal.
+
+    Cada fila trae `cerrado_por_nombre`, con el mismo `LEFT JOIN usuarios` que
+    `get_cierre()`: el listado es donde se lee "quién cerró", y sin esto cada
+    producto lo resolvía por su cuenta (LibraClub llegó a tapar esta ruta con
+    un endpoint propio para agregarlo).
     """
+    select = (
+        "SELECT cd.*, COALESCE(u.nombre, 'usuario #' || cd.usuario_id) AS cerrado_por_nombre"
+        "  FROM cierres_diarios cd LEFT JOIN usuarios u ON u.id = cd.usuario_id"
+    )
     with get_connection() as conn:
         if todas:
             rows = conn.execute(
-                "SELECT * FROM cierres_diarios ORDER BY id DESC LIMIT ?", (limit,)
+                f"{select} ORDER BY cd.id DESC LIMIT ?", (limit,)
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM cierres_diarios WHERE COALESCE(sucursal_id,0)=? "
-                "ORDER BY id DESC LIMIT ?",
+                f"{select} WHERE COALESCE(cd.sucursal_id,0)=? ORDER BY cd.id DESC LIMIT ?",
                 (_norm_sucursal(sucursal_id), limit),
             ).fetchall()
     return [dict(r) for r in rows]
