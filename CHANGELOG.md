@@ -7,6 +7,24 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.99.0] — El vuelto en `ventas_pagos` (plan ERP de VentaLibra, F2)
+
+### Agregado
+
+- Migración `0010_recibido_en_ventas_pagos`: columna `ventas_pagos.recibido`,
+  lo que entregó el cliente por un pago (para el vuelto). Nullable y sin
+  default: `NULL` = no se registró, que es el estado de todas las filas
+  anteriores y de lo que escriban los productos que no la usan. LibraCore no
+  la escribe; la escribe LibraCommerce sólo cuando viene un valor.
+
+### Para los consumidores
+
+- **Correr la `0010`** (`libracore-migrar upgrade`, que ya corren el arranque
+  de los `-dev` y `panel_admin.py actualizar`). Sin ella, nada se rompe en un
+  producto que no escriba `recibido`.
+- Es Alembic puro, **fuera de `init_core_schema()`**, y tiene `downgrade` real:
+  el patrón de la `0002`, no el de la `0004`–`0009`.
+
 ## [v1.98.0] — Cierre diario (Fase 1: motor)
 
 ### Agregado
