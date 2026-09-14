@@ -302,6 +302,170 @@ def generar_ticket_venta(venta: dict) -> bytes:
     return recortar_a_contenido(pdf)
 
 
+# ── Ticket de CIERRE DIARIO ────────────────────────────────────────────────
+#
+# Dos funciones nuevas (Fase 1 de "cierre diario con comprobante impreso",
+# pedido del humano el 2026-09-13): el arqueo de UN turno y el cierre de UNA
+# sucursal. Las dos reciben datos ya resueltos —nunca reabren
+# `caja_movimientos`— y por eso reimprimir dos veces da el mismo PDF, incluso
+# si después alguien anula un movimiento del turno.
+#
+# 🔴 **Nombres que el motor no tiene.** `libracore.db` no sabe qué es una
+# "sucursal" —vive en la base del producto, ver `cierre_diario.py`— así que
+# `sucursal_nombre` viene siempre por parámetro. `caja_nombre` en cambio SÍ lo
+# resuelve el motor cuando arma la foto (`cajas.nombre` es de esta base), pero
+# la función lo acepta igual por parámetro: así sirve tanto para reimprimir
+# desde la foto guardada como para el ticket que un producto imprima al
+# cerrar el turno en el momento (antes de que exista ningún cierre diario),
+# que es Fase 2 y arma el diccionario con lo que tenga a mano.
+
+
+def _signo_diferencia(valor: float) -> tuple[str, str]:
+    """`(signo, leyenda)` de una diferencia de arqueo. Positiva es plata de
+    más (sobrante); negativa, de menos (faltante). Cero no lleva leyenda."""
+    if valor > 0.0009:
+        return "+", "sobrante"
+    if valor < -0.0009:
+        return "-", "faltante"
+    return "", ""
+
+
+def _fila_medio(pdf: TicketPDF, medio: dict):
+    label = medios_pago.label(medio.get("medio_pago", ""))
+    neto = float(medio.get("neto", 0))
+    signo, _ = _signo_diferencia(neto)
+    pdf._row(f"{label}:", f"{signo}${_ar(abs(neto))}")
+
+
+def generar_ticket_cierre_turno(arqueo: dict) -> bytes:
+    """Arqueo de UN turno: caja, cajero, apertura/cierre, inicial, esperado,
+    declarado, diferencia (con signo y leyenda) y desglose por medio.
+
+    `arqueo` (todas las claves opcionales salvo las de montos):
+    `turno_id`, `cajero_nombre`, `caja_nombre`, `sucursal_nombre`,
+    `apertura`, `cierre` (`'YYYY-MM-DD HH:MM[:SS]'`), `monto_inicial`,
+    `monto_esperado`, `monto_declarado`, `diferencia`,
+    `medios` (lista de `{medio_pago, ingresos, egresos, neto}`).
+
+    Es la misma forma que devuelve `cierre_diario.get_cierre_turno()`, más
+    `sucursal_nombre`, que ese diccionario no trae — lo agrega quien arma el
+    ticket (ver `caja_router.build_cierre_diario_router`).
+    """
+    ancho_mm, fuente, logo, corte, pie, cfg = cfg_ticket()
+    pdf = TicketPDF(ancho_mm, fuente)
+    pdf.fijar_fecha_documento((arqueo.get("cierre") or arqueo.get("apertura") or "")[:16])
+
+    _empresa_header(pdf, cfg, logo)
+    pdf._separador()
+
+    pdf._centrado("CIERRE DE TURNO", bold=True)
+    if arqueo.get("turno_id"):
+        pdf._centrado(f"Turno N° {arqueo['turno_id']}")
+    if arqueo.get("sucursal_nombre"):
+        pdf._centrado(str(arqueo["sucursal_nombre"])[:40])
+    if arqueo.get("caja_nombre"):
+        pdf._centrado(str(arqueo["caja_nombre"])[:40])
+    pdf._separador()
+
+    if arqueo.get("cajero_nombre"):
+        pdf._texto(f"Cajero: {arqueo['cajero_nombre']}")
+    if arqueo.get("apertura"):
+        pdf._row("Apertura:", fmt_fecha(str(arqueo["apertura"])[:16]))
+    if arqueo.get("cierre"):
+        pdf._row("Cierre:", fmt_fecha(str(arqueo["cierre"])[:16]))
+    pdf._separador("-")
+
+    pdf._row("Monto inicial:", "$" + _ar(arqueo.get("monto_inicial", 0)))
+    pdf._row("Esperado:", "$" + _ar(arqueo.get("monto_esperado", 0)))
+    pdf._row("Declarado:", "$" + _ar(arqueo.get("monto_declarado", 0)))
+
+    medios = arqueo.get("medios") or []
+    if medios:
+        pdf._separador("-")
+        pdf._row("MEDIO", "NETO", bold_izq=True, bold_der=True)
+        for medio in medios:
+            _fila_medio(pdf, medio)
+
+    pdf._separador()
+    diferencia = float(arqueo.get("diferencia", 0))
+    signo, leyenda = _signo_diferencia(diferencia)
+    etiqueta = f"DIFERENCIA{f' ({leyenda})' if leyenda else ''}:"
+    pdf._row(etiqueta, f"{signo}${_ar(abs(diferencia))}", bold_izq=True, bold_der=True)
+
+    _pie_ticket(pdf, pie, corte)
+    return recortar_a_contenido(pdf)
+
+
+def generar_ticket_cierre_diario(cierre: dict, sucursal_nombre: str = "") -> bytes:
+    """Cierre de UNA sucursal: número, sucursal, fecha, quién y cuándo cerró,
+    una línea por turno agrupada por caja (con subtotal de caja), desglose
+    por medio de la sucursal y totales con la diferencia final.
+
+    `cierre` es la forma que devuelve `cierre_diario.get_cierre()`: la
+    cabecera (`numero`, `fecha`, `usuario_id`, `cerrado_en`/`created_at`,
+    `monto_esperado_total`, `monto_declarado_total`, `diferencia_total`) más
+    `cajas` (cada una con `caja_nombre` y sus `turnos`) y `medios` (el
+    desglose de la sucursal). `sucursal_nombre` no está en `cierre`: el motor
+    no conoce sucursales, así que la resuelve el producto y se la pasa acá
+    (ver `caja_router.build_cierre_diario_router`).
+
+    `cierre.get("cerrado_por_nombre")` es opcional: si el llamador ya resolvió
+    el nombre de `usuario_id`, lo muestra; si no, muestra sólo la fecha.
+    """
+    ancho_mm, fuente, logo, corte, pie, cfg = cfg_ticket()
+    pdf = TicketPDF(ancho_mm, fuente)
+    pdf.fijar_fecha_documento((cierre.get("created_at") or cierre.get("fecha") or "")[:16])
+
+    _empresa_header(pdf, cfg, logo)
+    pdf._separador()
+
+    pdf._centrado("CIERRE DIARIO", bold=True)
+    pdf._centrado(f"N° {cierre.get('numero', '')}")
+    if sucursal_nombre:
+        pdf._centrado(str(sucursal_nombre)[:40])
+    pdf._centrado(fmt_fecha(str(cierre.get("fecha", ""))[:10]))
+    quien = cierre.get("cerrado_por_nombre")
+    cuando = fmt_fecha(str(cierre.get("created_at", ""))[:16]) if cierre.get("created_at") else ""
+    if quien or cuando:
+        pdf._centrado(" — ".join(p for p in (quien, cuando) if p))
+    pdf._separador()
+
+    for caja in cierre.get("cajas", []):
+        nombre_caja = caja.get("caja_nombre") or "Sin caja"
+        pdf._texto(nombre_caja, bold=True)
+        for turno in caja.get("turnos", []):
+            pdf._row(
+                f"  T#{turno.get('turno_id', turno.get('id',''))} {str(turno.get('cajero_nombre',''))[:18]}",
+                "$" + _ar(turno.get("monto_declarado", 0)),
+            )
+            diferencia_t = float(turno.get("diferencia", 0))
+            signo_t, leyenda_t = _signo_diferencia(diferencia_t)
+            if leyenda_t:
+                pdf._row(f"    dif. ({leyenda_t}):", f"{signo_t}${_ar(abs(diferencia_t))}")
+        medios_caja = caja.get("medios") or []
+        if medios_caja:
+            for medio in medios_caja:
+                _fila_medio(pdf, medio)
+        pdf._separador("-")
+
+    medios_sucursal = cierre.get("medios") or []
+    if medios_sucursal:
+        pdf._row("MEDIO (total)", "NETO", bold_izq=True, bold_der=True)
+        for medio in medios_sucursal:
+            _fila_medio(pdf, medio)
+        pdf._separador()
+
+    pdf._row("Esperado:", "$" + _ar(cierre.get("monto_esperado_total", 0)))
+    pdf._row("Declarado:", "$" + _ar(cierre.get("monto_declarado_total", 0)))
+    diferencia = float(cierre.get("diferencia_total", 0))
+    signo, leyenda = _signo_diferencia(diferencia)
+    etiqueta = f"DIFERENCIA{f' ({leyenda})' if leyenda else ''}:"
+    pdf._row(etiqueta, f"{signo}${_ar(abs(diferencia))}", bold_izq=True, bold_der=True)
+
+    _pie_ticket(pdf, pie, corte)
+    return recortar_a_contenido(pdf)
+
+
 # ── Ticket de FACTURA ELECTRÓNICA ──────────────────────────────────────────────
 
 def generar_ticket_factura(factura: dict) -> bytes:

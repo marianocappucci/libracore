@@ -31,11 +31,12 @@ import datetime
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
-from libracore import medios_pago
+from libracore import medios_pago, ticket_generator
 from libracore.db import caja as db_caja
+from libracore.db import cierre_diario as db_cierre_diario
 from libracore.db import turnos as db_turnos
 from libracore.db.caja import PuntoDeVentaRepetido
 
@@ -241,5 +242,124 @@ def build_turnos_router(
             raise HTTPException(422, "El turno ya está cerrado.")
         cerrar_turno(tid, payload.monto_declarado, payload.notas.strip())
         return db_turnos.get_turno(tid)
+
+    return router
+
+
+# ── Cierre diario ────────────────────────────────────────────────────────
+
+
+class CerrarDiaPayload(BaseModel):
+    sucursal_id: int | None = None
+    #: `''` (default) usa el día operativo de hoy en hora AR — ver
+    #: `cierre_diario.cerrar_dia`. Formato `YYYY-MM-DD`.
+    fecha: str = ""
+    notas: str = ""
+
+
+def _pdf(contenido: bytes, filename: str) -> Response:
+    return Response(
+        contenido,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+def build_cierre_diario_router(
+    *,
+    usuario_actual: Callable[..., Any],
+    resolver_sucursal_nombre: Callable[[int | None], str] = lambda sucursal_id: "",
+    autorizar_cierre: Callable[..., Any] | None = None,
+    prefix: str = "/api/cierre-diario",
+) -> APIRouter:
+    """Vista previa, cierre, listado y tickets del cierre diario.
+
+    ```python
+    app.include_router(
+        build_cierre_diario_router(
+            usuario_actual=get_current_user_json,
+            resolver_sucursal_nombre=lambda sid: db_sucursales.get_nombre(sid),
+            autorizar_cierre=Depends(require_role("admin", "cajero")),
+        ),
+        dependencies=[_auth_json],
+    )
+    ```
+
+    🔴 **`autorizar_cierre` es quien decide quién puede cerrar, y el motor no
+    lo sabe.** No hay ningún `require_admin` fijo acá adentro: la decisión de
+    hoy (2026-09-13) es "admin o cajero", pero el nombre de esos roles —y si
+    mañana cambia la regla— es de cada producto, no de este router. Pasado
+    como dependencia FastAPI, se evalúa SÓLO en `POST /cerrar`; el resto de
+    los endpoints (previsualizar, listar, ver, tickets) quedan abiertos a
+    cualquiera que ya haya pasado `usuario_actual` y el gate del módulo que
+    el producto le ponga a `include_router(...)`. Sin `autorizar_cierre`, el
+    endpoint de cierre queda con esa misma protección de módulo nada más.
+
+    `resolver_sucursal_nombre` existe porque el motor no conoce sucursales
+    (viven en la base del producto, ver `db/cierre_diario.py`): sin esto los
+    endpoints de listado/detalle/ticket no podrían mostrar más que el
+    `sucursal_id` crudo.
+    """
+    router = APIRouter(prefix=prefix, tags=["cierre-diario"])
+    # `autorizar_cierre` ya viene envuelto en `Depends(...)` (ver el ejemplo del
+    # docstring) — es la misma forma que toman los elementos de `dependencies=`
+    # en `include_router`, así que se pasa tal cual y no se envuelve de nuevo.
+    cerrar_deps = [autorizar_cierre] if autorizar_cierre else []
+
+    @router.get("/preview")
+    def preview(sucursal_id: int | None = None, fecha: str = "",
+               user: dict = Depends(usuario_actual)):
+        return db_cierre_diario.preview_cierre_dia(sucursal_id, fecha or None)
+
+    @router.post("/cerrar", dependencies=cerrar_deps)
+    def cerrar(payload: CerrarDiaPayload, user: dict = Depends(usuario_actual)):
+        try:
+            cierre = db_cierre_diario.cerrar_dia(
+                usuario_id=user["id"], sucursal_id=payload.sucursal_id,
+                fecha=payload.fecha or None, notas=payload.notas.strip(),
+            )
+        except db_cierre_diario.TurnosAbiertosError as e:
+            raise HTTPException(422, str(e)) from e
+        except db_cierre_diario.DiaYaCerradoError as e:
+            raise HTTPException(409, str(e)) from e
+        return cierre
+
+    @router.get("")
+    def listar(sucursal_id: int | None = None, todas: bool = False, limit: int = 50,
+              user: dict = Depends(usuario_actual)):
+        return db_cierre_diario.listar_cierres(sucursal_id, todas=todas, limit=limit)
+
+    @router.get("/{cierre_id}")
+    def detalle(cierre_id: int, user: dict = Depends(usuario_actual)):
+        cierre = db_cierre_diario.get_cierre(cierre_id)
+        if not cierre:
+            raise HTTPException(404, "Cierre no encontrado")
+        return cierre
+
+    @router.get("/{cierre_id}/ticket")
+    def ticket(cierre_id: int, user: dict = Depends(usuario_actual)):
+        cierre = db_cierre_diario.get_cierre(cierre_id)
+        if not cierre:
+            raise HTTPException(404, "Cierre no encontrado")
+        sucursal_nombre = resolver_sucursal_nombre(cierre["sucursal_id"])
+        contenido = ticket_generator.generar_ticket_cierre_diario(cierre, sucursal_nombre)
+        return _pdf(contenido, f"cierre-diario-{cierre['numero']}.pdf")
+
+    @router.get("/turno/{turno_id}/ticket")
+    def ticket_turno(turno_id: int, user: dict = Depends(usuario_actual)):
+        """Por `turno_id` (`turnos_caja.id`), no por el id de la foto: el
+        cajero que acaba de cerrar su turno sólo conoce el primero, y todavía
+        puede no existir ningún cierre diario que lo incluya. `arqueo_de_turno`
+        decide sola si usa la foto o lo calcula en vivo."""
+        try:
+            arqueo = db_cierre_diario.arqueo_de_turno(turno_id)
+        except db_cierre_diario.TurnoAbiertoError as e:
+            raise HTTPException(409, str(e)) from e
+        if not arqueo:
+            raise HTTPException(404, "Turno no encontrado")
+        sucursal_id = db_cierre_diario.sucursal_de_caja(arqueo.get("caja_id"))
+        arqueo["sucursal_nombre"] = resolver_sucursal_nombre(sucursal_id)
+        contenido = ticket_generator.generar_ticket_cierre_turno(arqueo)
+        return _pdf(contenido, f"cierre-turno-{turno_id}.pdf")
 
     return router

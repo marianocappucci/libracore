@@ -133,3 +133,90 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
   simple (Contalibra); Restolibra inyecta un callable `(producto_id) -> receta`.
 - Consecuencias: el motor no conoce el concepto "receta"; el vertical que lo
   necesita lo aporta, sin que el otro lo arrastre.
+
+## ADR-011 — Cierre diario: acto registrado por sucursal, guarda en `create_turno`, sin autorización propia
+
+- Estado: aceptada
+- Fecha: 2026-09-13
+- Contexto: VentaLibra y LibraClub necesitan cerrar el día operativo de una
+  sucursal (todas sus cajas y turnos) con comprobante impreso, de forma
+  numerada y no repetible. Las sucursales viven en la base del PRODUCTO;
+  `cajas.sucursal_id` ya era un entero sin FK desde antes (ver la nota de
+  `schema.py`).
+- Decisión, en sus partes:
+  - **Es un acto registrado**: `cierres_diarios` guarda una FOTO (por turno,
+    por caja y de la sucursal) tomada al momento del cierre — reimprimir no
+    vuelve a leer `caja_movimientos`, así que un movimiento anulado después
+    no le cambia el comprobante ya entregado.
+  - **La unicidad es por EXPRESIÓN** (`COALESCE(sucursal_id,0), fecha` y
+    `..., numero`), no por columna lisa: ni SQLite ni PostgreSQL consideran
+    que dos `NULL` colisionen, y una sucursal-NULL (turnos sin caja, o cajas
+    sin sucursal — el caso de datos viejos, o de cualquier producto que
+    todavía no terminó de asignar cajas a sucursales) es un caso real que
+    tiene que poder cerrar una vez y no dos.
+  - **El día operativo es el de la APERTURA del turno**, en hora Argentina
+    (`_ar_now()`/`_AR_TZ`): un turno de 22:00 a 03:00 pertenece al día en que
+    abrió. Se filtra con `substr(apertura,1,10)` — `apertura` es TEXT, no una
+    columna de fecha, mismo criterio que `PARTE_TURNOS` de `db/logs.py`.
+  - **La guarda de apertura vive en `turnos.create_turno()`**, no en cada
+    producto: es el camino común de VentaLibra y LibraClub (los dos abren
+    turnos llamando a esta función), así que los cubre a los dos sin que
+    ninguno haya tocado su alta de turnos. Para un producto sin sucursales la
+    tabla `cierres_diarios` queda vacía y la guarda es un no-op. Si la tabla
+    todavía no existe (código desplegado antes de correr la migración —
+    "el deploy no corre migraciones solo" es una regla ya vigente de esta
+    familia), la guarda no revienta: se comporta como si nunca se hubiera
+    cerrado nada, igual que antes de esta versión.
+  - **La numeración correlativa por sucursal reintenta con una conexión
+    nueva por intento** (mismo patrón que `facturas.crear_factura`): en
+    PostgreSQL un error aborta la transacción, así que no se puede seguir
+    escribiendo sobre la misma conexión después de un `IntegrityError`. Cada
+    reintento repite las validaciones desde cero, así que una colisión real
+    (el día ya se cerró) no se reintenta a ciegas: se convierte en el error
+    correcto en el siguiente intento.
+  - **El motor recibe `usuario_id` y NO autoriza.** Quién puede cerrar el día
+    lo decide el producto — hoy (2026-09-13) la respuesta es "admin o
+    cajero", pero con el nombre de rol que tenga cada uno. La factory de
+    router (`caja_router.build_cierre_diario_router`) expone un parámetro
+    `autorizar_cierre` inyectable (una dependencia de FastAPI) para el
+    endpoint de cierre en particular; no hay ningún `require_admin` fijo
+    adentro del motor, y sin ese parámetro el endpoint no impone ningún rol
+    propio.
+  - **El motor no conoce sucursales por nombre.** Los tickets y el router
+    reciben `sucursal_nombre` (y, para el ticket de turno, también lo resuelve
+    el producto) porque esa tabla vive del lado del dominio; `caja_nombre` sí
+    lo resuelve el motor, porque `cajas` es suya.
+  - **Las tres tablas nuevas NO entran a `init_core_schema()`** (congelada
+    desde la `0001`): su DDL vive en `db/cierre_diario.crear_tablas()` y lo
+    aplica la migración `0009_cierre_diario` — mismo criterio que toda
+    revisión posterior a la baseline.
+  - **El ticket de un turno se imprime EN VIVO, antes de que exista cualquier
+    cierre diario** — es el caso normal: el cajero cierra su turno y lo
+    imprime en el momento. `arqueo_turno_en_vivo()` calcula el mismo arqueo
+    que la foto, con la MISMA función de medios y de diferencia
+    (`_medios_de_turno`/`_diferencia`) — no una segunda cuenta. El endpoint
+    (`GET /turno/{turno_id}/ticket`, por el id REAL del turno, no por el de
+    la foto) resuelve solo cuál de los dos casos aplica: si el turno ya entró
+    a una foto la usa, si no lo calcula en vivo, y devuelve 409 si el turno
+    sigue abierto.
+  - **`sucursal_id=None` es SIEMPRE "sin sucursal"**, en las cuatro funciones
+    del módulo por igual. La primera versión de esta ADR dejaba
+    `listar_cierres()` como la excepción (`None` = "todas", por calco de
+    `db.caja.get_all_cajas()`) — una misma llamada sin argumentos quería decir
+    cosas distintas según qué función la recibiera. "Todas" ahora es
+    `listar_cierres(todas=True)`, explícito.
+  - **El `except` de la tabla ausente es angosto por mensaje, no por clase
+    sola.** `dia_cerrado()` atrapa `OperationalError`/`ProgrammingError` de
+    `sqlite3` y sólo se los traga si el TEXTO dice "no such table" o "does
+    not exist" mencionando `cierres_diarios` — porque la traducción de
+    PostgreSQL (`_postgres._equivalente_sqlite3`) sube el MRO de
+    `UndefinedTable` (SQLSTATE 42P01) y no aterriza en `OperationalError`
+    sino en `ProgrammingError`, sin conservar el SQLSTATE original. Un
+    `ProgrammingError` real por otro motivo (una conexión cerrada, por
+    ejemplo) no menciona la tabla y se propaga.
+- Consecuencias: los productos cablean su UI y su selección de sucursal sobre
+  esta API sin haber tenido que cambiar su alta de turnos ni su modelo de
+  autorización. El costo es una tabla más para auditar (`cierres_diarios_medios`,
+  con tres niveles distinguidos por qué FK llevan puesta) y un caso adicional
+  de "tabla que puede no existir todavía" que el motor tiene que tolerar en su
+  camino más transitado.

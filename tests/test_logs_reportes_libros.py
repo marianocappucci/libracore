@@ -12,6 +12,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
 from libracore import libros_iva as li
+from libracore.db import cierre_diario as db_cierre_diario
 from libracore.db import core
 from libracore.db import logs as db_logs
 from libracore.db.schema import init_core_schema
@@ -37,6 +38,10 @@ def entorno(tmp_path, monkeypatch):
     core.configure(db_path=str(tmp_path / "lrl.db"))
     conn = core.get_connection()
     init_core_schema(conn)
+    # `PARTES_LIBRACORE`/`PARTES_CORE` incluyen 'cierre_diario' desde esta
+    # versión: sin esta tabla, `get_actividad_log()` con sus partes por
+    # default rompe con "no such table" — ver el docstring de `crear_tablas`.
+    db_cierre_diario.crear_tablas(conn)
     conn.execute("INSERT INTO usuarios (id, username, nombre, password_hash, role) VALUES (7, 'ana', 'Ana', 'x', 'admin')")
     conn.execute("INSERT INTO ventas (numero, fecha, items, subtotal, descuento, total, cliente_nombre, usuario_id, estado) "
                  "VALUES ('V-1', ?, '[]', 100, 0, 100, 'Cli', 7, 'cobrada')", (HOY,))
@@ -67,6 +72,51 @@ def test_las_partes_del_log_se_componen(entorno):
     assert db_logs.get_actividad_count(turno_id=1) == 1
     with core.get_connection() as conn:
         assert db_logs.get_actividad_count(conn=conn, partes=db_logs.PARTES_CORE) == 3
+
+
+def test_el_cierre_diario_entra_a_la_linea_de_tiempo(entorno):
+    """`PARTE_CIERRES_DIARIOS` es la octava rama del UNION — mismo criterio
+    que ya tiene `PARTE_TURNOS`: aparece en `PARTES_LIBRACORE` y en
+    `PARTES_CORE` por default, sin que el llamador tenga que pedirla."""
+    with core.get_connection() as conn:
+        conn.execute(
+            """INSERT INTO cierres_diarios
+               (sucursal_id, numero, fecha, usuario_id, monto_esperado_total,
+                monto_declarado_total, diferencia_total)
+               VALUES (NULL, 1, ?, 7, 1000, 900, -100)""",
+            (HOY,),
+        )
+        conn.commit()
+
+    filas = db_logs.get_actividad_log(tipos=["cierre_diario"])
+    assert len(filas) == 1
+    fila = filas[0]
+    assert fila["fecha"] == HOY
+    assert fila["usuario"] == "Ana"
+    assert fila["ref_tabla"] == "cierres_diarios"
+    assert "Cierre diario #1" in fila["descripcion"]
+    assert "-100" in fila["descripcion"]
+
+    # Y por default (sin `tipos=`) también aparece, junto a las demás.
+    assert "cierre_diario" in {f["tipo"] for f in db_logs.get_actividad_log()}
+    assert "cierre_diario" in {f["tipo"] for f in db_logs.get_actividad_log(partes=db_logs.PARTES_CORE)}
+
+
+def test_sin_la_tabla_de_cierres_la_linea_de_tiempo_sigue_andando(entorno):
+    """El caso de un consumidor que sube el pin a esta versión y todavía no
+    corrió la migración `0009` (un `-dev` no la corre sola): la línea de tiempo
+    tiene que seguir mostrando todo lo demás. Sin el filtro de
+    `get_actividad_log`, el `UNION ALL` con una tabla ausente rompía la
+    pantalla de Logs entera, no sólo la fila del cierre."""
+    with core.get_connection() as conn:
+        conn.execute("DROP TABLE cierres_diarios_medios")
+        conn.execute("DROP TABLE cierres_diarios_turnos")
+        conn.execute("DROP TABLE cierres_diarios")
+        conn.commit()
+
+    assert sorted({f["tipo"] for f in db_logs.get_actividad_log()}) == ["caja", "turno", "venta"]
+    assert sorted({f["tipo"] for f in db_logs.get_actividad_log(partes=db_logs.PARTES_CORE)}) == ["caja", "turno"]
+    assert db_logs.get_actividad_count() == 4
 
 
 # ── logs router ──────────────────────────────────────────────────────────
