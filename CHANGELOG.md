@@ -7,6 +7,25 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.100.0] — Cuenta corriente cuando el party no es el cliente (plan ERP de VentaLibra)
+
+### Agregado
+
+- `libracore.db.cuenta_corriente.VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF`: origen de ventas para
+  cuando `sales.customer_party_id` NO coincide con `clients.id`. Es el caso de VentaLibra, que da
+  de alta el cliente como party primero y enlaza el cliente de LibraCore por
+  `clients.external_ref = 'party-<id>'`. Resuelve el cliente de cada venta por esa referencia.
+  `get_cc_saldo`, `get_cc_movimientos` y `get_clientes_con_saldo_cc` lo aceptan como cualquier
+  otro origen, y `build_cuenta_corriente_router` ya lo recibía por parámetro.
+- `cc_resumen.calcular_periodo`, `enviar_resumen` y `enviar_resumenes_pendientes` reciben
+  `origen`. El default es el de hoy, así que el resumen por mail de un producto así cuenta la
+  deuda del cliente correcto.
+
+### Para los consumidores
+
+- **Sin migración.** Nada cambia para quien no pase el origen nuevo: Contalibra y Restolibra
+  siguen con `VENTAS_LIBRACOMMERCE`, donde `clients.id == parties.id` es un invariante del motor.
+
 ## [v1.99.0] — El vuelto en `ventas_pagos` (plan ERP de VentaLibra, F2)
 
 ### Agregado
