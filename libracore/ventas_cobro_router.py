@@ -27,6 +27,13 @@ Lo que difería entre las dos copias de los productos, y cómo quedó:
 `mercadopago` es el cliente HTTP: por default el de `libracore.mp_api`, resuelto
 **en cada llamada** y no al montar, para que un `monkeypatch` sobre ese módulo
 intercepte. Un producto cuya suite parchea su propio shim pasa el suyo.
+
+`facturacion_habilitada` es `() -> bool`, default siempre `True` (lo de hoy).
+Existe porque VentaLibra tiene un módulo `facturacion` que se puede apagar
+(`ModuleRepository`, concepto del producto) independiente de `mp_auto_facturar_ventas`
+de `config_manager`: con la automática prendida y el módulo apagado, `mp-status`
+facturaba igual. En `False`, ni `mp-status` ni el manual (`POST /{vid}/facturar`)
+emiten un comprobante.
 """
 
 from __future__ import annotations
@@ -63,6 +70,22 @@ async def _buscar_pago_por_referencia(referencia: str, access_token: str) -> dic
     return await mp_api.buscar_pago_por_referencia(referencia, access_token)
 
 
+def _siempre_facturable() -> bool:
+    return True
+
+
+#: Cuando el pago entró en MercadoPago pero la venta ya no existe (se anuló
+#: entre que se generó el QR y que se acreditó). No hay UPDATE que revierta
+#: eso automáticamente — alguien tiene que devolver la plata a mano.
+MENSAJE_PAGO_ANULADA = "El pago entró en MercadoPago pero la venta está anulada: hay que devolverlo a mano."
+
+
+def _venta_anulada(venta: dict) -> bool:
+    """Mismo criterio que `venta_facturacion.facturar_venta`: `status` es el
+    crudo y `estado` puede venir pisado por `status_detail`."""
+    return venta.get("status") == "cancelled" or venta.get("estado") == "anulada"
+
+
 @dataclass(frozen=True)
 class ClienteMercadoPago:
     """Las dos llamadas a MercadoPago que hace el cobro por QR."""
@@ -79,6 +102,7 @@ def build_cobro_de_ventas_router(
     usuario_actual: Callable[..., Any],
     prefix: str = "/api/ventas",
     mercadopago: ClienteMercadoPago | None = None,
+    facturacion_habilitada: Callable[[], bool] = _siempre_facturable,
 ) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["ventas"])
     mp = mercadopago or ClienteMercadoPago()
@@ -103,7 +127,15 @@ def build_cobro_de_ventas_router(
     def facturar(vid: int, user: dict = Depends(usuario_actual)):
         """Emite la factura de la venta y las vincula. Es el mismo camino que
         usa el webhook con la automática prendida, así que sirve también para
-        reintentar una venta cuyo CAE falló. Idempotente."""
+        reintentar una venta cuyo CAE falló. Idempotente.
+
+        403 si `facturacion_habilitada` dice que el módulo está apagado —
+        mismo código que usa `modules_gate.require_module` para "módulo no
+        incluido": es la misma clase de rechazo, funcionalidad deshabilitada
+        por configuración de la instancia, no un conflicto sobre el estado de
+        la venta."""
+        if not facturacion_habilitada():
+            raise HTTPException(403, "El módulo de facturación está deshabilitado para esta instancia.")
         try:
             factura = asyncio.run(facturar_venta(ventas, vid, usuario_id=user.get("id")))
         except VentaNoFacturable as e:
@@ -118,6 +150,14 @@ def build_cobro_de_ventas_router(
         QR fijo por punto de venta: el cartel impreso del mostrador, que no
         cambia nunca. Lo que esta llamada cambia es *cuánto cobra* cuando
         alguien lo escanea.
+
+        409 sin llamar a MercadoPago si la venta está anulada (pedir plata por
+        algo que ya no existe) o si ya fue cobrada por QR —`mp_payment_id` ya
+        seteado— (pedir de nuevo una plata que ya entró). Una venta con un
+        pago electrónico declarado `aprobado` pero sin `mp_payment_id` TODAVÍA
+        puede pedir el QR: es el flujo de "Cobrar con QR" del detalle
+        (`libra-ui/src/comercio/VentaDetalle.tsx`, `puedeCobrarConQr`), que
+        necesita esa fila de pago para poder sellar la referencia después.
         """
         venta = _venta_o_404(vid)
         cfg = config_manager.load()
@@ -130,6 +170,11 @@ def build_cobro_de_ventas_router(
                 "Configurá el Access Token, el User ID y el POS ID de MercadoPago "
                 "en Configuración → Integraciones.",
             )
+
+        if _venta_anulada(venta):
+            raise HTTPException(409, f"La venta {vid} está anulada: no se puede generar un cobro por QR.")
+        if venta.get("mp_payment_id"):
+            raise HTTPException(409, f"La venta {vid} ya fue cobrada por QR.")
 
         referencia = f"venta-{vid}"
         try:
@@ -156,20 +201,31 @@ def build_cobro_de_ventas_router(
 
         Es un GET **con efectos**: cuando MercadoPago dice `approved`, acredita
         el pago —escribe el movimiento de caja y recalcula el estado— y factura
-        si la automática está prendida. Las dos cosas son idempotentes, así que
-        el poll pegándole cada pocos segundos no duplica nada, y da igual si el
-        webhook llegó primero.
+        si la automática está prendida (y el módulo de facturación no está
+        apagado). Las dos cosas son idempotentes, así que el poll pegándole
+        cada pocos segundos no duplica nada, y da igual si el webhook llegó
+        primero.
+
+        Si la venta está anulada, `"status": "anulada"` en vez de `"approved"`
+        y no factura — la plata pudo entrar en MercadoPago después de anularse
+        (`libracommerce.erp.ventas.acreditar_pago_qr` no toca nada en ese
+        caso, y avisa por log que hay que devolverla a mano).
         """
         venta = _venta_o_404(vid)
         usuario_id = user.get("id")
+        anulada = _venta_anulada(venta)
 
         if venta.get("mp_payment_id"):
+            if anulada:
+                return {"status": "anulada", "payment_id": venta["mp_payment_id"],
+                        "message": MENSAJE_PAGO_ANULADA}
             # Ya estaba acreditada. Se llama igual: cubre a las que se
             # acreditaron antes de que esto existiera, y a las que fallaron el
             # CAE la primera vez.
             ventas.acreditar(vid, venta["mp_payment_id"], usuario_id)
-            factura_id = (venta.get("factura_id")
-                          or asyncio.run(facturar_si_esta_prendida(ventas, vid)))
+            factura_id = venta.get("factura_id")
+            if not factura_id and facturacion_habilitada():
+                factura_id = asyncio.run(facturar_si_esta_prendida(ventas, vid))
             return {"status": "approved", "payment_id": venta["mp_payment_id"],
                     "factura_id": factura_id}
 
@@ -194,10 +250,13 @@ def build_cobro_de_ventas_router(
 
         payment_id = str(pago["id"])
         ventas.set_pago_mp(vid, payment_id)
+        if anulada:
+            return {"status": "anulada", "payment_id": payment_id, "message": MENSAJE_PAGO_ANULADA}
         # 🔴 Acá entra la plata a la caja, y no antes.
         ventas.acreditar(vid, payment_id, usuario_id)
         ventas.sellar_referencia_mp(vid, payment_id)
-        factura_id = asyncio.run(facturar_si_esta_prendida(ventas, vid, cfg))
+        factura_id = (asyncio.run(facturar_si_esta_prendida(ventas, vid, cfg))
+                      if facturacion_habilitada() else None)
         return {"status": "approved", "payment_id": payment_id, "factura_id": factura_id}
 
     return router
