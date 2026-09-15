@@ -16,7 +16,11 @@ from libracore import venta_facturacion as vf
 from libracore.db import caja as db_caja
 from libracore.db import core
 from libracore.db.schema import init_core_schema
-from libracore.ventas_cobro_router import ClienteMercadoPago, build_cobro_de_ventas_router
+from libracore.ventas_cobro_router import (
+    MENSAJE_PAGO_ANULADA,
+    ClienteMercadoPago,
+    build_cobro_de_ventas_router,
+)
 
 USUARIO = {"id": 7, "username": "cajero", "role": "admin"}
 
@@ -138,10 +142,13 @@ def _caja(factura_id=None):
         return conn.execute("SELECT COUNT(*) FROM caja_movimientos WHERE factura_id=?", (factura_id,)).fetchone()[0]
 
 
-def _app(ventas: VentasEnMemoria, mp: ClienteMercadoPago | None = None, **extra) -> TestClient:
+def _app(ventas: VentasEnMemoria, mp: ClienteMercadoPago | None = None,
+        facturacion_habilitada=None, **extra) -> TestClient:
     app = FastAPI()
-    app.include_router(build_cobro_de_ventas_router(
-        ventas=ventas.puerto(**extra), usuario_actual=lambda: USUARIO, mercadopago=mp))
+    kwargs = dict(ventas=ventas.puerto(**extra), usuario_actual=lambda: USUARIO, mercadopago=mp)
+    if facturacion_habilitada is not None:
+        kwargs["facturacion_habilitada"] = facturacion_habilitada
+    app.include_router(build_cobro_de_ventas_router(**kwargs))
     return TestClient(app)
 
 
@@ -404,3 +411,101 @@ def test_mp_status_sin_respuesta_de_mercadopago_es_502(ventas, entorno):
     assert _app(ventas, mp).get("/api/ventas/1/mp-status").status_code == 502
     entorno.save({**entorno.load(), "mp_access_token": ""})
     assert _app(ventas, mp).get("/api/ventas/1/mp-status").status_code == 400
+
+
+# ── Hueco 1: facturar con el módulo de facturación apagado ─────────────────
+
+
+def test_facturacion_apagada_no_factura_desde_mp_status(ventas, entorno):
+    _mp_configurado(entorno)
+    entorno.save({**entorno.load(), "mp_auto_facturar_ventas": True})
+    ventas.alta(1, 1500.0, pagos=[{"medio": "mercadopago", "monto": 1500.0, "estado": "pendiente"}])
+    mp, _ = _mp(pago={"id": 321, "status": "approved"})
+    client = _app(ventas, mp, facturacion_habilitada=lambda: False)
+    r = client.get("/api/ventas/1/mp-status")
+    # Se acredita igual (la plata entró) — lo único que no pasa es la factura.
+    assert r.json() == {"status": "approved", "payment_id": "321", "factura_id": None}
+    assert ventas.obtener(1)["estado"] == "cobrada" and _facturas() == 0
+    # El poll siguiente entra por la rama del `mp_payment_id` ya seteado:
+    # tampoco factura ahí.
+    r2 = client.get("/api/ventas/1/mp-status")
+    assert r2.json() == {"status": "approved", "payment_id": "321", "factura_id": None}
+    assert _facturas() == 0
+
+
+def test_facturacion_apagada_bloquea_el_manual(ventas):
+    ventas.alta(1, 1500.0)
+    client = _app(ventas, facturacion_habilitada=lambda: False)
+    r = client.post("/api/ventas/1/facturar")
+    assert r.status_code == 403
+    assert _facturas() == 0
+    # Prendido de nuevo, el mismo endpoint sí emite — no quedó roto en general.
+    assert _app(ventas).post("/api/ventas/1/facturar").status_code == 200
+    assert _facturas() == 1
+
+
+# ── Hueco 2: mp-qr sobre una venta ya cobrada o anulada (para todos) ───────
+
+
+def test_mp_qr_sobre_venta_anulada_es_409(ventas, entorno):
+    _mp_configurado(entorno)
+    ventas.alta(1, pagos=[{"medio": "mercadopago", "monto": 1500.0, "estado": "pendiente"}],
+                estado="anulada", status="cancelled")
+    mp, llamadas = _mp()
+    r = _app(ventas, mp).post("/api/ventas/1/mp-qr")
+    assert r.status_code == 409 and "anulada" in r.json()["detail"].lower()
+    assert llamadas == []
+
+
+def test_mp_qr_sobre_venta_ya_cobrada_por_qr_es_409(ventas, entorno):
+    _mp_configurado(entorno)
+    ventas.alta(1, 1500.0, pagos=[{"medio": "mercadopago", "monto": 1500.0, "estado": "aprobado"}],
+                mp_payment_id="999")
+    mp, llamadas = _mp()
+    r = _app(ventas, mp).post("/api/ventas/1/mp-qr")
+    assert r.status_code == 409 and "cobrada" in r.json()["detail"].lower()
+    assert llamadas == []
+
+
+def test_mp_qr_sobre_pago_electronico_ya_aprobado_sigue_permitido(ventas, entorno):
+    """El flujo de "Cobrar con QR" del detalle de venta (`libra-ui/src/comercio/
+    VentaDetalle.tsx`, `puedeCobrarConQr`): la venta nace con un pago
+    electrónico ya declarado `aprobado` (sin que MercadoPago haya intervenido
+    todavía) y sin `mp_payment_id` — recién ahí `mp-qr` le pone el QR para
+    poder sellar la referencia después. No es "no tiene pago pendiente": es
+    justo el caso que el fixture de estos tests venía representando."""
+    _mp_configurado(entorno)
+    ventas.alta(1, 1500.0, pagos=[{"medio": "mercadopago", "monto": 1500.0, "estado": "aprobado"}])
+    mp, llamadas = _mp()
+    r = _app(ventas, mp).post("/api/ventas/1/mp-qr")
+    assert r.status_code == 200, r.text
+    assert llamadas[0][1]["external_reference"] == "venta-1"
+    assert ventas.obtener(1)["mp_order_id"] == "venta-1"
+
+
+# ── Hueco 3: mp-status sobre una venta anulada (para todos) ────────────────
+
+
+def test_mp_status_sobre_venta_anulada_no_factura_y_avisa(ventas, entorno):
+    _mp_configurado(entorno)
+    entorno.save({**entorno.load(), "mp_auto_facturar_ventas": True})
+    ventas.alta(1, 1500.0, pagos=[{"medio": "mercadopago", "monto": 1500.0, "estado": "pendiente"}],
+                estado="anulada", status="cancelled")
+    antes = _caja()
+    mp, _ = _mp(pago={"id": 777, "status": "approved"})
+    r = _app(ventas, mp).get("/api/ventas/1/mp-status")
+    assert r.json() == {"status": "anulada", "payment_id": "777", "message": MENSAJE_PAGO_ANULADA}
+    assert _caja() == antes and _facturas() == 0
+    assert ventas.acreditaciones == []
+
+
+def test_mp_status_con_mp_payment_id_y_venta_anulada(ventas):
+    ventas.alta(1, 1500.0, pagos=[{"medio": "mercadopago", "monto": 1500.0, "estado": "pendiente"}],
+                mp_payment_id="555")
+    ventas.ventas[1]["estado"] = "anulada"
+    ventas.ventas[1]["status"] = "cancelled"
+    antes = _caja()
+    r = _app(ventas).get("/api/ventas/1/mp-status")
+    assert r.json() == {"status": "anulada", "payment_id": "555", "message": MENSAJE_PAGO_ANULADA}
+    assert _caja() == antes
+    assert ventas.acreditaciones == []
