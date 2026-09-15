@@ -7,6 +7,40 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.101.0] — Tres huecos del cobro por QR de ventas (plan ERP de VentaLibra)
+
+### Agregado
+
+- `ventas_cobro_router.build_cobro_de_ventas_router` recibe `facturacion_habilitada: Callable[[], bool]`
+  (default `True`, lo de hoy). VentaLibra tiene un módulo `facturacion` que se puede apagar,
+  independiente de `mp_auto_facturar_ventas`: con la automática prendida y el módulo apagado,
+  `GET /{vid}/mp-status` facturaba igual al aprobarse el QR. Con `False`: `mp-status` acredita el
+  pago pero no factura (ninguna de las dos ramas, la del pago recién aprobado y la del
+  `mp_payment_id` ya seteado), y `POST /{vid}/facturar` contesta **403** en vez de emitir.
+
+### Corregido (para todos — Contalibra y Restolibra incluidos)
+
+- `POST /{vid}/mp-qr` ya no genera una orden nueva sobre una venta anulada ni sobre una que ya fue
+  cobrada por QR (`mp_payment_id` ya seteado): devuelve **409** sin llamar a MercadoPago. Antes
+  reabría el cartel de cobro pidiendo de nuevo una plata que ya había entrado, o por algo que ya
+  no existía. **No** rechaza una venta con un pago electrónico ya declarado `aprobado` pero sin
+  `mp_payment_id`: ese es el flujo de "Cobrar con QR" del detalle de venta
+  (`libra-ui/src/comercio/VentaDetalle.tsx`, `puedeCobrarConQr`), que registra el pago antes de
+  poner el QR y necesita esa fila para sellar la referencia después.
+- `GET /{vid}/mp-status` ya no responde `"approved"` ni factura cuando la venta está anulada.
+  Desde `libracommerce` v0.16.1 `erp.ventas.acreditar_pago_qr` no toca nada en ese caso —la plata
+  entró en MercadoPago pero hay que devolverla a mano—, y el router no miraba esa señal: ahora
+  responde `{"status": "anulada", "payment_id": ..., "message": ...}` en las dos ramas (la del pago
+  recién encontrado aprobado y la del `mp_payment_id` ya seteado).
+
+### Para los consumidores
+
+- **Sin migración y sin cambio de comportamiento para Contalibra y Restolibra** en el caso feliz:
+  ninguna de las dos instancias tiene ventas anuladas con QR pendiente ni un módulo de
+  facturación propio (`facturacion_habilitada` queda en su default `True`). Las dos correcciones
+  "para todos" solo cambian algo que ya era un error (pedir de nuevo una plata que entró, o
+  facturar una venta anulada).
+
 ## [v1.100.0] — Cuenta corriente cuando el party no es el cliente (plan ERP de VentaLibra)
 
 ### Agregado
