@@ -1,5 +1,5 @@
 """Resuelve la URL de la base de una instancia desde el entorno, con UN nombre
-normalizado para los seis productos de la familia.
+normalizado para los productos de la familia.
 
 Antes del 2026-08-11 cada producto nombraba lo mismo distinto — cuatro
 convenciones entre seis productos, y dos de ellas mentían:
@@ -9,6 +9,14 @@ convenciones entre seis productos, y dos de ellas mentían:
 | contalibra, restolibra | `<PREFIJO>_DATABASE_URL` | (la misma) |
 | libradesk, gestiolibra, medlibra | `DATABASE_URL` | — / `<PREFIJO>_LIBRACORE_DB_PATH` |
 | ventalibra | `VENTALIBRA_DB_PATH` | `VENTALIBRA_LIBRACORE_DB_PATH` |
+| libracargo, libraclub | `DATABASE_URL` | `<PREFIJO>_LIBRACORE_DATABASE_URL` |
+
+🔴 **La última fila faltó hasta el 2026-09-16.** La tabla se escribió para seis
+productos y LibraCargo y LibraClub llegaron después con `DATABASE_URL` a secas
+para el dominio. No se notó porque cada app lo parcheó en su `app/config.py`
+(`url_de_instancia(...) or os.environ.get("DATABASE_URL")`). Lo destapó
+`libraauth-migrar --prefijo libracargo --base dominio`, que no hace ese
+fallback y dejó el `-dev` sin arrancar.
 
 `..._DB_PATH` viene de cuando el valor era una ruta a un archivo SQLite. Desde
 la migración guarda una URL de PostgreSQL, así que el nombre dice una cosa y el
@@ -38,11 +46,38 @@ _HISTORICOS = {
     ("libradesk", False): ("DATABASE_URL",),
     ("gestiolibra", False): ("DATABASE_URL",),
     ("medlibra", False): ("DATABASE_URL",),
+    # 2026-09-16. Solo el DOMINIO: en estos dos el core va en una base aparte, y
+    # `DATABASE_URL` nunca puede resolverlo. Ver `_UNA_SOLA_BASE`.
+    ("libracargo", False): ("DATABASE_URL",),
+    ("libraclub", False): ("DATABASE_URL",),
     ("ventalibra", False): ("VENTALIBRA_DB_PATH",),
     ("gestiolibra", True): ("GESTIOLIBRA_LIBRACORE_DB_PATH",),
     ("medlibra", True): ("MEDLIBRA_LIBRACORE_DB_PATH",),
     ("ventalibra", True): ("VENTALIBRA_LIBRACORE_DB_PATH",),
 }
+
+
+#: 🔴 Los productos cuyo schema de LibraCore vive en la MISMA base que el
+#: dominio. Es lo que autoriza a `libracore.migrar.url_de_core` a caer a la base
+#: del dominio cuando no hay variable del core.
+#:
+#: **Se nombra, no se deduce** (2026-09-16, decisión del humano). Hasta esa fecha
+#: la regla era "si la variable del core no existe, el producto no separa las
+#: bases". Eso es cierto para estos cuatro y falso para los otros cuatro:
+#: Gestiolibra, MedLibra, LibraCargo y LibraClub llevan el core APARTE, y ahí la
+#: ausencia de la variable no dice "una sola base" sino "falta configuración".
+#: Caer al dominio migraría la base equivocada **sin fallar**. Se volvió urgente
+#: al sumar `DATABASE_URL` como histórico de LibraCargo y LibraClub: antes su
+#: dominio no resolvía y la caída fallaba por casualidad.
+#:
+#: Un producto que no esté acá **falla**: agregarlo es una decisión explícita, no
+#: un default. Medido el 2026-09-16 contra las bases reales de cada instancia.
+_UNA_SOLA_BASE = frozenset({"contalibra", "restolibra", "ventalibra", "libradesk"})
+
+
+def comparte_base_con_el_dominio(prefijo: str) -> bool:
+    """Si el schema de LibraCore de este producto vive en la base del dominio."""
+    return (prefijo or "").strip().lower() in _UNA_SOLA_BASE
 
 
 def nombre_normalizado(prefijo: str, *, core: bool = False) -> str:

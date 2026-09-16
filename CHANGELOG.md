@@ -7,6 +7,39 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Sin publicar]
+
+Sin migraciones.
+
+### Corregido
+
+- 🔴 **`libracore-migrar` deja de caer al dominio en los productos de core
+  aparte.** Sin la variable del core, `url_de_core` caía a la base del dominio
+  con la idea de que esa ausencia señalaba un producto de una sola base. Eso vale
+  para Contalibra, Restolibra, VentaLibra y LibraDesk, pero **no** para
+  Gestiolibra, MedLibra, LibraCargo y LibraClub, que llevan el core aparte: ahí la
+  caída migraba el dominio con el schema de LibraCore **sin fallar**. Ahora la
+  lista de base única se **nombra** (`url_de_instancia._UNA_SOLA_BASE`, con
+  `comparte_base_con_el_dominio()`) y un prefijo fuera de ella falla, igual que
+  un producto nuevo que no se haya agregado. Cambia la decisión del 2026-08-25,
+  con confirmación del humano.
+
+  **No cambia a dónde migra ninguna instancia viva**: verificado en los 17
+  contenedores del VPS, cada uno resuelve la misma base que antes. Lo que se
+  cierra es el caso de la variable del core faltante.
+
+- **`DATABASE_URL` como nombre histórico del dominio de LibraCargo y LibraClub.**
+  La tabla se escribió para seis productos y estos dos llegaron después usando
+  `DATABASE_URL` a secas; cada app lo había parcheado en su `app/config.py`. Lo
+  destapó `libraauth-migrar --prefijo libracargo --base dominio`, que no hace ese
+  fallback y dejó el `-dev` sin arrancar. **Sólo del lado del dominio**: en estos
+  dos `DATABASE_URL` nunca puede resolver el core.
+
+  Las dos cosas van juntas a propósito: sumar el histórico **sin** endurecer el
+  paso 3 habría abierto la caída al dominio en LibraCargo y LibraClub. Lo detectó
+  `test_un_producto_fuera_de_la_convencion_FALLA_en_vez_de_adivinar`, que hasta
+  ese día pasaba por casualidad.
+
 ## [v1.102.0] — `list-backups` y `restore-db` dejan de mentir sobre los respaldos
 
 Sin migraciones. Es un cambio de la CLI de provisioning, que corre **desde el venv
