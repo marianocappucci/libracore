@@ -7,7 +7,7 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Sin publicar]
+## [v1.103.0] — `libracore-migrar` no cae al dominio en los productos de core aparte
 
 Sin migraciones.
 
