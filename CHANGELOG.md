@@ -7,9 +7,25 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Sin publicar]
+## [v1.102.0] — `list-backups` y `restore-db` dejan de mentir sobre los respaldos
+
+Sin migraciones. Es un cambio de la CLI de provisioning, que corre **desde el venv
+del host** (`.venv-scripts` de cada producto) y no desde la imagen: para que
+llegue al servidor hay que actualizar ese venv, no alcanza con subir el pin.
 
 ### Corregido
+
+- 🔴 **`list-backups` mira también la carpeta donde caen los ZIP.** Completa el
+  arreglo de abajo, que se quedó corto y se vio al desplegar: los `.dump`/`.db`
+  van a `<cliente>/backups/`, pero el camino de `backup_zip` —el que tienen
+  prendido las instancias reales— escribe en `<cliente>/data/backups/`. Mirando
+  una sola carpeta, el listado mostraba el respaldo de hacía un mes como si
+  fuera el vigente, con el de esa madrugada invisible en la otra. **Peor que el
+  bug original**, porque parecía actualizado. Ahora junta los tres formatos de
+  las dos carpetas, ordena por fecha real y marca con `!` los que no son el
+  formato vivo. Y la extensión "que sirve" ya no la decide el motor solo: con
+  `backup_zip` es el ZIP, sea cual sea el motor. `restore-db` manda a la
+  pantalla de Configuración del producto cuando el respaldo vivo es un ZIP.
 
 - 🔴 **`panel_admin restore-db` y `list-backups` ven el motor de la instancia.**
   `cmd_backup` distingue PostgreSQL de SQLite desde el 2026-08-10, pero los dos
