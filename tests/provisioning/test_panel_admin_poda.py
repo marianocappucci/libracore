@@ -13,6 +13,8 @@ import pytest
 from libracore import provisioning
 from libracore.provisioning import panel_admin as pa
 
+from ._dobles import build_falso
+
 
 @pytest.fixture(autouse=True)
 def _reset_config():
@@ -183,7 +185,7 @@ def test_cmd_actualizar_poda_despues_de_desplegar(cfg, docker_falso, monkeypatch
     quedaría sin la versión a la que volver."""
     orden = []
     monkeypatch.setattr(pa, "build_image_tagged",
-                        lambda v, **kw: orden.append("build") or True)
+                        build_falso(antes=lambda: orden.append("build")))
     monkeypatch.setattr(pa, "load_clients", lambda: [])
     monkeypatch.setattr(pa, "podar_imagenes_viejas",
                         lambda *a, **kw: orden.append("poda") or ([], []))
@@ -198,7 +200,7 @@ def test_cmd_actualizar_poda_despues_de_desplegar(cfg, docker_falso, monkeypatch
 def test_cmd_actualizar_poda_al_final_con_un_cliente(cfg, docker_falso, monkeypatch):
     orden = []
     monkeypatch.setattr(pa, "build_image_tagged",
-                        lambda v, **kw: orden.append("build") or True)
+                        build_falso(antes=lambda: orden.append("build")))
     monkeypatch.setattr(pa, "check_venv_sync", lambda *_: None)
     monkeypatch.setattr(pa, "container_status", lambda c: {"status": "running"})
     monkeypatch.setattr(pa, "compose",

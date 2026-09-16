@@ -24,6 +24,8 @@ import pytest
 from libracore import provisioning
 from libracore.provisioning import panel_admin as pa
 
+from ._dobles import build_falso
+
 
 @pytest.fixture(autouse=True)
 def _reset_config():
@@ -79,7 +81,7 @@ def _armar(tmp_path, monkeypatch, *, migraciones=()):
         return subprocess.CompletedProcess(args, 0 if estado["up_ok"] else 1)
 
     pineos: list[str] = []
-    monkeypatch.setattr(pa, "build_image_tagged", lambda *a, **k: True)
+    monkeypatch.setattr(pa, "build_image_tagged", build_falso())
     monkeypatch.setattr(pa, "container_status", lambda c: {"status": "running"})
     monkeypatch.setattr(pa, "compose", _compose)
     monkeypatch.setattr(pa, "podar_imagenes_viejas", lambda *a, **k: ([], []))

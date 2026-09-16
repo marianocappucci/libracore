@@ -19,12 +19,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import (
+    MigracionesIlegibles,
     _npm_api,
     build_image_tagged,
     check_venv_sync,
     contexto_de_build,
     deploy_version,
     get_config,
+    migraciones_declaradas,
 )
 
 BACKUP_RETENTION_DIAS = 14
@@ -1121,7 +1123,13 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
     la rama que necesita dev en la que decide qué se le despliega al cliente.
 
     Si el producto declara `migraciones` en su `configure(...)`, **se corren
-    antes de mover cada instancia** (ver el bloque comentado abajo): el compose
+    antes de mover cada instancia** (ver el bloque comentado abajo).
+
+    🔴 **Las migraciones salen del mismo commit que la imagen**, no del script
+    que se está ejecutando (ver `provisioning.migraciones_declaradas`): el panel
+    corre desde el checkout del VPS, que está en `develop`, y hasta el
+    2026-09-16 eso hacía correr la lista de `develop` sobre la imagen de `main`.
+    Si la lista del checkout es distinta, se avisa y manda la del ref. El compose
     ya está pineado a la imagen nueva, así que la migración corre con el código
     nuevo mientras la instancia todavía sirve el viejo. Una migración que falla
     aborta el deploy de esa instancia y repinea el compose.
@@ -1172,8 +1180,12 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
                 print(f"  version  : {ref}   (commit {commit})")
                 print(f"  origen   : {origen}")
                 print(f"  contexto : {ctx}")
+                migraciones = migraciones_declaradas(ctx)
+                _avisar_si_difieren(cfg.migraciones, migraciones, commit)
+                print("  migraciones del ref: "
+                      + ("; ".join(" ".join(c) for c in migraciones) or "(ninguna)"))
                 print(f"[DRY-RUN] Contexto materializado OK ({len(archivos)} archivos).")
-        except RuntimeError as e:
+        except RuntimeError as e:  # incluye MigracionesIlegibles
             print(f"[ERROR] {e}")
             return False
         objetivo = ", ".join(slugs) if slugs else "todos los que estén corriendo"
@@ -1182,9 +1194,30 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
               + ("sí" if respaldar else "NO (--sin-respaldo)") + ".")
         return True
 
-    if not build_image_tagged(version, ref=git_ref, from_checkout=from_checkout):
+    leidas: dict = {}
+
+    def _leer_migraciones(contexto, commit):
+        leidas["migraciones"] = migraciones_declaradas(contexto)
+        leidas["commit"] = commit
+
+    try:
+        construida = build_image_tagged(version, ref=git_ref,
+                                        from_checkout=from_checkout,
+                                        al_materializar=_leer_migraciones)
+    except MigracionesIlegibles as e:
+        print(f"[ERROR] {e} No se construyó ni se desplegó nada.")
+        return False
+    if not construida:
         print("[ERROR] Falló el build.")
         return False
+    if "migraciones" not in leidas:
+        # Fallar cerrado: sin la lista del ref, usar la del checkout es
+        # exactamente el defecto que esto cierra.
+        print("[ERROR] El build no informó las migraciones del commit construido; "
+              "no se despliega con las del checkout.")
+        return False
+    migraciones = leidas["migraciones"]
+    _avisar_si_difieren(cfg.migraciones, migraciones, leidas["commit"])
     print(f"[OK] Imagen {ref} construida.")
 
     clients = load_clients()
@@ -1252,7 +1285,7 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
         # LibraGenda. Seguir con la segunda después de que falló la primera es
         # garantía de un error que no nombra la causa.
         migracion_fallida = None
-        for comando in cfg.migraciones:
+        for comando in migraciones:
             print(f"    migraciones: {' '.join(comando)}")
             m = compose(slug, "run", "--rm", c["container"], *comando)
             if m.returncode != 0:
@@ -1305,6 +1338,27 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
 
     print("[OK] Actualización completa.")
     return True
+
+
+def _avisar_si_difieren(del_checkout: tuple, del_ref: tuple, commit: str) -> None:
+    """Avisa cuando el checkout declara otras migraciones que el ref a desplegar.
+
+    No es un error: es lo normal cuando `develop` tiene una cadena nueva que
+    todavía no se promovió. Se dice para que nadie se sorprenda de que **no**
+    corra.
+    """
+    if tuple(del_checkout) == tuple(del_ref):
+        return
+    solo_checkout = [c for c in del_checkout if c not in del_ref]
+    solo_ref = [c for c in del_ref if c not in del_checkout]
+    print(f"[AVISO] Las migraciones del checkout difieren de las del commit {commit}. "
+          "Se corren las del commit (las de la imagen).")
+    for c in solo_checkout:
+        print(f"    sólo en el checkout, NO se corre: {' '.join(c)}")
+    for c in solo_ref:
+        print(f"    sólo en el commit, se corre     : {' '.join(c)}")
+    if not solo_checkout and not solo_ref:
+        print("    mismas migraciones en otro orden: manda el orden del commit.")
 
 
 def cmd_versiones():
