@@ -7,7 +7,7 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Sin publicar]
+## [v1.104.0] — `actualizar` corre las migraciones del commit que construye
 
 Sin migraciones.
 
