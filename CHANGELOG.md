@@ -7,6 +7,48 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.102.0] — `list-backups` y `restore-db` dejan de mentir sobre los respaldos
+
+Sin migraciones. Es un cambio de la CLI de provisioning, que corre **desde el venv
+del host** (`.venv-scripts` de cada producto) y no desde la imagen: para que
+llegue al servidor hay que actualizar ese venv, no alcanza con subir el pin.
+
+### Corregido
+
+- 🔴 **`list-backups` mira también la carpeta donde caen los ZIP.** Completa el
+  arreglo de abajo, que se quedó corto y se vio al desplegar: los `.dump`/`.db`
+  van a `<cliente>/backups/`, pero el camino de `backup_zip` —el que tienen
+  prendido las instancias reales— escribe en `<cliente>/data/backups/`. Mirando
+  una sola carpeta, el listado mostraba el respaldo de hacía un mes como si
+  fuera el vigente, con el de esa madrugada invisible en la otra. **Peor que el
+  bug original**, porque parecía actualizado. Ahora junta los tres formatos de
+  las dos carpetas, ordena por fecha real y marca con `!` los que no son el
+  formato vivo. Y la extensión "que sirve" ya no la decide el motor solo: con
+  `backup_zip` es el ZIP, sea cual sea el motor. `restore-db` manda a la
+  pantalla de Configuración del producto cuando el respaldo vivo es un ZIP.
+
+- 🔴 **`panel_admin restore-db` y `list-backups` ven el motor de la instancia.**
+  `cmd_backup` distingue PostgreSQL de SQLite desde el 2026-08-10, pero los dos
+  comandos que **leen** esos respaldos habían quedado con el glob de `*.db`.
+  Contra una instancia migrada:
+  - `list-backups` decía *«Sin backups de DB»* sobre una instancia
+    perfectamente respaldada, porque sus respaldos son los `.dump` de
+    `pg_dump`. Ahora lista los dos formatos, dice con qué motor corre la
+    instancia y marca los que no le sirven.
+  - `restore-db` copiaba un `.db` sobre `data/<db>.db` —un archivo que en esa
+    instancia no lee nadie—, imprimía `[OK] DB restaurada` y no cambiaba un
+    solo dato. Ahora **se niega**, con dos señales independientes (el
+    contenedor declara una URL PostgreSQL, o no existe el archivo SQLite), y
+    explica cuál es el camino real.
+
+  Restaurar un `.dump` con `pg_restore` **sigue sin estar automatizado**: la
+  decisión de adaptar el comando o retirarlo está abierta. Lo que se cierra
+  acá es el camino silencioso al desastre.
+
+  De paso: la selección interactiva indexaba sobre una lista distinta de la que
+  imprimía, así que al listar los dos formatos el número elegido habría
+  apuntado a otra fila. Ahora es la misma lista.
+
 ## [v1.101.0] — Tres huecos del cobro por QR de ventas (plan ERP de VentaLibra)
 
 ### Agregado

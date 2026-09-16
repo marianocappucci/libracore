@@ -858,21 +858,77 @@ def cmd_backup_all():
             print(f"[OK] '{c['slug']}' respaldado.")
 
 
+def _zips_dir(c: dict) -> Path:
+    """Donde deja los ZIP el camino de `backup_zip`. Ver `_backup_zip`."""
+    return c["dir"] / "data" / "backups"
+
+
+def _backups_de_db(c: dict) -> list[Path]:
+    """Los respaldos de base de una instancia, **de los TRES formatos**.
+
+    🔴 Y de **dos carpetas distintas**, que es lo que se habia pasado por alto
+    el 2026-09-15: los `.dump`/`.db` van a `<cliente>/backups/`, pero el camino
+    de `backup_zip` --que es el que corren de verdad las instancias del VPS--
+    escribe en `<cliente>/data/backups/`. Mirar una sola carpeta deja el listado
+    mostrando respaldos de hace un mes mientras el de anoche existe en la otra,
+    que es peor que no mostrar nada: parece actualizado.
+
+    Mas nuevo primero, por fecha de archivo y no por nombre: las tres series no
+    comparten prefijo, asi que ordenar por nombre las mezclaria y pondria arriba
+    a la que empieza con la letra mas alta.
+    """
+    bdir = _backups_dir(c)
+    zdir = _zips_dir(c)
+    encontrados = [*bdir.glob("*.dump"), *bdir.glob("*.db")]
+    if zdir.is_dir():
+        encontrados += list(zdir.glob("*.zip"))
+    return sorted(encontrados, key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+def _motor_de_la_instancia(c: dict) -> tuple[str, str]:
+    """Con que motor corre la instancia, y que extension le SIRVE.
+
+    El motor sale de la misma deteccion que usa `cmd_backup` desde el
+    2026-08-10, por la misma razon: es el contenedor el que sabe, no el nombre
+    del archivo.
+
+    🔴 **Pero la extension no la decide el motor sola.** Con `backup_zip` el
+    respaldo es un ZIP que lleva el dump adentro, sea cual sea el motor -- y es
+    el modo en que corren las instancias reales. Preguntarle solo al motor
+    devolvia `.dump` y dejaba el ZIP de anoche sin marcar como el bueno.
+    """
+    motor = "PostgreSQL" if _urls_postgres_del_contenedor(c) else "SQLite"
+    if get_config().backup_zip:
+        return motor, ".zip"
+    return motor, ".dump" if motor == "PostgreSQL" else ".db"
+
+
 def cmd_list_backups(slug: str):
-    """Lista los backups de DB disponibles para el cliente."""
+    """Lista los backups de DB disponibles para el cliente.
+
+    🔴 **Mira los dos formatos y dice cual sirve.** Hasta el 2026-09-15 globaba
+    solo `*.db`, asi que contra una instancia migrada a PostgreSQL --que se
+    respalda con `pg_dump` a un `.dump` desde el 2026-08-10-- imprimia
+    *"Sin backups de DB"* sobre una instancia perfectamente respaldada. El
+    backup ya distinguia motor; el listado se habia quedado atras, y el unico
+    sintoma era un mensaje tranquilizador al reves.
+    """
     c = find_client(slug)
     if not c:
         print(f"[ERROR] Cliente '{slug}' no encontrado.")
         return
     bdir = _backups_dir(c)
-    dbs  = sorted(bdir.glob("*.db"), reverse=True)
-    if not dbs:
-        print(f"  Sin backups de DB en {bdir}")
+    motor, esperado = _motor_de_la_instancia(c)
+    archivos = _backups_de_db(c)
+    if not archivos:
+        print(f"  Sin backups de DB en {bdir} ni en {_zips_dir(c)} "
+              f"(la instancia corre {motor} y respalda a `*{esperado}`)")
         return
-    print(f"\n  Backups disponibles para '{slug}':")
-    print(f"  {'#':<3}  {'ARCHIVO':<35}  {'TAMAÑO':>8}  FECHA")
-    print("  " + "-" * 70)
-    for i, f in enumerate(dbs, 1):
+    print(f"\n  Backups disponibles para '{slug}'  --  la instancia corre {motor} "
+          f"y sus respaldos vivos son los `*{esperado}`:")
+    print(f"  {'':<2}{'#':<3}  {'ARCHIVO':<40}  {'TIPO':<12}  {'TAMAÑO':>8}  FECHA")
+    print("  " + "-" * 88)
+    for i, f in enumerate(archivos, 1):
         # 🔴 `dd-mm-aaaa`, que es el formato visible del ecosistema: esto se
         # imprime en pantalla. Los `strftime` ISO que quedan en este archivo
         # arman nombres de archivo y tags, y esos siguen en ISO a proposito --
@@ -880,12 +936,38 @@ def cmd_list_backups(slug: str):
         # mantenga el mismo ancho que el resto de la tabla.
         mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%d-%m-%Y %H:%M:%S")
         size  = f"{f.stat().st_size/1_048_576:.1f} MB"
-        print(f"  {i:<3}  {f.name:<35}  {size:>8}  {mtime}")
+        suyo  = {".zip": "ZIP", ".dump": "PostgreSQL", ".db": "SQLite"}[f.suffix]
+        # El que no es del formato vivo de la instancia queda marcado: existe,
+        # pero no es el que hay que restaurar.
+        marca = "  " if f.suffix == esperado else "! "
+        print(f"  {marca}{i:<3}  {f.name:<40}  {suyo:<12}  {size:>8}  {mtime}")
+    if not any(f.suffix == esperado for f in archivos):
+        print(f"\n  [AVISO] Ninguno de estos respaldos es un `{esperado}`, que es lo que "
+              f"produce hoy esta instancia: son de otro momento y NO la restauran.")
+    elif any(f.suffix != esperado for f in archivos):
+        print("\n  Los marcados con `!` son de otro formato o de antes de migrar: "
+              "estan ahi, pero no restauran esta instancia.")
     print()
 
 
 def cmd_restore_db(slug: str, backup_file: str | None = None):
-    """Restaura la DB de un cliente desde un backup. Para el contenedor durante el proceso."""
+    """Restaura la DB **SQLite** de un cliente desde un backup.
+
+    Para el contenedor durante el proceso.
+
+    🔴 **Se niega contra una instancia PostgreSQL, en vez de "restaurarla".**
+    Este comando copia un archivo sobre `data/<db>.db`; en una instancia
+    migrada ese archivo no lo lee nadie, asi que la restauracion terminaba con
+    un `[OK] DB restaurada` y **cero datos cambiados** -- y el operador se iba
+    convencido de haber recuperado la base. Un restore que miente es peor que
+    uno que falta, por la misma razon por la que lo era el backup del cron
+    antes del 2026-08-10.
+
+    Restaurar un `.dump` de PostgreSQL es otro procedimiento (`pg_restore`
+    contra el contenedor de la base) y todavia no esta automatizado: la
+    decision de adaptarlo o retirar este comando esta abierta. Hasta que se
+    tome, lo que hace falta es que no haya un camino silencioso al desastre.
+    """
     cfg = get_config()
     import sqlite3 as _sq3
     c = find_client(slug)
@@ -893,10 +975,37 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
         print(f"[ERROR] Cliente '{slug}' no encontrado.")
         return
 
+    # -- El motor primero: lo demas no tiene sentido si no es SQLite ---------
+    #
+    # Las dos señales, y alcanza con cualquiera, porque cada una tapa el punto
+    # ciego de la otra: `docker inspect` no responde si el contenedor no esta,
+    # y el archivo puede no existir todavia en una instancia recien creada.
+    motor, esperado = _motor_de_la_instancia(c)
+    db_dest = c["dir"] / "data" / cfg.db_filename
+    if motor == "PostgreSQL" or not db_dest.exists():
+        print(f"[ERROR] '{slug}' no corre sobre SQLite: este comando no puede restaurarla.")
+        if motor == "PostgreSQL":
+            print("  El contenedor declara una URL PostgreSQL.")
+        if not db_dest.exists():
+            print(f"  No existe {db_dest}, que es lo unico que este comando sabe reemplazar.")
+        print("  Copiar un .db encima no restauraria nada: la app no lee ese archivo.")
+        print(f"  Listá sus respaldos con: python3 scripts/panel_admin.py list-backups {slug}")
+        if esperado == ".zip":
+            # El camino que SI funciona, y esta verificado: ver la pantalla de
+            # Configuracion del producto, que restaura desde este mismo ZIP.
+            print("  Sus respaldos vivos son los ZIP de `backup_zip`, y el camino que los "
+                  "restaura es la pantalla de Configuracion del producto, no este comando.")
+        else:
+            print("  Sus respaldos son los `.dump` de `pg_dump`, y restaurarlos es "
+                  "`pg_restore` contra el contenedor de la base, a mano.")
+        return
+
     # Si no se indicó archivo, mostrar lista y pedir selección
     if not backup_file:
         bdir = _backups_dir(c)
-        dbs  = sorted(bdir.glob("*.db"), reverse=True)
+        # La MISMA lista que imprime `cmd_list_backups`, o el numero que elige
+        # el operador no seria el de la fila que vio.
+        dbs = _backups_de_db(c)
         if not dbs:
             print(f"[ERROR] No hay backups disponibles en {bdir}")
             print(f"  Creá uno con: python3 scripts/panel_admin.py backup {slug}")
@@ -926,6 +1035,12 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
             magic = f.read(16)
         if not magic.startswith(b"SQLite format 3\x00"):
             print("[ERROR] El archivo no es una base de datos SQLite válida.")
+            if backup_path.suffix == ".dump":
+                print("  Es un dump de PostgreSQL. Se restaura con `pg_restore`, no con "
+                      "este comando.")
+            elif backup_path.suffix == ".zip":
+                print("  Es un ZIP de `backup_zip`. Se restaura desde la pantalla de "
+                      "Configuracion del producto, no con este comando.")
             return
         conn = _sq3.connect(str(backup_path))
         result = conn.execute("PRAGMA integrity_check").fetchone()[0]
@@ -941,8 +1056,6 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
     if confirm == "n":
         print("Cancelado.")
         return
-
-    db_dest = c["dir"] / "data" / cfg.db_filename
 
     # Parar contenedor
     info = container_status(c["container"])
