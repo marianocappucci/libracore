@@ -14,6 +14,8 @@ import pytest
 from libracore import provisioning
 from libracore.provisioning import panel_admin as pa
 
+from ._dobles import escribir_panel
+
 
 @pytest.fixture(autouse=True)
 def _reset_config():
@@ -71,6 +73,9 @@ def cfg(tmp_path, fake_docker):
         container_prefix="testprod", db_filename="testprod.db",
         repo_root=repo_root, base_port=9000,
     )
+    # `actualizar` lee las migraciones del árbol que construye (ver
+    # `test_migraciones_del_ref.py`); acá ese árbol es el repo mismo.
+    escribir_panel(repo_root)
     return provisioning.get_config()
 
 

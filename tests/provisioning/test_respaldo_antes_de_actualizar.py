@@ -23,6 +23,8 @@ import pytest
 from libracore import provisioning
 from libracore.provisioning import panel_admin as pa
 
+from ._dobles import build_falso
+
 # Tomada al importar, antes de que el `conftest` la reemplace por el doble.
 _RESPALDO_PREVIO_REAL = pa._respaldo_previo
 
@@ -84,7 +86,7 @@ def _armar(tmp_path, monkeypatch, *, migraciones=(), respaldo_ok=True,
         return "testprod:v1"
 
     monkeypatch.setattr(pa, "_respaldo_previo", _respaldo)
-    monkeypatch.setattr(pa, "build_image_tagged", lambda *a, **k: True)
+    monkeypatch.setattr(pa, "build_image_tagged", build_falso())
     monkeypatch.setattr(
         pa, "container_status",
         lambda c: {"status": "running" if corriendo else "exited"})

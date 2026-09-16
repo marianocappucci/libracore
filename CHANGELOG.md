@@ -7,6 +7,34 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.104.0] — `actualizar` corre las migraciones del commit que construye
+
+Sin migraciones.
+
+### Corregido
+
+- 🔴 **`panel_admin.py actualizar` corre las migraciones del commit que construye,
+  no las del checkout.** La imagen salía de un clon limpio de `main`, pero
+  `migraciones=` se tomaba de `get_config()`, o sea del `scripts/panel_admin.py`
+  que se ejecuta: el del checkout del VPS, que vive en `develop`. Se corría la
+  lista de `develop` sobre la imagen de `main`. Pasó el 2026-09-16 en LibraDesk:
+  el deploy a producción de un hotfix corrió `libraauth-migrar` en las tres
+  instancias antes de que esa adopción se promoviera.
+
+  Ahora `build_image_tagged(..., al_materializar=)` le pasa el árbol materializado
+  antes del `docker build`, y `cmd_actualizar` lee de ahí las migraciones con
+  `provisioning.migraciones_declaradas()` —por `ast`, sin ejecutar el script—.
+  Si el checkout declara otras, lo avisa y manda la del commit. Si no se pueden
+  leer (no hay script, no es un literal, hay más de un `configure`), **no se
+  construye ni se despliega nada**: caer a las del checkout es el defecto.
+  `--dry-run` muestra las del ref.
+
+  Leído contra los ocho productos, en `main` y en `develop`: las ocho
+  declaraciones son literales y se leen igual que las carga el panel.
+
+  ⚠️ **No cubre `nuevo_cliente.py`**, que sigue corriendo las del checkout sobre
+  la imagen que reusa o construye para el alta.
+
 ## [v1.103.0] — `libracore-migrar` no cae al dominio en los productos de core aparte
 
 Sin migraciones.

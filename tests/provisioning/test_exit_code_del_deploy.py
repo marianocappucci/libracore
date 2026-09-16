@@ -18,6 +18,8 @@ import pytest
 from libracore import provisioning
 from libracore.provisioning import panel_admin as pa
 
+from ._dobles import build_falso, escribir_panel
+
 
 @pytest.fixture(autouse=True)
 def _reset_config():
@@ -67,10 +69,11 @@ def entorno(tmp_path, monkeypatch):
         container_prefix="testprod", db_filename="testprod.db",
         repo_root=repo, base_port=9000,
     )
+    escribir_panel(repo)
 
     estado = {"build_ok": True, "up_ok": True}
     monkeypatch.setattr(pa, "build_image_tagged",
-                        lambda *a, **k: estado["build_ok"])
+                        build_falso(lambda: estado["build_ok"]))
     monkeypatch.setattr(pa, "container_status", lambda c: {"status": "running"})
     monkeypatch.setattr(pa, "compose", lambda slug, *args: subprocess.CompletedProcess(
         args, 0 if estado["up_ok"] else 1))
@@ -108,7 +111,7 @@ def test_sin_slugs_y_sin_clientes_no_es_un_fallo(tmp_path, monkeypatch):
     provisioning.configure(
         product_name="TESTPROD", image_name="testprod:latest",
         container_prefix="testprod", db_filename="testprod.db", repo_root=repo)
-    monkeypatch.setattr(pa, "build_image_tagged", lambda *a, **k: True)
+    monkeypatch.setattr(pa, "build_image_tagged", build_falso())
     monkeypatch.setattr(pa, "podar_imagenes_viejas", lambda *a, **k: ([], []))
     monkeypatch.setattr(pa, "check_venv_sync", lambda *a, **k: None)
     assert pa.cmd_actualizar() is True
