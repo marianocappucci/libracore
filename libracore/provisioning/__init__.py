@@ -18,6 +18,7 @@ producto, nunca dos productos en el mismo intérprete.
 LibraCore) se resuelven en tiempo de ejecución vía imports diferidos, mismo
 patrón que `libracore.admin.services::_plans()/_pa()/_nc()`.
 """
+import ast
 import os
 import re
 import shutil
@@ -644,8 +645,83 @@ def contexto_de_build(repo_root: Path, ref: str = "main", *,
         shutil.rmtree(padre, ignore_errors=True)
 
 
+#: Dónde declara cada producto su `configure(...)` de deploy, relativo a la raíz
+#: del repo. Es el mismo archivo en los ocho productos.
+SCRIPT_DEL_PANEL = Path("scripts") / "panel_admin.py"
+
+
+class MigracionesIlegibles(RuntimeError):
+    """No se pudo leer `migraciones=` del script del panel en el ref a desplegar."""
+
+
+def _nombre_de_la_funcion(nodo) -> str:
+    if isinstance(nodo, ast.Name):
+        return nodo.id
+    if isinstance(nodo, ast.Attribute):
+        return nodo.attr
+    return ""
+
+
+def migraciones_declaradas(contexto, script=SCRIPT_DEL_PANEL) -> tuple:
+    """Las `migraciones=` que declara el `configure(...)` del script del panel
+    **en ese árbol**, leídas sin ejecutarlo.
+
+    🔴 **Por qué existe (2026-09-16).** `cmd_actualizar` construye la imagen desde
+    un clon limpio de `main`, pero tomaba las migraciones de `get_config()`, o
+    sea del `scripts/panel_admin.py` que se está ejecutando: el del **checkout del
+    VPS**, que vive en `develop`. Se corría la lista de `develop` sobre la imagen
+    de `main`. Pasó en LibraDesk: el deploy a producción de un hotfix corrió
+    `libraauth-migrar` en las tres instancias —dos con clientes reales— antes de
+    que esa adopción se promoviera. Salió bien porque la migración era
+    idempotente; con una que no lo fuera, o con una imagen de `main` sin ese
+    comando, el deploy habría cambiado un schema que nadie aprobó o abortado por
+    un cambio que no se estaba promoviendo.
+
+    Se lee con `ast` y `literal_eval`, **no importando el script**: importarlo
+    llamaría a `configure()` y pisaría la configuración global del proceso, y
+    además ejecutaría código de otra rama adentro del panel. Por eso exige que el
+    valor sea un **literal** —lo es en los ocho productos—; si no lo es, falla en
+    vez de adivinar.
+    """
+    ruta = Path(contexto) / script
+    try:
+        fuente = ruta.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raise MigracionesIlegibles(
+            f"No existe {script} en el árbol a desplegar ({contexto}): no hay de "
+            "dónde leer las migraciones de ese commit."
+        ) from None
+    try:
+        arbol = ast.parse(fuente, filename=str(ruta))
+    except SyntaxError as e:
+        raise MigracionesIlegibles(f"{script} no se puede parsear: {e}") from None
+    llamadas = [n for n in ast.walk(arbol)
+                if isinstance(n, ast.Call) and _nombre_de_la_funcion(n.func) == "configure"]
+    if len(llamadas) != 1:
+        raise MigracionesIlegibles(
+            f"{script} tiene {len(llamadas)} llamadas a configure(...); se esperaba "
+            "exactamente una para saber qué migraciones declara."
+        )
+    kws = [k for k in llamadas[0].keywords if k.arg == "migraciones"]
+    if not kws:
+        return ()
+    try:
+        valor = ast.literal_eval(kws[0].value)
+    except (ValueError, TypeError, SyntaxError):
+        raise MigracionesIlegibles(
+            f"migraciones= en {script} no es un literal (línea "
+            f"{kws[0].value.lineno}): no se puede leer sin ejecutar el script. "
+            "Declaralas como una tupla de tuplas de strings."
+        ) from None
+    try:
+        return _migraciones_normalizadas(valor)
+    except (TypeError, ValueError) as e:
+        raise MigracionesIlegibles(f"migraciones= en {script}: {e}") from None
+
+
 def build_image_tagged(version: str, *, ref: str = "main",
-                       from_checkout: bool = False, log=print) -> bool:
+                       from_checkout: bool = False, log=print,
+                       al_materializar=None) -> bool:
     """Construye la imagen del producto activo etiquetándola **con la
     versión y además con `latest`**, y devuelve si el build salió bien.
 
@@ -658,12 +734,19 @@ def build_image_tagged(version: str, *, ref: str = "main",
     hace segura la convivencia es que los clientes dejan de usarlo: cada
     uno queda pineado a su versión, así que un `up -d` inocente ya no puede
     saltarlos a código que nadie probó para ellos.
+
+    `al_materializar(contexto, commit)`, si se pasa, se llama **con el árbol ya
+    materializado y antes del `docker build`**: es lo que le permite a
+    `cmd_actualizar` leer las migraciones del mismo commit que va a construir.
+    Una excepción ahí corta sin construir.
     """
     cfg = get_config()
     image = cfg.image_ref(version)
 
     with contexto_de_build(cfg.repo_root, ref, from_checkout=from_checkout,
                            log=log) as (contexto, commit, origen):
+        if al_materializar is not None:
+            al_materializar(contexto, commit)
         cmd = [
             "docker", "build", *docker_build_ssh_args(cfg.repo_root),
             "-t", image,
