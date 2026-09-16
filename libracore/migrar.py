@@ -101,16 +101,19 @@ def url_de_core(prefijo: str | None = None, entorno=None) -> str:
     1. `LIBRACORE_MIGRAR_URL`, que es la salida de emergencia explícita.
     2. Con `prefijo`: `<PREFIJO>_LIBRACORE_DATABASE_URL` y sus nombres
        históricos, vía `url_de_instancia(..., core=True)`.
-    3. Con `prefijo` y sin lo anterior: la del **dominio**, porque en los
-       productos de una sola base el schema del core vive ahí. Es la misma
-       regla que `ProductConfig.db_urls`, que deriva `base_core` del prefijo y
-       la hace igual a la del dominio cuando `base_core_separada` es falso.
+    3. Con `prefijo` y sin lo anterior: la del **dominio**, pero **sólo** si el
+       producto está nombrado en `url_de_instancia._UNA_SOLA_BASE`. En los
+       de base única el schema del core vive ahí; en los de core aparte,
+       caer al dominio migraría la base equivocada, así que **falla**.
     4. Sin `prefijo`: `DATABASE_URL`, que es el caso de un script en el host.
 
-    El paso 3 es el que hay que mirar con cuidado: **cae al dominio sólo cuando
-    la variable del core no existe**, que es exactamente la señal de que el
-    producto no separa las bases. Si existiera y estuviera vacía,
-    `url_de_instancia` la trata como no puesta — ver su docstring.
+    🔴 **El paso 3 cambió el 2026-09-16** (decisión del humano). Antes caía al
+    dominio siempre que faltara la variable del core, con la idea de que esa
+    ausencia era la señal de un producto de una sola base. No lo es en los
+    cuatro de core aparte: ahí es configuración faltante, y la caída migraba el
+    dominio con el schema de LibraCore **sin fallar**. Ahora la lista de base
+    única se nombra y un prefijo fuera de ella falla. Si existiera y estuviera
+    vacía, `url_de_instancia` la trata como no puesta — ver su docstring.
     """
     env = os.environ if entorno is None else entorno
 
@@ -119,11 +122,20 @@ def url_de_core(prefijo: str | None = None, entorno=None) -> str:
         return explicita
 
     if prefijo:
-        from .db.url_de_instancia import url_de_instancia
+        from .db.url_de_instancia import comparte_base_con_el_dominio, url_de_instancia
 
         del_core = url_de_instancia(prefijo, core=True, entorno=env)
         if del_core:
             return del_core
+        if not comparte_base_con_el_dominio(prefijo):
+            raise SinURL(
+                f"No hay base de LibraCore para el prefijo '{prefijo}': falta "
+                f"{prefijo.upper()}_LIBRACORE_DATABASE_URL (ni sus nombres históricos). "
+                f"'{prefijo}' no figura como producto de una sola base, así que NO "
+                "se cae a la del dominio: si el core va aparte, migraría la base "
+                "equivocada sin fallar. Definí la variable del core, o pasá el "
+                "destino explícito por LIBRACORE_MIGRAR_URL."
+            )
         del_dominio = url_de_instancia(prefijo, core=False, entorno=env)
         if del_dominio:
             return del_dominio

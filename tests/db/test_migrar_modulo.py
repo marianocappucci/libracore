@@ -160,13 +160,14 @@ def test_url_de_core_no_cae_al_dominio_si_el_core_esta_declarado():
 
 
 def test_un_producto_fuera_de_la_convencion_FALLA_en_vez_de_adivinar():
-    """🔴 **La mitad de los productos no usan `url_de_instancia`, y eso importa.**
+    """🔴 **Sin variable del core, un producto de core aparte FALLA.**
 
-    Medido el 2026-08-25 sobre los ocho: sólo LibraDesk, VentaLibra, Gestiolibra
-    y MedLibra resuelven su base con `url_de_instancia`. LibraCargo, LibraClub,
-    Contalibra y Restolibra la leen por su cuenta, así que sus nombres no están
-    en el mapa de la convención — LibraCargo, por ejemplo, usa `DATABASE_URL` a
-    secas y el mapa no lo lista.
+    Hasta el 2026-09-16 esto fallaba **por casualidad**: `DATABASE_URL` de
+    LibraCargo no estaba en el mapa de la convención, así que el dominio no
+    resolvía y la caída al dominio no tenía a dónde ir. Ese día se sumó ese
+    histórico —lo necesitaba `libraauth-migrar`— y este test se puso rojo: la
+    caída habría migrado el dominio con el schema de LibraCore. Ahora falla **a
+    propósito**, porque LibraCargo no está en `_UNA_SOLA_BASE`.
 
     Lo que se aserta acá es que en ese caso **se frena**. La alternativa
     tentadora —caer a `DATABASE_URL` cuando el prefijo no resuelve— es
@@ -305,3 +306,48 @@ def test_la_cli_migra_de_verdad_con_prefijo(tmp_path, monkeypatch, capsys):
     with sqlite3.connect(destino) as c:
         revision = c.execute("SELECT version_num FROM alembic_version").fetchone()
     assert revision and revision[0], "no quedó revisión estampada"
+
+
+# ── El endurecimiento del paso 3 (2026-09-16, decision del humano) ───────────
+
+@pytest.mark.parametrize("prefijo", ["gestiolibra", "medlibra", "libracargo", "libraclub"])
+def test_un_producto_de_core_aparte_sin_variable_del_core_FALLA(prefijo):
+    """🔴 El defecto que se cierra. Con el dominio resoluble y sin la variable del
+    core, la regla vieja caia al dominio y migraba ahi el schema de LibraCore,
+    **sin fallar**. Gestiolibra y MedLibra lo tenian desde siempre; LibraCargo y
+    LibraClub lo habrian tenido al sumar su historico."""
+    entorno = {"DATABASE_URL": f"postgresql://u:p@h/{prefijo}",
+               f"{prefijo.upper()}_DATABASE_URL": f"postgresql://u:p@h/{prefijo}"}
+    with pytest.raises(migrar.SinURL, match="una sola base"):
+        migrar.url_de_core(prefijo, entorno=entorno)
+
+
+@pytest.mark.parametrize("prefijo", ["gestiolibra", "medlibra", "libracargo", "libraclub"])
+def test_un_producto_de_core_aparte_CON_variable_del_core_la_usa(prefijo):
+    """Control del anterior: el endurecimiento frena la CAIDA, no el caso normal."""
+    entorno = {"DATABASE_URL": f"postgresql://u:p@h/{prefijo}",
+               f"{prefijo.upper()}_LIBRACORE_DATABASE_URL": f"postgresql://u:p@h/{prefijo}_core"}
+    assert migrar.url_de_core(prefijo, entorno=entorno).endswith(f"/{prefijo}_core")
+
+
+@pytest.mark.parametrize("prefijo,var", [("contalibra", "CONTALIBRA_DATABASE_URL"),
+                                         ("restolibra", "RESTOLIBRA_DATABASE_URL"),
+                                         ("ventalibra", "VENTALIBRA_DB_PATH")])
+def test_los_de_una_sola_base_siguen_cayendo_al_dominio(prefijo, var):
+    """Control: los de base unica no cambian. Su core VIVE en el dominio."""
+    entorno = {var: f"postgresql://u:p@h/{prefijo}"}
+    assert migrar.url_de_core(prefijo, entorno=entorno).endswith(f"/{prefijo}")
+
+
+def test_un_prefijo_desconocido_no_cae_al_dominio():
+    """El default es fallar: un producto nuevo tiene que nombrarse en la lista."""
+    entorno = {"PRODUCTONUEVO_DATABASE_URL": "postgresql://u:p@h/nuevo"}
+    with pytest.raises(migrar.SinURL):
+        migrar.url_de_core("productonuevo", entorno=entorno)
+
+
+def test_la_salida_de_emergencia_sigue_ganando_en_un_core_aparte():
+    """`LIBRACORE_MIGRAR_URL` es el camino explicito cuando se quiere otra base."""
+    entorno = {"DATABASE_URL": "postgresql://u:p@h/gestiolibra",
+               "LIBRACORE_MIGRAR_URL": "postgresql://u:p@h/explicita"}
+    assert migrar.url_de_core("gestiolibra", entorno=entorno).endswith("/explicita")
