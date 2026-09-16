@@ -7,6 +7,32 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Sin publicar]
+
+### Corregido
+
+- 🔴 **`panel_admin restore-db` y `list-backups` ven el motor de la instancia.**
+  `cmd_backup` distingue PostgreSQL de SQLite desde el 2026-08-10, pero los dos
+  comandos que **leen** esos respaldos habían quedado con el glob de `*.db`.
+  Contra una instancia migrada:
+  - `list-backups` decía *«Sin backups de DB»* sobre una instancia
+    perfectamente respaldada, porque sus respaldos son los `.dump` de
+    `pg_dump`. Ahora lista los dos formatos, dice con qué motor corre la
+    instancia y marca los que no le sirven.
+  - `restore-db` copiaba un `.db` sobre `data/<db>.db` —un archivo que en esa
+    instancia no lee nadie—, imprimía `[OK] DB restaurada` y no cambiaba un
+    solo dato. Ahora **se niega**, con dos señales independientes (el
+    contenedor declara una URL PostgreSQL, o no existe el archivo SQLite), y
+    explica cuál es el camino real.
+
+  Restaurar un `.dump` con `pg_restore` **sigue sin estar automatizado**: la
+  decisión de adaptar el comando o retirarlo está abierta. Lo que se cierra
+  acá es el camino silencioso al desastre.
+
+  De paso: la selección interactiva indexaba sobre una lista distinta de la que
+  imprimía, así que al listar los dos formatos el número elegido habría
+  apuntado a otra fila. Ahora es la misma lista.
+
 ## [v1.101.0] — Tres huecos del cobro por QR de ventas (plan ERP de VentaLibra)
 
 ### Agregado
