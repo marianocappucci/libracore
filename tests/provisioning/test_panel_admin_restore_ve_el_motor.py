@@ -20,6 +20,7 @@ import time
 
 import pytest
 
+from libracore import provisioning
 from libracore.provisioning import panel_admin as pa
 
 from .test_panel_admin import _mkclient, cfg, fake_docker  # noqa: F401 - fixtures
@@ -165,3 +166,102 @@ def test_el_numero_elegido_es_el_de_la_fila_listada(instancia, cfg, monkeypatch,
     # que es. Lo que NO puede pasar es que "1" agarre el `.db` de otra fila.
     assert "no es una base de datos SQLite" in salida, salida
     assert "pg_restore" in salida, salida
+
+
+# ---------------------------------------------------------------------------
+# El hueco que quedo abierto el 2026-09-15 y se vio en el VPS el 2026-09-16:
+# los respaldos que corren de verdad NO estan en `<cliente>/backups/`.
+# ---------------------------------------------------------------------------
+
+def _con_backup_zip(actual, valor: bool):
+    """Reconfigura el producto cambiando solo `backup_zip`.
+
+    `ProductConfig` es un dataclass frozen a proposito, asi que no se muta: se
+    vuelve a llamar a `configure` con los mismos valores. Reconfigurar es lo que
+    hace de verdad un producto al arrancar, asi que el test pasa por el mismo
+    camino que la realidad.
+    """
+    provisioning.configure(
+        product_name=actual.product_name, image_name=actual.image_name,
+        container_prefix=actual.container_prefix, db_filename=actual.db_filename,
+        repo_root=actual.repo_root, base_port=actual.base_port, backup_zip=valor,
+    )
+    return provisioning.get_config()
+
+
+@pytest.fixture
+def con_zips(cfg, monkeypatch):                                    # noqa: F811
+    """Una instancia como las reales: `backup_zip`, con los ZIP en data/backups.
+
+    Ademas deja en la carpeta vieja un `.dump` **mas antiguo**, que es
+    exactamente la trampa: el listado lo mostraba como si fuera el respaldo
+    vigente mientras el ZIP de anoche quedaba invisible.
+    """
+    cdir = _mkclient(cfg, "acme", db_content=b"SQLite format 3\x00")
+    viejo = cdir / "backups"
+    viejo.mkdir(parents=True, exist_ok=True)
+    (viejo / "testprod_20260812_073353.dump").write_bytes(b"PGDMP" + b"\x00" * 50)
+    zdir = cdir / "data" / "backups"
+    zdir.mkdir(parents=True, exist_ok=True)
+    (zdir / "backup_automatico_20260916_040001.zip").write_bytes(b"PK" + b"\x00" * 80)
+    ahora = time.time()
+    os.utime(zdir / "backup_automatico_20260916_040001.zip", (ahora, ahora))
+    os.utime(viejo / "testprod_20260812_073353.dump", (ahora - 35 * 86400, ahora - 35 * 86400))
+    _con_backup_zip(cfg, True)
+    return cdir
+
+
+def test_list_backups_ve_el_zip_de_data_backups(con_zips, monkeypatch, capsys):
+    """🔴 El defecto: el ZIP de anoche no aparecia, y el .dump de hace un mes si."""
+    _como_postgres(monkeypatch)
+
+    pa.cmd_list_backups("acme")
+
+    salida = capsys.readouterr().out
+    assert "backup_automatico_20260916_040001.zip" in salida, salida
+    # Y el viejo tiene que quedar MARCADO, no simplemente listado al lado.
+    lineas = [l for l in salida.splitlines() if "testprod_20260812" in l]
+    assert lineas and lineas[0].lstrip().startswith("!"), salida
+
+
+def test_el_zip_queda_primero_por_ser_el_mas_nuevo(con_zips, monkeypatch, capsys):
+    """El orden importa: el numero 1 es el que elige quien restaura."""
+    _como_postgres(monkeypatch)
+
+    pa.cmd_list_backups("acme")
+
+    filas = [l for l in capsys.readouterr().out.splitlines() if ".zip" in l or ".dump" in l]
+    assert ".zip" in filas[0], filas
+
+
+def test_restore_db_manda_a_la_pantalla_cuando_el_respaldo_es_zip(con_zips, monkeypatch, capsys):
+    """Negarse no alcanza: tiene que decir cual ES el camino que restaura."""
+    _como_postgres(monkeypatch)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("no tiene que preguntar")))
+
+    pa.cmd_restore_db("acme")
+
+    salida = capsys.readouterr().out
+    assert "[ERROR]" in salida, salida
+    assert "Configuracion" in salida, salida
+    assert "pg_restore" not in salida, salida
+
+
+def test_sin_backup_zip_el_formato_vivo_sigue_siendo_el_dump(con_zips, cfg, monkeypatch, capsys):  # noqa: F811
+    """El control: apagando `backup_zip`, lo esperado vuelve a ser el `.dump`.
+
+    Sin esto, un `_motor_de_la_instancia` que devolviera `.zip` **siempre**
+    pasaria los tests de arriba igual, y romperia a las instancias que no usan
+    ese camino.
+    """
+    _con_backup_zip(cfg, False)
+    _como_postgres(monkeypatch)
+
+    pa.cmd_list_backups("acme")
+
+    salida = capsys.readouterr().out
+    lineas = [l for l in salida.splitlines() if "testprod_20260812" in l]
+    assert lineas and not lineas[0].lstrip().startswith("!"), salida
+    lineas_zip = [l for l in salida.splitlines() if ".zip" in l and "AVISO" not in l]
+    assert lineas_zip and lineas_zip[0].lstrip().startswith("!"), salida
