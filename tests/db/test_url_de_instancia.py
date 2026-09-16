@@ -4,6 +4,7 @@ de base, con fallback a los historicos mientras se actualizan las instancias.
 import pytest
 
 from libracore.db.url_de_instancia import (
+    comparte_base_con_el_dominio,
     nombre_normalizado,
     nombres_aceptados,
     url_de_instancia,
@@ -91,3 +92,42 @@ def test_requerida_no_estorba_cuando_la_variable_esta():
 def test_requerida_tambien_rechaza_la_variable_vacia():
     with pytest.raises(RuntimeError):
         url_de_instancia("medlibra", requerida=True, entorno={"MEDLIBRA_DATABASE_URL": "   "})
+
+
+# ── LibraCargo y LibraClub (2026-09-16) ──────────────────────────────────────
+
+@pytest.mark.parametrize("prefijo", ["libracargo", "libraclub"])
+def test_libracargo_y_libraclub_toman_el_dominio_de_DATABASE_URL(prefijo):
+    """La forma real de su entorno, medida en dev y en produccion: el dominio en
+    `DATABASE_URL` y ninguna `<PREFIJO>_DATABASE_URL`."""
+    entorno = {"DATABASE_URL": "postgresql://h/dominio",
+               f"{prefijo.upper()}_LIBRACORE_DATABASE_URL": "postgresql://h/core"}
+    assert url_de_instancia(prefijo, entorno=entorno) == "postgresql://h/dominio"
+
+
+@pytest.mark.parametrize("prefijo", ["libracargo", "libraclub"])
+def test_DATABASE_URL_NUNCA_resuelve_el_core_de_libracargo_ni_libraclub(prefijo):
+    """En estos dos `DATABASE_URL` es el DOMINIO y el core va aparte: el historico
+    se cargo solo del lado del dominio."""
+    entorno = {"DATABASE_URL": "postgresql://h/dominio"}
+    assert url_de_instancia(prefijo, core=True, entorno=entorno, default="SIN") == "SIN"
+    assert "DATABASE_URL" not in nombres_aceptados(prefijo, core=True)
+
+
+def test_sumar_libracargo_y_libraclub_no_le_abre_DATABASE_URL_a_contalibra():
+    """Control: la entrada es por producto."""
+    for p in ("contalibra", "restolibra"):
+        assert "DATABASE_URL" not in nombres_aceptados(p)
+
+
+def test_los_de_una_sola_base_son_exactamente_los_medidos():
+    """🔴 La lista que autoriza a `url_de_core` a caer al dominio. Medida contra
+    las bases reales el 2026-09-16. Cambiarla es una decision, no un ajuste: por
+    eso se fija entera y no con `in`."""
+    todos = ["contalibra", "restolibra", "ventalibra", "libradesk",
+             "gestiolibra", "medlibra", "libracargo", "libraclub"]
+    una_sola = {p for p in todos if comparte_base_con_el_dominio(p)}
+    assert una_sola == {"contalibra", "restolibra", "ventalibra", "libradesk"}
+    # un prefijo desconocido NO comparte base: el default es fallar, no adivinar
+    assert comparte_base_con_el_dominio("productonuevo") is False
+    assert comparte_base_con_el_dominio("") is False
