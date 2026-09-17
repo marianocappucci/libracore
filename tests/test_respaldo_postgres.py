@@ -18,34 +18,27 @@ Los tests de acá están escritos contra esa forma de fallar:
   incompleto. Es la diferencia entre un backup que falta y un backup que
   miente.
 """
-import os
 import zipfile
 
 import pytest
+from pg_descartable import conectar
 
 from libracore.respaldo import BackupInvalido, Instancia, crear_backup, restaurar_backup
 
-
-def _url():
-    url = os.environ.get("LIBRACORE_POSTGRES_URL")
-    if not url:
-        pytest.skip("LIBRACORE_POSTGRES_URL no configurada")
-    return url
+#: Estos tests prueban el backup y el round trip, no las migraciones: se pasa
+#: una lista vacia explicita. El motor lee las de la imagen cuando recibe `None`.
+SIN_MIGRACIONES = ()
 
 
 def _conectar(url):
-    import psycopg
-
-    return psycopg.connect(url.replace("postgresql+psycopg://", "postgresql://", 1))
+    return conectar(url)
 
 
 @pytest.fixture
-def base(tmp_path):
-    """Una base con una tabla y una fila reconocible."""
-    url = _url()
+def base(bases):
+    """Una base propia con una tabla y una fila reconocible."""
+    url = bases.nueva()
     with _conectar(url) as conn:
-        conn.execute("DROP SCHEMA public CASCADE")
-        conn.execute("CREATE SCHEMA public")
         conn.execute("CREATE TABLE clientes (id serial PRIMARY KEY, nombre text)")
         conn.execute("INSERT INTO clientes (nombre) VALUES (%s)", ("Antes del backup",))
         conn.commit()
@@ -84,7 +77,7 @@ def test_el_round_trip_devuelve_los_datos_borrados(base, tmp_path):
     assert _nombres(base) == ["Despues del backup"]
 
     with open(ruta, "rb") as f:
-        r = restaurar_backup(instancia, f.read(), tmp_path / "backups")
+        r = restaurar_backup(instancia, f.read(), tmp_path / "backups", migraciones=SIN_MIGRACIONES)
 
     assert r["ok"] is True
     assert r["bases_restauradas"] == ["probe.dump"]
@@ -100,7 +93,7 @@ def test_restaurar_hace_un_backup_previo(base, tmp_path):
     ruta = crear_backup(instancia, tmp_path / "backups")
 
     with open(ruta, "rb") as f:
-        r = restaurar_backup(instancia, f.read(), tmp_path / "backups")
+        r = restaurar_backup(instancia, f.read(), tmp_path / "backups", migraciones=SIN_MIGRACIONES)
 
     previo = tmp_path / "backups" / r["backup_previo"]
     assert previo.exists()
@@ -121,7 +114,7 @@ def test_un_dump_cortado_no_llega_a_tocar_la_base(base, tmp_path):
 
     with open(roto, "rb") as f:
         with pytest.raises(BackupInvalido):
-            restaurar_backup(instancia, f.read(), tmp_path / "backups")
+            restaurar_backup(instancia, f.read(), tmp_path / "backups", migraciones=SIN_MIGRACIONES)
 
     assert _nombres(base) == ["Antes del backup"]
 
@@ -154,26 +147,15 @@ def test_una_instancia_no_puede_ser_de_los_dos_motores(tmp_path):
 # ── Dos bases PostgreSQL en la misma instancia ────────────────────────────
 
 @pytest.fixture
-def base_core(base):
+def base_core(base, bases):
     """Una SEGUNDA base, la de LibraCore, en el mismo servidor.
 
-    Es la forma real de [[gestiolibra]] y [[medlibra]] despues del corte: el
-    dominio y LibraCore no pueden compartir schema -- los dos declaran una tabla
-    `clients` con `id` de tipos incompatibles -- asi que quedan como dos bases,
-    igual que eran dos archivos en SQLite.
+    Es la forma real de [[gestiolibra]], [[medlibra]], [[libracargo]] y
+    [[libraclub]]: el dominio y LibraCore quedan como dos bases del mismo
+    servidor.
     """
-    servidor = base.rsplit("/", 1)[0]
-    nombre = base.rsplit("/", 1)[1].split("?")[0] + "_core"
-    with _conectar(servidor + "/postgres") as conn:
-        conn.autocommit = True
-        if not conn.execute(
-            "SELECT 1 FROM pg_database WHERE datname = %s", (nombre,)
-        ).fetchone():
-            conn.execute(f'CREATE DATABASE "{nombre}"')
-    url = f"{servidor}/{nombre}"
+    url = bases.nueva("_core")
     with _conectar(url) as conn:
-        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
-        conn.execute("CREATE SCHEMA public")
         conn.execute("CREATE TABLE usuarios (id serial PRIMARY KEY, nombre text)")
         conn.execute("INSERT INTO usuarios (nombre) VALUES (%s)", ("Admin de antes",))
         conn.commit()
@@ -206,7 +188,7 @@ def test_el_restore_devuelve_las_dos(base, base_core, tmp_path):
             conn.execute(f"INSERT INTO {tabla} (nombre) VALUES (%s)", (valor,))
             conn.commit()
 
-    restaurar_backup(instancia, destino.read_bytes(), tmp_path / "backups")
+    restaurar_backup(instancia, destino.read_bytes(), tmp_path / "backups", migraciones=SIN_MIGRACIONES)
 
     assert _nombres(base) == ["Antes del backup"]
     with _conectar(base_core) as conn:
