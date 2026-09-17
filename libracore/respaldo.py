@@ -615,6 +615,19 @@ def _restaurar_postgres(instancia, z, backups_dir, migraciones, cerrar_conexione
         except rp.ErrorDeRestore as exc:
             raise BackupInvalido(f"No se puede restaurar: {exc}") from exc
 
+        # Cada base tiene que estar nombrada por alguna variable de entorno, o
+        # la migracion no ve su temporal. Ver `rp.bases_sin_variable`.
+        if migraciones:
+            sin_variable = rp.bases_sin_variable([url for url, _ in instancia.dumps])
+            if sin_variable:
+                raise BackupInvalido(
+                    "No se puede restaurar: ninguna variable de entorno apunta a "
+                    f"{', '.join(sin_variable)}, asi que las migraciones no correrian "
+                    "contra la base restaurada. La URL de la base tiene que estar en el "
+                    "entorno del proceso, no solo en la configuracion de la app."
+                )
+
+        rp.vigilar_pools()
         previo = crear_backup(instancia, backups_dir, motivo="antes_restore")
 
         pares: list[tuple[str, str]] = []
@@ -639,7 +652,12 @@ def _restaurar_postgres(instancia, z, backups_dir, migraciones, cerrar_conexione
             if cerrar_conexiones is not None:
                 cerrar_conexiones()
                 cerradas = True
-            anteriores = rp.intercambiar(pares)
+            try:
+                anteriores = rp.intercambiar(pares)
+            finally:
+                # Salga bien o mal, el intercambio ya termino conexiones: los
+                # pools del proceso tienen que abrir otras. Ver `rp.vigilar_pools`.
+                rp.descartar_conexiones_anteriores()
         except Exception as exc:
             for _, temporal in pares:
                 try:

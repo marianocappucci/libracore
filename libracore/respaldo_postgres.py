@@ -197,6 +197,25 @@ def entorno_para_temporales(pares: list[tuple[str, str]], entorno: dict | None =
     return salida
 
 
+def bases_sin_variable(urls: list[str], entorno: dict | None = None) -> list[str]:
+    """Las bases que ninguna variable de entorno nombra, con el mismo criterio
+    —servidor, puerto y base— que usa `entorno_para_temporales` para reescribir.
+
+    🔴 **Si una base no tiene variable, la migracion no ve la temporal.** La
+    reescritura no encuentra que cambiar y la cadena corre contra lo que tenga
+    por defecto: otra base, el `sqlalchemy.url` del ini, o nada. Paso el
+    2026-09-17 con la suite de LibraDesk, que le pasa la URL a la app en el
+    proceso y no en el entorno: alembic fallo contra otra cosa, y lo unico que
+    impidio un restore sin migrar fue que ademas fallara. Por eso se pregunta
+    antes de tocar nada, y no se espera a ver que hace la cadena.
+    """
+    entorno = os.environ if entorno is None else entorno
+    nombradas = {
+        (_servidor_de(valor), base_de(valor)) for valor in entorno.values() if es_url_postgres(valor)
+    }
+    return [base_de(url) for url in urls if (_servidor_de(url), base_de(url)) not in nombradas]
+
+
 def correr_migraciones(migraciones, pares: list[tuple[str, str]]) -> None:
     """Corre cada cadena declarada contra las bases temporales, en orden."""
     entorno = entorno_para_temporales(pares)
@@ -227,10 +246,88 @@ def errores_de_stderr(stderr: str, tope: int = 8) -> str:
         return "sin detalle en stderr"
     utiles = [
         ln for ln in lineas
-        if re.search(r"\berror\b|\bFATAL\b|\bDETAIL\b|\bDETALLE\b|\bHINT\b", ln, re.IGNORECASE)
+        if _LINEA_DE_ERROR.search(ln) and not ln.startswith(_RUIDO_DE_SQLALCHEMY)
     ]
     elegidas = utiles[:tope] if utiles else lineas[-1:]
     return " | ".join(elegidas)
+
+
+#: Las lineas que dicen que fallo. La segunda mitad es la de una excepcion de
+#: Python (`sqlalchemy.exc.ProgrammingError: ...`, `psycopg.errors.X: ...`) y la
+#: sentencia que la causo (`[SQL: ...]`).
+#:
+#: 🔴 Hasta el 2026-09-17 solo estaba la primera mitad, y `\berror\b` no matchea
+#: `ProgrammingError`: de un traceback de alembic sobrevivia unicamente
+#: *"(Background on this error at: https://sqlalche.me/e/20/f405)"*, que es un
+#: link y no una causa. El restore de LibraCargo fallaba en el CI y el mensaje
+#: no decia por que. La mitad de Python distingue mayusculas a proposito:
+#: `self._handle_dbapi_exception(` es una linea del traceback, no el error.
+_LINEA_DE_ERROR = re.compile(
+    r"(?i:\berror\b|\bFATAL\b|\bDETAIL\b|\bDETALLE\b|\bHINT\b)"
+    r"|^[\w.]*(?:Error|Exception|errors\.\w+)\b"
+    r"|^\[SQL: "
+)
+_RUIDO_DE_SQLALCHEMY = "(Background on this error at:"
+
+
+# ── Los pools de la app despues del intercambio ─────────────────────────────
+
+_CLAVE_GENERACION = "libracore_restore_generacion"
+_generacion = 0
+_vigilando = False
+
+
+def vigilar_pools() -> None:
+    """Hace que todo pool de SQLAlchemy del proceso descarte, al pedirla, una
+    conexion abierta antes del ultimo intercambio.
+
+    🔴 **El intercambio termina las conexiones de la base viva**, y los pools no
+    se enteran: la conexion sigue en el pool, y la proxima request que la toma
+    muere con *"terminating connection due to administrator command"*. Esperar
+    que cada producto pase un `reabrir_conexiones` que deseche **todos** sus
+    engines no alcanzo: el 2026-09-17 fallaron los tests de restore de cuatro
+    productos, dos de ellos pasando `engine.dispose` — tenian otro engine mas
+    (el de auth) que nadie desechaba.
+
+    Por eso el motor no depende de un registro: escucha `connect` y `checkout`
+    en la **clase** `Pool`, que alcanza a todos los pools del proceso, tambien
+    a los creados antes. Una conexion de una generacion vieja levanta
+    `DisconnectionError` al pedirla; SQLAlchemy la invalida y abre otra, sin
+    que la request lo note. Las conexiones abiertas despues del restore no
+    pagan nada: la comparacion es un entero.
+
+    Alcanza a **este proceso**. Con varios workers de uvicorn, los otros no se
+    enteran del restore; hoy los productos corren con uno.
+
+    Si SQLAlchemy no esta instalado no hay pools que cuidar.
+    """
+    global _vigilando
+    if _vigilando:
+        return
+    try:
+        from sqlalchemy import event, exc
+        from sqlalchemy.pool import Pool
+    except ImportError:
+        return
+
+    def _al_conectar(dbapi_connection, connection_record):
+        connection_record.info[_CLAVE_GENERACION] = _generacion
+
+    def _al_pedir(dbapi_connection, connection_record, connection_proxy):
+        if connection_record.info.get(_CLAVE_GENERACION, 0) < _generacion:
+            raise exc.DisconnectionError("conexion abierta antes de un restore")
+
+    event.listen(Pool, "connect", _al_conectar)
+    event.listen(Pool, "checkout", _al_pedir)
+    _vigilando = True
+
+
+def descartar_conexiones_anteriores() -> None:
+    """Marca como viejas todas las conexiones abiertas hasta ahora. Se llama
+    despues de intentar el intercambio, salga bien o mal: si fallo a mitad de
+    camino, igual se terminaron conexiones de la viva."""
+    global _generacion
+    _generacion += 1
 
 
 def _cerrar_la_puerta(conn, base: str) -> None:
