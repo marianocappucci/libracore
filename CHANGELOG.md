@@ -7,6 +7,60 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.106.0] — Un solo motor de restore, y un backup sin sus bases ya no sale en silencio
+
+Sin migraciones de Alembic.
+
+### Cambiado
+
+- 🔴 **Un solo motor de restore: `libracore.respaldo.restaurar(...)`** (#281). La
+  pantalla de Configuración (`restaurar_backup`, misma firma) y `panel_admin.py
+  restore-db` lo llaman sin lógica propia. En PostgreSQL:
+  - El dump se restaura en `<base>__restore`, una base nueva; las migraciones
+    declaradas corren **contra esa base**, y recién al final se intercambian los
+    nombres, todas las bases o ninguna. Antes, `pg_restore --clean` sobre la viva
+    dejaba vivas las tablas que no estaban en el dump, y eso rompía las
+    migraciones posteriores.
+  - Cualquier falla antes del intercambio deja la base viva intacta.
+  - La viva queda como `<base>__antes_restore`; la del restore anterior se
+    reemplaza recién después de un intercambio exitoso. El resultado trae
+    `antes_restore` y `como_volver`.
+  - Se valida `pg_restore` ≤ la major del servidor antes de tocar nada.
+  - Las migraciones salen de `get_config().migraciones` de la imagen
+    (`respaldo.migraciones_de_la_imagen`, que importa `scripts/panel_admin.py`).
+    **Si no se pueden leer, no se restaura.**
+- **`panel_admin.py restore-db` es un envoltorio del motor** (#281): para sólo la
+  app, corre `python -m libracore.respaldo restaurar` en un contenedor efímero de
+  la misma imagen y la vuelve a levantar aunque falle. **Sólo acepta ZIP.** Se
+  retiró su rama SQLite.
+- `principal_primero` y `directorios_de_datos` pasan de `provisioning.panel_admin`
+  a `respaldo` (quedan alias con el nombre viejo).
+
+### Corregido
+
+- 🔴 **Un backup sin sus bases ya no sale en silencio** (#282). VentaLibra bajaba
+  desde su pantalla ZIPs con 0 entradas:
+  - `Instancia` rechaza una URL (`scheme://`) en `bases`, con un mensaje que manda
+    a `postgres_url`/`postgres_extra`.
+  - `_copiar_base`: una base declarada que no existe levanta `BackupInvalido`.
+  - `crear_backup` borra el ZIP a medio armar si algo falla.
+  - `POST /backups` y `GET /backup-ahora` verifican el ZIP (`verificar_backup`)
+    antes de guardarlo o entregarlo; si no pasa, lo borran y contestan 500 con el
+    motivo.
+- Los errores de `pg_dump`/`pg_restore` traen todas las líneas de error de stderr,
+  no la última (#281).
+
+### ⚠️ Al subir el pin
+
+- **Un producto que pase URLs en `bases=` no arranca**, si arma la `Instancia` en
+  `create_app`. Verificado en `origin/develop` de los ocho: VentaLibra ya lo
+  corrigió (#269).
+- **El restore necesita `scripts/` en la imagen.** LibraCargo (#211) y LibraClub
+  (#260) ya lo copian; sin eso su restore aborta antes de tocar.
+- El usuario de la instancia tiene que poder `CREATE DATABASE`,
+  `pg_terminate_backend` y `ALTER DATABASE ... RENAME`. Medido en los 21 sidecars
+  del VPS: superuser en todos.
+
 ## [v1.105.0] — El alta corre las migraciones de la imagen, y el movimiento sin caja toma la del turno
 
 Sin migraciones.

@@ -37,6 +37,7 @@ from libracore.respaldo import (
     crear_backup,
     listar_backups,
     restaurar_backup,
+    verificar_backup,
 )
 
 # Lo que el navegador puede mostrar y los generadores de PDF/ticket saben
@@ -181,6 +182,32 @@ def build_backup_router(
     router = APIRouter(prefix=prefix, tags=["config"])
     _resolver = instancia if callable(instancia) else (lambda: instancia)
 
+    def _backup_verificado(motivo: str) -> str:
+        """Arma el ZIP y **lo abre para verificarlo** antes de guardarlo o
+        entregarlo.
+
+        🔴 Hasta el 2026-09-17 la pantalla no verificaba nada: devolvia lo que
+        saliera de `crear_backup`. VentaLibra estuvo bajando ZIPs de **0
+        entradas** —pasaba las URLs de PostgreSQL en `bases`— y el cliente
+        recibia un archivo con nombre de backup. El cron ya verificaba desde el
+        2026-08-12 (`verificar_backup`); la pantalla, que es lo que usa el
+        cliente, se habia quedado atras.
+
+        Un backup que no pasa la verificacion **se borra** y se contesta 500 con
+        el motivo: no es un problema del pedido, es de la instancia.
+        """
+        inst = _resolver()
+        try:
+            destino = crear_backup(inst, backups_dir, motivo=motivo)
+        except BackupInvalido as exc:
+            raise HTTPException(500, f"No se pudo hacer el backup: {exc}") from exc
+        try:
+            verificar_backup(destino, inst)
+        except BackupInvalido as exc:
+            os.unlink(destino)
+            raise HTTPException(500, f"El backup salio incompleto y no se guardo: {exc}") from exc
+        return str(destino)
+
     @router.get("/backups")
     def listar():
         return listar_backups(backups_dir)
@@ -190,7 +217,7 @@ def build_backup_router(
         """Backup a pedido. Es el boton "Backup rapido" que Contalibra tiene
         siempre visible al lado de las pestanas: el cliente lo aprieta antes de
         hacer algo que lo pone nervioso."""
-        destino = crear_backup(_resolver(), backups_dir, motivo="manual")
+        destino = _backup_verificado("manual")
         return {"ok": True, "filename": os.path.basename(destino)}
 
     @router.get("/backups/{filename}")
@@ -207,8 +234,7 @@ def build_backup_router(
         """Genera y devuelve el backup en la misma request, sin dejarlo en el
         servidor. Es lo que el cliente quiere el 90% de las veces —"dame una
         copia"— y evita que cada descarga sume un archivo al disco del VPS."""
-        inst = _resolver()
-        destino = crear_backup(inst, backups_dir, motivo="descarga")
+        destino = _backup_verificado("descarga")
         return FileResponse(
             destino, media_type="application/zip", filename=os.path.basename(destino),
         )
