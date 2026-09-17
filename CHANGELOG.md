@@ -7,6 +7,48 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.107.0] — Reabrir día: un admin puede anular un cierre diario, con motivo
+
+Migración de Alembic: `0011_reabrir_cierre_diario`.
+
+### Agregado
+
+- `libracore.db.cierre_diario.reabrir_dia(cierre_id, usuario_id, motivo)`:
+  anula un cierre (no lo borra — le marca `anulado_en`/`anulado_por`/
+  `motivo_anulacion`) y libera el día para volver a abrir turnos. Motivo
+  obligatorio; rechaza un cierre inexistente, ya anulado, o si la sucursal
+  tiene un cierre ACTIVO de una fecha posterior (dejaría un día suelto
+  detrás de uno ya cerrado). El cierre anulado conserva su `numero`; volver
+  a cerrar el mismo día arma uno nuevo, con el siguiente.
+- Endpoint `POST /api/cierre-diario/{id}/reabrir` (`build_cierre_diario_router`),
+  body `{motivo}`. 404 / 409 (ya anulado, cierre posterior) / 422 (motivo
+  vacío).
+- `cierres_diarios` suma `anulado_en`, `anulado_por` (FK a `usuarios`,
+  `ON DELETE SET NULL`) y `motivo_anulacion`. El UNIQUE de fecha
+  (`sucursal, fecha`) pasa a ser un índice PARCIAL (`WHERE anulado_en IS
+  NULL`) — un cierre anulado ya no bloquea volver a cerrar ese día. El de
+  `numero` no cambia.
+
+### ⚠️ Al subir el pin
+
+- 🔴 **`POST /{id}/reabrir` sólo se monta si el producto pasa
+  `autorizar_reabrir`** (parámetro nuevo, opcional). Anular un cierre es más
+  sensible que cerrarlo y el pedido es "sólo admin"; el motor no sabe cómo se
+  llama ese rol en cada producto, y la protección de módulo deja pasar al
+  cajero en VentaLibra y LibraClub. Sin el parámetro la ruta **no existe**:
+  subir el pin sin tocar `main.py` es seguro y no cambia nada. Para ofrecer
+  la reapertura, `autorizar_reabrir=Depends(require_role("admin"))` (o el
+  helper de rol del producto).
+- Los mensajes de `DiaCerradoError`/`DiaYaCerradoError` ahora muestran la
+  fecha en `dd-mm-aaaa` (antes ISO). Ningún test de los 4 consumidores
+  (VentaLibra, LibraClub, Contalibra, Restolibra) asserteaba el texto viejo
+  al momento de este cambio — revisar igual si algo nuevo lo hace.
+- `cierre_diario.crear_tablas()` sigue siendo `CREATE TABLE/INDEX IF NOT
+  EXISTS` puro — no migra una tabla existente (eso es trabajo exclusivo de
+  la `0011`, a propósito: LibraClub la llama en cada arranque, y un `ALTER`
+  ahí adentro desharía un `alembic downgrade` en el próximo boot — ver el
+  docstring de la migración).
+
 ## [v1.106.1] — El restore no deja pools muertos, frena si no puede migrar la base restaurada y dice por qué falló
 
 Sin migraciones de Alembic. Corrige el motor de restore de v1.106.0, que no llegó a ningún producto: los tests de restore de los productos lo encontraron en los PRs de bump.
