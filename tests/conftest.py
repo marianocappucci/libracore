@@ -131,3 +131,19 @@ def head_de_la_cadena() -> str:
 
     raiz = pathlib.Path(__file__).resolve().parents[1]
     return ScriptDirectory.from_config(Config(str(raiz / "alembic.ini"))).get_current_head()
+
+
+@pytest.fixture
+def bases():
+    """Bases PostgreSQL propias del test, borradas al terminar.
+
+    Ver `tests/pg_descartable.py`: el restore renombra bases y corta
+    conexiones, asi que nunca se hace sobre la de `LIBRACORE_POSTGRES_URL`.
+    """
+    from pg_descartable import Bases
+
+    b = Bases()
+    try:
+        yield b
+    finally:
+        b.limpiar()

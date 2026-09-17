@@ -260,10 +260,12 @@ def _correr_pg(binario: str, argumentos: list[str], url: str, que: str) -> None:
             f"sobre PostgreSQL lo necesita (paquete postgresql-client)."
         )
     if r.returncode != 0:
-        detalle = (r.stderr or "").strip().splitlines()
+        # Todas las lineas de error y no la ultima: ver `errores_de_stderr`.
+        from .respaldo_postgres import errores_de_stderr
+
         raise BackupInvalido(
             f"No se pudo {que}: {binario} termino con codigo {r.returncode}. "
-            f"{detalle[-1] if detalle else 'sin detalle en stderr'}"
+            f"{errores_de_stderr(r.stderr)}"
         )
 
 
@@ -478,36 +480,167 @@ def _validar(contenido: bytes, instancia: Instancia) -> zipfile.ZipFile:
     return z
 
 
+def restaurar(
+    instancia: Instancia,
+    origen,
+    backups_dir,
+    *,
+    migraciones=None,
+    cerrar_conexiones=None,
+    reabrir_conexiones=None,
+) -> dict:
+    """**El** restore de una instancia. La unica puerta.
+
+    La llaman, sin logica propia, la pantalla de Configuracion de los productos
+    (`config_router`, via `restaurar_backup`) y `panel_admin.py restore-db`
+    (via `python -m libracore.respaldo restaurar`, dentro del contenedor de la
+    app). Hasta el 2026-09-17 eran dos caminos que no compartian una linea, y
+    el segundo ni siquiera sabia restaurar PostgreSQL.
+
+    `origen` es el ZIP: sus bytes (lo que sube la pantalla) o su ruta (lo que
+    deja el cron en `data/backups/`, o lo que se bajo de Drive/Dropbox).
+
+    **Antes de tocar nada hace un backup del estado actual**, y no en un
+    `try/except` que se lo trague: si esa copia falla, el restore no arranca.
+
+    En una instancia PostgreSQL:
+
+    - `migraciones` son las cadenas declaradas en el `configure()` del
+      producto. Con `None` se leen de la imagen (`migraciones_de_la_imagen`); si
+      no se pueden leer, **aborta antes de tocar**. Restaurar sin migrar deja
+      una base que la app en curso no sabe leer —o que no la deja arrancar—.
+    - El dump se restaura en bases temporales, las migraciones corren contra
+      ellas, y recien al final se intercambian por nombre. Ver
+      `libracore.respaldo_postgres`.
+
+    🔴 **`cerrar_conexiones` / `reabrir_conexiones` no son opcionales en la
+    practica, aunque la firma los deje pasar.** En SQLite reemplazar el archivo
+    con el proceso abierto no hace nada visible: el descriptor sigue en el
+    inodo viejo y la app sirve la base ANTERIOR. En PostgreSQL el pool queda
+    con conexiones a una base que cambio de nombre. El producto pasa lo que
+    corresponda a su capa de datos — `engine.dispose` en los que usan
+    SQLAlchemy.
+    """
+    contenido = origen if isinstance(origen, (bytes, bytearray)) else Path(origen).read_bytes()
+    z = _validar(bytes(contenido), instancia)
+    if instancia.postgres_url:
+        return _restaurar_postgres(
+            instancia, z, backups_dir, migraciones, cerrar_conexiones, reabrir_conexiones,
+        )
+    return _restaurar_sqlite(instancia, z, backups_dir, cerrar_conexiones, reabrir_conexiones)
+
+
 def restaurar_backup(
     instancia: Instancia,
     contenido: bytes,
     backups_dir,
     cerrar_conexiones=None,
     reabrir_conexiones=None,
+    migraciones=None,
 ) -> dict:
-    """Reemplaza las bases y los directorios de la instancia por los del ZIP.
+    """La firma que usa `config_router` desde v1.11.0. Es `restaurar`, nada mas."""
+    return restaurar(
+        instancia, contenido, backups_dir, migraciones=migraciones,
+        cerrar_conexiones=cerrar_conexiones, reabrir_conexiones=reabrir_conexiones,
+    )
 
-    **Antes de tocar nada hace un backup del estado actual**, y no en un
-    `try/except` que se lo trague: si esa copia falla, el restore no arranca.
-    Restaurar es la operacion mas destructiva que el cliente puede disparar
-    solo desde una pantalla, y sin red no se hace.
 
-    🔴 **`cerrar_conexiones` / `reabrir_conexiones` no son opcionales en la
-    practica, aunque la firma los deje pasar.** Reemplazar el archivo mientras
-    el proceso lo tiene abierto **no hace nada visible**: en Linux el descriptor
-    sigue apuntando al inodo viejo, asi que la app sigue sirviendo la base
-    ANTERIOR hasta que alguien reinicie el contenedor. El endpoint devuelve
-    `ok`, la pantalla dice que salio bien, y los datos son los de antes.
+def _restaurar_postgres(instancia, z, backups_dir, migraciones, cerrar_conexiones, reabrir_conexiones) -> dict:
+    from . import respaldo_postgres as rp
 
-    Lo encontro un test de LibraDesk que restauraba y despues preguntaba por
-    los clientes: seguian los de despues del backup.
+    # Las migraciones se resuelven PRIMERO: si la imagen no las declara, no hay
+    # restore posible y no tiene sentido ni hacer el backup previo.
+    if migraciones is None:
+        migraciones = migraciones_de_la_imagen()
 
-    El producto pasa lo que corresponda a su capa de datos — `engine.dispose`
-    en los que usan SQLAlchemy, cerrar y reabrir la conexion en los que usan
-    sqlite3 crudo.
-    """
-    z = _validar(contenido, instancia)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        z.extractall(tmp)
 
+        # Validar TODAS las bases antes de tocar la primera. `pg_restore --list`
+        # lee el indice del dump sin ejecutar una sola sentencia: si el archivo
+        # esta cortado o no es un dump, se sabe ahora y no a mitad del restore.
+        for url, nombre_en_zip in instancia.dumps:
+            entrante = tmp / "bases" / nombre_en_zip
+            if not entrante.exists():
+                raise BackupInvalido(
+                    f"El backup no trae {nombre_en_zip}: esta instancia necesita "
+                    f"{sorted(instancia.nombres_en_zip)} para restaurarse entera."
+                )
+            with open(entrante, "rb") as f:
+                if f.read(len(_MAGIC_PGDUMP)) != _MAGIC_PGDUMP:
+                    raise BackupInvalido(f"{nombre_en_zip} no es un dump de PostgreSQL valido.")
+            _correr_pg("pg_restore", ["--list", str(entrante)], url, "leer el dump del backup")
+
+        try:
+            cliente = rp.version_pg_restore()
+            for url, _ in instancia.dumps:
+                servidor = rp.version_servidor(url)
+                if cliente > servidor:
+                    raise BackupInvalido(
+                        f"pg_restore {cliente} no puede restaurar contra un servidor PostgreSQL "
+                        f"{servidor}: la imagen tiene que traer el cliente de la misma major "
+                        f"que el servidor."
+                    )
+        except rp.ErrorDeRestore as exc:
+            raise BackupInvalido(f"No se puede restaurar: {exc}") from exc
+
+        previo = crear_backup(instancia, backups_dir, motivo="antes_restore")
+
+        pares: list[tuple[str, str]] = []
+        cerradas = False
+        try:
+            for url, nombre_en_zip in instancia.dumps:
+                temporal = rp.crear_temporal(url)
+                pares.append((url, temporal))
+                # Contra una base vacia recien creada: sin `--clean`. Con
+                # `--exit-on-error` y `--single-transaction`, cualquier error
+                # —una FK que los datos no cumplen, un dump de otra version—
+                # corta en la primera sentencia y no deja nada a medias.
+                _correr_pg(
+                    "pg_restore",
+                    ["--no-owner", "--no-privileges", "--single-transaction", "--exit-on-error",
+                     str(tmp / "bases" / nombre_en_zip)],
+                    temporal,
+                    f"restaurar {nombre_en_zip}",
+                )
+            rp.correr_migraciones(migraciones, pares)
+
+            if cerrar_conexiones is not None:
+                cerrar_conexiones()
+                cerradas = True
+            anteriores = rp.intercambiar(pares)
+        except Exception as exc:
+            for _, temporal in pares:
+                try:
+                    rp.borrar_temporal(temporal)
+                except Exception:  # noqa: BLE001 - limpiar no debe tapar la causa
+                    pass
+            if cerradas and reabrir_conexiones is not None:
+                reabrir_conexiones()
+            if isinstance(exc, BackupInvalido):
+                raise
+            if isinstance(exc, rp.ErrorDeRestore):
+                raise BackupInvalido(f"No se restauro nada, la base sigue como estaba: {exc}") from exc
+            raise
+
+        _reponer_directorios(instancia, tmp)
+
+    if reabrir_conexiones is not None:
+        reabrir_conexiones()
+
+    return {
+        "ok": True,
+        "bases_restauradas": [nombre for _, nombre in instancia.dumps],
+        "backup_previo": Path(previo).name,
+        "antes_restore": anteriores,
+        "como_volver": rp.como_volver(anteriores),
+    }
+
+
+def _restaurar_sqlite(instancia, z, backups_dir, cerrar_conexiones, reabrir_conexiones) -> dict:
+    """El camino de las instancias SQLite. Se conserva hasta que se decida
+    retirarlo en su propia tanda: ningun producto corre hoy sobre SQLite."""
     previo = crear_backup(instancia, backups_dir, motivo="antes_restore")
 
     # Antes de mover: suelta los descriptores. En Linux evita el inodo
@@ -520,42 +653,6 @@ def restaurar_backup(
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         z.extractall(tmp)
-
-        # Mismo orden que en el camino SQLite: **validar TODOS antes de tocar
-        # el primero**. Con dos bases eso importa mas todavia: dejarlas de
-        # momentos distintos es peor que no restaurar.
-        for url, nombre_en_zip in instancia.dumps:
-            entrante = tmp / "bases" / nombre_en_zip
-            # `pg_restore --list` lee el indice del dump sin ejecutar una sola
-            # sentencia, asi que es el equivalente exacto del
-            # `PRAGMA integrity_check`: si el archivo esta cortado o no es un
-            # dump, se sabe ahora y no a mitad del restore.
-            with open(entrante, "rb") as f:
-                if f.read(len(_MAGIC_PGDUMP)) != _MAGIC_PGDUMP:
-                    raise BackupInvalido(
-                        f"{nombre_en_zip} no es un dump de PostgreSQL valido."
-                    )
-            _correr_pg(
-                "pg_restore", ["--list", str(entrante)], url,
-                "leer el dump del backup",
-            )
-
-        for url, nombre_en_zip in instancia.dumps:
-            entrante = tmp / "bases" / nombre_en_zip
-            # `--clean --if-exists` borra cada objeto del dump antes de
-            # recrearlo. NO es lo mismo que reemplazar el archivo en SQLite:
-            # una tabla que exista en la base y no en el dump sobrevive. Se
-            # deja asi a proposito —vaciar el schema entero convierte cualquier
-            # fallo a mitad de camino en perdida total— y el backup previo
-            # obligatorio de arriba es la red para ese caso.
-            _correr_pg(
-                "pg_restore",
-                ["--clean", "--if-exists", "--no-owner", "--no-privileges",
-                 "--single-transaction", str(entrante)],
-                url,
-                "restaurar la base PostgreSQL",
-            )
-            restauradas.append(nombre_en_zip)
 
         # Se validan TODAS las bases antes de pisar la primera: a mitad de
         # camino la instancia queda mezclada y no hay vuelta atras automatica.
@@ -591,17 +688,10 @@ def restaurar_backup(
                         pass
             restauradas.append(base.name)
 
-        for carpeta in instancia.directorios:
-            entrante = tmp / "datos" / carpeta.name
-            if not entrante.is_dir():
-                continue
-            if carpeta.exists():
-                shutil.rmtree(carpeta)
-            shutil.move(str(entrante), str(carpeta))
+        _reponer_directorios(instancia, tmp)
 
-    # Despues de mover: el pool vuelve a abrir contra el archivo nuevo. Va
-    # fuera del `with` del temporal pero dentro del flujo normal — si esto no
-    # corre, el restore no tuvo efecto para el proceso en curso.
+    # Despues de mover: el pool vuelve a abrir contra el archivo nuevo. Si esto
+    # no corre, el restore no tuvo efecto para el proceso en curso.
     if reabrir_conexiones is not None:
         reabrir_conexiones()
 
@@ -610,3 +700,158 @@ def restaurar_backup(
         "bases_restauradas": restauradas,
         "backup_previo": Path(previo).name,
     }
+
+
+def _reponer_directorios(instancia: Instancia, extraido: Path) -> None:
+    """Los directorios de datos se reemplazan enteros, sin merge."""
+    for carpeta in instancia.directorios:
+        entrante = extraido / "datos" / carpeta.name
+        if not entrante.is_dir():
+            continue
+        if carpeta.exists():
+            shutil.rmtree(carpeta)
+        shutil.move(str(entrante), str(carpeta))
+
+
+# ── Lo que necesita el restore cuando corre DENTRO del contenedor ────────────
+
+def migraciones_de_la_imagen(raiz=".") -> tuple:
+    """Las cadenas de migracion que declara el producto de ESTA imagen.
+
+    Salen de `get_config().migraciones`, despues de importar el
+    `scripts/panel_admin.py` que viaja en la imagen: es la misma declaracion
+    que lee `panel_admin.py actualizar` para desplegar.
+
+    🔴 **Se lee de la imagen y no del checkout del host.** El checkout del VPS
+    esta en `develop`; la imagen, en lo que se desplego. El 2026-09-16 esa
+    diferencia hizo que un deploy de `main` corriera una migracion que solo
+    estaba en `develop`. Aca el restore corre con el codigo de la imagen, asi
+    que las migraciones tienen que ser las de la imagen.
+
+    Si no se pueden leer, **no se restaura**: medido el 2026-09-17, las
+    imagenes de LibraCargo y LibraClub no traen `scripts/`.
+    """
+    import importlib
+    import sys
+
+    carpeta = str(Path(raiz).resolve())
+    if carpeta not in sys.path:
+        sys.path.insert(0, carpeta)
+    try:
+        importlib.import_module("scripts.panel_admin")
+    except Exception as exc:  # noqa: BLE001 - cualquier falla es "no se sabe como migrar"
+        raise BackupInvalido(
+            "No se puede restaurar: no se pudieron leer las migraciones que declara el "
+            f"producto (scripts/panel_admin.py en {carpeta}): {exc}. Restaurar sin "
+            "migrar dejaria una base que esta version de la app no sabe leer."
+        ) from exc
+    from .provisioning import get_config
+
+    migraciones = tuple(tuple(c) for c in get_config().migraciones)
+    if not migraciones:
+        raise BackupInvalido(
+            "No se puede restaurar: el producto no declara migraciones en su configure()."
+        )
+    return migraciones
+
+
+def principal_primero(urls: list[str], nombre: str) -> list[str]:
+    """Pone adelante la base del DOMINIO, que es la que el producto respalda
+    como principal.
+
+    🔴 **No alcanza con respetar el orden en que vinieron.** Las URLs salen de
+    las variables del contenedor, o sea del orden en que estan escritas en el
+    compose. Si alguien reordena dos lineas, la principal pasaria a ser la de
+    LibraCore y las dos bases caerian en el mismo archivo del ZIP.
+
+    El criterio es el nombre: la base del dominio se llama igual que el
+    producto (`gestiolibra`), la de LibraCore lleva sufijo (`gestiolibra_core`).
+    Si ninguna coincide, se deja el orden como vino — no es un caso conocido, y
+    reordenar a ciegas seria peor que no tocar nada.
+    """
+    def _base(url: str) -> str:
+        return url.rstrip("/").rsplit("/", 1)[-1].split("?")[0]
+
+    exactas = [u for u in urls if _base(u) == nombre]
+    if not exactas:
+        return list(urls)
+    return exactas + [u for u in urls if _base(u) != nombre]
+
+
+def directorios_de_datos(data_dir: Path) -> list[Path]:
+    """Las carpetas de `data/` que entran al ZIP: todas menos `backups/`.
+
+    Todas y no una lista fija porque cada producto guarda cosas distintas ahi.
+    `backups/` afuera porque es donde queda el propio ZIP: incluirla haria que
+    cada backup se llevara adentro a los anteriores.
+    """
+    data_dir = Path(data_dir)
+    if not data_dir.is_dir():
+        return []
+    return sorted(d for d in data_dir.iterdir() if d.is_dir() and d.name != "backups")
+
+
+def instancia_desde_entorno(nombre: str, datos, entorno: dict | None = None) -> Instancia:
+    """La `Instancia` que arma `panel_admin._instancia_del_cliente` desde el
+    host, armada desde adentro del contenedor.
+
+    Las bases salen de las variables de entorno **por su valor** —toda la que
+    sea una URL de PostgreSQL—, igual que `_urls_postgres_del_contenedor`: el
+    nombre de la variable cambia de producto a producto. Tienen que dar los
+    mismos nombres dentro del ZIP que el backup del cron, o `_validar` lo
+    rechazaria como "de otro sistema".
+    """
+    from .respaldo_postgres import es_url_postgres
+
+    urls: list[str] = []
+    for valor in (os.environ if entorno is None else entorno).values():
+        if es_url_postgres(valor):
+            normal = valor.replace("postgresql+psycopg://", "postgresql://", 1)
+            if normal not in urls:
+                urls.append(normal)
+    if not urls:
+        raise BackupInvalido(
+            "No se puede restaurar: el contenedor no declara ninguna URL de PostgreSQL."
+        )
+    principal, *extra = principal_primero(urls, nombre)
+    return Instancia(
+        nombre=nombre,
+        postgres_url=principal,
+        postgres_extra=extra,
+        directorios=directorios_de_datos(datos),
+    )
+
+
+def main(argv=None) -> int:
+    """`python -m libracore.respaldo restaurar --nombre N --zip RUTA --datos DIR`
+
+    Es lo que corre `panel_admin.py restore-db` dentro de un contenedor efimero
+    de la app, con la app parada. No tiene logica propia: arma la instancia
+    desde el entorno y llama a `restaurar`.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m libracore.respaldo")
+    sub = parser.add_subparsers(dest="comando", required=True)
+    rest = sub.add_parser("restaurar", help="restaura la instancia desde un ZIP de backup")
+    rest.add_argument("--nombre", required=True, help="el container_prefix del producto")
+    rest.add_argument("--zip", required=True, help="ruta del ZIP, vista desde el contenedor")
+    rest.add_argument("--datos", required=True, help="el directorio data/ de la instancia")
+    args = parser.parse_args(argv)
+
+    try:
+        instancia = instancia_desde_entorno(args.nombre, args.datos)
+        resultado = restaurar(instancia, Path(args.zip), Path(args.datos) / "backups")
+    except BackupInvalido as exc:
+        print(f"[ERROR] {exc}")
+        return 1
+    print(f"[OK] Restaurado desde {Path(args.zip).name}: {', '.join(resultado['bases_restauradas'])}")
+    print(f"     Backup previo: {resultado['backup_previo']}")
+    if resultado.get("antes_restore"):
+        print(f"     Bases anteriores conservadas: {', '.join(resultado['antes_restore'])}")
+        print(f"     Para volver a ellas: {resultado['como_volver']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

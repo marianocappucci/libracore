@@ -179,7 +179,9 @@ def test_un_dump_vacio_hace_fallar_el_backup(cfg_zip, monkeypatch):
 # ── sin el flag, nada cambia ──────────────────────────────────────────────────
 
 def test_sin_el_flag_sigue_haciendo_el_tar_gz(cfg, monkeypatch):  # noqa: F811
-    """Contalibra y Restolibra todavia dependen de este camino."""
+    """El camino de un producto que no prende `backup_zip`. Ninguno de los ocho
+    lo usa hoy (Contalibra y Restolibra tambien migraron), pero el flag existe
+    y apagarlo no puede dejar al cron sin respaldo."""
     _cliente_con_datos(cfg)
     _sin_postgres(monkeypatch)
 

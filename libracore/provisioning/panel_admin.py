@@ -556,47 +556,24 @@ def _dump_postgres_por_docker(url: str, destino) -> None:
 
 
 def _directorios_de_datos(data_dir: Path) -> list[Path]:
-    """Las carpetas de `data/` que entran al ZIP: todas menos `backups/`.
+    """Ver `respaldo.directorios_de_datos`.
 
-    Todas y no una lista fija (`logos`, `arca_certs`, ...) porque este código es
-    de los seis productos y cada uno guarda cosas distintas ahí — MedLibra
-    documentos clínicos, Contalibra los certificados de ARCA. Una lista fija se
-    desactualiza en silencio el día que un producto agrega una carpeta, y el
-    backup sale sin ella sin que nada falle.
-
-    🔴 **`backups/` afuera, y no es un detalle de prolijidad**: es donde queda
-    este mismo ZIP. Incluirla haría que cada backup se llevara adentro a los
-    diez anteriores, creciendo en cascada. Es la versión ordenada del problema
-    que ya tenía el `tar.gz`, que empaquetaba `data/` entero.
+    Vive alla desde el 2026-09-17: el restore que corre DENTRO del contenedor
+    (`python -m libracore.respaldo restaurar`) tiene que armar la misma
+    instancia que el backup del cron arma desde el host, y dos copias de este
+    criterio son dos ZIP con nombres distintos el dia que una cambie.
     """
-    return sorted(
-        d for d in data_dir.iterdir() if d.is_dir() and d.name != "backups"
-    )
+    from ..respaldo import directorios_de_datos
+
+    return directorios_de_datos(data_dir)
 
 
 def _principal_primero(urls: list[str], prefijo: str) -> list[str]:
-    """Pone adelante la base del DOMINIO, que es la que el producto respalda
-    como principal.
+    """Ver `respaldo.principal_primero`, por la misma razon que
+    `_directorios_de_datos`."""
+    from ..respaldo import principal_primero
 
-    🔴 **No alcanza con respetar el orden en que vinieron.** `urls` sale de
-    leer las variables del contenedor, o sea del orden en que estan escritas en
-    el compose. Hoy `DATABASE_URL` viene antes que
-    `<PRODUCTO>_LIBRACORE_DB_PATH` en los dos productos con dos bases, y por eso
-    funciona; el dia que alguien reordene esas dos lineas, la principal pasaria
-    a ser la de LibraCore y las dos bases caerian en el mismo archivo del ZIP.
-
-    El criterio es el nombre: la base del dominio se llama igual que el
-    producto (`gestiolibra`), la de LibraCore lleva sufijo
-    (`gestiolibra_core`). Si ninguna coincide, se deja el orden como vino — no
-    es un caso conocido, y reordenar a ciegas seria peor que no tocar nada.
-    """
-    def _base(url: str) -> str:
-        return url.rstrip("/").rsplit("/", 1)[-1].split("?")[0]
-
-    exactas = [u for u in urls if _base(u) == prefijo]
-    if not exactas:
-        return list(urls)
-    return exactas + [u for u in urls if _base(u) != prefijo]
+    return principal_primero(urls, prefijo)
 
 
 def _instancia_del_cliente(c: dict, cfg, urls_postgres: list[str]):
@@ -670,8 +647,10 @@ def cmd_backup(slug: str, quiet: bool = False):
     archivo que parece el backup de la instancia no lo es.
 
     El camino viejo (tar.gz + copia WAL-safe vía la Online Backup API de
-    sqlite3, purgando a los `BACKUP_RETENTION_DIAS`) se conserva mientras
-    Contalibra y Restolibra no migren su pantalla al motor.
+    sqlite3, purgando a los `BACKUP_RETENTION_DIAS`) sigue para un producto
+    que no prenda `backup_zip`. Hoy lo prenden los ocho —Contalibra y
+    Restolibra tambien, desde que usan `build_backup_router`—, asi que ninguna
+    instancia real pasa por aca.
 
     **Devuelve `True` si el respaldo quedó hecho y `False` si no** —cliente
     inexistente, sin `data/`, o sin base que respaldar—. Un fallo del dump o
@@ -952,141 +931,140 @@ def cmd_list_backups(slug: str):
     print()
 
 
+def _datos_en_el_contenedor(c: dict) -> str | None:
+    """Donde ve el contenedor de la app la carpeta `data/` del cliente.
+
+    Sale del bind mount real (`docker inspect`), no de una ruta supuesta: cada
+    producto la monta donde quiere, y adivinarla mal haria que el restore
+    buscara el ZIP en una carpeta vacia.
+    """
+    import json
+
+    r = docker("inspect", c["container"], "--format", "{{json .Mounts}}", capture=True)
+    if r.returncode != 0:
+        return None
+    fuente = str((c["dir"] / "data").resolve())
+    for montaje in json.loads(r.stdout or "[]"):
+        if montaje.get("Type") == "bind" and str(Path(montaje.get("Source", "")).resolve()) == fuente:
+            return montaje.get("Destination")
+    return None
+
+
 def cmd_restore_db(slug: str, backup_file: str | None = None):
-    """Restaura la DB **SQLite** de un cliente desde un backup.
+    """Restaura una instancia desde un ZIP de backup. **Envoltorio del motor.**
 
-    Para el contenedor durante el proceso.
+    No tiene logica de restore propia: para la app, corre
+    `python -m libracore.respaldo restaurar` en un contenedor efimero de la
+    MISMA imagen —con su `pg_restore`, que es el de la major del servidor, y
+    con las migraciones que declara esa imagen— y la vuelve a levantar. Todo lo
+    que importa (validar, backup previo, bases temporales, migraciones,
+    intercambio) esta en `libracore.respaldo.restaurar`, que es lo mismo que
+    corre la pantalla de Configuracion del producto.
 
-    🔴 **Se niega contra una instancia PostgreSQL, en vez de "restaurarla".**
-    Este comando copia un archivo sobre `data/<db>.db`; en una instancia
-    migrada ese archivo no lo lee nadie, asi que la restauracion terminaba con
-    un `[OK] DB restaurada` y **cero datos cambiados** -- y el operador se iba
-    convencido de haber recuperado la base. Un restore que miente es peor que
-    uno que falta, por la misma razon por la que lo era el backup del cron
-    antes del 2026-08-10.
+    🔴 **Hasta el 2026-09-17 este comando solo sabia SQLite** y, desde el PR
+    #267, se negaba ante PostgreSQL para no terminar en un `[OK]` sin datos
+    cambiados. Ningun producto corre ya sobre SQLite, asi que esa rama se
+    retiro: un restore que copia un `.db` que nadie lee no es un camino, es una
+    trampa.
 
-    Restaurar un `.dump` de PostgreSQL es otro procedimiento (`pg_restore`
-    contra el contenedor de la base) y todavia no esta automatizado: la
-    decision de adaptarlo o retirar este comando esta abierta. Hasta que se
-    tome, lo que hace falta es que no haya un camino silencioso al desastre.
+    Solo acepta **ZIP**. Un `.dump` suelto se rechaza: es del camino viejo de
+    `cmd_backup` y no trae la segunda base ni los directorios de datos. El ZIP
+    lo generan el cron (`backup_zip=True` en los ocho productos) y la pantalla.
+
+    🔴 **Para solo el contenedor de la app, no el compose entero.** `compose
+    stop` sin servicio para tambien el sidecar de PostgreSQL, y el restore
+    necesita la base arriba.
     """
     cfg = get_config()
-    import sqlite3 as _sq3
     c = find_client(slug)
     if not c:
         print(f"[ERROR] Cliente '{slug}' no encontrado.")
         return
 
-    # -- El motor primero: lo demas no tiene sentido si no es SQLite ---------
-    #
-    # Las dos señales, y alcanza con cualquiera, porque cada una tapa el punto
-    # ciego de la otra: `docker inspect` no responde si el contenedor no esta,
-    # y el archivo puede no existir todavia en una instancia recien creada.
-    motor, esperado = _motor_de_la_instancia(c)
-    db_dest = c["dir"] / "data" / cfg.db_filename
-    if motor == "PostgreSQL" or not db_dest.exists():
-        print(f"[ERROR] '{slug}' no corre sobre SQLite: este comando no puede restaurarla.")
-        if motor == "PostgreSQL":
-            print("  El contenedor declara una URL PostgreSQL.")
-        if not db_dest.exists():
-            print(f"  No existe {db_dest}, que es lo unico que este comando sabe reemplazar.")
-        print("  Copiar un .db encima no restauraria nada: la app no lee ese archivo.")
-        print(f"  Listá sus respaldos con: python3 scripts/panel_admin.py list-backups {slug}")
-        if esperado == ".zip":
-            # El camino que SI funciona, y esta verificado: ver la pantalla de
-            # Configuracion del producto, que restaura desde este mismo ZIP.
-            print("  Sus respaldos vivos son los ZIP de `backup_zip`, y el camino que los "
-                  "restaura es la pantalla de Configuracion del producto, no este comando.")
-        else:
-            print("  Sus respaldos son los `.dump` de `pg_dump`, y restaurarlos es "
-                  "`pg_restore` contra el contenedor de la base, a mano.")
+    motor, _ = _motor_de_la_instancia(c)
+    if motor != "PostgreSQL":
+        print(f"[ERROR] '{slug}' no declara una URL de PostgreSQL en su contenedor.")
+        print("  Este comando restaura instancias PostgreSQL. Si el contenedor no esta, "
+              "levantalo primero: la deteccion lee sus variables de entorno.")
         return
 
-    # Si no se indicó archivo, mostrar lista y pedir selección
     if not backup_file:
-        bdir = _backups_dir(c)
-        # La MISMA lista que imprime `cmd_list_backups`, o el numero que elige
-        # el operador no seria el de la fila que vio.
-        dbs = _backups_de_db(c)
-        if not dbs:
-            print(f"[ERROR] No hay backups disponibles en {bdir}")
+        zips = [f for f in _backups_de_db(c) if f.suffix == ".zip"]
+        if not zips:
+            print(f"[ERROR] No hay backups ZIP en {_zips_dir(c)}")
             print(f"  Creá uno con: python3 scripts/panel_admin.py backup {slug}")
             return
         cmd_list_backups(slug)
+        todos = _backups_de_db(c)
         sel = input("Número de backup a restaurar (Enter para cancelar): ").strip()
         if not sel or not sel.isdigit():
             print("Cancelado.")
             return
         idx = int(sel) - 1
-        if not (0 <= idx < len(dbs)):
+        if not (0 <= idx < len(todos)):
             print("[ERROR] Número fuera de rango.")
             return
-        backup_path = dbs[idx]
+        backup_path = todos[idx]
     else:
         backup_path = Path(backup_file)
         if not backup_path.exists():
-            # Buscar por nombre en el directorio de backups
-            backup_path = _backups_dir(c) / backup_file
+            backup_path = _zips_dir(c) / backup_file
         if not backup_path.exists():
             print(f"[ERROR] No se encontró el archivo: {backup_file}")
             return
 
-    # Validar que es SQLite
-    try:
-        with open(backup_path, "rb") as f:
-            magic = f.read(16)
-        if not magic.startswith(b"SQLite format 3\x00"):
-            print("[ERROR] El archivo no es una base de datos SQLite válida.")
-            if backup_path.suffix == ".dump":
-                print("  Es un dump de PostgreSQL. Se restaura con `pg_restore`, no con "
-                      "este comando.")
-            elif backup_path.suffix == ".zip":
-                print("  Es un ZIP de `backup_zip`. Se restaura desde la pantalla de "
-                      "Configuracion del producto, no con este comando.")
-            return
-        conn = _sq3.connect(str(backup_path))
-        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        conn.close()
-        if result != "ok":
-            print(f"[ERROR] Integridad fallida: {result}")
-            return
-    except Exception as e:
-        print(f"[ERROR] No se pudo validar el backup: {e}")
+    if backup_path.suffix != ".zip":
+        print(f"[ERROR] {backup_path.name} no es un ZIP de backup: este comando solo restaura ZIP.")
+        print("  Un `.dump` o `.db` suelto no trae todas las bases ni los directorios de "
+              "datos de la instancia.")
+        print(f"  Usá el ZIP del cron (`list-backups {slug}`) o armá uno con "
+              f"`python3 scripts/panel_admin.py backup {slug}`.")
         return
 
-    confirm = input(f"¿Restaurar '{backup_path.name}' en '{slug}'? Se reemplazarán TODOS los datos. [S/n]: ").strip().lower()
-    if confirm == "n":
+    datos_dentro = _datos_en_el_contenedor(c)
+    if not datos_dentro:
+        print(f"[ERROR] No encontré dónde monta {c['container']} la carpeta {c['dir'] / 'data'}.")
+        return
+
+    # El ZIP tiene que estar a la vista del contenedor efimero: si vino de
+    # afuera (lo bajaron de Drive, por ejemplo), se copia a `data/backups/`.
+    zdir = _zips_dir(c)
+    zdir.mkdir(parents=True, exist_ok=True)
+    if backup_path.resolve().parent != zdir.resolve():
+        copia = zdir / backup_path.name
+        shutil.copy2(backup_path, copia)
+        backup_path = copia
+    zip_dentro = f"{datos_dentro.rstrip('/')}/backups/{backup_path.name}"
+
+    confirm = input(
+        f"¿Restaurar '{backup_path.name}' en '{slug}'? Se reemplazan TODOS los datos "
+        f"(la base anterior queda conservada). [s/N]: "
+    ).strip().lower()
+    if confirm not in ("s", "si", "sí"):
         print("Cancelado.")
         return
 
-    # Parar contenedor
-    info = container_status(c["container"])
-    was_running = info["status"] == "running"
+    was_running = container_status(c["container"])["status"] == "running"
     if was_running:
-        print(f"[*] Deteniendo {c['container']} ...")
-        compose(slug, "stop")
+        print(f"[*] Deteniendo {c['container']} (solo la app) ...")
+        compose(slug, "stop", c["container"])
 
-    # Backup automático de la DB actual
-    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
-    bdir = _backups_dir(c)
-    auto = bdir / f"antes_restore_{ts}.db"
-    if db_dest.exists():
-        shutil.copy2(db_dest, auto)
-        print(f"[OK] Backup automático guardado: {auto.name}")
+    try:
+        r = compose(
+            slug, "run", "--rm", c["container"],
+            "python", "-m", "libracore.respaldo", "restaurar",
+            "--nombre", cfg.container_prefix, "--zip", zip_dentro, "--datos", datos_dentro,
+        )
+    finally:
+        if was_running:
+            print(f"[*] Levantando {c['container']} ...")
+            compose(slug, "up", "-d", c["container"])
 
-    # Reemplazar DB y limpiar WAL
-    shutil.copy2(backup_path, db_dest)
-    for ext in ("-wal", "-shm"):
-        wal = Path(str(db_dest) + ext)
-        if wal.exists():
-            wal.unlink()
-    print(f"[OK] DB restaurada desde: {backup_path.name}")
-
-    # Reiniciar si estaba corriendo
-    if was_running:
-        print(f"[*] Reiniciando {c['container']} ...")
-        compose(slug, "up", "-d")
-        print("[OK] Contenedor reiniciado.")
+    if r.returncode != 0:
+        print(f"[ERROR] El restore de '{slug}' no se completó (ver el detalle arriba). "
+              "Si el error fue antes del intercambio, la base sigue como estaba.")
+        return
+    print(f"[OK] '{slug}' restaurada desde {backup_path.name}.")
 
 
 def _respaldo_previo(slug: str) -> bool:
@@ -1840,7 +1818,7 @@ def cli():
         "resguardo-externo": lambda: cmd_resguardo_externo([slug] if slug else None),
         "estado-externo":    lambda: cmd_estado_externo([slug] if slug else None),
         "list-backups": lambda: cmd_list_backups(slug) if slug else print("Uso: panel_admin.py list-backups <slug>"),
-        "restore-db":   lambda: cmd_restore_db(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py restore-db <slug> [archivo.db]"),
+        "restore-db":   lambda: cmd_restore_db(slug, args[2] if len(args) > 2 else None) if slug else print("Uso: panel_admin.py restore-db <slug> [archivo.zip]"),
         "actualizar":  lambda: cmd_actualizar([slug] if slug else None, **build_opts),
         "versiones":   lambda: cmd_versiones(),
         "podar-imagenes": lambda: cmd_podar_imagenes(dry_run=(slug == "--dry-run")),
@@ -1873,7 +1851,7 @@ def cli():
         print("          cada instancia se respalda antes de tocarla; --sin-respaldo lo saltea.")
         print("          --ref por defecto es main, o sea lo promovido — no el checkout.")
         print("Versión:  versiones | rollback <slug> [version] | podar-imagenes [--dry-run]")
-        print("DB:       list-backups <slug> | restore-db <slug> [archivo.db]")
+        print("DB:       list-backups <slug> | restore-db <slug> [archivo.zip]")
         print("Externo:  resguardo-externo [slug] | estado-externo [slug]")
         print("Servicio: activar <slug> | pausar <slug> | suspender <slug> | estado <slug>")
         print("NPM:      npm-listar | npm-crear <slug> | npm-eliminar <slug>")
