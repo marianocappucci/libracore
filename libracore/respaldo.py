@@ -115,6 +115,18 @@ class Instancia:
     postgres_extra: list[str] = field(default_factory=list)
 
     def __post_init__(self):
+        # 🔴 Antes de convertir a `Path`, que se come la doble barra: una URL en
+        # `bases` es el cableado roto que dejo a VentaLibra con backups de 0
+        # entradas (medido el 2026-09-17 en `ventalibra-dev`). `Path` la
+        # aceptaba, `_copiar_base` no encontraba el "archivo" y el ZIP salia
+        # vacio sin que nada fallara.
+        for b in self.bases:
+            if "://" in str(b):
+                raise ValueError(
+                    f"`bases` son rutas a archivos SQLite y recibio una URL "
+                    f"({str(b).split('://', 1)[0]}://...): una base PostgreSQL va en "
+                    "`postgres_url` (la principal) o en `postgres_extra`"
+                )
         self.bases = [Path(b) for b in self.bases]
         self.directorios = [Path(d) for d in self.directorios]
         # Antes que la de "sin ninguna base": las dos aplican a una instancia
@@ -195,11 +207,19 @@ class Instancia:
 def _copiar_base(origen: Path, destino: Path) -> None:
     """Snapshot coherente de una base en uso, via la API de backup de SQLite.
 
-    Si la base no existe todavia (una instancia recien creada que no arranco),
-    no es un error: no hay nada que copiar y el backup sale sin ella.
+    🔴 **Una base declarada que no existe es un error, no un caso a saltear.**
+    Hasta el 2026-09-17 volvia en silencio, pensado para "una instancia recien
+    creada que todavia no arranco". Ese `return` es el que produjo backups
+    vacios dos veces: el 2026-08-09 (un producto pasaba el nombre de la base
+    PostgreSQL como ruta) y el 2026-09-17 (VentaLibra pasaba las URLs en
+    `bases`, y su pantalla bajaba ZIPs de 0 entradas). Un backup que falla se
+    ve; uno que sale sin la base, no.
     """
     if not origen.exists():
-        return
+        raise BackupInvalido(
+            f"No se puede hacer el backup: la base {origen} no existe. Si la "
+            f"instancia corre sobre PostgreSQL, la base va en `postgres_url`, no en `bases`."
+        )
     src = sqlite3.connect(f"file:{origen}?mode=ro", uri=True)
     try:
         dst = sqlite3.connect(str(destino))
@@ -319,7 +339,18 @@ def crear_backup(
     _rotar(destino_dir)
 
     destino = _nombre_libre(destino_dir, motivo)
+    try:
+        _escribir_zip(instancia, destino, dump)
+    except BaseException:
+        # El ZIP se abre antes de copiar las bases: si una falla, queda en
+        # disco un archivo con nombre de backup y adentro lo que alcanzo a
+        # entrar. La rotacion lo contaria como uno de los diez.
+        destino.unlink(missing_ok=True)
+        raise
+    return destino
 
+
+def _escribir_zip(instancia: Instancia, destino: Path, dump) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as z:
@@ -346,7 +377,6 @@ def crear_backup(
                         completo = Path(raiz) / a
                         relativo = completo.relative_to(carpeta.parent)
                         z.write(completo, f"datos/{relativo}")
-    return destino
 
 
 def verificar_backup(destino, instancia: Instancia) -> dict:
