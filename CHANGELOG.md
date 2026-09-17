@@ -7,6 +7,21 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.106.1] — El restore no deja pools muertos, frena si no puede migrar la base restaurada y dice por qué falló
+
+Sin migraciones de Alembic. Corrige el motor de restore de v1.106.0, que no llegó a ningún producto: los tests de restore de los productos lo encontraron en los PRs de bump.
+
+### Corregido
+
+- 🔴 **Pools muertos después del intercambio** (#285). El intercambio termina las conexiones de la base viva y los pools de SQLAlchemy no se enteraban: la primera request después de restaurar moría con `AdminShutdown`. Pasar `reabrir_conexiones` no alcanzaba —dos productos pasaban `engine.dispose` y tenían otro engine—. Ahora `respaldo_postgres.vigilar_pools()` escucha `connect`/`checkout` en la clase `Pool`: toda conexión abierta antes del último intercambio se descarta al pedirla y el pool abre otra. Alcanza a todos los pools del proceso, también a los creados antes, sin registro ni cambios en los productos. Un engine a otra base sólo se reconecta. Alcance: el proceso que restaura.
+- 🔴 **Una base que ninguna variable de entorno nombra ya no se restaura** (#285). La reescritura por valor no encontraba qué cambiar y las migraciones corrían contra otra cosa. Con migraciones declaradas, `bases_sin_variable` frena **antes del backup previo** con un mensaje que nombra la base.
+- **`errores_de_stderr` trae la excepción de Python** (`...Error: ...`, `psycopg.errors.X: ...`) y la sentencia `[SQL: ...]`, y descarta el link *"(Background on this error at: ...)"*, que era lo único que sobrevivía de un traceback de alembic (#285).
+
+### ⚠️ Al subir el pin
+
+- Un test de producto que le pase la URL de la base a la app **sólo en proceso** va a recibir 422 con *"ninguna variable de entorno apunta a …"* al restaurar con migraciones. Pasa en LibraDesk: su conftest tiene que poner la URL en el entorno.
+- Un fixture que arme la base con `create_all`, sin tabla de versión de Alembic, no se puede restaurar con migraciones: `alembic upgrade head` intenta construirla de cero. Pasa en LibraCargo (`DuplicateObject: type "accion_auditoria" already exists`). En producción las bases están migradas.
+
 ## [v1.106.0] — Un solo motor de restore, y un backup sin sus bases ya no sale en silencio
 
 Sin migraciones de Alembic.
