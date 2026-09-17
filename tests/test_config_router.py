@@ -208,6 +208,49 @@ def test_bajar_uno_al_vuelo_sin_dejarlo_en_el_servidor(client):
     assert r.content[:2] == b"PK"
 
 
+def _zip_sin_bases(instancia, destino_dir, motivo="manual", dump_fn=None):
+    """Lo que devolvia `crear_backup` para VentaLibra: un ZIP con nombre de
+    backup y ninguna base adentro."""
+    import zipfile
+    from pathlib import Path
+
+    destino = Path(destino_dir) / f"backup_{motivo}_20260917_000000.zip"
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(destino, "w") as z:
+        z.writestr("datos/logos/logo.png", b"PNG")
+    return destino
+
+
+@pytest.mark.parametrize("pedido", [("post", "/api/config/backups"), ("get", "/api/config/backup-ahora")])
+def test_un_backup_incompleto_no_se_guarda_ni_se_entrega(client, app, monkeypatch, pedido):
+    """🔴 El defecto de VentaLibra (2026-09-17): la pantalla entregaba lo que
+    saliera de `crear_backup` sin abrirlo. Ahora se verifica, y el que no pasa
+    se borra y se contesta con el motivo."""
+    import libracore.config_router as cr
+
+    monkeypatch.setattr(cr, "crear_backup", _zip_sin_bases)
+    metodo, ruta = pedido
+
+    r = getattr(client, metodo)(ruta, headers=ADMIN)
+
+    assert r.status_code == 500, r.text
+    assert "incompleto" in r.json()["detail"]
+    assert r.content[:2] != b"PK", "entrego el ZIP igual"
+    assert list(app.state.backups_dir.glob("*.zip")) == [], "el ZIP incompleto quedo en el servidor"
+
+
+def test_una_base_que_falta_da_un_error_legible_y_no_un_500_crudo(client, app):
+    """Una base declarada que no existe hace fallar el backup: la pantalla
+    tiene que recibir el motivo, no un *Internal Server Error* sin texto."""
+    app.state.instancia.bases[0].unlink()
+
+    r = client.post("/api/config/backups", headers=ADMIN)
+
+    assert r.status_code == 500
+    assert "no existe" in r.json()["detail"]
+    assert list(app.state.backups_dir.glob("*.zip")) == []
+
+
 def test_no_se_puede_bajar_algo_de_afuera_de_la_carpeta(client):
     assert client.get("/api/config/backups/..%2F..%2Fetc%2Fpasswd", headers=ADMIN).status_code in (400, 404)
 

@@ -83,20 +83,45 @@ def test_el_backup_incluye_las_dos_bases_y_los_archivos(instancia, tmp_path):
     assert "datos/documentos/estudio.pdf" in dentro, "faltan los documentos en disco"
 
 
-def test_una_base_que_todavia_no_existe_no_rompe_el_backup(tmp_path):
-    """Una instancia recien creada que nunca arranco: la segunda base todavia
-    no se creo. Que el backup falle ahi seria dejar sin respaldo justo a la
-    instancia mas facil de perder."""
+def test_una_base_declarada_que_no_existe_hace_fallar_el_backup(tmp_path):
+    """🔴 Hasta el 2026-09-17 este test afirmaba lo contrario: que una base que
+    "todavia no existe" se salteaba en silencio, pensado para una instancia
+    recien creada. Ese salteo es el que dejo a VentaLibra bajando ZIPs de 0
+    entradas —pasaba URLs de PostgreSQL en `bases`, que como archivo no
+    existen—. Un backup que falla se ve; uno que sale sin la base, no.
+
+    Y el ZIP a medio armar **no queda en disco**: la rotacion lo contaria.
+    """
     datos = tmp_path / "datos"
     _base(datos / "producto.db")
     inst = Instancia(
         nombre="producto",
-        bases=[datos / "producto.db", datos / "no_existe_todavia.db"],
+        bases=[datos / "producto.db", datos / "no_existe.db"],
     )
 
-    zip_path = crear_backup(inst, tmp_path / "backups")
-    with zipfile.ZipFile(zip_path) as z:
-        assert z.namelist() == ["bases/producto.db"]
+    with pytest.raises(BackupInvalido, match="no_existe.db"):
+        crear_backup(inst, tmp_path / "backups")
+
+    assert list((tmp_path / "backups").glob("*.zip")) == []
+
+
+@pytest.mark.parametrize("url", [
+    "postgresql://u:p@db:5432/ventalibra",
+    "postgresql+psycopg://u:p@db:5432/ventalibra_core",
+    "postgres://db/x",
+    "sqlite:////app/data/x.db",
+])
+def test_una_url_en_bases_se_rechaza_al_armar_la_instancia(url):
+    """El cableado exacto de VentaLibra el 2026-09-17. Se corta al construir la
+    instancia —al arrancar la app—, no a la hora del backup."""
+    with pytest.raises(ValueError, match="postgres_url"):
+        Instancia(nombre="ventalibra", bases=[url])
+
+
+def test_una_ruta_de_verdad_en_bases_se_sigue_aceptando(tmp_path):
+    """El control del anterior: el chequeo no puede rechazar rutas."""
+    inst = Instancia(nombre="producto", bases=[tmp_path / "datos" / "producto.db", "relativa/otra.db"])
+    assert [b.name for b in inst.bases] == ["producto.db", "otra.db"]
 
 
 def test_una_instancia_sin_bases_no_se_acepta():
