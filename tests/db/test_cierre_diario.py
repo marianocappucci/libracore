@@ -600,3 +600,200 @@ def test_tabla_cierres_ausente_distingue_el_mensaje():
     assert cd._tabla_cierres_ausente('relation "cierres_diarios" does not exist') is True
     assert cd._tabla_cierres_ausente("Cannot operate on a closed database.") is False
     assert cd._tabla_cierres_ausente("no such table: turnos_caja") is False
+
+
+def test_columna_anulado_ausente_distingue_el_mensaje():
+    assert cd._columna_anulado_ausente("no such column: anulado_en") is True
+    assert cd._columna_anulado_ausente('column "anulado_en" does not exist') is True
+    assert cd._columna_anulado_ausente("no such table: cierres_diarios") is False
+    assert cd._columna_anulado_ausente("no such column: motivo_anulacion") is False
+
+
+def test_dia_cerrado_sin_columna_anulado_cae_al_query_viejo(conn):
+    """La ventana entre desplegar este código y correr la migración `0011`:
+    la tabla existe (`0009` corrió hace rato) pero todavía no la columna
+    `anulado_en`. `dia_cerrado` no tiene que reventar -- cae al mismo query
+    de siempre, que sin la columna es exactamente lo que había antes de esta
+    versión."""
+    admin = _usuario(conn, "admin1")
+    cajero = _usuario(conn, "cajero1")
+    caja1 = _caja(conn, "Mostrador", sucursal_id=1)
+    _turno(conn, cajero, "2026-09-13 08:00:00", "2026-09-13 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=caja1)
+    cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+
+    # Se "desmigra" la tabla a mano, simulando una base que corrió `0009`
+    # pero no `0011` todavía. El índice parcial depende de la columna, así
+    # que se saca primero (SQLite no dropea una columna que un índice usa).
+    conn.execute("DROP INDEX ux_cierres_diarios_sucursal_fecha_activo")
+    conn.execute("ALTER TABLE cierres_diarios DROP COLUMN anulado_en")
+    conn.execute(
+        "CREATE UNIQUE INDEX ux_cierres_diarios_sucursal_fecha "
+        "ON cierres_diarios (COALESCE(sucursal_id, 0), fecha)"
+    )
+    conn.commit()
+
+    assert cd.dia_cerrado("2026-09-13", 1) is True
+    assert cd.dia_cerrado("2026-09-13", 2) is False
+    with pytest.raises(cd.DiaCerradoError):
+        cd.verificar_dia_abierto("2026-09-13", 1)
+
+
+# ── `reabrir_dia` ─────────────────────────────────────────────────────────
+
+
+def test_reabrir_libera_el_dia_y_permite_re_cerrar(conn):
+    admin = _usuario(conn, "admin1")
+    cajero = _usuario(conn, "cajero1")
+    caja1 = _caja(conn, "Mostrador", sucursal_id=1)
+    _turno(conn, cajero, "2026-09-13 08:00:00", "2026-09-13 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=caja1)
+    cierre = cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+
+    reabierto = cd.reabrir_dia(cierre_id=cierre["id"], usuario_id=admin, motivo="error de tipeo")
+    assert reabierto["anulado_en"] is not None
+    assert reabierto["anulado_por"] == admin
+    assert reabierto["motivo_anulacion"] == "error de tipeo"
+    assert reabierto["numero"] == cierre["numero"]  # conserva el número
+
+    # El día vuelve a estar abierto para `dia_cerrado`/`verificar_dia_abierto`.
+    assert cd.dia_cerrado("2026-09-13", 1) is False
+    cd.verificar_dia_abierto("2026-09-13", 1)  # no debe levantar nada
+
+    # Y para `create_turno()`, el camino real.
+    tid = db_turnos.create_turno(cajero, 0.0, caja_id=caja1)
+    assert db_turnos.get_turno(tid) is not None
+
+    # Re-cerrar el mismo día da un cierre NUEVO, con el número siguiente —
+    # no `DiaYaCerradoError` contra el anulado.
+    conn.execute("UPDATE turnos_caja SET estado='cerrado', cierre='2026-09-13 15:00:00', "
+                "monto_esperado_cierre=0, monto_declarado_cierre=0 WHERE id=?", (tid,))
+    conn.commit()
+    recierre = cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+    assert recierre["numero"] == cierre["numero"] + 1
+    assert recierre["id"] != cierre["id"]
+
+
+def test_reabrir_motivo_vacio(conn):
+    admin = _usuario(conn, "admin1")
+    caja1 = _caja(conn, "Mostrador", sucursal_id=1)
+    _turno(conn, admin, "2026-09-13 08:00:00", "2026-09-13 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=caja1)
+    cierre = cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+
+    with pytest.raises(cd.MotivoRequeridoError):
+        cd.reabrir_dia(cierre_id=cierre["id"], usuario_id=admin, motivo="")
+    with pytest.raises(cd.MotivoRequeridoError):
+        cd.reabrir_dia(cierre_id=cierre["id"], usuario_id=admin, motivo="   ")
+    with pytest.raises(cd.MotivoRequeridoError):
+        cd.reabrir_dia(cierre_id=cierre["id"], usuario_id=admin, motivo=None)
+
+    # No tocó nada: el cierre sigue activo.
+    assert cd.get_cierre(cierre["id"])["anulado_en"] is None
+
+
+def test_reabrir_inexistente(conn):
+    with pytest.raises(cd.CierreNoEncontradoError):
+        cd.reabrir_dia(cierre_id=999999, usuario_id=1, motivo="algo")
+
+
+def test_reabrir_ya_anulado(conn):
+    admin = _usuario(conn, "admin1")
+    caja1 = _caja(conn, "Mostrador", sucursal_id=1)
+    _turno(conn, admin, "2026-09-13 08:00:00", "2026-09-13 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=caja1)
+    cierre = cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+    cd.reabrir_dia(cierre_id=cierre["id"], usuario_id=admin, motivo="primera vez")
+
+    with pytest.raises(cd.CierreYaAnuladoError):
+        cd.reabrir_dia(cierre_id=cierre["id"], usuario_id=admin, motivo="otra vez")
+
+
+def test_reabrir_con_cierre_posterior_activo(conn):
+    admin = _usuario(conn, "admin1")
+    caja1 = _caja(conn, "Mostrador", sucursal_id=1)
+    for dia in ("2026-09-13", "2026-09-14"):
+        _turno(conn, admin, f"{dia} 08:00:00", f"{dia} 14:00:00",
+              monto_inicial=0.0, monto_esperado_cierre=0.0,
+              monto_declarado_cierre=0.0, caja_id=caja1)
+    cierre_13 = cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+    cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-14")
+
+    with pytest.raises(cd.CierrePosteriorError):
+        cd.reabrir_dia(cierre_id=cierre_13["id"], usuario_id=admin, motivo="tarde")
+
+    # No tocó nada.
+    assert cd.get_cierre(cierre_13["id"])["anulado_en"] is None
+
+
+def test_reabrir_con_cierre_posterior_anulado_no_bloquea(conn):
+    """El cierre posterior está ahí, pero ANULADO: no cuenta."""
+    admin = _usuario(conn, "admin1")
+    caja1 = _caja(conn, "Mostrador", sucursal_id=1)
+    for dia in ("2026-09-13", "2026-09-14"):
+        _turno(conn, admin, f"{dia} 08:00:00", f"{dia} 14:00:00",
+              monto_inicial=0.0, monto_esperado_cierre=0.0,
+              monto_declarado_cierre=0.0, caja_id=caja1)
+    cierre_13 = cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+    cierre_14 = cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-14")
+    cd.reabrir_dia(cierre_id=cierre_14["id"], usuario_id=admin, motivo="el del 14 también")
+
+    reabierto = cd.reabrir_dia(cierre_id=cierre_13["id"], usuario_id=admin, motivo="ahora sí")
+    assert reabierto["anulado_en"] is not None
+
+
+def test_reabrir_sucursal_distinta_no_bloquea(conn):
+    """Un cierre posterior de OTRA sucursal no es un cierre posterior de
+    ESTA: `CierrePosteriorError` compara dentro de la misma sucursal."""
+    admin = _usuario(conn, "admin1")
+    caja1 = _caja(conn, "Centro", sucursal_id=1)
+    caja2 = _caja(conn, "Norte", sucursal_id=2)
+    _turno(conn, admin, "2026-09-13 08:00:00", "2026-09-13 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=caja1)
+    _turno(conn, admin, "2026-09-14 08:00:00", "2026-09-14 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=caja2)
+    cierre_1 = cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+    cd.cerrar_dia(usuario_id=admin, sucursal_id=2, fecha="2026-09-14")
+
+    reabierto = cd.reabrir_dia(cierre_id=cierre_1["id"], usuario_id=admin, motivo="ok")
+    assert reabierto["anulado_en"] is not None
+
+
+def test_reabrir_sucursal_null(conn):
+    """`sucursal_id=None` es una sucursal real -- `reabrir_dia` la trata
+    igual que cualquier otra (mismo criterio que el resto del módulo)."""
+    admin = _usuario(conn, "admin1")
+    _turno(conn, admin, "2026-09-13 08:00:00", "2026-09-13 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=None)
+    cierre = cd.cerrar_dia(usuario_id=admin, sucursal_id=None, fecha="2026-09-13")
+
+    reabierto = cd.reabrir_dia(cierre_id=cierre["id"], usuario_id=admin, motivo="sin sucursal")
+    assert reabierto["anulado_en"] is not None
+    assert cd.dia_cerrado("2026-09-13", None) is False
+
+
+def test_mensajes_de_dia_cerrado_en_dd_mm_aaaa(conn):
+    admin = _usuario(conn, "admin1")
+    caja1 = _caja(conn, "Mostrador", sucursal_id=1)
+    _turno(conn, admin, "2026-09-13 08:00:00", "2026-09-13 14:00:00",
+          monto_inicial=0.0, monto_esperado_cierre=0.0,
+          monto_declarado_cierre=0.0, caja_id=caja1)
+    cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+
+    with pytest.raises(cd.DiaCerradoError, match=r"13-09-2026"):
+        cd.verificar_dia_abierto("2026-09-13", 1)
+    with pytest.raises(cd.DiaYaCerradoError, match=r"13-09-2026"):
+        cd.cerrar_dia(usuario_id=admin, sucursal_id=1, fecha="2026-09-13")
+
+
+def test_fmt_fecha_ar():
+    assert cd._fmt_fecha_ar("2026-09-13") == "13-09-2026"
+    assert cd._fmt_fecha_ar("") == ""
+    assert cd._fmt_fecha_ar("no-es-una-fecha") == "no-es-una-fecha"

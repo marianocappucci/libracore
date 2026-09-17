@@ -257,6 +257,13 @@ class CerrarDiaPayload(BaseModel):
     notas: str = ""
 
 
+class ReabrirDiaPayload(BaseModel):
+    #: Obligatorio y no vacío (tras `strip()`) — `cierre_diario.reabrir_dia`
+    #: levanta `MotivoRequeridoError` si no cumple, que el router traduce a
+    #: 422. Queda guardado en `motivo_anulacion` para auditoría.
+    motivo: str
+
+
 def _pdf(contenido: bytes, filename: str) -> Response:
     return Response(
         contenido,
@@ -270,9 +277,10 @@ def build_cierre_diario_router(
     usuario_actual: Callable[..., Any],
     resolver_sucursal_nombre: Callable[[int | None], str] = lambda sucursal_id: "",
     autorizar_cierre: Callable[..., Any] | None = None,
+    autorizar_reabrir: Any = None,
     prefix: str = "/api/cierre-diario",
 ) -> APIRouter:
-    """Vista previa, cierre, listado y tickets del cierre diario.
+    """Vista previa, cierre, reapertura, listado y tickets del cierre diario.
 
     ```python
     app.include_router(
@@ -280,6 +288,7 @@ def build_cierre_diario_router(
             usuario_actual=get_current_user_json,
             resolver_sucursal_nombre=lambda sid: db_sucursales.get_nombre(sid),
             autorizar_cierre=Depends(require_role("admin", "cajero")),
+            autorizar_reabrir=Depends(require_role("admin")),
         ),
         dependencies=[_auth_json],
     )
@@ -295,15 +304,29 @@ def build_cierre_diario_router(
     el producto le ponga a `include_router(...)`. Sin `autorizar_cierre`, el
     endpoint de cierre queda con esa misma protección de módulo nada más.
 
+    🔴 **Sin `autorizar_reabrir`, `POST /{id}/reabrir` NO SE MONTA.** Anular
+    un cierre es más sensible que cerrarlo —reabre un día que ya se dio por
+    auditado, y `autorizar_cierre` deja pasar a "admin o cajero" en más de un
+    producto—, así que el endpoint no puede quedar con sólo la protección de
+    módulo, que en VentaLibra y LibraClub también deja pasar al cajero. El
+    motor no sabe cómo se llama el rol admin en cada producto: lo decide quien
+    lo monta (el pedido es "sólo admin", 2026-09-17).
+    Se eligió "no montar" y no un parámetro obligatorio: con uno obligatorio,
+    todo consumidor que subiera el pin sin tocar su `main.py` dejaba de
+    arrancar (`TypeError`), y la reapertura no es algo que todos quieran.
+    Así el cambio es aditivo y cerrado por defecto: quien no lo pasa, sigue
+    exactamente igual y sin la ruta.
+
     `resolver_sucursal_nombre` existe porque el motor no conoce sucursales
     (viven en la base del producto, ver `db/cierre_diario.py`): sin esto los
     endpoints de listado/detalle/ticket no podrían mostrar más que el
     `sucursal_id` crudo.
     """
     router = APIRouter(prefix=prefix, tags=["cierre-diario"])
-    # `autorizar_cierre` ya viene envuelto en `Depends(...)` (ver el ejemplo del
-    # docstring) — es la misma forma que toman los elementos de `dependencies=`
-    # en `include_router`, así que se pasa tal cual y no se envuelve de nuevo.
+    # `autorizar_cierre`/`autorizar_reabrir` ya vienen envueltos en
+    # `Depends(...)` (ver el ejemplo del docstring) — es la misma forma que
+    # toman los elementos de `dependencies=` en `include_router`, así que se
+    # pasan tal cual y no se envuelven de nuevo.
     cerrar_deps = [autorizar_cierre] if autorizar_cierre else []
 
     @router.get("/preview")
@@ -323,6 +346,20 @@ def build_cierre_diario_router(
         except db_cierre_diario.DiaYaCerradoError as e:
             raise HTTPException(409, str(e)) from e
         return cierre
+
+    if autorizar_reabrir is not None:
+        @router.post("/{cierre_id}/reabrir", dependencies=[autorizar_reabrir])
+        def reabrir(cierre_id: int, payload: ReabrirDiaPayload, user: dict = Depends(usuario_actual)):
+            try:
+                return db_cierre_diario.reabrir_dia(
+                    cierre_id=cierre_id, usuario_id=user["id"], motivo=payload.motivo,
+                )
+            except db_cierre_diario.CierreNoEncontradoError as e:
+                raise HTTPException(404, str(e)) from e
+            except db_cierre_diario.MotivoRequeridoError as e:
+                raise HTTPException(422, str(e)) from e
+            except (db_cierre_diario.CierreYaAnuladoError, db_cierre_diario.CierrePosteriorError) as e:
+                raise HTTPException(409, str(e)) from e
 
     @router.get("")
     def listar(sucursal_id: int | None = None, todas: bool = False, limit: int = 50,

@@ -62,6 +62,18 @@ si el turno ya entró a un cierre (`get_cierre_turno_por_turno_id`), y si no,
 lo calcula en vivo (`arqueo_turno_en_vivo`) — con la MISMA `_medios_de_turno`/
 `_diferencia` que arma la foto, no una segunda implementación del cálculo.
 
+## Reabrir un día (v1.107.0)
+
+`reabrir_dia()` anula un cierre en vez de borrarlo: le marca `anulado_en`/
+`anulado_por`/`motivo_anulacion` y listo — la foto (`cierres_diarios_turnos`/
+`cierres_diarios_medios`) y el `numero` quedan intactos, como corresponde a
+un acto registrado. El UNIQUE de fecha es un índice PARCIAL (`WHERE
+anulado_en IS NULL`) desde esta versión, así que un cierre anulado no
+bloquea volver a cerrar ese mismo día — el de `numero` no cambió: sigue
+liso, el anulado se queda con el suyo y el próximo cierre toma el
+siguiente. Ver el docstring de `reabrir_dia()` para las reglas (motivo
+obligatorio, no reabrir con un cierre posterior activo).
+
 ## `sucursal_id=None`
 
 Es "sin sucursal" —una sucursal real, no un comodín— en las CUATRO funciones
@@ -89,7 +101,9 @@ class TurnosAbiertosError(RuntimeError):
 
 
 class DiaYaCerradoError(RuntimeError):
-    """Ya existe un cierre diario para esa sucursal y esa fecha."""
+    """Ya existe un cierre diario ACTIVO para esa sucursal y esa fecha. Un
+    cierre anulado (ver `reabrir_dia`) no cuenta: por eso el índice único que
+    respalda esta regla es parcial (`WHERE anulado_en IS NULL`)."""
 
 
 class TurnoAbiertoError(RuntimeError):
@@ -98,7 +112,27 @@ class TurnoAbiertoError(RuntimeError):
 
 class DiaCerradoError(RuntimeError):
     """El día operativo ya está cerrado para esta sucursal: no se puede abrir
-    un turno con apertura en él."""
+    un turno con apertura en él. Un cierre anulado no cuenta — ver `reabrir_dia`."""
+
+
+class CierreNoEncontradoError(RuntimeError):
+    """No existe un cierre diario con ese id."""
+
+
+class CierreYaAnuladoError(RuntimeError):
+    """Ese cierre diario ya fue anulado antes — `reabrir_dia` no es
+    idempotente: anular dos veces perdería cuál de los dos motivos y qué
+    admin fue el que realmente reabrió el día."""
+
+
+class CierrePosteriorError(RuntimeError):
+    """La misma sucursal tiene un cierre ACTIVO de una fecha posterior.
+    Reabrir dejaría un día suelto detrás de uno que ya se dio por cerrado —
+    ver el docstring de `reabrir_dia`."""
+
+
+class MotivoRequeridoError(ValueError):
+    """El motivo de la anulación viene vacío (o sólo espacios)."""
 
 
 #: El DDL de las tres tablas de este módulo, en el mismo dialecto
@@ -126,11 +160,28 @@ _DDL_TABLAS = """
         monto_declarado_total   REAL NOT NULL DEFAULT 0,
         diferencia_total        REAL NOT NULL DEFAULT 0,
         notas                   TEXT DEFAULT '',
-        created_at              TEXT DEFAULT (datetime('now','-3 hours'))
+        created_at              TEXT DEFAULT (datetime('now','-3 hours')),
+        anulado_en              TEXT,
+        anulado_por             INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+        motivo_anulacion        TEXT
     );
 
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_cierres_diarios_sucursal_fecha
-        ON cierres_diarios (COALESCE(sucursal_id, 0), fecha);
+    -- Parcial desde v1.107.0 (reabrir día): un cierre ANULADO no cuenta para
+    -- la unicidad de fecha, así que la misma sucursal puede volver a cerrar
+    -- ese día después de reabrirlo. El de NÚMERO no cambia -- el anulado
+    -- conserva el suyo, ver `reabrir_dia` y `_cerrar_dia_en_transaccion`.
+    --
+    -- 🔑 Este `CREATE ... IF NOT EXISTS` sólo alcanza a una tabla NUEVA: una
+    -- base que ya tenía `cierres_diarios` de antes de v1.107.0 (con el índice
+    -- viejo, sin `WHERE`) la migra la revisión `0011_reabrir_cierre_diario`,
+    -- con `op.add_column`/`op.execute` puros -- nunca acá. Si el ALTER
+    -- viviera en esta función, cada arranque de un producto que la llama al
+    -- iniciar (LibraClub, ver `app/servicios/facturacion.py::configurar()`)
+    -- deshacía un `alembic downgrade` en el próximo boot, igual que el
+    -- problema que documenta `0010_recibido_en_ventas_pagos.py`.
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_cierres_diarios_sucursal_fecha_activo
+        ON cierres_diarios (COALESCE(sucursal_id, 0), fecha)
+        WHERE anulado_en IS NULL;
 
     CREATE UNIQUE INDEX IF NOT EXISTS ux_cierres_diarios_sucursal_numero
         ON cierres_diarios (COALESCE(sucursal_id, 0), numero);
@@ -178,6 +229,20 @@ def crear_tablas(conn: Conexion) -> None:
     `libracore.db.logs.get_actividad_log()` con sus partes por default, que
     desde esta versión incluyen `cierres_diarios`."""
     conn.executescript(_DDL_TABLAS)
+
+
+def _fmt_fecha_ar(fecha: str) -> str:
+    """`fecha` (`YYYY-MM-DD`) a `dd-mm-aaaa` para los mensajes que llegan a
+    pantalla -- el estándar de la familia (`wiki/concepts/estandares-
+    desarrollo.md`, sección "Fecha y hora"): el dato en sí sigue viajando en
+    ISO, esto es sólo presentación en el texto del error.
+
+    No reutiliza `ticket_generator.fmt_fecha()` a propósito: ese vive en la
+    capa de impresión y arrastra `fpdf` como dependencia -- un módulo de
+    `db/` no tiene motivo para cargarla sólo por un formateo de fecha."""
+    if len(fecha) >= 10 and fecha[4] == "-" and fecha[7] == "-":
+        return f"{fecha[8:10]}-{fecha[5:7]}-{fecha[0:4]}"
+    return fecha
 
 
 def _norm_sucursal(sucursal_id: int | None) -> int:
@@ -228,8 +293,29 @@ def _tabla_cierres_ausente(mensaje: str) -> bool:
     )
 
 
+def _columna_anulado_ausente(mensaje: str) -> bool:
+    """Si ESTE mensaje dice, específicamente, que la columna `anulado_en`
+    todavía no existe -- la MISMA ventana de deploy-antes-que-migración que
+    `_tabla_cierres_ausente`, pero para la migración `0011_reabrir_cierre_
+    diario` en vez de la `0009`: acá la tabla YA existe (`0009` corrió hace
+    meses en cualquier instancia real) y lo que puede faltar es sólo la
+    columna nueva, en el rato entre que se despliega este código y que
+    corre `libracore-migrar`.
+
+    SQLite dice *"no such column: anulado_en"*; PostgreSQL (`UndefinedColumn`,
+    SQLSTATE `42703`, traducida por `_equivalente_sqlite3` al mismo
+    `ProgrammingError` que `UndefinedTable`) dice *"column \"anulado_en\" does
+    not exist"*."""
+    return "anulado_en" in mensaje and (
+        "no such column" in mensaje or "does not exist" in mensaje
+    )
+
+
 def dia_cerrado(fecha: str, sucursal_id: int | None, conn: Conexion | None = None) -> bool:
-    """Si ya hay un cierre diario para esa sucursal y esa fecha (`YYYY-MM-DD`).
+    """Si ya hay un cierre diario ACTIVO para esa sucursal y esa fecha
+    (`YYYY-MM-DD`). Uno anulado (`anulado_en` puesto, ver `reabrir_dia`) no
+    cuenta -- por eso el filtro incluye `AND anulado_en IS NULL`, el mismo
+    criterio que respalda el índice parcial que reemplazó al UNIQUE liso.
 
     🔴 **Si la tabla `cierres_diarios` todavía no existe, devuelve `False` en
     vez de reventar.** No es indulgencia con un bug: la crea la migración
@@ -254,19 +340,32 @@ def dia_cerrado(fecha: str, sucursal_id: int | None, conn: Conexion | None = Non
     with cm as c:
         try:
             fila = c.execute(
-                "SELECT 1 FROM cierres_diarios WHERE COALESCE(sucursal_id,0)=? AND fecha=?",
+                "SELECT 1 FROM cierres_diarios "
+                "WHERE COALESCE(sucursal_id,0)=? AND fecha=? AND anulado_en IS NULL",
                 (_norm_sucursal(sucursal_id), fecha),
             ).fetchone()
         except (sqlite3.OperationalError, sqlite3.ProgrammingError) as e:
-            if not _tabla_cierres_ausente(str(e)):
+            mensaje = str(e)
+            if _columna_anulado_ausente(mensaje):
+                # La tabla existe (`0009` corrió) pero todavía no la columna
+                # `anulado_en` (falta `0011`): sin ella nunca hubo un
+                # anulado, así que cae al mismo query que esta función tenía
+                # antes de v1.107.0. Ver `_columna_anulado_ausente`.
+                c.rollback()
+                fila = c.execute(
+                    "SELECT 1 FROM cierres_diarios WHERE COALESCE(sucursal_id,0)=? AND fecha=?",
+                    (_norm_sucursal(sucursal_id), fecha),
+                ).fetchone()
+            elif _tabla_cierres_ausente(mensaje):
+                # En PostgreSQL el error deja la transacción abortada: sin
+                # este rollback, todo lo que la conexión ejecute después —el
+                # INSERT del propio `create_turno`, en el caso real— muere
+                # con "current transaction is aborted". Mismo motivo que el
+                # rollback de `comprobantes_pendientes.upsert_comprobante`.
+                c.rollback()
+                return False
+            else:
                 raise
-            # En PostgreSQL el error deja la transacción abortada: sin este
-            # rollback, todo lo que la conexión ejecute después —el INSERT del
-            # propio `create_turno`, en el caso real— muere con "current
-            # transaction is aborted". Mismo motivo que el rollback de
-            # `comprobantes_pendientes.upsert_comprobante`.
-            c.rollback()
-            return False
     return fila is not None
 
 
@@ -275,8 +374,8 @@ def verificar_dia_abierto(fecha: str, sucursal_id: int | None, conn: Conexion | 
     para esa sucursal. Es lo que llama `turnos.create_turno()` antes de abrir."""
     if dia_cerrado(fecha, sucursal_id, conn=conn):
         raise DiaCerradoError(
-            f"El día {fecha} ya está cerrado para esta sucursal: no se puede "
-            "abrir un turno con apertura en él."
+            f"El día {_fmt_fecha_ar(fecha)} ya está cerrado para esta sucursal: "
+            "no se puede abrir un turno con apertura en él."
         )
 
 
@@ -435,7 +534,9 @@ def _cerrar_dia_en_transaccion(conn: Conexion, fecha: str, sucursal_id: int | No
     if abiertos:
         raise TurnosAbiertosError(_mensaje_turnos_abiertos(fecha, abiertos))
     if dia_cerrado(fecha, sucursal_id, conn=conn):
-        raise DiaYaCerradoError(f"El día {fecha} ya está cerrado para esta sucursal.")
+        raise DiaYaCerradoError(
+            f"El día {_fmt_fecha_ar(fecha)} ya está cerrado para esta sucursal."
+        )
 
     snap = _armar_snapshot(conn, turnos)
 
@@ -523,6 +624,81 @@ def cerrar_dia(usuario_id: int, sucursal_id: int | None = None, fecha: str | Non
                 raise
             continue
     raise AssertionError("no debería llegar acá")  # pragma: no cover
+
+
+def reabrir_dia(cierre_id: int, usuario_id: int, motivo: str) -> dict:
+    """Anula un cierre diario: le pone `anulado_en`/`anulado_por`/
+    `motivo_anulacion` y libera el día para volver a abrir turnos. Admin lo
+    decide el LLAMADOR, igual que `cerrar_dia()` — ver
+    `caja_router.build_cierre_diario_router`.
+
+    **No borra nada.** El cierre anulado sigue existiendo con su `numero` —
+    es un acto registrado, igual que uno activo — y la foto en
+    `cierres_diarios_turnos`/`cierres_diarios_medios` queda intacta: lo único
+    que cambia es que deja de contar para `dia_cerrado()`/
+    `verificar_dia_abierto()` (el índice único de fecha es parcial, `WHERE
+    anulado_en IS NULL`, desde v1.107.0). Volver a cerrar el mismo día
+    después de reabrirlo arma un cierre NUEVO, con el número siguiente —
+    `_cerrar_dia_en_transaccion` calcula `numero` contra el máximo de la
+    sucursal sin filtrar anulados, así que la numeración no tiene huecos.
+
+    Levanta `MotivoRequeridoError` si `motivo` viene vacío (tras `strip()`)
+    — se valida ANTES de tocar la base. Levanta `CierreNoEncontradoError` si
+    `cierre_id` no existe, `CierreYaAnuladoError` si ya estaba anulado.
+
+    Levanta `CierrePosteriorError` si la misma sucursal tiene un cierre
+    ACTIVO de una fecha POSTERIOR a la de este: reabrir dejaría un día suelto
+    detrás de uno que ya se dio por cerrado, y la numeración —correlativa por
+    sucursal, no por fecha— dejaría de leerse en el mismo orden que las
+    fechas.
+
+    🔴 **Lo que NO se chequea, a propósito: turnos de fecha posterior.**
+    `turnos.create_turno()` siempre estampa `apertura=_ar_now()` — no hay
+    forma de abrir un turno con fecha pasada — así que reabrir un día `D` que
+    no es HOY no destraba nada para la creación de turnos: los nuevos turnos
+    van a parar a HOY, no a `D`. El único caso útil en la práctica es reabrir
+    el cierre del día de hoy. Y la foto de un cierre es inmutable pase lo que
+    pase después con `turnos_caja` (ver el docstring del módulo, "Es una
+    foto y no una vista") — reabrir tampoco la toca. Sin ninguna de las dos
+    cosas en juego, que existan turnos —abiertos o cerrados— en una fecha
+    posterior no es una condición que haga falta bloquear.
+    """
+    motivo = (motivo or "").strip()
+    if not motivo:
+        raise MotivoRequeridoError("El motivo de la anulación no puede estar vacío.")
+
+    with get_connection() as conn:
+        fila = conn.execute(
+            "SELECT * FROM cierres_diarios WHERE id=?", (cierre_id,)
+        ).fetchone()
+        if not fila:
+            raise CierreNoEncontradoError(f"No existe el cierre diario #{cierre_id}.")
+        cierre = dict(fila)
+        if cierre["anulado_en"] is not None:
+            raise CierreYaAnuladoError(f"El cierre diario #{cierre_id} ya está anulado.")
+
+        suc = _norm_sucursal(cierre["sucursal_id"])
+        posterior = conn.execute(
+            """SELECT id, numero, fecha FROM cierres_diarios
+                WHERE COALESCE(sucursal_id,0)=? AND fecha>? AND anulado_en IS NULL
+                ORDER BY fecha LIMIT 1""",
+            (suc, cierre["fecha"]),
+        ).fetchone()
+        if posterior:
+            raise CierrePosteriorError(
+                f"La sucursal ya tiene el cierre #{posterior['numero']} del "
+                f"{_fmt_fecha_ar(posterior['fecha'])}, posterior al "
+                f"{_fmt_fecha_ar(cierre['fecha'])}: reabrir este día dejaría un "
+                "día suelto detrás de uno ya cerrado."
+            )
+
+        conn.execute(
+            """UPDATE cierres_diarios
+                  SET anulado_en=?, anulado_por=?, motivo_anulacion=?
+                WHERE id=?""",
+            (_ar_now(), usuario_id, motivo, cierre_id),
+        )
+    return get_cierre(cierre_id)
 
 
 def listar_cierres(sucursal_id: int | None = None, *, todas: bool = False,
