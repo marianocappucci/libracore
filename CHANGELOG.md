@@ -7,11 +7,17 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Sin publicar]
+## [v1.105.0] — El alta corre las migraciones de la imagen, y el movimiento sin caja toma la del turno
 
 Sin migraciones.
 
 ### Corregido
+
+- **`create_caja_movimiento` sin `caja_id` toma la caja del turno** (#277).
+  LibraCommerce registra los movimientos de venta con `turno_id` y sin
+  `caja_id`, así que en una instancia con varias cajas todo quedaba en la caja
+  default. El arqueo y el cierre diario no se veían afectados (van por
+  `turnos_caja.caja_id`); los reportes filtrados por caja sí.
 
 - 🔴 **El alta (`nuevo_cliente.py`) corre las migraciones del commit de la imagen,
   no las del checkout.** Gemelo del arreglo de `actualizar` en v1.104.0: el alta
