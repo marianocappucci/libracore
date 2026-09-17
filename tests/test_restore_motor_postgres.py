@@ -16,6 +16,7 @@ Lo que estos tests fijan, y por que cada uno existe:
 Todos corren contra PostgreSQL real, sobre bases propias
 (`tests/pg_descartable.py`).
 """
+import os
 import sys
 import zipfile
 
@@ -148,7 +149,10 @@ def test_las_migraciones_corren_contra_la_restaurada_y_no_contra_la_viva(viva, t
     assert "marca_migracion" not in _tablas(anterior), "la migracion toco la base viva antes del intercambio"
 
 
-def test_una_migracion_que_falla_deja_la_viva_intacta(viva, bases, tmp_path):
+def test_una_migracion_que_falla_deja_la_viva_intacta(viva, bases, tmp_path, monkeypatch):
+    # La base nombrada en el entorno: si no, el restore frena antes por eso y
+    # este test pasaria sin llegar a correr la migracion.
+    monkeypatch.setenv("LCR_TEST_URL", viva)
     instancia = Instancia(nombre="probe", postgres_url=viva)
     zip_ = crear_backup(instancia, tmp_path / "backups")
     _ejecutar(viva, "INSERT INTO clientes (nombre) VALUES ('Despues')")
@@ -291,7 +295,8 @@ def test_una_sesion_idle_in_transaction_no_frena_el_intercambio(viva, tmp_path):
 
 # ── La vuelta atras ─────────────────────────────────────────────────────────
 
-def test_la_anterior_se_reemplaza_recien_despues_de_un_restore_exitoso(viva, tmp_path):
+def test_la_anterior_se_reemplaza_recien_despues_de_un_restore_exitoso(viva, tmp_path, monkeypatch):
+    monkeypatch.setenv("LCR_TEST_URL", viva)
     instancia = Instancia(nombre="probe", postgres_url=viva)
     zip_ = crear_backup(instancia, tmp_path / "zips")
     base = viva.rsplit("/", 1)[1]
@@ -303,7 +308,7 @@ def test_la_anterior_se_reemplaza_recien_despues_de_un_restore_exitoso(viva, tmp
 
     # Un restore que falla NO se lleva la vuelta atras que habia.
     _ejecutar(viva, "INSERT INTO clientes (nombre) VALUES ('Estado 2')")
-    with pytest.raises(BackupInvalido):
+    with pytest.raises(BackupInvalido, match="fallo"):
         restaurar(instancia, zip_, tmp_path / "backups",
                   migraciones=[[sys.executable, "-c", "import sys; sys.exit(1)"]])
     assert _nombres(anterior) == ["Antes del backup", "Estado 1"]
@@ -356,3 +361,140 @@ def test_los_errores_de_stderr_traen_la_causa_y_no_la_ultima_linea():
         "Command was: SET transaction_timeout = 0;\n"
     )
     assert "unrecognized configuration parameter" in rp.errores_de_stderr(stderr)
+
+
+def test_los_errores_de_stderr_traen_la_excepcion_de_un_traceback_de_python():
+    """🔴 El caso de LibraCargo (2026-09-17): de un traceback de alembic solo
+    sobrevivia el link de "(Background on this error at: ...)"."""
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "/app/.venv/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1988, in _exec_single_context\n'
+        "    self._handle_dbapi_exception(\n"
+        '  File "/app/.venv/lib/python3.12/site-packages/psycopg/cursor.py", line 117, in execute\n'
+        "    raise ex.with_traceback(None)\n"
+        'sqlalchemy.exc.ProgrammingError: (psycopg.errors.DuplicateObject) type "accion_auditoria" already exists\n'
+        "[SQL: CREATE TYPE accion_auditoria AS ENUM ('alta', 'modificacion', 'baja')]\n"
+        "(Background on this error at: https://sqlalche.me/e/20/f405)\n"
+    )
+
+    salida = rp.errores_de_stderr(stderr)
+
+    assert 'type "accion_auditoria" already exists' in salida, salida
+    assert "[SQL: CREATE TYPE accion_auditoria" in salida, salida
+    assert "sqlalche.me" not in salida, salida
+    assert "_handle_dbapi_exception" not in salida, salida
+
+
+# ── Lo que el restore le deja a la app que sigue corriendo ──────────────────
+
+def _engine(url):
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+    return sqlalchemy.create_engine(url.replace("postgresql://", "postgresql+psycopg://", 1))
+
+
+def _por_el_pool(engine, consulta):
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        return [f[0] for f in conn.execute(text(consulta))]
+
+
+def test_los_pools_de_la_app_siguen_andando_despues_del_intercambio(viva, core, tmp_path):
+    """🔴 El intercambio termina las conexiones de las vivas. Con DOS pools —el
+    del dominio y el de auth, como en los productos— y **sin** pasar
+    `reabrir_conexiones`: el 2026-09-17 cuatro productos fallaron con
+    `AdminShutdown` en la primera request despues del restore, y dos de ellos
+    pasaban `engine.dispose` del engine del dominio."""
+    dominio, auth = _engine(viva), _engine(core)
+    try:
+        # Los pools con conexiones abiertas ANTES del restore.
+        assert _por_el_pool(dominio, "SELECT nombre FROM clientes") == ["Antes del backup"]
+        assert _por_el_pool(auth, "SELECT nombre FROM usuarios") == ["Admin de antes"]
+        instancia = Instancia(nombre="probe", postgres_url=viva, postgres_extra=[core])
+        zip_ = crear_backup(instancia, tmp_path / "backups")
+        _ejecutar(viva, "INSERT INTO clientes (nombre) VALUES ('Despues')")
+        _ejecutar(core, "INSERT INTO usuarios (nombre) VALUES ('Despues')")
+
+        restaurar(instancia, zip_, tmp_path / "backups", migraciones=SIN_MIGRACIONES)
+
+        assert _por_el_pool(dominio, "SELECT nombre FROM clientes ORDER BY id") == ["Antes del backup"]
+        assert _por_el_pool(auth, "SELECT nombre FROM usuarios ORDER BY id") == ["Admin de antes"]
+    finally:
+        dominio.dispose()
+        auth.dispose()
+
+
+def test_una_conexion_en_uso_durante_el_intercambio_no_vuelve_zombie_al_pool(viva, tmp_path):
+    """La request que restaura tiene su propia conexion tomada mientras dura el
+    intercambio. Esa muere; lo que importa es que al devolverla el pool no la
+    guarde y se la de a la request siguiente."""
+    from sqlalchemy import exc, text
+
+    dominio = _engine(viva)
+    try:
+        instancia = Instancia(nombre="probe", postgres_url=viva)
+        zip_ = crear_backup(instancia, tmp_path / "backups")
+        _ejecutar(viva, "INSERT INTO clientes (nombre) VALUES ('Despues')")
+        en_uso = dominio.connect()
+        en_uso.execute(text("SELECT 1"))
+
+        restaurar(instancia, zip_, tmp_path / "backups", migraciones=SIN_MIGRACIONES)
+
+        with pytest.raises(exc.OperationalError):
+            en_uso.execute(text("SELECT 1"))
+        en_uso.close()
+        for _ in range(3):  # mas pedidos que conexiones vivas: ninguno toma la muerta
+            assert _por_el_pool(dominio, "SELECT nombre FROM clientes ORDER BY id") == ["Antes del backup"]
+    finally:
+        dominio.dispose()
+
+
+def test_un_engine_a_otra_base_solo_se_reconecta(viva, bases, tmp_path):
+    """El descarte es de todo pool del proceso, no solo de las bases
+    restauradas: a un engine de otra base le cuesta una reconexion, y nada mas."""
+    otra = bases.nueva("_otra")
+    _ejecutar(otra, "CREATE TABLE cosas (id int)", "INSERT INTO cosas VALUES (7)")
+    ajeno = _engine(otra)
+    try:
+        pid_antes = _por_el_pool(ajeno, "SELECT pg_backend_pid()")[0]
+        instancia = Instancia(nombre="probe", postgres_url=viva)
+        zip_ = crear_backup(instancia, tmp_path / "backups")
+
+        restaurar(instancia, zip_, tmp_path / "backups", migraciones=SIN_MIGRACIONES)
+
+        assert _por_el_pool(ajeno, "SELECT id FROM cosas") == [7]
+        assert _por_el_pool(ajeno, "SELECT pg_backend_pid()")[0] != pid_antes, "no se reconecto"
+    finally:
+        ajeno.dispose()
+
+
+def test_una_base_que_ninguna_variable_nombra_no_se_restaura(viva, tmp_path, monkeypatch):
+    """🔴 Como el conftest de LibraDesk: la URL se le pasa a la app en el proceso,
+    no en el entorno. La reescritura no encuentra que cambiar y la migracion
+    correria contra otra cosa. Frena antes de tocar nada y nombra la base."""
+    base = viva.rsplit("/", 1)[1]
+    for clave, valor in list(os.environ.items()):
+        if rp.es_url_postgres(valor) and rp.base_de(valor) == base:
+            monkeypatch.delenv(clave)
+    instancia = Instancia(nombre="probe", postgres_url=viva)
+    zip_ = crear_backup(instancia, tmp_path / "zips")
+    _ejecutar(viva, "INSERT INTO clientes (nombre) VALUES ('Despues')")
+
+    with pytest.raises(BackupInvalido, match="ninguna variable de entorno") as e:
+        restaurar(instancia, zip_, tmp_path / "backups",
+                  migraciones=[[sys.executable, "-c", "pass"]])
+
+    assert base in str(e.value)
+    assert _nombres(viva) == ["Antes del backup", "Despues"]
+    assert not (tmp_path / "backups").exists(), "hizo el backup previo antes de ver que no podia migrar"
+
+
+def test_las_bases_sin_variable_se_miden_como_la_reescritura():
+    entorno = {
+        "ACME_DATABASE_URL": "postgresql+psycopg://u:p@db:5432/acme",
+        "MISMO_NOMBRE_OTRO_HOST": "postgresql://u:p@otro:5432/acme_core",
+    }
+
+    assert rp.bases_sin_variable(
+        ["postgresql://u:p@db:5432/acme", "postgresql://u:p@db:5432/acme_core"], entorno
+    ) == ["acme_core"]
