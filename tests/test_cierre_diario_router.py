@@ -47,12 +47,30 @@ def entorno(tmp_path):
     core._db_path = None
 
 
+@pytest.fixture(autouse=True)
+def _reset_usuario_actual():
+    """Algunos tests de `reabrir` cambian `_USUARIO_ACTUAL["actual"]` a
+    `CAJERO` para probar el 403 — se restaura a `ADMIN` después de cada test,
+    así ninguno hereda el usuario que dejó el anterior."""
+    yield
+    _USUARIO_ACTUAL["actual"] = ADMIN
+
+
+def _autorizar_admin():
+    """`autorizar_reabrir` de prueba: sólo `ADMIN` pasa — lee
+    `_USUARIO_ACTUAL["actual"]`, así que un test puede alternar el usuario
+    activo entre pedidos con sólo reasignar esa entrada."""
+    if _USUARIO_ACTUAL["actual"]["role"] != "admin":
+        raise HTTPException(403, "sólo un admin puede reabrir el día")
+
+
 @pytest.fixture
 def client(entorno):
     app = FastAPI()
     app.include_router(build_cierre_diario_router(
         usuario_actual=lambda: _USUARIO_ACTUAL["actual"],
         resolver_sucursal_nombre=lambda sid: {1: "Sucursal Centro"}.get(sid, "Sin sucursal"),
+        autorizar_reabrir=Depends(_autorizar_admin),
     ))
     return TestClient(app)
 
@@ -185,3 +203,117 @@ def test_autorizar_cierre_es_inyectable_y_no_hay_admin_fijo(tmp_path):
     assert client.get("/api/cierre-diario/preview").status_code == 200
 
     core._db_path = None
+
+
+def test_sin_autorizar_reabrir_la_ruta_no_existe(tmp_path):
+    """Sin `autorizar_reabrir` el router arma igual —un consumidor que sube el
+    pin sin tocar su `main.py` sigue arrancando— pero `POST /{id}/reabrir` no
+    se monta: cerrado por defecto, nunca abierto a quien sólo pasó el gate de
+    módulo. Ver el docstring de `build_cierre_diario_router`."""
+    router = build_cierre_diario_router(usuario_actual=lambda: ADMIN)
+    rutas = {(r.path, tuple(sorted(r.methods))) for r in router.routes}
+    assert not any(path.endswith("/reabrir") for path, _ in rutas), rutas
+    # Y lo demás sigue montado.
+    assert any(path.endswith("/cerrar") for path, _ in rutas), rutas
+
+
+# ------------------------------------------------------------ POST /reabrir
+
+
+def test_reabrir_admin_libera_el_dia_y_permite_re_cerrar(client):
+    cierre = client.post(
+        "/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-13"}
+    ).json()
+
+    r = client.post(f"/api/cierre-diario/{cierre['id']}/reabrir", json={"motivo": "error de carga"})
+    assert r.status_code == 200
+    reabierto = r.json()
+    assert reabierto["anulado_en"] is not None
+    assert reabierto["anulado_por"] == ADMIN["id"]
+    assert reabierto["motivo_anulacion"] == "error de carga"
+    # El cierre anulado conserva su número.
+    assert reabierto["numero"] == cierre["numero"]
+
+    # El día vuelve a estar abierto: un turno nuevo ya no choca con
+    # `DiaCerradoError`. `caja_id` sale de la foto del cierre y no se
+    # hardcodea: `init_core_schema()` puede sembrar filas propias en
+    # `cajas`, así que el id de "Mostrador" no está garantizado en 1.
+    caja_id = cierre["turnos"][0]["caja_id"]
+    conn = core.get_connection()
+    conn.execute(
+        """INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial, estado, caja_id)
+           VALUES (?, '2026-09-13 15:00:00', 0, 'abierto', ?)""",
+        (CAJERO["id"], caja_id),
+    )
+    conn.commit()
+    conn.close()
+
+    # Y re-cerrar da un cierre NUEVO, con el número siguiente.
+    r2 = client.post("/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-13"})
+    assert r2.status_code == 422  # el turno recién abierto sigue abierto
+    with core.get_connection() as conn:
+        conn.execute("UPDATE turnos_caja SET estado='cerrado', cierre='2026-09-13 16:00:00' "
+                     "WHERE apertura='2026-09-13 15:00:00'")
+    r3 = client.post("/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-13"})
+    assert r3.status_code == 200
+    assert r3.json()["numero"] == cierre["numero"] + 1
+
+
+def test_reabrir_no_admin_da_403(client):
+    cierre = client.post(
+        "/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-13"}
+    ).json()
+    _USUARIO_ACTUAL["actual"] = CAJERO
+    r = client.post(f"/api/cierre-diario/{cierre['id']}/reabrir", json={"motivo": "algo"})
+    assert r.status_code == 403
+
+
+def test_reabrir_inexistente_da_404(client):
+    r = client.post("/api/cierre-diario/999999/reabrir", json={"motivo": "algo"})
+    assert r.status_code == 404
+
+
+def test_reabrir_motivo_vacio_da_422(client):
+    cierre = client.post(
+        "/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-13"}
+    ).json()
+    assert client.post(
+        f"/api/cierre-diario/{cierre['id']}/reabrir", json={"motivo": "   "}
+    ).status_code == 422
+    # Falta el campo directamente: lo rechaza Pydantic, también 422.
+    assert client.post(f"/api/cierre-diario/{cierre['id']}/reabrir", json={}).status_code == 422
+
+
+def test_reabrir_dos_veces_da_409(client):
+    cierre = client.post(
+        "/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-13"}
+    ).json()
+    client.post(f"/api/cierre-diario/{cierre['id']}/reabrir", json={"motivo": "primera vez"})
+    r = client.post(f"/api/cierre-diario/{cierre['id']}/reabrir", json={"motivo": "otra vez"})
+    assert r.status_code == 409
+
+
+def test_reabrir_con_cierre_posterior_da_409(client):
+    cierre_13 = client.post(
+        "/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-13"}
+    ).json()
+    client.post("/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-14"})
+
+    r = client.post(f"/api/cierre-diario/{cierre_13['id']}/reabrir", json={"motivo": "tarde"})
+    assert r.status_code == 409
+    assert "posterior" in r.json()["detail"].lower()
+
+
+def test_listar_y_detalle_traen_los_campos_de_anulacion(client):
+    cierre = client.post(
+        "/api/cierre-diario/cerrar", json={"sucursal_id": 1, "fecha": "2026-09-13"}
+    ).json()
+    assert cierre["anulado_en"] is None
+    assert cierre["anulado_por"] is None
+    assert cierre["motivo_anulacion"] is None
+
+    client.post(f"/api/cierre-diario/{cierre['id']}/reabrir", json={"motivo": "prueba"})
+
+    listado = client.get("/api/cierre-diario", params={"sucursal_id": 1}).json()
+    assert listado[0]["anulado_en"] is not None
+    assert listado[0]["motivo_anulacion"] == "prueba"
