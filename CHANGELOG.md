@@ -7,6 +7,33 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.105.0] — El alta corre las migraciones de la imagen, y el movimiento sin caja toma la del turno
+
+Sin migraciones.
+
+### Corregido
+
+- **`create_caja_movimiento` sin `caja_id` toma la caja del turno** (#277).
+  LibraCommerce registra los movimientos de venta con `turno_id` y sin
+  `caja_id`, así que en una instancia con varias cajas todo quedaba en la caja
+  default. El arqueo y el cierre diario no se veían afectados (van por
+  `turnos_caja.caja_id`); los reportes filtrados por caja sí.
+
+- 🔴 **El alta (`nuevo_cliente.py`) corre las migraciones del commit de la imagen,
+  no las del checkout.** Gemelo del arreglo de `actualizar` en v1.104.0: el alta
+  corría `get_config().migraciones` —las del `scripts/nuevo_cliente.py` del
+  checkout del VPS, en `develop`— sobre una imagen de `main`. Y el alta no
+  siempre construye: `version_para_cliente_nuevo` reusa la última imagen. Por
+  eso se leen **de la imagen que se pinea**: `migraciones_de_la_imagen()` toma
+  su label `org.libra.commit`, hace `git show <commit>:scripts/nuevo_cliente.py`
+  (con un `fetch` si el commit no está) y lo parsea literal, sin ejecutarlo. Si
+  el checkout declara otras, lo avisa y manda la de la imagen.
+
+  **Falla cerrado:** sin label, sin commit, sin script o con un valor no literal,
+  el alta levanta `ClienteError` antes de escribir el compose y hace rollback.
+  Medido en el VPS: la imagen más reciente de los ocho productos trae el label
+  y su commit está en el repo.
+
 ## [v1.104.0] — `actualizar` corre las migraciones del commit que construye
 
 Sin migraciones.

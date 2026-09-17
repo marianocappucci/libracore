@@ -251,7 +251,24 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
                 ).fetchone()
             if exists:
                 return exists[0]
-        _caja_id = caja_id or get_default_caja_id()
+        # Sin `caja_id` explícito, pero con un turno: la caja es la del turno,
+        # no la default. LibraCommerce llama esta función con `turno_id` y sin
+        # `caja_id` desde `erp/ventas.py`, y en un producto con varias cajas eso
+        # dejaba TODA venta anotada en la caja default aunque el turno estuviera
+        # abierto en otra — el arqueo y el cierre no se enteraban (van por
+        # `turnos_caja.caja_id`), pero `get_caja_movimientos`/`get_caja_resumen`
+        # filtrados por caja sí quedaban mal. Se consulta con la MISMA conexión
+        # `c`, dentro de la misma transacción del INSERT. Turno sin caja (o
+        # inexistente) sigue cayendo al default, como siempre.
+        if caja_id is not None:
+            _caja_id = caja_id
+        elif turno_id is not None:
+            fila_turno = c.execute(
+                "SELECT caja_id FROM turnos_caja WHERE id=?", (turno_id,)
+            ).fetchone()
+            _caja_id = fila_turno[0] if fila_turno and fila_turno[0] else get_default_caja_id()
+        else:
+            _caja_id = get_default_caja_id()
         cur = c.execute(
             """INSERT INTO caja_movimientos
                (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id,

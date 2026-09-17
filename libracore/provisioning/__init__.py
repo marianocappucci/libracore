@@ -649,6 +649,9 @@ def contexto_de_build(repo_root: Path, ref: str = "main", *,
 #: del repo. Es el mismo archivo en los ocho productos.
 SCRIPT_DEL_PANEL = Path("scripts") / "panel_admin.py"
 
+#: Y el del alta de clientes, que declara su propio `configure(...)`.
+SCRIPT_DEL_ALTA = Path("scripts") / "nuevo_cliente.py"
+
 
 class MigracionesIlegibles(RuntimeError):
     """No se pudo leer `migraciones=` del script del panel en el ref a desplegar."""
@@ -691,8 +694,13 @@ def migraciones_declaradas(contexto, script=SCRIPT_DEL_PANEL) -> tuple:
             f"No existe {script} en el árbol a desplegar ({contexto}): no hay de "
             "dónde leer las migraciones de ese commit."
         ) from None
+    return _migraciones_de_fuente(fuente, script)
+
+
+def _migraciones_de_fuente(fuente: str, script) -> tuple:
+    """El parseo de `migraciones_declaradas`, sobre el texto del script."""
     try:
-        arbol = ast.parse(fuente, filename=str(ruta))
+        arbol = ast.parse(fuente, filename=str(script))
     except SyntaxError as e:
         raise MigracionesIlegibles(f"{script} no se puede parsear: {e}") from None
     llamadas = [n for n in ast.walk(arbol)
@@ -717,6 +725,72 @@ def migraciones_declaradas(contexto, script=SCRIPT_DEL_PANEL) -> tuple:
         return _migraciones_normalizadas(valor)
     except (TypeError, ValueError) as e:
         raise MigracionesIlegibles(f"migraciones= en {script}: {e}") from None
+
+
+def commit_de_la_imagen(image_ref: str) -> str:
+    """El commit del que salió una imagen, según su label `org.libra.commit`.
+
+    Es verdadero por construcción: lo pone `build_image_tagged` con el commit
+    del árbol materializado. Devuelve `""` si la imagen no existe o no lo trae.
+    """
+    r = subprocess.run(
+        ["docker", "image", "inspect", "--format",
+         '{{index .Config.Labels "org.libra.commit"}}', image_ref],
+        capture_output=True, text=True,
+    )
+    commit = (r.stdout or "").strip() if r.returncode == 0 else ""
+    return "" if commit in ("", "<no value>") else commit
+
+
+def migraciones_de_la_imagen(repo_root, image_ref: str,
+                             script=SCRIPT_DEL_ALTA) -> tuple[tuple, str]:
+    """Las migraciones que declara `script` **en el commit del que salió la
+    imagen**, y ese commit.
+
+    🔴 **Por qué (2026-09-16).** Es el gemelo de lo que se arregló en
+    `cmd_actualizar`: el alta corría `get_config().migraciones`, las del
+    `scripts/nuevo_cliente.py` del checkout del VPS —que vive en `develop`—,
+    sobre una imagen de `main`. Y el alta ni siquiera construye siempre:
+    `version_para_cliente_nuevo` reusa la última imagen construida. Por eso no
+    alcanza con leer del árbol del build; lo que ata las migraciones al código
+    que va a correr es **la imagen**, y la imagen dice de qué commit salió.
+
+    Falla cerrado con `MigracionesIlegibles` si la imagen no trae el label, si
+    el commit no está en el repo (ni después de un `fetch`) o si el script no
+    se puede leer.
+    """
+    commit = commit_de_la_imagen(image_ref)
+    if not commit:
+        raise MigracionesIlegibles(
+            f"La imagen {image_ref} no dice de qué commit salió (falta el label "
+            "org.libra.commit): no se puede saber qué migraciones le corresponden. "
+            "Construí una imagen nueva para el alta (rebuild)."
+        )
+    repo_root = Path(repo_root)
+
+    def _existe() -> bool:
+        return subprocess.run(
+            ["git", "-C", str(repo_root), "cat-file", "-e", f"{commit}^{{commit}}"],
+            capture_output=True,
+        ).returncode == 0
+
+    if not _existe():
+        subprocess.run(["git", "-C", str(repo_root), "fetch", "--quiet", "origin"],
+                       capture_output=True)
+        if not _existe():
+            raise MigracionesIlegibles(
+                f"El commit {commit} de la imagen {image_ref} no está en {repo_root} "
+                "ni después de un fetch: no se puede leer qué migraciones declara."
+            )
+    r = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"{commit}:{Path(script).as_posix()}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise MigracionesIlegibles(
+            f"No existe {script} en el commit {commit} de la imagen {image_ref}."
+        )
+    return _migraciones_de_fuente(r.stdout, script), commit
 
 
 def build_image_tagged(version: str, *, ref: str = "main",
