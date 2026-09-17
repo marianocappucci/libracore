@@ -66,6 +66,12 @@ def fake_docker(monkeypatch):
     # cada test del sidecar cuesta casi un minuto y la suite parece colgada.
     monkeypatch.setattr(nc, "_esperar_tabla_en_sidecar", lambda *a, **k: True)
     monkeypatch.setattr(nc, "_aplicar_plan_en_contenedor", lambda *a, **k: True)
+    # El alta lee las migraciones del commit de la imagen (label + `git show`,
+    # ver `test_alta_migraciones_de_la_imagen.py`). Acá no hay imagen ni repo:
+    # el doble devuelve las del checkout, que es lo que estos tests declaran.
+    monkeypatch.setattr(
+        nc, "migraciones_de_la_imagen",
+        lambda repo_root, image_ref, script=None: (provisioning.get_config().migraciones, "abc1234"))
     return calls
 
 

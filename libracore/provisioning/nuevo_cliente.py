@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from . import (
+    MigracionesIlegibles,
     _npm_api,
     _plans,
     build_image_tagged,
@@ -29,6 +30,7 @@ from . import (
     get_config,
     le_email_from_config,
     mail_cuentas,
+    migraciones_de_la_imagen,
     npm_available,
 )
 
@@ -864,6 +866,25 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         image_ref = cfg.image_ref(version)
         log(f"[OK] Imagen para este cliente: {image_ref}")
 
+        # — las migraciones, del commit de ESA imagen — ver
+        # `provisioning.migraciones_de_la_imagen`. Antes salían del checkout
+        # (`develop`) aunque la imagen fuera de `main`. Se resuelven acá, antes
+        # de escribir el compose, para que un alta que no puede saberlas no
+        # deje nada a medio crear.
+        try:
+            migraciones, commit_imagen = migraciones_de_la_imagen(cfg.repo_root, image_ref)
+        except MigracionesIlegibles as e:
+            raise ClienteError(f"{e} No se creó la instancia.") from None
+        if tuple(migraciones) != tuple(cfg.migraciones):
+            log(f"[AVISO] Las migraciones del checkout difieren de las del commit "
+                f"{commit_imagen} de la imagen. Se corren las de la imagen.")
+            for c in cfg.migraciones:
+                if c not in migraciones:
+                    log(f"    sólo en el checkout, NO se corre: {' '.join(c)}")
+            for c in migraciones:
+                if c not in cfg.migraciones:
+                    log(f"    sólo en la imagen, se corre     : {' '.join(c)}")
+
         # — copia externa (ver RESGUARDO_OAUTH_ENV) — el aviso queda en el log
         # del alta porque es la única pista de que la instancia no va a ofrecer
         # Drive ni Dropbox: la pantalla de Configuración no da error, calla.
@@ -971,7 +992,7 @@ services:
         # Es la misma secuencia y el mismo orden que `cmd_actualizar`. Los
         # productos sin `migraciones` —cuatro de seis— no ven ningún paso
         # nuevo.
-        for comando in cfg.migraciones:
+        for comando in migraciones:
             log(f"[*] Migraciones: {' '.join(comando)}")
             r = subprocess.run(
                 ["docker", "compose", "run", "--rm", container, *comando],
