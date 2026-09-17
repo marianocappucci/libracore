@@ -50,8 +50,14 @@ _EXTS_LOGO = (".png", ".jpg", ".jpeg")
 class EmpresaPayload(BaseModel):
     """Los 8 campos que ya estan en `config_manager.DEFAULTS`. Se declaran acá
     y no se acepta un dict libre para que un `PUT` con una clave de mas no
-    pueda escribir en `config.json` cualquier cosa — ahi tambien viven el token
-    de MercadoPago y la contrasena de SMTP."""
+    pueda escribir en la config cualquier cosa — ahi tambien viven el token de
+    MercadoPago y la contrasena de SMTP.
+
+    Desde el 2026-09-17 esos tres ya no se guardan en el `config.json`, sino
+    cifrados (ver `config_manager.CLAVES_SECRETAS`). El guard igual sigue
+    haciendo falta, y por la misma razón de siempre: lo que impide que un `PUT`
+    de datos de empresa escriba una credencial es **esta lista cerrada**, no
+    dónde termine guardada."""
 
     empresa_nombre: str = ""
     empresa_direccion: str = ""

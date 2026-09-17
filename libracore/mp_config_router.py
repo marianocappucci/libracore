@@ -22,6 +22,18 @@ Y una del mismo tipo: **un token vacío no borra el que estaba.** La pantalla
 muestra el valor enmascarado, así que mandar el campo tal como se ve borraría la
 credencial. Vacío significa "no lo toqués", igual que la contraseña de SMTP.
 
+3. 🔴 **Y desde el 2026-09-17, el token tampoco queda en claro en disco.** Las
+   dos de arriba cerraron la capa en la que el dato *se mira*; en la capa en la
+   que *se guarda* no había nada, y el `mp_access_token` se escribía tal cual en
+   `DATA_DIR/config.json`. Eso no se ve desde acá y no cambia una línea de este
+   router: `config_manager.load()` sigue devolviendo el token en claro, sólo que
+   ahora lo trae del almacén cifrado en vez del archivo. Ver
+   `config_manager.CLAVES_SECRETAS`.
+
+   Vale la pena decir por qué era fácil no verlo: el enmascarado de acá hace que
+   la pantalla se comporte **exactamente igual** con el secreto cifrado o en
+   claro. Una pantalla que se ve bien no dice nada sobre el reposo.
+
 ## De qué ambiente es la credencial
 
 MercadoPago **no tiene un ambiente de homologación** como ARCA: no hay host de
