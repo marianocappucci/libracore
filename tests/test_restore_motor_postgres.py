@@ -424,6 +424,50 @@ def test_los_pools_de_la_app_siguen_andando_despues_del_intercambio(viva, core, 
         auth.dispose()
 
 
+def test_una_conexion_en_uso_durante_el_intercambio_no_vuelve_zombie_al_pool(viva, tmp_path):
+    """La request que restaura tiene su propia conexion tomada mientras dura el
+    intercambio. Esa muere; lo que importa es que al devolverla el pool no la
+    guarde y se la de a la request siguiente."""
+    from sqlalchemy import exc, text
+
+    dominio = _engine(viva)
+    try:
+        instancia = Instancia(nombre="probe", postgres_url=viva)
+        zip_ = crear_backup(instancia, tmp_path / "backups")
+        _ejecutar(viva, "INSERT INTO clientes (nombre) VALUES ('Despues')")
+        en_uso = dominio.connect()
+        en_uso.execute(text("SELECT 1"))
+
+        restaurar(instancia, zip_, tmp_path / "backups", migraciones=SIN_MIGRACIONES)
+
+        with pytest.raises(exc.OperationalError):
+            en_uso.execute(text("SELECT 1"))
+        en_uso.close()
+        for _ in range(3):  # mas pedidos que conexiones vivas: ninguno toma la muerta
+            assert _por_el_pool(dominio, "SELECT nombre FROM clientes ORDER BY id") == ["Antes del backup"]
+    finally:
+        dominio.dispose()
+
+
+def test_un_engine_a_otra_base_solo_se_reconecta(viva, bases, tmp_path):
+    """El descarte es de todo pool del proceso, no solo de las bases
+    restauradas: a un engine de otra base le cuesta una reconexion, y nada mas."""
+    otra = bases.nueva("_otra")
+    _ejecutar(otra, "CREATE TABLE cosas (id int)", "INSERT INTO cosas VALUES (7)")
+    ajeno = _engine(otra)
+    try:
+        pid_antes = _por_el_pool(ajeno, "SELECT pg_backend_pid()")[0]
+        instancia = Instancia(nombre="probe", postgres_url=viva)
+        zip_ = crear_backup(instancia, tmp_path / "backups")
+
+        restaurar(instancia, zip_, tmp_path / "backups", migraciones=SIN_MIGRACIONES)
+
+        assert _por_el_pool(ajeno, "SELECT id FROM cosas") == [7]
+        assert _por_el_pool(ajeno, "SELECT pg_backend_pid()")[0] != pid_antes, "no se reconecto"
+    finally:
+        ajeno.dispose()
+
+
 def test_una_base_que_ninguna_variable_nombra_no_se_restaura(viva, tmp_path, monkeypatch):
     """🔴 Como el conftest de LibraDesk: la URL se le pasa a la app en el proceso,
     no en el entorno. La reescritura no encuentra que cambiar y la migracion
