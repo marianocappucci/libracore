@@ -27,10 +27,36 @@ ZIP ya esta en disco: subirlo es un paso posterior e independiente.
 del cliente, asi que el alta de cada remoto la hace una persona, una vez. Este
 modulo asume que el remoto ya existe en la config de `rclone` y que
 `cliente.json` lo nombra.
+
+## Por que lo que sale va cifrado (2026-09-17)
+
+El ZIP lleva la **clave privada de ARCA** del cliente —la que permite facturar en
+su nombre— porque sin ella un restore deja una instancia que no factura. Hasta
+el 2026-09-17 subia en claro al Drive del cliente. Se decidio que el ZIP local y
+la descarga del admin no cambian, y que **lo que sale a un tercero va cifrado**
+con `rclone crypt`. Ver `wiki/analyses/resguardo-backup-familia-libra.md`.
+
+Tres decisiones que no son de gusto:
+
+- 🔴 **Sin clave no se sube.** No hay camino que caiga a claro: si falta la
+  passphrase, el error va al estado y `estado-externo` se pone rojo. Un
+  resguardo que no sube se ve; uno que sube en claro sin avisar, no.
+- **La passphrase vive solo en el host** y el remoto cifrado se arma por
+  variables de entorno en cada llamada. No entra al `rclone.conf` del enlace
+  —que lo escribe y lo lee la app— ni al argv de ningun proceso.
+- **Es una del parque, fuera del ciclo de rotacion.** Rotarla deja ilegible todo
+  lo ya subido, al reves que los secretos de `libraauth`: misma sonda, distinto
+  ciclo. Por eso el estado guarda su **huella** —si cambia entre dos subidas,
+  parte del historial del cliente ya no se abre con la clave de hoy— y **no
+  puede derivarse de `SECRET_KEY`**, que se rota.
 """
+import hashlib
 import json
+import os
 import re
+import stat
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -53,6 +79,20 @@ GFS_MENSUALES = 6
 
 #: `backup_<motivo>_<YYYYmmdd>_<HHMMSS>[_n].zip`
 _NOMBRE = re.compile(r"^backup_[a-z_]+_(\d{8})_(\d{6})(?:_\d+)?\.zip$")
+
+#: Nombre del remoto `crypt` que se arma por entorno. Distintivo a proposito: una
+#: variable `RCLONE_CONFIG_<NOMBRE>_*` pisa a un remoto del mismo nombre en el
+#: `rclone.conf`, y ninguno deberia llamarse asi.
+REMOTO_CIFRADO = "resguardocifrado"
+
+#: Donde vive la passphrase en el host. `RESGUARDO_CIFRADO_CLAVE_ARCHIVO` la
+#: cambia —los tests, o un host con otro layout—.
+CLAVE_ARCHIVO_DEFAULT = "/root/secretos/resguardo_cifrado.key"
+CLAVE_ARCHIVO_ENV = "RESGUARDO_CIFRADO_CLAVE_ARCHIVO"
+
+#: Largo minimo aceptado. Detras hay un ZIP con la clave para facturar en nombre
+#: del cliente.
+CLAVE_MINIMO = 32
 
 
 
@@ -179,9 +219,10 @@ def ultimo_zip(backups_dir) -> Path | None:
     return zips[0] if zips else None
 
 
-def _rclone(*args, binario="rclone", timeout=1800):
+def _rclone(*args, binario="rclone", timeout=1800, env=None):
     r = subprocess.run(
         [binario, *args], capture_output=True, text=True, timeout=timeout,
+        env={**os.environ, **env} if env else None,
     )
     if r.returncode != 0:
         detalle = (r.stderr or "").strip().splitlines()
@@ -192,10 +233,14 @@ def _rclone(*args, binario="rclone", timeout=1800):
     return r.stdout
 
 
-def _listar_remoto(destino: str, *extra, binario="rclone") -> dict[str, int]:
-    """`{nombre: bytes}` de lo que hay hoy en el destino."""
+def _listar_remoto(destino: str, *extra, binario="rclone", env=None) -> dict[str, int]:
+    """`{nombre: bytes}` de lo que hay hoy en el destino.
+
+    A traves del remoto cifrado, nombre y tamaño son los **originales**: `crypt`
+    descuenta su sobrecarga. Por eso la verificacion de abajo no cambio.
+    """
     try:
-        salida = _rclone("lsjson", destino, *extra, binario=binario)
+        salida = _rclone("lsjson", destino, *extra, binario=binario, env=env)
     except ResguardoExternoError as e:
         # Un destino que todavia no existe no es un error: la primera subida lo
         # crea. Cualquier otra cosa si.
@@ -205,6 +250,104 @@ def _listar_remoto(destino: str, *extra, binario="rclone") -> dict[str, int]:
     return {i["Name"]: i["Size"] for i in json.loads(salida or "[]") if not i["IsDir"]}
 
 
+
+
+def leer_clave(ruta=None) -> str:
+    """La passphrase del cifrado, o `ResguardoExternoError`.
+
+    Los mensajes dicen **que** falta y **donde**, nunca el valor.
+    """
+    ruta = Path(ruta or os.environ.get(CLAVE_ARCHIVO_ENV) or CLAVE_ARCHIVO_DEFAULT)
+    try:
+        info = ruta.stat()
+    except FileNotFoundError:
+        raise ResguardoExternoError(
+            f"no hay clave de cifrado en {ruta}: no se sube en claro"
+        ) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise ResguardoExternoError(f"{ruta} no es un archivo: no se sube en claro")
+    if info.st_mode & 0o077:
+        raise ResguardoExternoError(
+            f"{ruta} tiene permisos {stat.S_IMODE(info.st_mode):04o}; "
+            "tiene que ser 0600: no se sube"
+        )
+    clave = ruta.read_text(encoding="utf-8").strip()
+    if len(clave) < CLAVE_MINIMO:
+        raise ResguardoExternoError(
+            f"la clave de cifrado en {ruta} tiene menos de {CLAVE_MINIMO} caracteres: no se sube"
+        )
+    return clave
+
+
+def huella_de(clave: str) -> str:
+    """Identifica la clave sin revelarla. Si cambia entre dos subidas, parte del
+    historial del cliente quedo cifrado con otra y ya no se abre con esta."""
+    return hashlib.sha256(clave.encode("utf-8")).hexdigest()[:8]
+
+
+def _obscurecer(clave: str, binario="rclone") -> str:
+    """La forma en que `rclone` espera una password de config.
+
+    Por **stdin** y no como argumento: el argv de un proceso lo ve cualquiera que
+    liste procesos.
+    """
+    r = subprocess.run(
+        [binario, "obscure", "-"], input=clave, capture_output=True, text=True, timeout=60,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        raise ResguardoExternoError("rclone obscure no devolvio la clave preparada")
+    return r.stdout.strip()
+
+
+def _entorno_cifrado(destino_plano: str, clave_obscura: str) -> dict[str, str]:
+    """Las variables que definen el remoto `crypt` sobre el destino de siempre.
+
+    `filename_encryption = off` no es comodidad: la verificacion compara por
+    nombre y la retencion fecha por nombre. Con los nombres cifrados las dos
+    dejarian de funcionar. El contenido va cifrado igual.
+    """
+    p = f"RCLONE_CONFIG_{REMOTO_CIFRADO.upper()}_"
+    return {
+        f"{p}TYPE": "crypt",
+        f"{p}REMOTE": destino_plano,
+        f"{p}PASSWORD": clave_obscura,
+        f"{p}FILENAME_ENCRYPTION": "off",
+        f"{p}DIRECTORY_NAME_ENCRYPTION": "false",
+    }
+
+
+def _en(destino: str, nombre: str) -> str:
+    """`destino` + `nombre`, sin la barra de mas cuando el destino es la raiz de
+    un remoto (`resguardocifrado:`)."""
+    return f"{destino}{nombre}" if destino.endswith(":") else f"{destino}/{nombre}"
+
+
+def _verificar_contenido(zip_local: Path, destino: str, *extra, binario, env) -> None:
+    """🔴 Que el objeto de alla sea ESTE archivo, cifrado — no sólo que tenga su
+    nombre y su tamaño.
+
+    `cryptcheck` cifra el local con el nonce del remoto y compara hashes, sin
+    bajar nada. Y no alcanza con su codigo de salida: con un filtro que no
+    matchea compara **cero** archivos y sale 0. Por eso la lista va por
+    `--files-from` —literal, sin globs— y se exige que `--match` nombre al
+    archivo.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        lista = Path(tmp) / "archivos"
+        coinciden = Path(tmp) / "coinciden"
+        lista.write_text(zip_local.name + "\n", encoding="utf-8")
+        _rclone(
+            "cryptcheck", str(zip_local.parent), destino, "--one-way",
+            "--files-from", str(lista), "--match", str(coinciden),
+            *extra, binario=binario, env=env,
+        )
+        vistos = (
+            coinciden.read_text(encoding="utf-8").splitlines() if coinciden.exists() else []
+        )
+    if vistos != [zip_local.name]:
+        raise ResguardoExternoError(
+            f"cryptcheck no confirmo {zip_local.name} en el destino (coincidieron: {vistos})"
+        )
 
 
 def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print) -> dict:
@@ -218,17 +361,27 @@ def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print
     if cfg is None:
         return {"ok": None, "motivo": "sin resguardo externo contratado"}
 
-    destino = f"{cfg['remoto']}{cfg['ruta']}" if cfg["ruta"] else cfg["remoto"]
+    # El destino de siempre, legible: es el que se muestra y el que envuelve el
+    # remoto cifrado. A rclone se le habla SOLO por el cifrado.
+    destino_plano = f"{cfg['remoto']}{cfg['ruta']}" if cfg["ruta"] else cfg["remoto"]
+    destino = f"{REMOTO_CIFRADO}:"
     # Un enlace hecho desde la pantalla trae su propio `rclone.conf`. Va como
     # flag al final y no como parametro de `_rclone`, para que `args[0]` siga
     # siendo el subcomando que nombra el mensaje de error.
     extra = ("--config", cfg["config"]) if cfg.get("config") else ()
     estado = {
         "ok": False, "cuando": ahora.isoformat(timespec="seconds"),
-        "destino": destino, "archivo": None, "bytes": 0, "error": None,
+        "destino": destino_plano, "cifrado": True, "huella_clave": None,
+        "archivo": None, "bytes": 0, "error": None,
     }
 
     try:
+        # Lo primero, antes de tocar la red: sin clave no hay subida posible, y
+        # el error tiene que decir eso y no otra cosa.
+        clave = leer_clave()
+        estado["huella_clave"] = huella_de(clave)
+        env = _entorno_cifrado(destino_plano, _obscurecer(clave, binario=binario))
+
         zip_local = ultimo_zip(backups_dir)
         if zip_local is None:
             raise ResguardoExternoError(
@@ -238,12 +391,13 @@ def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print
         estado["bytes"] = zip_local.stat().st_size
 
         log(f"[*] {slug}: subiendo {zip_local.name} "
-            f"({estado['bytes'] / 1_048_576:.2f} MB) a {destino}")
-        _rclone("copy", str(zip_local), destino, "--no-traverse", *extra, binario=binario)
+            f"({estado['bytes'] / 1_048_576:.2f} MB) cifrado a {destino_plano}")
+        _rclone("copy", str(zip_local), destino, "--no-traverse", *extra,
+                binario=binario, env=env)
 
         # 🔴 Que `rclone copy` no haya fallado NO alcanza. Es el mismo criterio
         # que `respaldo.verificar_backup`: se mira el producto, no el proceso.
-        remoto = _listar_remoto(destino, *extra, binario=binario)
+        remoto = _listar_remoto(destino, *extra, binario=binario, env=env)
         if zip_local.name not in remoto:
             raise ResguardoExternoError(
                 f"rclone dijo que copio pero {zip_local.name} no esta en el destino"
@@ -253,11 +407,12 @@ def subir(cliente: dict, backups_dir, *, binario="rclone", ahora=None, log=print
                 f"{zip_local.name} llego con {remoto[zip_local.name]} bytes y "
                 f"pesa {estado['bytes']}"
             )
-        log(f"[OK] {slug}: verificado en el destino")
+        _verificar_contenido(zip_local, destino, *extra, binario=binario, env=env)
+        log(f"[OK] {slug}: verificado en el destino, cifrado")
 
         sobran = a_borrar(remoto, ahora)
         for nombre in sobran:
-            _rclone("deletefile", f"{destino}/{nombre}", *extra, binario=binario)
+            _rclone("deletefile", _en(destino, nombre), *extra, binario=binario, env=env)
         if sobran:
             log(f"[OK] {slug}: retencion, {len(sobran)} copia/s vieja/s borrada/s")
         estado["borrados"] = sobran

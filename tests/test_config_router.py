@@ -366,8 +366,10 @@ def test_resguardo_externo_refleja_lo_que_dejo_el_host(client, app):
 
     from libracore.resguardo_estado import escribir_estado
 
+    # Una copia cifrada: es lo unico que produce el subidor desde el 2026-09-17,
+    # y sin `cifrado` el estado ya no cuenta como al dia.
     escribir_estado(app.state.backups_dir, {
-        'ok': True,
+        'ok': True, 'cifrado': True,
         'cuando': datetime.now().isoformat(timespec='seconds'),
         'archivo': 'backup_automatico_20260812_040000.zip',
         'destino': 'drive_cliente:libra/cliente',
@@ -381,6 +383,7 @@ def test_resguardo_externo_refleja_lo_que_dejo_el_host(client, app):
     assert datos['contratado'] is True
     assert datos['al_dia'] is True
     assert datos['detalle']['destino'] == 'drive_cliente:libra/cliente'
+    assert datos['detalle']['cifrado'] is True
 
 
 def test_resguardo_externo_muestra_la_falla(client, app):
