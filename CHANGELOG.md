@@ -46,6 +46,45 @@ Sin migración de Alembic.
 - `esta_al_dia` y el botón viajan con el pin de cada producto, sin cambios en su
   código.
 
+## [v1.108.0] — Los secretos de `config.json` salen del archivo en texto plano
+
+Sin migración de Alembic propia. Requiere libraauth `v0.46.0`, que trae la
+tabla `secretos_instancia` en la revisión `0002` de su cadena.
+
+### Agregado
+
+- `config_manager.usar_almacen_de_secretos(almacen)`: enchufa un almacén
+  cifrado para `mp_access_token`, `mp_webhook_secret` y
+  `email_smtp_password` (`config_manager.CLAVES_SECRETAS`). El almacén es
+  cualquier objeto con `get(clave)` y `set(clave, valor)`; en la familia es
+  `libraauth.secretos.SecretosRepository`. **LibraCore no importa
+  libraauth**: el producto, que tiene los dos, lo inyecta.
+- `config_manager.migrar_secretos_al_almacen()`: saca de `config.json` los
+  secretos que quedaron en claro. Idempotente, pensada para correr en cada
+  arranque. Devuelve un informe con **nombres de claves, nunca valores**.
+- `config_manager.almacen_de_secretos()`: el almacén enchufado, o `None`.
+
+### Cambiado
+
+- Con almacén enchufado, `load()` trae los tres secretos del almacén (con el
+  JSON como respaldo mientras el almacén esté vacío) y `save()` los escribe
+  ahí y los deja **vacíos en el JSON**. Para los consumidores no cambia nada:
+  `load()` sigue devolviendo el secreto en claro bajo la misma clave.
+
+### ⚠️ Al subir el pin
+
+- 🔴 **Subir el pin solo no cambia nada.** Sin `usar_almacen_de_secretos()`,
+  `config_manager` se comporta exactamente como antes y sigue escribiendo
+  el secreto en el JSON. El producto tiene que enchufar el almacén sobre el
+  mismo session factory que `UserRepository`, y llamar a
+  `migrar_secretos_al_almacen()` en el arranque **después** de
+  `exigir_schema_al_dia()` (la tabla sale de la revisión `0002` de
+  libraauth). Llamarla sin almacén enchufado levanta `RuntimeError`: falla
+  ruidosa a propósito.
+- Si cifrar falla (instancia sin `SECRET_KEY`), la migración **no toca el
+  `config.json`**: la instancia sigue funcionando con la credencial que
+  tiene, y la clave queda listada en `fallaron`.
+
 ## [v1.107.0] — Reabrir día: un admin puede anular un cierre diario, con motivo
 
 Migración de Alembic: `0011_reabrir_cierre_diario`.
