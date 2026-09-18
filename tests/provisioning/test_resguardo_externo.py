@@ -252,7 +252,8 @@ def test_sin_estado_no_esta_al_dia(tmp_path):
 
 def test_una_copia_vieja_no_esta_al_dia(tmp_path):
     rx.escribir_estado(tmp_path, {
-        "ok": True, "cuando": (AHORA - timedelta(hours=50)).isoformat(timespec="seconds"),
+        "ok": True, "cifrado": True,
+        "cuando": (AHORA - timedelta(hours=50)).isoformat(timespec="seconds"),
     })
 
     al_dia, motivo = rx.esta_al_dia(tmp_path, horas=36, ahora=AHORA)
@@ -263,7 +264,8 @@ def test_una_copia_vieja_no_esta_al_dia(tmp_path):
 
 def test_una_copia_fresca_esta_al_dia(tmp_path):
     rx.escribir_estado(tmp_path, {
-        "ok": True, "cuando": (AHORA - timedelta(hours=5)).isoformat(timespec="seconds"),
+        "ok": True, "cifrado": True,
+        "cuando": (AHORA - timedelta(hours=5)).isoformat(timespec="seconds"),
     })
 
     al_dia, _ = rx.esta_al_dia(tmp_path, horas=36, ahora=AHORA)

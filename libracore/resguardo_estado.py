@@ -51,9 +51,15 @@ def leer_estado(backups_dir) -> dict | None:
 def esta_al_dia(backups_dir, *, horas: int = HORAS_FRESCURA, ahora=None) -> tuple[bool, str]:
     """`(al_dia, motivo)`.
 
-    Los cuatro "no" que tiene que distinguir, porque se ven igual desde afuera y
+    Los "no" que tiene que distinguir, porque se ven igual desde afuera y
     significan cosas muy distintas: nunca se configuro, el archivo esta roto, la
-    ultima subida fallo, y la ultima subida anduvo pero es vieja.
+    ultima subida fallo, la ultima subida anduvo **pero sin cifrar**, y la ultima
+    subida anduvo pero es vieja.
+
+    🔴 **Sin cifrar no esta al dia**, aunque sea de hace un minuto. Desde el
+    2026-09-17 el subidor no tiene camino en claro, asi que un estado sin
+    `cifrado` es de antes de ese cambio: la copia que describe esta —o
+    estuvo— en la nube del cliente con su clave privada de ARCA legible.
     """
     ahora = ahora or datetime.now()
     ruta = Path(backups_dir) / ESTADO
@@ -64,6 +70,8 @@ def esta_al_dia(backups_dir, *, horas: int = HORAS_FRESCURA, ahora=None) -> tupl
         return False, ".externo.json ilegible"
     if not datos.get("ok"):
         return False, f"la ultima subida fallo: {datos.get('error') or 'sin detalle'}"
+    if datos.get("cifrado") is not True:
+        return False, "la ultima copia externa subio sin cifrar"
     try:
         cuando = datetime.fromisoformat(datos["cuando"])
     except (KeyError, TypeError, ValueError):
@@ -98,5 +106,6 @@ def resumen(backups_dir, *, horas: int = HORAS_FRESCURA, ahora=None) -> dict:
             "bytes": datos.get("bytes"),
             "en_destino": datos.get("en_destino"),
             "error": datos.get("error"),
+            "cifrado": datos.get("cifrado") is True,
         },
     }
