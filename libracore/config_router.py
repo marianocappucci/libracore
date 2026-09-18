@@ -24,6 +24,8 @@ ponerle un guard distinto a cada endpoint.
 """
 import os
 from collections.abc import Callable
+from dataclasses import replace
+from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -35,6 +37,7 @@ from libracore.respaldo import (
     BackupInvalido,
     Instancia,
     crear_backup,
+    directorios_de_datos,
     listar_backups,
     restaurar_backup,
     verificar_backup,
@@ -186,7 +189,52 @@ def build_backup_router(
     pasar `engine.dispose` en los dos.
     """
     router = APIRouter(prefix=prefix, tags=["config"])
-    _resolver = instancia if callable(instancia) else (lambda: instancia)
+    _resolver_del_producto = instancia if callable(instancia) else (lambda: instancia)
+
+    def _resolver() -> Instancia:
+        """La instancia del producto, **mas** las carpetas de `data/` que el
+        cron tambien respalda.
+
+        🔴 Hasta el 2026-09-17 este router usaba tal cual la `Instancia` que
+        arma cada producto a mano —VentaLibra y Gestiolibra con
+        `directorios=[LOGO_DIR]`, LibraClub con `[]`—, mientras que el cron del
+        host (`provisioning.panel_admin._instancia_del_cliente`) y el restore
+        por CLI dentro del contenedor (`instancia_desde_entorno`) usan
+        `directorios_de_datos(data_dir)`: **todas** las subcarpetas de `data/`
+        menos `backups/`. Resultado real: en esos productos el boton armaba
+        ZIPs sin `arca_certs/` —la clave privada de ARCA, sin la cual una
+        instancia restaurada no factura— aunque el cron si la llevara, y
+        restaurar desde el boton un ZIP del cron no reponia `arca_certs/` ni
+        `facturas_pdf/`, porque `restaurar_backup` solo repone lo que trae
+        `instancia.directorios`.
+
+        La union se arma **por request** y no una sola vez al crear el router:
+        `arca_certs/` recien aparece cuando el cliente sube su primer
+        certificado, despues de que la app ya arranco. Es union y no
+        reemplazo —nunca menos que lo que declara el producto, por si alguna
+        dia declara una carpeta fuera de `data/`— y sin duplicados por ruta
+        **resuelta**: un producto puede escribir `LOGO_DIR` con otra forma de
+        la misma ruta, y un duplicado haria que `crear_backup` escriba los
+        mismos archivos dos veces en el ZIP.
+
+        Solo aplica si `backups_dir` se llama `backups`: si no, el padre no es
+        `data/` y `directorios_de_datos(padre)` se llevaria adentro a la
+        propia carpeta de backups, metiendo cada ZIP anterior dentro del
+        siguiente.
+
+        No muta la `Instancia` del producto —puede ser un objeto compartido
+        entre requests—: arma una nueva con `dataclasses.replace`.
+        """
+        base = _resolver_del_producto()
+        carpeta_backups = Path(backups_dir)
+        if carpeta_backups.name != "backups":
+            return base
+        del_cron = directorios_de_datos(carpeta_backups.parent)
+        ya_declaradas = {d.resolve() for d in base.directorios}
+        faltantes = [d for d in del_cron if d.resolve() not in ya_declaradas]
+        if not faltantes:
+            return base
+        return replace(base, directorios=[*base.directorios, *faltantes])
 
     def _backup_verificado(motivo: str) -> str:
         """Arma el ZIP y **lo abre para verificarlo** antes de guardarlo o
