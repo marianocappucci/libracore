@@ -7,6 +7,45 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.109.0] — La copia externa sale cifrada, y el botón de backup arma el mismo ZIP que el cron
+
+Sin migración de Alembic.
+
+### ⚠️ Antes de actualizar el `.venv-scripts` de un host
+
+- **Crear la passphrase del parque**: `/root/secretos/resguardo_cifrado.key`,
+  `0600`, de 32 caracteres o más (o la ruta de `RESGUARDO_CIFRADO_CLAVE_ARCHIVO`).
+  Sin ella `panel_admin.py resguardo-externo` **no sube**: falla cerrado, el error
+  queda en `.externo.json` y `estado-externo` se pone rojo. **Anotarla fuera del
+  servidor**: si se pierde, lo ya subido es irrecuperable. **No se rota**: rotarla
+  deja ilegible todo lo subido con la anterior.
+
+### Cambiado
+
+- `provisioning.resguardo_externo.subir`: la copia externa sale cifrada con
+  `rclone crypt`, **o no sale**. El remoto cifrado se arma por variables de
+  entorno en cada llamada —la passphrase no entra al `rclone.conf` del enlace ni
+  al argv—, con `filename_encryption = off` para que la verificación y la
+  retención por nombre sigan funcionando. Suma una verificación de contenido con
+  `cryptcheck`, exigiendo por `--match` que el archivo se haya comparado. El
+  estado suma `cifrado` y `huella_clave` (`sha256[:8]`).
+- `resguardo_estado.esta_al_dia`: una copia que subió sin `cifrado: true` ya no
+  está al día. `resumen()` suma `detalle.cifrado`.
+- `config_router.build_backup_router`: el botón de la pantalla suma, por request,
+  las carpetas de `directorios_de_datos(<padre de backups_dir>)` a las que declara
+  el producto —la misma regla que el cron del host y el restore por CLI—. Sólo si
+  `backups_dir` se llama `backups`. En VentaLibra, Gestiolibra y LibraClub el ZIP
+  del botón pasa a llevar `arca_certs/`, y restaurar desde el botón un ZIP del cron
+  repone todas sus carpetas.
+
+### Para los consumidores
+
+- **El subidor corre en el host**, desde el `.venv-scripts` de cada producto: el
+  pin de los productos **no** lo mueve. Hay que actualizar los ocho, no sólo los
+  que hoy tienen resguardo: el bloqueo de subir en claro está en este código.
+- `esta_al_dia` y el botón viajan con el pin de cada producto, sin cambios en su
+  código.
+
 ## [v1.107.0] — Reabrir día: un admin puede anular un cierre diario, con motivo
 
 Migración de Alembic: `0011_reabrir_cierre_diario`.
