@@ -18,6 +18,26 @@ import pytest
 from libracore.provisioning import resguardo_externo as rx
 
 
+@pytest.fixture(autouse=True)
+def _clave_de_cifrado(tmp_path, monkeypatch):
+    """Desde el 2026-09-17 sin clave no se sube nada. Estos tests son sobre el
+    destino y la retencion, no sobre el cifrado — ese vive en
+    `test_resguardo_cifrado.py`."""
+    ruta = tmp_path / "resguardo_cifrado.key"
+    ruta.write_text("c" * 40)
+    ruta.chmod(0o600)
+    monkeypatch.setenv(rx.CLAVE_ARCHIVO_ENV, str(ruta))
+    monkeypatch.setattr(rx, "_obscurecer", lambda clave, binario="rclone": "OBSCURA")
+
+
+def _simular_cryptcheck(args):
+    """Deja en `--match` lo que se pidio en `--files-from`: todo coincide."""
+    from pathlib import Path as _P
+    match = _P(args[args.index("--match") + 1])
+    nombres = _P(args[args.index("--files-from") + 1]).read_text().splitlines()
+    match.write_text("\n".join(nombres) + "\n")
+
+
 def _nombre(dt: datetime, motivo="automatico") -> str:
     return f"backup_{motivo}_{dt.strftime('%Y%m%d')}_{dt.strftime('%H%M%S')}.zip"
 
@@ -119,9 +139,12 @@ def _poner_zip(cliente, dt=AHORA, contenido=b"PK\x03\x04" + b"x" * 500):
 
 def _falso_rclone(monkeypatch, *, remoto_tras_copiar, registro=None):
     """Reemplaza `_rclone` por uno que simula el destino."""
-    def fake(*args, binario="rclone", timeout=1800):
+    def fake(*args, binario="rclone", timeout=1800, env=None):
         if registro is not None:
             registro.append(args)
+        if args[0] == "cryptcheck":
+            _simular_cryptcheck(args)
+            return ""
         if args[0] == "lsjson":
             return json.dumps([
                 {"Name": n, "Size": s, "IsDir": False}
