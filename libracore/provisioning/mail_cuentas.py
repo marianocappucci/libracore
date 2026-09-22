@@ -208,6 +208,61 @@ def borrar_cuenta(direccion: str) -> None:
     _ssh(["borrar", direccion])
 
 
+def agregar_reenvio(slug: str, destino: str) -> None:
+    """Reenvía la casilla de una instancia a un correo del cliente, sin
+    dejar de recibirla localmente.
+
+    **El caso de uso.** El cliente carga desde su panel un correo personal
+    para no perderse lo que le llega a `<slug>@dominio` —el `forgot-password`,
+    un aviso del sistema— sin tener que acordarse de revisar una casilla que
+    no es la que usa todos los días. El servidor mantiene la copia local
+    además de reenviar: si el reenvío externo rebota o el correo del cliente
+    está lleno, el mensaje no se pierde, sigue estando en la casilla de la
+    instancia.
+
+    Del lado del wrapper esto se resuelve con un script Sieve por usuario y
+    no con un alias de Postfix —`setup alias add` rechaza una dirección que
+    ya es una casilla real—, pero acá no cambia nada: se manda `alias` igual
+    que `crear_cuenta` manda `crear`, y quien traduce la orden es el wrapper.
+
+    Idempotente sin necesitar un `del` previo: el script Sieve es un archivo
+    entero por casilla, no una lista a la que se le agrega — reenviar de
+    nuevo, o cambiar el destino, es reescribir el mismo archivo.
+    """
+    direccion = direccion_de(slug)
+    if not _DIRECCION_VALIDA.match(direccion):
+        raise MailError(
+            f"La dirección {direccion!r} no tiene forma de dirección de correo. "
+            "Revisá LIBRA_MAIL_DOMINIO y el slug de la instancia."
+        )
+    if not destino or not _DIRECCION_VALIDA.match(destino):
+        raise MailError(
+            f"El destino {destino!r} no tiene forma de dirección de correo: "
+            "no hay a quién reenviarle."
+        )
+    _ssh(["alias", direccion, destino])
+
+
+def quitar_reenvio(slug: str) -> None:
+    """Saca el reenvío de una instancia. La casilla sigue recibiendo local.
+
+    Sin `destino`, a propósito: el caso real es el cliente **limpiando el
+    campo** en su panel y guardando — para cuando este módulo se entera, el
+    valor viejo ya no existe en ningún lado (la instancia lo pisó por
+    `null`), así que pedirlo sería un requisito que nadie puede cumplir. El
+    script Sieve es un archivo entero por casilla, no una lista acumulativa
+    —lo mismo que hace `agregar_reenvio` idempotente sin un `del` previo—,
+    así que sacarlo no necesita saber qué decía: se borra el archivo entero.
+    """
+    direccion = direccion_de(slug)
+    if not _DIRECCION_VALIDA.match(direccion):
+        raise MailError(
+            f"La dirección {direccion!r} no tiene forma de dirección de correo. "
+            "Revisá LIBRA_MAIL_DOMINIO y el slug de la instancia."
+        )
+    _ssh(["desalias", direccion])
+
+
 def _from_name(nombre: str) -> str:
     """El nombre que ve quien recibe el correo: el del cliente, no el del producto.
 
