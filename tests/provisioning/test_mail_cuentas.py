@@ -197,6 +197,92 @@ def test_borrar_una_direccion_mal_formada_no_llega_al_ssh(configurado, ssh):
     assert ssh == []
 
 
+# ── agregar_reenvio ─────────────────────────────────────────────────────────
+
+
+def test_agregar_reenvio_manda_el_verbo_alias_con_direccion_y_destino(configurado, ssh):
+    mc.agregar_reenvio("lagrace", "cliente@gmail.com")
+    (args, _), = ssh
+    assert args[-3:] == ["alias", "lagrace@testprod.com.ar", "cliente@gmail.com"]
+
+
+def test_agregar_reenvio_con_direccion_mal_formada_no_llega_al_ssh(monkeypatch, ssh):
+    monkeypatch.setenv("LIBRA_MAIL_ADMIN_SSH", "libra-mail@mail.testprod.com.ar")
+    monkeypatch.setenv("LIBRA_MAIL_DOMINIO", "no es un dominio")
+    with pytest.raises(mc.MailError):
+        mc.agregar_reenvio("lagrace", "cliente@gmail.com")
+    assert ssh == []
+
+
+def test_agregar_reenvio_con_destino_mal_formado_no_llega_al_ssh(configurado, ssh):
+    with pytest.raises(mc.MailError):
+        mc.agregar_reenvio("lagrace", "; rm -rf /")
+    assert ssh == []
+
+
+def test_agregar_reenvio_sin_destino_es_un_error(configurado, ssh):
+    with pytest.raises(mc.MailError):
+        mc.agregar_reenvio("lagrace", "")
+    assert ssh == []
+
+
+def test_agregar_reenvio_con_destino_none_es_un_error(configurado, ssh):
+    with pytest.raises(mc.MailError):
+        mc.agregar_reenvio("lagrace", None)
+    assert ssh == []
+
+
+def test_un_rechazo_del_servidor_al_agregar_reenvio_llega_con_su_motivo(
+    configurado, monkeypatch
+):
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="dominio no configurado\n"
+        )
+
+    monkeypatch.setattr(mc.subprocess, "run", fake_run)
+    with pytest.raises(mc.MailError, match="dominio no configurado"):
+        mc.agregar_reenvio("lagrace", "cliente@gmail.com")
+
+
+# ── quitar_reenvio ──────────────────────────────────────────────────────────
+
+
+def test_quitar_reenvio_manda_el_verbo_desalias_con_la_direccion(configurado, ssh):
+    mc.quitar_reenvio("lagrace")
+    (args, _), = ssh
+    assert args[-2:] == ["desalias", "lagrace@testprod.com.ar"]
+
+
+def test_quitar_reenvio_con_direccion_mal_formada_no_llega_al_ssh(monkeypatch, ssh):
+    monkeypatch.setenv("LIBRA_MAIL_ADMIN_SSH", "libra-mail@mail.testprod.com.ar")
+    monkeypatch.setenv("LIBRA_MAIL_DOMINIO", "no es un dominio")
+    with pytest.raises(mc.MailError):
+        mc.quitar_reenvio("lagrace")
+    assert ssh == []
+
+
+def test_quitar_reenvio_no_pide_destino(configurado, ssh):
+    # A diferencia de agregar_reenvio, acá no hay un destino que validar: el
+    # caso real es el cliente limpiando el campo, y para cuando esto se llama
+    # el valor viejo ya no existe en ningún lado.
+    mc.quitar_reenvio("lagrace")
+    assert len(ssh) == 1
+
+
+def test_un_rechazo_del_servidor_al_quitar_reenvio_llega_con_su_motivo(
+    configurado, monkeypatch
+):
+    def fake_run(args, **kwargs):
+        return subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="no habia reenvio para esa direccion\n"
+        )
+
+    monkeypatch.setattr(mc.subprocess, "run", fake_run)
+    with pytest.raises(mc.MailError, match="no habia reenvio para esa direccion"):
+        mc.quitar_reenvio("lagrace")
+
+
 # ── env_para_compose ────────────────────────────────────────────────────────
 
 
