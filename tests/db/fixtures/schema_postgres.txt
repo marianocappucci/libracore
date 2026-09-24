@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (374)
+## tablas (375)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -39,6 +39,7 @@ cajas|descripcion|text||''::text
 cajas|es_default|integer|NN|0
 cajas|id|bigint|NN|nextval('cajas_id_seq'::regclass)
 cajas|medios_pago|text|NN|'[]'::text
+cajas|mp_pos_id|text||
 cajas|nombre|text|NN|
 cajas|punto_venta|integer||
 cajas|sucursal_id|integer||

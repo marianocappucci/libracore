@@ -816,6 +816,13 @@ def init_core_schema(conn: Conexion):
     # número — con el agravante de que el choque lo detecta ARCA, no nosotros.
     if "punto_venta" not in cols_cajas:
         conn.execute("ALTER TABLE cajas ADD COLUMN punto_venta INTEGER")
+    # El POS de MercadoPago asociado a este mostrador. Cada caja con QR
+    # necesita su propio `external_id` porque el monto se escribe en el POS:
+    # compartirlo hace que la última venta pise la anterior. Es TEXT y
+    # alfanumérico (MercadoPago no acepta guiones). Nullable: una caja sin
+    # QR no lo necesita.
+    if "mp_pos_id" not in cols_cajas:
+        conn.execute("ALTER TABLE cajas ADD COLUMN mp_pos_id TEXT")
 
     # 🔴 **Un pago puede existir y no haber entrado.** Hasta acá una línea de
     # `ventas_pagos` no tenía estado: existía, y por lo tanto contaba. El POS de

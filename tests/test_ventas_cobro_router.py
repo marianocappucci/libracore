@@ -304,6 +304,17 @@ def _mp(pago=None, orden=None):
 
 def _mp_configurado(entorno):
     entorno.save({**entorno.load(), "mp_access_token": "APP_USR-test", "mp_pos_id": "RESTODEV", "mp_user_id": "3392230021"})
+    # En el nuevo modelo el POS vive en la caja, no en la config. Abrimos un
+    # turno sobre la caja que el fixture creó (la última) y le cargamos el POS.
+    from libracore.db import turnos as db_turnos
+
+    caja = db_caja.get_all_cajas()[-1]
+    db_caja.update_caja_config(
+        caja["id"], caja["nombre"], caja["descripcion"], caja["medios_pago"],
+        1 if caja.get("activo", True) else 0,
+        mp_pos_id="RESTODEV",
+    )
+    db_turnos.create_turno(USUARIO["id"], 0.0, caja_id=caja["id"])
 
 
 def test_facturar_por_http(ventas):
@@ -323,7 +334,25 @@ def test_mp_qr_sin_configurar_lo_dice_antes_de_salir_a_la_red(ventas):
     ventas.alta(1)
     mp, llamadas = _mp()
     r = _app(ventas, mp).post("/api/ventas/1/mp-qr")
-    assert r.status_code == 400 and "POS ID" in r.json()["detail"]
+    assert r.status_code == 400
+    assert "Access Token" in r.json()["detail"] and "User ID" in r.json()["detail"]
+    assert llamadas == []
+
+
+def test_mp_qr_caja_sin_pos_id_y_mas_de_una_caja_devuelve_422(ventas, entorno):
+    """Con varias cajas, cada una debe tener su POS; no hay fallback a config."""
+    entorno.save({
+        **entorno.load(),
+        "mp_access_token": "APP_USR-test",
+        "mp_user_id": "3392230021",
+        "mp_pos_id": "RESTODEV",
+    })
+    # Una segunda caja sin POS rompe el fallback de una sola caja.
+    db_caja.create_caja_config("Otra", "", [])
+    ventas.alta(1)
+    mp, llamadas = _mp()
+    r = _app(ventas, mp).post("/api/ventas/1/mp-qr")
+    assert r.status_code == 422 and "caja activa no tiene un POS" in r.json()["detail"]
     assert llamadas == []
 
 

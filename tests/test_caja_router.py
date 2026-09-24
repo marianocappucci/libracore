@@ -146,6 +146,37 @@ def test_cajas_crud_y_punto_de_venta(client):
     assert client.delete("/api/cajas/999").status_code == 404
 
 
+def test_cajas_mp_pos_id(client):
+    """El POS de MercadoPago vive en la caja; el external_id debe ser alfanumérico."""
+    r = client.post("/api/cajas", json={
+        "nombre": "Caja QR", "medios_pago": ["efectivo"],
+        "mp_pos_id": "BIOKOCAJA01",
+    })
+    assert r.status_code == 200
+    assert r.json()["mp_pos_id"] == "BIOKOCAJA01"
+
+    # Guiones y espacios no están permitidos por MercadoPago.
+    r = client.post("/api/cajas", json={
+        "nombre": "Caja QR mala", "medios_pago": [],
+        "mp_pos_id": "BIOKO-CAJA-01",
+    })
+    assert r.status_code == 422 and "alfanumérico" in r.json()["detail"]
+
+    cid = client.get("/api/cajas").json()[-1]["id"]
+    r = client.put(f"/api/cajas/{cid}", json={
+        "nombre": "Caja QR", "medios_pago": ["efectivo"],
+        "mp_pos_id": "BIOKOCAJA02", "activo": True,
+    })
+    assert r.status_code == 200 and r.json()["mp_pos_id"] == "BIOKOCAJA02"
+
+    # Limpiar el POS deja la caja sin QR.
+    r = client.put(f"/api/cajas/{cid}", json={
+        "nombre": "Caja QR", "medios_pago": ["efectivo"],
+        "mp_pos_id": "", "activo": True,
+    })
+    assert r.status_code == 200 and r.json()["mp_pos_id"] is None
+
+
 # ── Turnos ───────────────────────────────────────────────────────────────
 
 

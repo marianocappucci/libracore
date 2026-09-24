@@ -48,6 +48,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from libracore import config_manager
 from libracore import pagos as acreditacion
+from libracore.db import caja as db_caja
 from libracore.venta_facturacion import (
     PuertoDeVentas,
     VentaNoFacturable,
@@ -162,13 +163,22 @@ def build_cobro_de_ventas_router(
         venta = _venta_o_404(vid)
         cfg = config_manager.load()
         access_token = cfg.get("mp_access_token", "")
-        pos_id = cfg.get("mp_pos_id", "")
         user_id = cfg.get("mp_user_id", "")
-        if not access_token or not pos_id or not user_id:
+        if not access_token or not user_id:
             raise HTTPException(
                 400,
-                "Configurá el Access Token, el User ID y el POS ID de MercadoPago "
+                "Configurá el Access Token y el User ID de MercadoPago "
                 "en Configuración → Integraciones.",
+            )
+
+        pos_id = db_caja.mp_pos_id_con_fallback(
+            user.get("id"), cfg.get("mp_pos_id")
+        )
+        if not pos_id:
+            raise HTTPException(
+                422,
+                "La caja activa no tiene un POS de MercadoPago configurado. "
+                "Configurá el POS ID en la caja antes de cobrar con QR.",
             )
 
         if _venta_anulada(venta):
