@@ -38,7 +38,7 @@ from libracore import medios_pago, ticket_generator
 from libracore.db import caja as db_caja
 from libracore.db import cierre_diario as db_cierre_diario
 from libracore.db import turnos as db_turnos
-from libracore.db.caja import PuntoDeVentaRepetido
+from libracore.db.caja import ExternalIdMercadoPagoInvalido, PuntoDeVentaRepetido
 
 # ── Caja: los movimientos ────────────────────────────────────────────────
 
@@ -108,6 +108,9 @@ class CajaPayload(BaseModel):
     #: El punto de venta de ARCA de este mostrador. `None` deja la caja usando
     #: el de la empresa, que es como funcionan las instancias de un solo POS.
     punto_venta: int | None = None
+    #: El `external_id` del POS de MercadoPago de esta caja. Cada caja con QR
+    #: necesita el suyo propio; `None` o vacío deja la caja sin QR.
+    mp_pos_id: str | None = None
 
 
 class CajaUpdatePayload(CajaPayload):
@@ -134,10 +137,13 @@ def build_cajas_router(*, prefix: str = "/api/cajas") -> APIRouter:
             cid = db_caja.create_caja_config(
                 nombre, payload.descripcion.strip(), payload.medios_pago,
                 punto_venta=payload.punto_venta,
+                mp_pos_id=payload.mp_pos_id,
             )
         except PuntoDeVentaRepetido as choque:
             # 409 y no 422: el dato no está mal escrito, ya lo tiene otra caja.
             raise HTTPException(409, str(choque)) from choque
+        except ExternalIdMercadoPagoInvalido as exc:
+            raise HTTPException(422, str(exc)) from exc
         return db_caja.get_caja_config(cid)
 
     @router.put("/{cid}")
@@ -151,9 +157,12 @@ def build_cajas_router(*, prefix: str = "/api/cajas") -> APIRouter:
             db_caja.update_caja_config(
                 cid, nombre, payload.descripcion.strip(), payload.medios_pago,
                 1 if payload.activo else 0, punto_venta=payload.punto_venta,
+                mp_pos_id=payload.mp_pos_id,
             )
         except PuntoDeVentaRepetido as choque:
             raise HTTPException(409, str(choque)) from choque
+        except ExternalIdMercadoPagoInvalido as exc:
+            raise HTTPException(422, str(exc)) from exc
         return db_caja.get_caja_config(cid)
 
     @router.post("/{cid}/set-default")

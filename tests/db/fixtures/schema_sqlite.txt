@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (374)
+## tablas (375)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -39,6 +39,7 @@ cajas|descripcion|TEXT||''
 cajas|es_default|INTEGER|NN|0
 cajas|id|INTEGER||
 cajas|medios_pago|TEXT|NN|'[]'
+cajas|mp_pos_id|TEXT||
 cajas|nombre|TEXT|NN|
 cajas|punto_venta|INTEGER||
 cajas|sucursal_id|INTEGER||
