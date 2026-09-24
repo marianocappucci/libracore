@@ -6,6 +6,7 @@ wiki/entities/libracore.md).
 """
 import contextlib
 import json
+import re
 
 from libracore import medios_pago
 from libracore.db.core import get_connection
@@ -127,6 +128,31 @@ class PuntoDeVentaRepetido(ValueError):
     """Otra caja ya tiene ese punto de venta de ARCA."""
 
 
+class ExternalIdMercadoPagoInvalido(ValueError):
+    """El external_id de MercadoPago tiene caracteres no permitidos."""
+
+
+_RE_MP_EXTERNAL_ID_VALIDO = re.compile(r"^[a-zA-Z0-9]+$")
+
+
+def _validar_mp_pos_id(mp_pos_id: str | None) -> None:
+    """MercadoPago exige que el external_id del POS sea alfanumérico.
+
+    No acepta guiones, espacios ni otros símbolos. Ver
+    `procedimiento-credenciales-prueba-mercadopago` en el wiki.
+    """
+    if mp_pos_id is None:
+        return
+    valor = str(mp_pos_id).strip()
+    if not valor:
+        return
+    if not _RE_MP_EXTERNAL_ID_VALIDO.match(valor):
+        raise ExternalIdMercadoPagoInvalido(
+            "El POS ID de MercadoPago debe ser alfanumérico (sin guiones, "
+            "espacios ni símbolos)."
+        )
+
+
 def _validar_punto_venta(conn, punto_venta, cid: int | None = None) -> None:
     """🔴 Dos cajas no pueden compartir el punto de venta de ARCA.
 
@@ -154,19 +180,23 @@ def _validar_punto_venta(conn, punto_venta, cid: int | None = None) -> None:
 
 def create_caja_config(nombre: str, descripcion: str, medios_pago: list,
                        sucursal_id: int | None = None,
-                       punto_venta: int | None = None) -> int:
+                       punto_venta: int | None = None,
+                       mp_pos_id: str | None = None) -> int:
     with get_connection() as conn:
         _validar_punto_venta(conn, punto_venta)
+        _validar_mp_pos_id(mp_pos_id)
         cur = conn.execute(
-            "INSERT INTO cajas (nombre, descripcion, medios_pago, sucursal_id, punto_venta)"
-            " VALUES (?,?,?,?,?)",
-            (nombre, descripcion, json.dumps(medios_pago), sucursal_id, punto_venta),
+            "INSERT INTO cajas (nombre, descripcion, medios_pago, sucursal_id, punto_venta, mp_pos_id)"
+            " VALUES (?,?,?,?,?,?)",
+            (nombre, descripcion, json.dumps(medios_pago), sucursal_id, punto_venta,
+             (mp_pos_id or "").strip() or None),
         )
         return cur.lastrowid
 
 
 def update_caja_config(cid: int, nombre: str, descripcion: str, medios_pago: list,
-                       activo: int, punto_venta: int | None = None):
+                       activo: int, punto_venta: int | None = None,
+                       mp_pos_id: str | None = None):
     """`punto_venta=None` deja la caja usando el de la empresa.
 
     Va con default para no romper a los llamadores que ya existen: los productos
@@ -174,10 +204,12 @@ def update_caja_config(cid: int, nombre: str, descripcion: str, medios_pago: lis
     """
     with get_connection() as conn:
         _validar_punto_venta(conn, punto_venta, cid)
+        _validar_mp_pos_id(mp_pos_id)
         conn.execute(
             "UPDATE cajas SET nombre=?, descripcion=?, medios_pago=?, activo=?,"
-            " punto_venta=? WHERE id=?",
-            (nombre, descripcion, json.dumps(medios_pago), activo, punto_venta, cid),
+            " punto_venta=?, mp_pos_id=? WHERE id=?",
+            (nombre, descripcion, json.dumps(medios_pago), activo, punto_venta,
+             (mp_pos_id or "").strip() or None, cid),
         )
 
 
@@ -206,6 +238,52 @@ def resolver_punto_venta(usuario_id: int | None) -> int | None:
             (usuario_id,),
         ).fetchone()
     return fila[0] if fila and fila[0] else None
+
+
+def resolver_mp_pos_id(usuario_id: int | None) -> str | None:
+    """El `external_id` del POS de MercadoPago de la caja activa de este usuario.
+
+    Sigue la misma cadena que `resolver_punto_venta`: usuario → turno abierto
+    → caja → mp_pos_id. Cada caja necesita su propio POS porque el monto se
+    escribe en el POS: compartirlo haría que la última venta pise la anterior.
+
+    Devuelve `None` cuando no hay usuario, no hay turno abierto, o la caja no
+    tiene POS configurado.
+    """
+    if not usuario_id:
+        return None
+    with get_connection() as conn:
+        fila = conn.execute(
+            """SELECT c.mp_pos_id
+                 FROM turnos_caja t JOIN cajas c ON c.id = t.caja_id
+                WHERE t.usuario_id = ? AND t.estado = 'abierto'
+                ORDER BY t.id DESC LIMIT 1""",
+            (usuario_id,),
+        ).fetchone()
+    if not fila or not fila[0]:
+        return None
+    return str(fila[0]).strip()
+
+
+def mp_pos_id_con_fallback(usuario_id: int | None, cfg_pos_id: str | None) -> str | None:
+    """POS de MercadoPago de la caja activa, con fallback a config para una sola caja.
+
+    Durante la migración, una instancia de una sola caja puede tener el
+    `mp_pos_id` todavía en la configuración de instancia. Si la caja activa no
+    tiene POS propio y hay exactamente una caja, se usa el de config. Con más
+    de una caja no hay fallback: cada una debe tener su POS configurado.
+    """
+    pos_id = resolver_mp_pos_id(usuario_id)
+    if pos_id:
+        return pos_id
+    valor_config = (cfg_pos_id or "").strip()
+    if not valor_config:
+        return None
+    with get_connection() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM cajas").fetchone()[0]
+        if count == 1:
+            return valor_config
+    return None
 
 
 def set_default_caja(cid: int):

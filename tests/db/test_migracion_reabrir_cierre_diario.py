@@ -30,6 +30,17 @@ from libracore.db.schema import init_core_schema
 
 RAIZ = Path(__file__).resolve().parents[2]
 
+#: La revisión a la que se sube antes de ejercitar el downgrade de la `0011`.
+#:
+#: 🔑 NO es el `head`: desde la `0012` la cadena tiene arriba una revisión
+#: que NO baja — las columnas de `cajas` nacidas con ALTER defensivo en
+#: `init_core_schema()` (generación `0004`-`0008`; la `0012` es la última) —
+#: y bajar desde el head atravesaría esa `downgrade()` y explotaría por
+#: diseño, sin decir nada sobre la `0011` que es lo que este archivo mide.
+#: La cobertura del `upgrade head` con la base sembrada queda en los tests
+#: de upgrade; acá el tramo bajo prueba es el `0011 ↔ 0010`.
+REVISION_DE_LA_0011 = "0011_reabrir_cierre_diario"
+
 # Copia fiel del `_DDL_TABLAS` de `cierre_diario.py` ANTES de v1.107.0 (ver
 # `git show origin/develop:libracore/db/cierre_diario.py`) -- sin las tres
 # columnas de anulación, con el UNIQUE de fecha liso. Es un snapshot histórico
@@ -278,7 +289,7 @@ def test_verificar_reabrir_y_re_cerrar_sobre_base_migrada_sqlite(tmp_path):
 def test_downgrade_ok_sin_duplicados_sqlite(tmp_path):
     destino = str(tmp_path / "downgrade_ok.db")
     _sembrar_base_vieja(destino)
-    assert _alembic(destino, "upgrade", "head").returncode == 0
+    assert _alembic(destino, "upgrade", REVISION_DE_LA_0011).returncode == 0
 
     r = _alembic(destino, "downgrade", "0010_recibido_en_ventas_pagos")
     assert r.returncode == 0, r.stderr
@@ -296,7 +307,7 @@ def test_downgrade_falla_cerrado_con_activo_y_anulado_mismo_dia_sqlite(tmp_path)
     rechazar ANTES de tocar nada -- ni las columnas ni los índices cambian."""
     destino = str(tmp_path / "downgrade_choca.db")
     ids = _sembrar_base_vieja(destino)
-    assert _alembic(destino, "upgrade", "head").returncode == 0
+    assert _alembic(destino, "upgrade", REVISION_DE_LA_0011).returncode == 0
 
     from libracore.db import cierre_diario as cd
     core.configure(destino)
@@ -379,7 +390,7 @@ def test_downgrade_falla_cerrado_con_activo_y_anulado_mismo_dia_postgres():
     url = _url_postgres()
     _limpiar_postgres(url)
     ids = _sembrar_base_vieja(url)
-    assert _alembic(url, "upgrade", "head").returncode == 0
+    assert _alembic(url, "upgrade", REVISION_DE_LA_0011).returncode == 0
 
     from libracore.db import cierre_diario as cd
     core.configure(url)
@@ -405,7 +416,7 @@ def test_downgrade_ok_sin_duplicados_postgres():
     url = _url_postgres()
     _limpiar_postgres(url)
     _sembrar_base_vieja(url)
-    assert _alembic(url, "upgrade", "head").returncode == 0
+    assert _alembic(url, "upgrade", REVISION_DE_LA_0011).returncode == 0
 
     r = _alembic(url, "downgrade", "0010_recibido_en_ventas_pagos")
     assert r.returncode == 0, r.stderr

@@ -7,6 +7,35 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.110.0] — El POS de MercadoPago vive en la caja, con fallback a config para una sola caja
+
+Migración `0012`: agrega `cajas.mp_pos_id` (nullable). **No baja** (patrón de la
+generación `0004`-`0008`, caso hermano exacto de `0004_punto_venta_por_caja`):
+volver a compartir el POS reabre el defecto que esta versión cierra; para atrás,
+restaurar el backup. El gate del schema congelado pasa a **375 columnas**.
+
+### Qué llega
+
+- `cajas.mp_pos_id`: el `external_id` del POS de MercadoPago deja de ser dato de
+  instancia y pasa a vivir en cada caja. Con dos cajas compartiendo el POS, el
+  modelo de QR escribe el **monto** en el POS: la última venta pisa el monto de
+  la anterior y el cliente paga otra cosa.
+- CRUD de cajas: campo `mp_pos_id` alfanumérico (`^[a-zA-Z0-9]+$` — MercadoPago
+  no acepta guiones ni espacios), vacío → NULL, error 422 propio
+  (`ExternalIdMercadoPagoInvalido`) al lado del 409 de punto de venta repetido.
+- Cobro QR: `mp_pos_id_con_fallback()` resuelve usuario → turno abierto → caja →
+  `mp_pos_id`. Si la caja activa no tiene POS y hay **exactamente una** caja, cae
+  al `mp_pos_id` de config: las instancias de una sola caja siguen cobrando sin
+  tocar nada. Con más de una caja no hay fallback → 422 con mensaje accionable.
+- `mp_user_id` y access token siguen a nivel instancia.
+
+### Antes de actualizar el pin del consumidor
+
+- Instancia con **una sola caja**: nada que hacer, el fallback cubre.
+- Instancia con **varias cajas**: configurar `mp_pos_id` por caja (la pantalla de
+  Cajas de libra-ui `0.74.0` lo edita). Mientras una caja activa sin POS conviva
+  con otras, el cobro por QR responde 422 con el mensaje de qué falta.
+
 ## [v1.109.0] — La copia externa sale cifrada, y el botón de backup arma el mismo ZIP que el cron
 
 Sin migración de Alembic.
@@ -45,6 +74,45 @@ Sin migración de Alembic.
   que hoy tienen resguardo: el bloqueo de subir en claro está en este código.
 - `esta_al_dia` y el botón viajan con el pin de cada producto, sin cambios en su
   código.
+
+## [v1.108.0] — Los secretos de `config.json` salen del archivo en texto plano
+
+Sin migración de Alembic propia. Requiere libraauth `v0.46.0`, que trae la
+tabla `secretos_instancia` en la revisión `0002` de su cadena.
+
+### Agregado
+
+- `config_manager.usar_almacen_de_secretos(almacen)`: enchufa un almacén
+  cifrado para `mp_access_token`, `mp_webhook_secret` y
+  `email_smtp_password` (`config_manager.CLAVES_SECRETAS`). El almacén es
+  cualquier objeto con `get(clave)` y `set(clave, valor)`; en la familia es
+  `libraauth.secretos.SecretosRepository`. **LibraCore no importa
+  libraauth**: el producto, que tiene los dos, lo inyecta.
+- `config_manager.migrar_secretos_al_almacen()`: saca de `config.json` los
+  secretos que quedaron en claro. Idempotente, pensada para correr en cada
+  arranque. Devuelve un informe con **nombres de claves, nunca valores**.
+- `config_manager.almacen_de_secretos()`: el almacén enchufado, o `None`.
+
+### Cambiado
+
+- Con almacén enchufado, `load()` trae los tres secretos del almacén (con el
+  JSON como respaldo mientras el almacén esté vacío) y `save()` los escribe
+  ahí y los deja **vacíos en el JSON**. Para los consumidores no cambia nada:
+  `load()` sigue devolviendo el secreto en claro bajo la misma clave.
+
+### ⚠️ Al subir el pin
+
+- 🔴 **Subir el pin solo no cambia nada.** Sin `usar_almacen_de_secretos()`,
+  `config_manager` se comporta exactamente como antes y sigue escribiendo
+  el secreto en el JSON. El producto tiene que enchufar el almacén sobre el
+  mismo session factory que `UserRepository`, y llamar a
+  `migrar_secretos_al_almacen()` en el arranque **después** de
+  `exigir_schema_al_dia()` (la tabla sale de la revisión `0002` de
+  libraauth). Llamarla sin almacén enchufado levanta `RuntimeError`: falla
+  ruidosa a propósito.
+- Si cifrar falla (instancia sin `SECRET_KEY`), la migración **no toca el
+  `config.json`**: la instancia sigue funcionando con la credencial que
+  tiene, y la clave queda listada en `fallaron`.
 
 ## [v1.107.0] — Reabrir día: un admin puede anular un cierre diario, con motivo
 

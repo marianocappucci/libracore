@@ -27,6 +27,16 @@ RAIZ = Path(__file__).resolve().parents[2]
 #: nomás, no en un literal que se repita en dos lugares.
 REVISION_ANTERIOR = "0009_cierre_diario"
 
+#: La revisión bajo prueba, para el round-trip. El `head` NO sirve de punto
+#: de partida para la vuelta atrás: desde la `0012` la cadena tiene arriba
+#: una revisión que NO baja — las columnas de `cajas` nacidas con ALTER
+#: defensivo en `init_core_schema()` (generación `0004`-`0008`; la `0012` es
+#: la última) — y bajar desde el head atravesaría esa `downgrade()` y
+#: explotaría por diseño, sin decir nada sobre la `0010`. El upgrade al head
+#: con los datos puestos se ejercita al final de `_ejercer_upgrade_y_
+#: downgrade`; el tramo propio de esta revisión es el `0009 ↔ 0010`.
+REVISION_DE_LA_0010 = "0010_recibido_en_ventas_pagos"
+
 REVISION = head_de_la_cadena()
 
 
@@ -174,12 +184,13 @@ def _ejercer_upgrade_y_downgrade(destino: str):
     assert "recibido" not in antes, (
         "la base de partida ya tiene la columna: el test no prueba nada")
 
-    # ── upgrade ──────────────────────────────────────────────────────────
-    r = _alembic(destino, "upgrade", "head")
+    # ── upgrade a la revisión bajo prueba ────────────────────────────────
+    # 🔑 El tramo es `0009 ↔ 0010`, no el head: ver `REVISION_DE_LA_0010`.
+    r = _alembic(destino, "upgrade", REVISION_DE_LA_0010)
     assert r.returncode == 0, r.stderr
-    assert _revision_actual(destino) == REVISION, (
-        f"la cadena no llegó a {REVISION} — comparar los datos no diría nada.\n"
-        + r.stderr[-800:]
+    assert _revision_actual(destino) == REVISION_DE_LA_0010, (
+        f"la cadena no llegó a {REVISION_DE_LA_0010} — comparar los datos no "
+        "diría nada.\n" + r.stderr[-800:]
     )
 
     cols_despues_upgrade = _columnas(destino, "ventas_pagos")
@@ -234,6 +245,23 @@ def _ejercer_upgrade_y_downgrade(destino: str):
     assert vieja["referencia"] == "ref-vieja"
     assert nueva["id"] == nuevo_id
     assert nueva["monto"] == 100.0
+
+    # ── y la cadena completa, con los datos puestos, sigue llegando al head ─
+    # Acá sí se sube hasta el head (sea cual sea la revisión de punta): es la
+    # mitad que hace este test inmune a las revisiones que se le agreguen
+    # arriba — los datos de una instancia vieja sobreviven la cadena entera.
+    r = _alembic(destino, "upgrade", "head")
+    assert r.returncode == 0, r.stderr
+    assert _revision_actual(destino) == REVISION, (
+        f"la cadena no llegó a {REVISION} — comparar los datos no diría nada.\n"
+        + r.stderr[-800:]
+    )
+
+    fila = _pago(destino, pago_id)
+    assert fila["recibido"] is None, (
+        "la cadena completa no tiene por qué inventarle un vuelto a una fila "
+        "vieja")
+    assert fila["monto"] == 500.0
 
 
 # --------------------------------------------------------------------- SQLite
