@@ -7,6 +7,35 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.110.0] — El POS de MercadoPago vive en la caja, con fallback a config para una sola caja
+
+Migración `0012`: agrega `cajas.mp_pos_id` (nullable). **No baja** (patrón de la
+generación `0004`-`0008`, caso hermano exacto de `0004_punto_venta_por_caja`):
+volver a compartir el POS reabre el defecto que esta versión cierra; para atrás,
+restaurar el backup. El gate del schema congelado pasa a **375 columnas**.
+
+### Qué llega
+
+- `cajas.mp_pos_id`: el `external_id` del POS de MercadoPago deja de ser dato de
+  instancia y pasa a vivir en cada caja. Con dos cajas compartiendo el POS, el
+  modelo de QR escribe el **monto** en el POS: la última venta pisa el monto de
+  la anterior y el cliente paga otra cosa.
+- CRUD de cajas: campo `mp_pos_id` alfanumérico (`^[a-zA-Z0-9]+$` — MercadoPago
+  no acepta guiones ni espacios), vacío → NULL, error 422 propio
+  (`ExternalIdMercadoPagoInvalido`) al lado del 409 de punto de venta repetido.
+- Cobro QR: `mp_pos_id_con_fallback()` resuelve usuario → turno abierto → caja →
+  `mp_pos_id`. Si la caja activa no tiene POS y hay **exactamente una** caja, cae
+  al `mp_pos_id` de config: las instancias de una sola caja siguen cobrando sin
+  tocar nada. Con más de una caja no hay fallback → 422 con mensaje accionable.
+- `mp_user_id` y access token siguen a nivel instancia.
+
+### Antes de actualizar el pin del consumidor
+
+- Instancia con **una sola caja**: nada que hacer, el fallback cubre.
+- Instancia con **varias cajas**: configurar `mp_pos_id` por caja (la pantalla de
+  Cajas de libra-ui `0.74.0` lo edita). Mientras una caja activa sin POS conviva
+  con otras, el cobro por QR responde 422 con el mensaje de qué falta.
+
 ## [v1.109.0] — La copia externa sale cifrada, y el botón de backup arma el mismo ZIP que el cron
 
 Sin migración de Alembic.
