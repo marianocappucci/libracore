@@ -7,6 +7,28 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.112.0] — Cajas y turnos aceptan las variantes de un producto con sucursales (`OpcionesCajas`, `validar_apertura`, `enriquecer`)
+
+Sin migración. Aditivo: sin `opciones=` ni ganchos el comportamiento es el de siempre (el de Contalibra y
+Restolibra); los 12 tests previos de `test_caja_router.py` pasan sin tocarlos.
+
+### Qué llega
+
+- `build_cajas_router(..., opciones=OpcionesCajas(...))` con seis ganchos opcionales: `autorizar_escritura` (quién puede crear, editar, predeterminar y borrar: una
+  `Depends(...)`, como `autorizar_cierre`), `validar_alta`,
+  `validar_edicion(payload, actual)`, `al_desactivar(actual)`, `predeterminar(caja_id)` (reemplaza a
+  `set_default_caja`, que desmarca **todas**: un producto con sedes la quiere por sucursal) y
+  `enriquecer(caja)`. Cada gancho decide con una `HTTPException`: el motor no sabe qué código le toca a la regla
+  de cada producto.
+- `CajaPayload.sucursal_id` (sólo al crear) y `GET /api/cajas?sucursal_id=`; cada caja de la respuesta trae
+  `tiene_turno_abierto` (el POS no ofrece una caja ocupada). `db.turnos.turno_abierto_de_caja` y
+  `cajas_con_turno_abierto` son las consultas.
+- `build_turnos_router(..., validar_apertura=, enriquecer=)`: el primero corre antes de abrir (sin él, abrir con
+  un turno abierto devuelve ese turno, como siempre); el segundo agrega campos a cada turno de la respuesta
+  (la caja y la sucursal).
+- `GET /api/turnos/actual`: el turno abierto de quien pregunta con su resumen, o `{"turno": null}`.
+- **Arreglo:** abrir un turno en un día cerrado (`DiaCerradoError`) contestaba 500; ahora es 409.
+
 ## [v1.111.0] — El router de cuenta corriente acepta las variantes de un producto (`OpcionesCuentaCorriente`)
 
 Sin migración. Aditivo: sin `opciones=` el comportamiento es **exactamente** el de siempre (el de Contalibra y
