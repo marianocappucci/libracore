@@ -7,6 +7,27 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.111.0] — El router de cuenta corriente acepta las variantes de un producto (`OpcionesCuentaCorriente`)
+
+Sin migración. Aditivo: sin `opciones=` el comportamiento es **exactamente** el de siempre (el de Contalibra y
+Restolibra); los 8 tests previos del router pasan sin tocarlos.
+
+### Qué llega
+
+`build_cuenta_corriente_router(..., opciones=OpcionesCuentaCorriente(...))` con tres ganchos opcionales, para
+que un producto cuyo cobro tiene reglas propias las declare en vez de reescribir el router (VentaLibra, que
+tiene el arqueo por turno, ADR-027, adopta el router del motor con estos tres):
+
+- `validar_pago(payload, user) -> CobroAprobado`: se llama antes de registrar el pago; puede rechazarlo
+  (`HTTPException`: 409 sin turno, 422 con una caja ajena, medio no cobrable...) y decide `caja_id`,
+  `turno_id` y la plantilla `referencia_movimiento` (`"cc-pago-{pago_id}"`) del movimiento de caja.
+- `cajas(user) -> list[dict]`: qué cajas ofrece `GET /cajas` (por defecto, todas).
+- `al_eliminar_pago(pago_id, user)`: se llama al dar de baja un pago, **antes** de anular sus recibos y de
+  borrarlo: es donde un producto anula el movimiento de caja que el pago generó; si levanta, no se toca nada.
+
+`GET /cajas` ahora lleva la dependencia `usuario_actual` (los productos ya montan el router detrás de su
+gate de sesión: no cambia quién puede llamarlo).
+
 ## [v1.110.0] — El POS de MercadoPago vive en la caja, con fallback a config para una sola caja
 
 Migración `0012`: agrega `cajas.mp_pos_id` (nullable). **No baja** (patrón de la
