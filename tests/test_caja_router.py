@@ -7,11 +7,17 @@ from __future__ import annotations
 import datetime
 
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from libracore.caja_router import build_caja_router, build_cajas_router, build_turnos_router
+from libracore.caja_router import (
+    OpcionesCajas,
+    build_caja_router,
+    build_cajas_router,
+    build_turnos_router,
+)
 from libracore.db import core
+from libracore.db import turnos as db_turnos
 from libracore.db.schema import init_core_schema
 
 HOY = datetime.date.today().isoformat()
@@ -242,3 +248,143 @@ def test_el_resumen_y_el_cierre_son_del_producto(entorno):
     r = client.post(f"/api/turnos/{tid}/cerrar", json={"monto_declarado": 250, "notas": "ok"})
     assert r.json()["estado"] == "cerrado" and r.json()["monto_esperado_cierre"] == 250.0
     assert llamadas == [("resumen", tid), ("cerrar", tid, 250.0, "ok")]
+
+
+# ── Variantes de un producto con sucursales (v1.112.0) ────────────────────
+
+
+def _app_con_ganchos(entorno, *, opciones=None, **turnos) -> TestClient:
+    app = FastAPI()
+    app.include_router(build_cajas_router(opciones=opciones))
+    app.include_router(build_turnos_router(usuario_actual=lambda: USUARIO, **turnos))
+    return TestClient(app)
+
+
+def test_sin_opciones_las_cajas_no_cambian_y_traen_si_tienen_turno(client):
+    """El default es Contalibra: sin `opciones` no se llama a ningún gancho. Lo
+    único nuevo en la respuesta es `tiene_turno_abierto`."""
+    caja = client.post("/api/cajas", json={"nombre": "POS 2", "medios_pago": []}).json()
+    assert caja["tiene_turno_abierto"] is False and caja["sucursal_id"] is None
+    client.post("/api/turnos/abrir", json={"monto_inicial": 0, "caja_id": caja["id"]})
+    por_id = {c["id"]: c for c in client.get("/api/cajas").json()}
+    assert por_id[caja["id"]]["tiene_turno_abierto"] is True
+    assert all(not c["tiene_turno_abierto"] for i, c in por_id.items() if i != caja["id"])
+
+
+def test_la_caja_se_crea_en_una_sucursal_y_se_filtra(client):
+    a = client.post("/api/cajas", json={"nombre": "A", "sucursal_id": 1}).json()
+    client.post("/api/cajas", json={"nombre": "B", "sucursal_id": 2})
+    assert a["sucursal_id"] == 1
+    assert [c["nombre"] for c in client.get("/api/cajas?sucursal_id=1").json()] == ["A"]
+    # Editar no la muda de sede.
+    r = client.put(f"/api/cajas/{a['id']}", json={"nombre": "A", "sucursal_id": 2})
+    assert r.json()["sucursal_id"] == 1
+
+
+def test_los_ganchos_de_las_cajas(entorno):
+    llamadas = []
+
+    def validar_alta(payload):
+        llamadas.append(("alta", payload.sucursal_id))
+        if payload.sucursal_id == 99:
+            raise HTTPException(422, "No existe esa sucursal.")
+
+    def validar_edicion(payload, actual):
+        llamadas.append(("edicion", actual["nombre"], payload.activo))
+        if not payload.activo and actual["nombre"] == "Única":
+            raise HTTPException(409, "La sucursal necesita una caja activa.")
+
+    def al_desactivar(actual):
+        llamadas.append(("baja", actual["nombre"]))
+
+    def predeterminar(cid):
+        llamadas.append(("predeterminar", cid))
+        with core.get_connection() as conn:
+            conn.execute("UPDATE cajas SET es_default=1 WHERE id=?", (cid,))
+
+    client = _app_con_ganchos(entorno, opciones=OpcionesCajas(
+        validar_alta=validar_alta, validar_edicion=validar_edicion, al_desactivar=al_desactivar,
+        predeterminar=predeterminar, enriquecer=lambda c: {**c, "sucursal_nombre": f"S{c['sucursal_id']}"},
+    ))
+    assert client.post("/api/cajas", json={"nombre": "X", "sucursal_id": 99}).status_code == 422
+    unica = client.post("/api/cajas", json={"nombre": "Única", "sucursal_id": 1}).json()
+    otra = client.post("/api/cajas", json={"nombre": "Otra", "sucursal_id": 1}).json()
+    assert unica["sucursal_nombre"] == "S1"
+    assert client.get("/api/cajas").json()[0]["sucursal_nombre"].startswith("S")
+    # La regla del producto frena la baja y NO toca la caja.
+    r = client.put(f"/api/cajas/{unica['id']}", json={"nombre": "Única", "activo": False})
+    assert r.status_code == 409
+    assert client.get("/api/cajas").json() and all(
+        c["activo"] for c in client.get("/api/cajas").json() if c["id"] == unica["id"])
+    # Una baja permitida avisa a `al_desactivar`; editar sin bajar, no.
+    assert client.put(f"/api/cajas/{otra['id']}", json={"nombre": "Otra", "activo": True}).status_code == 200
+    assert ("baja", "Otra") not in llamadas
+    assert client.put(f"/api/cajas/{otra['id']}", json={"nombre": "Otra", "activo": False}).json()["activo"] == 0
+    assert ("baja", "Otra") in llamadas
+    # Ya inactiva, volver a guardarla inactiva no es una baja nueva.
+    llamadas.clear()
+    client.put(f"/api/cajas/{otra['id']}", json={"nombre": "Otra", "activo": False})
+    assert ("baja", "Otra") not in llamadas
+    # La predeterminada la decide el producto.
+    assert client.post(f"/api/cajas/{unica['id']}/set-default").json()["es_default"]
+    assert ("predeterminar", unica["id"]) in llamadas
+
+
+def test_los_ganchos_de_los_turnos(entorno):
+    def validar(payload, user):
+        if payload.caja_id is None:
+            raise HTTPException(422, "La caja es obligatoria.")
+        if db_turnos.get_turno_activo(user["id"]):
+            raise HTTPException(409, "ya tenés un turno abierto")
+
+    client = _app_con_ganchos(
+        entorno, validar_apertura=validar,
+        enriquecer=lambda t: {**t, "caja": {"id": t["caja_id"]} if t.get("caja_id") else None},
+    )
+    USUARIO.update({"id": 7, "role": "admin"})
+    assert client.post("/api/turnos/abrir", json={"monto_inicial": 0}).status_code == 422
+    caja = client.post("/api/cajas", json={"nombre": "C"}).json()
+    abierto = client.post("/api/turnos/abrir", json={"monto_inicial": 5, "caja_id": caja["id"]})
+    assert abierto.status_code == 200 and abierto.json()["caja"] == {"id": caja["id"]}
+    # Con el gancho, abrir de nuevo ya no devuelve el mismo turno: lo decide el producto.
+    assert client.post("/api/turnos/abrir", json={"monto_inicial": 0, "caja_id": caja["id"]}).status_code == 409
+    # `/actual` trae el turno abierto de quien pregunta, enriquecido, con su resumen.
+    actual = client.get("/api/turnos/actual").json()
+    assert actual["turno"]["id"] == abierto.json()["id"] and actual["turno"]["caja"] == {"id": caja["id"]}
+    assert "pagos_por_medio" in actual["resumen"]
+    # Y el listado, el detalle y el cierre también pasan por `enriquecer`.
+    assert client.get("/api/turnos").json()["turno_activo"]["caja"] == {"id": caja["id"]}
+    assert client.get(f"/api/turnos/{abierto.json()['id']}").json()["turno"]["caja"] == {"id": caja["id"]}
+    cerrado = client.post(f"/api/turnos/{abierto.json()['id']}/cerrar", json={"monto_declarado": 5})
+    assert cerrado.json()["estado"] == "cerrado" and cerrado.json()["caja"] == {"id": caja["id"]}
+    assert client.get("/api/turnos/actual").json() == {"turno": None}
+
+
+def test_abrir_en_un_dia_cerrado_es_un_409(client):
+    """`create_turno` levanta `DiaCerradoError`; sin traducir era un 500."""
+    from libracore.db import cierre_diario
+
+    caja = client.post("/api/cajas", json={"nombre": "C", "sucursal_id": 3}).json()
+    with core.get_connection() as conn:
+        cierre_diario.crear_tablas(conn)
+    cierre_diario.cerrar_dia(usuario_id=7, sucursal_id=3)  # hoy, hora AR
+    r = client.post("/api/turnos/abrir", json={"monto_inicial": 0, "caja_id": caja["id"]})
+    assert r.status_code == 409
+
+
+def test_autorizar_escritura_protege_las_escrituras_y_no_la_lectura(entorno):
+    def solo_admin():
+        if USUARIO["role"] != "admin":
+            raise HTTPException(403, "Sólo el administrador.")
+
+    client = _app_con_ganchos(entorno, opciones=OpcionesCajas(autorizar_escritura=Depends(solo_admin)))
+    USUARIO.update({"id": 7, "role": "admin"})
+    caja = client.post("/api/cajas", json={"nombre": "A"}).json()
+    USUARIO.update({"id": 8, "role": "operador"})
+    assert client.get("/api/cajas").status_code == 200
+    assert client.post("/api/cajas", json={"nombre": "B"}).status_code == 403
+    assert client.put(f"/api/cajas/{caja['id']}", json={"nombre": "A2"}).status_code == 403
+    assert client.post(f"/api/cajas/{caja['id']}/set-default").status_code == 403
+    assert client.delete(f"/api/cajas/{caja['id']}").status_code == 403
+    USUARIO.update({"id": 7, "role": "admin"})
+    assert client.put(f"/api/cajas/{caja['id']}", json={"nombre": "A2"}).status_code == 200

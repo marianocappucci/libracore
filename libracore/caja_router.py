@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -39,6 +40,7 @@ from libracore.db import caja as db_caja
 from libracore.db import cierre_diario as db_cierre_diario
 from libracore.db import turnos as db_turnos
 from libracore.db.caja import ExternalIdMercadoPagoInvalido, PuntoDeVentaRepetido
+from libracore.db.cierre_diario import DiaCerradoError
 
 # ── Caja: los movimientos ────────────────────────────────────────────────
 
@@ -111,31 +113,82 @@ class CajaPayload(BaseModel):
     #: El `external_id` del POS de MercadoPago de esta caja. Cada caja con QR
     #: necesita el suyo propio; `None` o vacío deja la caja sin QR.
     mp_pos_id: str | None = None
+    #: La sucursal de esta caja, para los productos con sedes. Sólo se usa al
+    #: crear: una caja no se muda de sede (se da de baja y se crea otra donde
+    #: corresponda). `None` deja la caja sin sucursal, que es lo de siempre.
+    sucursal_id: int | None = None
 
 
 class CajaUpdatePayload(CajaPayload):
     activo: bool = True
 
 
-def build_cajas_router(*, prefix: str = "/api/cajas") -> APIRouter:
+@dataclass(frozen=True)
+class OpcionesCajas:
+    """Lo que un producto le agrega a las cajas. Sin nada, el router hace lo
+    que hacían Contalibra y Restolibra.
+
+    Cada gancho decide con una `HTTPException` (el motor no sabe qué código le
+    corresponde a la regla de cada producto: VentaLibra usa 422 y 409).
+
+    - `validar_alta(payload)`: antes de crear (sucursal válida, medios válidos…).
+    - `validar_edicion(payload, actual)`: antes de guardar; `actual` es la caja
+      como está hoy, para saber si el cambio es una baja.
+    - `al_desactivar(actual)`: después de guardar una caja que pasó de activa a
+      inactiva (mover la predeterminada de su sucursal a otra activa).
+    - `predeterminar(caja_id)`: reemplaza a `db.caja.set_default_caja`, que
+      desmarca **todas**; un producto con sedes la quiere por sucursal.
+    - `enriquecer(caja) -> caja`: campos de más en cada caja de la respuesta
+      (el nombre de la sucursal, que el motor no conoce).
+    - `autorizar_escritura`: quién puede crear, editar, predeterminar y borrar
+      (una `Depends(...)`, como `autorizar_cierre` del cierre diario). El motor no
+      sabe cómo se llama el rol admin de cada producto; sin esto, las escrituras
+      quedan con la protección con la que el producto monte el router, que es
+      la misma de la lectura.
+    """
+
+    validar_alta: Callable[[CajaPayload], None] | None = None
+    validar_edicion: Callable[[CajaUpdatePayload, dict], None] | None = None
+    al_desactivar: Callable[[dict], None] | None = None
+    predeterminar: Callable[[int], None] | None = None
+    enriquecer: Callable[[dict], dict] | None = None
+    autorizar_escritura: Any = None
+
+
+def build_cajas_router(*, prefix: str = "/api/cajas", opciones: OpcionesCajas | None = None) -> APIRouter:
+    opt = opciones or OpcionesCajas()
     router = APIRouter(prefix=prefix, tags=["cajas"])
+    # Ya viene envuelta en `Depends(...)`: se pasa tal cual, como en el cierre diario.
+    escribe = [opt.autorizar_escritura] if opt.autorizar_escritura is not None else []
+
+    def _salida(caja: dict, con_turno: set[int] | None = None) -> dict:
+        """La caja con `tiene_turno_abierto` (el POS no ofrece una ocupada) y lo
+        que le agregue el producto."""
+        if con_turno is None:
+            con_turno = db_turnos.cajas_con_turno_abierto()
+        caja = {**caja, "tiene_turno_abierto": caja["id"] in con_turno}
+        return opt.enriquecer(caja) if opt.enriquecer else caja
 
     @router.get("")
-    def listar():
-        return db_caja.get_all_cajas()
+    def listar(sucursal_id: int | None = None):
+        con_turno = db_turnos.cajas_con_turno_abierto()
+        return [_salida(c, con_turno) for c in db_caja.get_all_cajas(sucursal_id=sucursal_id)]
 
     @router.get("/medios-disponibles")
     def medios_disponibles():
         return medios_pago.para_selector()
 
-    @router.post("")
+    @router.post("", dependencies=escribe)
     def crear(payload: CajaPayload):
         nombre = payload.nombre.strip()
         if not nombre:
             raise HTTPException(422, "El nombre es obligatorio.")
+        if opt.validar_alta:
+            opt.validar_alta(payload)
         try:
             cid = db_caja.create_caja_config(
                 nombre, payload.descripcion.strip(), payload.medios_pago,
+                sucursal_id=payload.sucursal_id,
                 punto_venta=payload.punto_venta,
                 mp_pos_id=payload.mp_pos_id,
             )
@@ -144,15 +197,18 @@ def build_cajas_router(*, prefix: str = "/api/cajas") -> APIRouter:
             raise HTTPException(409, str(choque)) from choque
         except ExternalIdMercadoPagoInvalido as exc:
             raise HTTPException(422, str(exc)) from exc
-        return db_caja.get_caja_config(cid)
+        return _salida(db_caja.get_caja_config(cid))
 
-    @router.put("/{cid}")
+    @router.put("/{cid}", dependencies=escribe)
     def actualizar(cid: int, payload: CajaUpdatePayload):
-        if not db_caja.get_caja_config(cid):
+        actual = db_caja.get_caja_config(cid)
+        if not actual:
             raise HTTPException(404, "Caja no encontrada")
         nombre = payload.nombre.strip()
         if not nombre:
             raise HTTPException(422, "El nombre es obligatorio.")
+        if opt.validar_edicion:
+            opt.validar_edicion(payload, actual)
         try:
             db_caja.update_caja_config(
                 cid, nombre, payload.descripcion.strip(), payload.medios_pago,
@@ -163,16 +219,18 @@ def build_cajas_router(*, prefix: str = "/api/cajas") -> APIRouter:
             raise HTTPException(409, str(choque)) from choque
         except ExternalIdMercadoPagoInvalido as exc:
             raise HTTPException(422, str(exc)) from exc
-        return db_caja.get_caja_config(cid)
+        if opt.al_desactivar and not payload.activo and actual.get("activo", 1):
+            opt.al_desactivar(actual)
+        return _salida(db_caja.get_caja_config(cid))
 
-    @router.post("/{cid}/set-default")
+    @router.post("/{cid}/set-default", dependencies=escribe)
     def set_default(cid: int):
         if not db_caja.get_caja_config(cid):
             raise HTTPException(404, "Caja no encontrada")
-        db_caja.set_default_caja(cid)
-        return db_caja.get_caja_config(cid)
+        (opt.predeterminar or db_caja.set_default_caja)(cid)
+        return _salida(db_caja.get_caja_config(cid))
 
-    @router.delete("/{cid}")
+    @router.delete("/{cid}", dependencies=escribe)
     def eliminar(cid: int):
         if not db_caja.get_caja_config(cid):
             raise HTTPException(404, "Caja no encontrada")
@@ -210,26 +268,60 @@ def build_turnos_router(
     usuario_actual: Callable[..., Any],
     resumen_turno: Callable[[int], dict] = db_turnos.get_resumen_turno,
     cerrar_turno: Callable[[int, float, str], Any] = db_turnos.cerrar_turno,
+    validar_apertura: Callable[[AbrirPayload, dict], None] | None = None,
+    enriquecer: Callable[[dict], dict] | None = None,
     prefix: str = "/api/turnos",
 ) -> APIRouter:
+    """Los turnos de caja.
+
+    Además de las dos funciones que dependen de dónde viven las ventas, dos
+    ganchos opcionales para un producto con cajas por sucursal:
+
+    - `validar_apertura(payload, user)`: corre **antes** de abrir y decide con una
+      `HTTPException`. Sin él, abrir con un turno ya abierto devuelve ese turno
+      (lo de siempre); un producto que no lo quiere idempotente lo rechaza acá.
+    - `enriquecer(turno) -> turno`: campos de más en cada turno de la respuesta
+      (la caja y la sucursal donde está abierto).
+    """
     router = APIRouter(prefix=prefix, tags=["turnos"])
+
+    def _e(turno: dict) -> dict:
+        return enriquecer(turno) if enriquecer else turno
 
     @router.get("")
     def listar(user: dict = Depends(usuario_actual)):
         es_admin = user.get("role") == "admin"
+        activo = db_turnos.get_turno_activo(user["id"])
         return {
-            "turnos": db_turnos.get_all_turnos(usuario_id=None if es_admin else user["id"]),
-            "turno_activo": db_turnos.get_turno_activo(user["id"]),
+            "turnos": [_e(t) for t in db_turnos.get_all_turnos(usuario_id=None if es_admin else user["id"])],
+            "turno_activo": _e(activo) if activo else None,
         }
+
+    @router.get("/actual")
+    def actual(user: dict = Depends(usuario_actual)):
+        """El turno abierto de quien pregunta, con su resumen, o `{"turno": null}`.
+        Lo consulta el POS al arrancar para saber si puede cobrar. Va antes de
+        `/{tid}` para que `actual` no se lea como un id."""
+        turno = db_turnos.get_turno_activo(user["id"])
+        if not turno:
+            return {"turno": None}
+        return {"turno": _e(turno), "resumen": resumen_turno(turno["id"])}
 
     @router.post("/abrir")
     def abrir(payload: AbrirPayload, user: dict = Depends(usuario_actual)):
+        if validar_apertura:
+            validar_apertura(payload, user)
         turno_activo = db_turnos.get_turno_activo(user["id"])
         if turno_activo:
-            return turno_activo
-        tid = db_turnos.create_turno(user["id"], payload.monto_inicial, payload.notas.strip(),
-                                     caja_id=payload.caja_id)
-        return db_turnos.get_turno(tid)
+            return _e(turno_activo)
+        try:
+            tid = db_turnos.create_turno(user["id"], payload.monto_inicial, payload.notas.strip(),
+                                         caja_id=payload.caja_id)
+        except DiaCerradoError as exc:
+            # El día de esa sucursal ya se cerró: no es un dato mal escrito sino
+            # un estado, como el 409 del punto de venta repetido.
+            raise HTTPException(409, str(exc)) from exc
+        return _e(db_turnos.get_turno(tid))
 
     @router.get("/{tid}")
     def detalle(tid: int, user: dict = Depends(usuario_actual)):
@@ -238,7 +330,7 @@ def build_turnos_router(
             raise HTTPException(404, "Turno no encontrado")
         if not _puede_ver(turno, user):
             raise HTTPException(403, "No autorizado")
-        return {"turno": turno, "resumen": resumen_turno(tid)}
+        return {"turno": _e(turno), "resumen": resumen_turno(tid)}
 
     @router.post("/{tid}/cerrar")
     def cerrar(tid: int, payload: CerrarPayload, user: dict = Depends(usuario_actual)):
@@ -250,7 +342,7 @@ def build_turnos_router(
         if turno["estado"] != "abierto":
             raise HTTPException(422, "El turno ya está cerrado.")
         cerrar_turno(tid, payload.monto_declarado, payload.notas.strip())
-        return db_turnos.get_turno(tid)
+        return _e(db_turnos.get_turno(tid))
 
     return router
 

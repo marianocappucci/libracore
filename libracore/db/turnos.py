@@ -52,6 +52,34 @@ def get_turno_activo(usuario_id: int, conn: Conexion | None = None) -> dict | No
     return dict(row) if row else None
 
 
+def turno_abierto_de_caja(caja_id: int) -> dict | None:
+    """El turno abierto sobre ESE mostrador (de cualquier usuario), o `None`.
+
+    `get_turno_activo` mira por usuario; ésta mira por caja, que es la pregunta
+    de "¿hay alguien cobrando en este cajón?". El motor no impone "una caja, un
+    turno" (LibraClub sólo evita dos turnos del mismo usuario): lo impone el
+    producto que lo quiere, con esta consulta, desde `validar_apertura`.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            """SELECT t.*, u.nombre AS usuario_nombre
+               FROM turnos_caja t JOIN usuarios u ON u.id = t.usuario_id
+               WHERE t.caja_id=? AND t.estado='abierto'
+               ORDER BY t.id DESC LIMIT 1""",
+            (caja_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def cajas_con_turno_abierto() -> set[int]:
+    """Los ids de las cajas que ahora mismo tienen un turno abierto."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT caja_id FROM turnos_caja WHERE estado='abierto' AND caja_id IS NOT NULL"
+        ).fetchall()
+    return {r[0] for r in rows}
+
+
 def get_turno_activo_any() -> dict | None:
     """Devuelve el primer turno abierto (para cajero sin usuario_id explícito)."""
     with get_connection() as conn:
