@@ -11,7 +11,11 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from libracore.clientes_router import build_clientes_router
-from libracore.cuenta_corriente_router import build_cuenta_corriente_router
+from libracore.cuenta_corriente_router import (
+    CobroAprobado,
+    OpcionesCuentaCorriente,
+    build_cuenta_corriente_router,
+)
 from libracore.dashboard_router import build_dashboard_router
 from libracore.db import core
 from libracore.db.schema import init_core_schema
@@ -266,6 +270,87 @@ def test_cuenta_corriente_con_recibos(client, monkeypatch, tmp_path):
     monkeypatch.setattr(mod_recibos, "emitir_recibo_cobranza", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("sin pdf")))
     r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 100, "fecha": HOY}).json()
     assert r["recibo_id"] is None and r["saldo"] == 900.0
+
+
+# ── Cuenta corriente: las variantes de un producto (`OpcionesCuentaCorriente`) ─────────────────────
+
+
+def _client_con_opciones(entorno, opciones):
+    app = FastAPI()
+    app.include_router(build_clientes_router())
+    app.include_router(build_cuenta_corriente_router(
+        usuario_actual=_usuario, solo_admin=_solo_admin, opciones=opciones,
+    ))
+    return TestClient(app)
+
+
+def test_los_ganchos_deciden_la_caja_el_turno_y_la_referencia_del_pago(entorno):
+    """VentaLibra (ADR-027): el cobro cae en la caja del TURNO y su movimiento lleva la referencia
+    `cc-pago-<id>`, no la que escribió el usuario."""
+    vistos = {}
+
+    def validar(payload, user):
+        vistos["usuario"] = user["id"]
+        return CobroAprobado(caja_id=1, turno_id=None, referencia_movimiento="cc-pago-{pago_id}")
+
+    client = _client_con_opciones(entorno, OpcionesCuentaCorriente(validar_pago=validar))
+    cid = _cliente_con_deuda(client)
+    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={
+        "monto": 400, "fecha": HOY, "referencia": "lo-que-escribio-el-usuario", "caja_id": 999,
+    })
+    assert r.status_code == 200, r.text
+    assert vistos["usuario"] == USUARIO["id"]
+    with core.get_connection() as conn:
+        pago = conn.execute("SELECT id, caja_id, referencia FROM cc_pagos").fetchone()
+        mov = conn.execute("SELECT caja_id, referencia FROM caja_movimientos").fetchone()
+    assert pago["caja_id"] == 1                                    # la del gancho, no la del payload
+    assert pago["referencia"] == "lo-que-escribio-el-usuario"      # el pago conserva lo del usuario
+    assert mov["caja_id"] == 1
+    assert mov["referencia"] == f"cc-pago-{pago['id']}"            # el movimiento, el tag
+
+
+def test_el_gancho_puede_rechazar_el_pago_y_no_queda_nada(entorno):
+    def validar(payload, user):
+        raise HTTPException(409, "no hay un turno de caja abierto")
+
+    client = _client_con_opciones(entorno, OpcionesCuentaCorriente(validar_pago=validar))
+    cid = _cliente_con_deuda(client)
+    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": HOY})
+    assert r.status_code == 409 and "turno" in r.json()["detail"]
+    with core.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM cc_pagos").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM caja_movimientos").fetchone()[0] == 0
+    assert client.get(f"/api/cuenta-corriente/{cid}").json()["saldo"] == 1000.0
+
+
+def test_el_gancho_de_cajas_decide_cuales_se_ofrecen(entorno):
+    client = _client_con_opciones(entorno, OpcionesCuentaCorriente(cajas=lambda user: []))
+    assert client.get("/api/cuenta-corriente/cajas").json() == []
+    # Sin el gancho se ofrecen todas (Contalibra).
+    assert _client_con_opciones(entorno, None).get("/api/cuenta-corriente/cajas").json()
+
+
+def test_al_eliminar_un_pago_el_gancho_corre_antes_y_puede_frenar_la_baja(entorno):
+    llamadas = []
+
+    def al_eliminar(pago_id, user):
+        llamadas.append(pago_id)
+        if len(llamadas) == 1:
+            raise HTTPException(409, "el pago no tiene un movimiento de caja identificable")
+
+    client = _client_con_opciones(entorno, OpcionesCuentaCorriente(al_eliminar_pago=al_eliminar))
+    cid = _cliente_con_deuda(client)
+    client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": HOY})
+    with core.get_connection() as conn:
+        pago_id = conn.execute("SELECT MAX(id) FROM cc_pagos").fetchone()[0]
+
+    frenada = client.delete(f"/api/cuenta-corriente/pagos/{pago_id}")
+    assert frenada.status_code == 409
+    assert client.get(f"/api/cuenta-corriente/{cid}").json()["saldo"] == 600.0   # el pago sigue
+
+    assert client.delete(f"/api/cuenta-corriente/pagos/{pago_id}").json() == {"ok": True}
+    assert llamadas == [pago_id, pago_id]
+    assert client.get(f"/api/cuenta-corriente/{cid}").json()["saldo"] == 1000.0
 
 
 # ── Dashboard ────────────────────────────────────────────────────────────
