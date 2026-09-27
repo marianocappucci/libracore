@@ -204,6 +204,50 @@ def test_los_reportes_por_default_leen_las_tablas_del_core(entorno):
     assert r["resumen"]["ventas_cantidad"] == 1 and r["ventas_ts"][0]["total"] == 100.0
 
 
+def _con_fiado(entorno):
+    """El fixture trae 100 de ingreso y 30 de egreso en efectivo. Se suma una venta a cuenta corriente (la capa ERP escribe un
+    movimiento por cada medio, cuenta corriente incluido) y una anulada."""
+    with core.get_connection() as conn:
+        conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago) "
+                     "VALUES (?, 'ingreso', 'Venta V-2 (fiado)', 500, 'cuenta_corriente')", (HOY,))
+        conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago, anulado) "
+                     "VALUES (?, 'ingreso', 'Venta V-3 anulada', 999, 'efectivo', 1)", (HOY,))
+        conn.commit()
+
+
+def _cliente(**opciones):
+    app = FastAPI()
+    app.include_router(build_reportes_router(**opciones))
+    app.include_router(build_reportes_export_router(sesion=_gate_admin, **opciones))
+    return TestClient(app)
+
+
+def test_por_default_los_reportes_de_caja_cuentan_el_fiado_como_siempre(entorno):
+    _con_fiado(entorno)
+    client = _cliente()
+    ingresos = next(c for c in client.get("/api/reportes").json()["caja"] if c["tipo"] == "ingreso")
+    assert ingresos["total"] == 600.0  # 100 + 500 de cuenta corriente; el anulado no cuenta
+    cm = client.get("/api/reportes/caja-medios").json()
+    assert cm["totales"]["cuenta_corriente"]["ingresos"] == 500.0
+
+
+def test_sin_fiado_los_reportes_de_caja_no_cuentan_la_cuenta_corriente(entorno):
+    """Fiar no es cobrar: el reporte de caja tiene que coincidir con `get_caja_resumen` y con el arqueo del turno."""
+    _con_fiado(entorno)
+    client = _cliente(sin_fiado=True)
+    caja = {c["tipo"]: c["total"] for c in client.get("/api/reportes").json()["caja"]}
+    assert caja == {"ingreso": 100.0, "egreso": 30.0}
+    cm = client.get("/api/reportes/caja-medios").json()
+    assert "cuenta_corriente" not in cm["totales"] and cm["cajas"][0]["saldo"] == 70.0
+    csv = client.get("/reportes/caja-medios/export", headers=ADMIN).text
+    assert "Cuenta corriente" not in csv and "Efectivo" in csv
+    # El resumen por default del core también lo respeta si se lo pide.
+    from libracore.db import reportes as db_reportes
+
+    assert db_reportes.get_reporte_resumen(sin_fiado=True)["caja_saldo"] == 70.0
+    assert db_reportes.get_reporte_resumen()["caja_saldo"] == 570.0
+
+
 # ── libros IVA ───────────────────────────────────────────────────────────
 
 

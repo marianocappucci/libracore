@@ -7,6 +7,22 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.113.0] — Los reportes de caja pueden dejar afuera la cuenta corriente (`sin_fiado`)
+
+Sin migración. Aditivo: sin `sin_fiado` el comportamiento es **exactamente** el de siempre (el de Contalibra y Restolibra).
+
+### Qué llega
+
+`build_reportes_router(..., sin_fiado=False)`, `build_reportes_export_router(..., sin_fiado=False)` y `db.reportes.get_reporte_caja`,
+`get_reporte_caja_medios` y `get_reporte_resumen` con `sin_fiado`: con `True` los reportes de **caja** dejan afuera las marcas de
+cuenta corriente (`sql_no_es_cuenta_corriente`). **Fiar no es cobrar:** un producto cuya venta escribe un movimiento de caja por cada medio,
+cuenta corriente incluido (la capa ERP de LibraCommerce), sumaría el fiado como ingreso, y el reporte dejaría de coincidir con
+`get_caja_resumen` y con el arqueo del turno (VentaLibra, ADR-027). El `resumen` del puerto lo decide el producto
+(`libracommerce.erp.reportes.puerto_de_reportes(sin_fiado=...)`).
+
+> **Para Contalibra y Restolibra:** con la capa ERP sus reportes de caja tienen el mismo defecto (cuentan la cuenta corriente como
+> ingreso). Se activa pasando `sin_fiado=True` al montar el router; no se hizo acá porque cambia números que hoy ven sus usuarios.
+
 ## [v1.112.0] — Cajas y turnos aceptan las variantes de un producto con sucursales (`OpcionesCajas`, `validar_apertura`, `enriquecer`)
 
 Sin migración. Aditivo: sin `opciones=` ni ganchos el comportamiento es el de siempre (el de Contalibra y
