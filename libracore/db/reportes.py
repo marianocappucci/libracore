@@ -4,7 +4,7 @@ caja, stock bajo, resumen). Extraído de database.py de Contalibra/
 Restolibra (idéntico en ambos) como parte de la migración real a
 libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
-from libracore.db.caja import sql_no_anulado
+from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 
@@ -68,8 +68,13 @@ def get_reporte_productos_top(desde: str = "", hasta: str = "", limit: int = 20)
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def get_reporte_caja(desde: str = "", hasta: str = "") -> list[dict]:
-    """Movimientos de caja por tipo en el período."""
+def get_reporte_caja(desde: str = "", hasta: str = "", sin_fiado: bool = False) -> list[dict]:
+    """Movimientos de caja por tipo en el período.
+
+    `sin_fiado=True` deja afuera las marcas de cuenta corriente (`sql_no_es_cuenta_corriente`): **fiar no es cobrar**. Un
+    producto cuya venta escribe un movimiento por cada medio, cuenta corriente incluido (la capa ERP de LibraCommerce),
+    los sumaría como ingreso de caja, y el reporte dejaría de coincidir con `get_caja_resumen` y con el arqueo del
+    turno. Default `False`: lo de siempre."""
     where, params = [], []
     if desde:
         where.append("fecha >= ?"); params.append(desde)
@@ -79,6 +84,8 @@ def get_reporte_caja(desde: str = "", hasta: str = "") -> list[dict]:
     # puede venir vacío, así que la condición se agrega a la lista y no al
     # fragmento ya armado.
     where.append(sql_no_anulado())
+    if sin_fiado:
+        where.append(sql_no_es_cuenta_corriente())
     w = "WHERE " + " AND ".join(where)
     sql = f"""
         SELECT tipo, COUNT(*) AS cantidad, ROUND(SUM(monto), 2) AS total
@@ -89,10 +96,12 @@ def get_reporte_caja(desde: str = "", hasta: str = "") -> list[dict]:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def get_reporte_caja_medios(desde: str = "", hasta: str = "", caja_id: int = 0) -> list[dict]:
-    """Movimientos de caja agrupados por caja y medio de pago."""
+def get_reporte_caja_medios(desde: str = "", hasta: str = "", caja_id: int = 0, sin_fiado: bool = False) -> list[dict]:
+    """Movimientos de caja agrupados por caja y medio de pago. `sin_fiado`: ver `get_reporte_caja`."""
     where, params = ["cm.fecha BETWEEN ? AND ?"], [desde or "1900-01-01", hasta or "2999-12-31"]
     where.append(sql_no_anulado("cm"))
+    if sin_fiado:
+        where.append(sql_no_es_cuenta_corriente("cm.medio_pago"))
     if caja_id:
         where.append("cm.caja_id = ?"); params.append(caja_id)
     sql = f"""
@@ -140,7 +149,7 @@ def get_reporte_stock_bajo() -> list[dict]:
         return [dict(r) for r in conn.execute(sql).fetchall()]
 
 
-def get_reporte_resumen(desde: str = "", hasta: str = "") -> dict:
+def get_reporte_resumen(desde: str = "", hasta: str = "", sin_fiado: bool = False) -> dict:
     """KPIs rápidos para el período."""
     where, params = [], []
     if desde:
@@ -159,7 +168,7 @@ def get_reporte_resumen(desde: str = "", hasta: str = "") -> dict:
         # columna `anulado`. Y puede venir vacio ---sin fechas no hay `WHERE`---,
         # asi que pegarle un ` AND ...` deja `FROM caja_movimientos AND anulado`
         # y revienta. Se arma uno propio para la caja.
-        w_caja = "WHERE " + " AND ".join(where + [sql_no_anulado()])
+        w_caja = "WHERE " + " AND ".join(where + [sql_no_anulado()] + ([sql_no_es_cuenta_corriente()] if sin_fiado else []))
         caja = conn.execute(
             f"SELECT ROUND(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END),2)"
             f" saldo FROM caja_movimientos {w_caja}", params

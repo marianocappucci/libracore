@@ -54,7 +54,9 @@ def _csv(filas, campos: list[str], nombre: str) -> StreamingResponse:
 
 
 def build_reportes_router(*, reportes: PuertoDeReportes = REPORTES_LIBRACORE,
-                          prefix: str = "/api/reportes") -> APIRouter:
+                          prefix: str = "/api/reportes", sin_fiado: bool = False) -> APIRouter:
+    """`sin_fiado=True`: los reportes de **caja** dejan afuera las marcas de cuenta corriente (fiar no es cobrar), como
+    `get_caja_resumen`; el `resumen` lo decide el `PuertoDeReportes` del producto. Default `False`: lo de siempre."""
     router = APIRouter(prefix=prefix, tags=["reportes"])
 
     @router.get("")
@@ -68,7 +70,7 @@ def build_reportes_router(*, reportes: PuertoDeReportes = REPORTES_LIBRACORE,
             "ventas_ts": reportes.ventas(desde, hasta, agrupacion),
             "medios": reportes.medios_pago(desde, hasta),
             "productos": reportes.productos_top(desde, hasta),
-            "caja": db_reportes.get_reporte_caja(desde, hasta),
+            "caja": db_reportes.get_reporte_caja(desde, hasta, sin_fiado=sin_fiado),
             "stock_bajo": reportes.stock_bajo(),
             # Las etiquetas viajan con el reporte: sin esto la pantalla las
             # declaraba por su cuenta y ya divergía. Con los históricos.
@@ -78,7 +80,7 @@ def build_reportes_router(*, reportes: PuertoDeReportes = REPORTES_LIBRACORE,
     @router.get("/caja-medios")
     def caja_medios(desde: str = "", hasta: str = "", caja_id: int = 0):
         desde, hasta = _fechas_default(desde, hasta)
-        rows = db_reportes.get_reporte_caja_medios(desde, hasta, caja_id)
+        rows = db_reportes.get_reporte_caja_medios(desde, hasta, caja_id, sin_fiado=sin_fiado)
         cajas_pivot = pivot_caja_medios(rows)
         return {
             "desde": desde,
@@ -94,7 +96,7 @@ def build_reportes_router(*, reportes: PuertoDeReportes = REPORTES_LIBRACORE,
 
 def build_reportes_export_router(*, sesion: Callable[..., Any],
                                  reportes: PuertoDeReportes = REPORTES_LIBRACORE,
-                                 prefix: str = "") -> APIRouter:
+                                 prefix: str = "", sin_fiado: bool = False) -> APIRouter:
     """Los exports CSV (`/reportes/export/*`, `/reportes/caja-medios/export`),
     con la sesión por cookie de la SPA (`sesion` es `require_auth` del producto)."""
     router = APIRouter(prefix=prefix, tags=["reportes"], dependencies=[Depends(sesion)])
@@ -117,7 +119,7 @@ def build_reportes_export_router(*, sesion: Callable[..., Any],
     @router.get("/reportes/caja-medios/export")
     def export_caja_medios(desde: str = "", hasta: str = "", caja_id: int = 0):
         desde, hasta = _fechas_default(desde, hasta)
-        rows = db_reportes.get_reporte_caja_medios(desde, hasta, caja_id)
+        rows = db_reportes.get_reporte_caja_medios(desde, hasta, caja_id, sin_fiado=sin_fiado)
         buf = io.StringIO()
         w = csv.writer(buf)
         w.writerow(["Caja", "Medio de cobro", "Tipo", "Operaciones", "Total"])
