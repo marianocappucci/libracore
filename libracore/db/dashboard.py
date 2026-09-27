@@ -3,12 +3,17 @@ Datos agregados del dashboard principal. Extraído de database.py de
 Contalibra/Restolibra (idéntico en ambos) como parte de la migración real
 a libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
-from libracore.db.caja import sql_no_anulado
+from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 
-def get_dashboard_data(mes_desde: str, mes_hasta: str) -> dict:
-    """Devuelve todos los datos necesarios para el dashboard en una sola llamada."""
+def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) -> dict:
+    """Devuelve todos los datos necesarios para el dashboard en una sola llamada.
+
+    `sin_fiado=True`: todo lo que sale de `caja_movimientos` deja afuera las marcas de cuenta corriente
+    (`sql_no_es_cuenta_corriente`), mismo criterio y misma razón que `db.reportes.get_reporte_resumen`
+    (P9-M4/fase 8): **fiar no es cobrar**. Sin esto, "Cobrado del mes", "Saldo de caja" y "Facturas sin
+    cobrar" cuentan una venta a cuenta corriente como plata ya entrada. Default `False`: lo de siempre."""
     _TIPOS_FACTURA = (1, 6, 11)
     with get_connection() as conn:
         # KPI 1: total facturado en el mes (solo facturas, no NC/ND)
@@ -19,12 +24,13 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str) -> dict:
         facturado_mes = row[0]
 
         # KPI 2/3: ingresos y egresos de caja del mes
+        cond_cc = f" AND {sql_no_es_cuenta_corriente()}" if sin_fiado else ""
         row = conn.execute(
             """SELECT
                  COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE 0 END), 0),
                  COALESCE(SUM(CASE WHEN tipo='egreso'  THEN monto ELSE 0 END), 0)
                FROM caja_movimientos
-               WHERE fecha BETWEEN ? AND ? AND """ + sql_no_anulado(),
+               WHERE fecha BETWEEN ? AND ? AND """ + sql_no_anulado() + cond_cc,
             (mes_desde, mes_hasta),
         ).fetchone()
         cobrado_mes = row[0]
@@ -33,7 +39,7 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str) -> dict:
         # KPI 4: saldo total de caja (histórico)
         saldo_total = conn.execute(
             "SELECT COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE -monto END), 0)"
-            f" FROM caja_movimientos WHERE {sql_no_anulado()}"
+            f" FROM caja_movimientos WHERE {sql_no_anulado()}{cond_cc}"
         ).fetchone()[0]
 
         # Cantidad de facturas emitidas en el mes
@@ -42,11 +48,14 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str) -> dict:
             (mes_desde, mes_hasta),
         ).fetchone()[0]
 
-        # Facturas sin cobrar (tipo factura, sin ingreso en caja)
+        # Facturas sin cobrar (tipo factura, sin ingreso en caja). Con `sin_fiado`, un ingreso a cuenta
+        # corriente no cuenta como cobro: la factura sigue apareciendo acá, que es lo real (nadie puso
+        # plata todavía).
+        join_cc = f" AND {sql_no_es_cuenta_corriente('c.medio_pago')}" if sin_fiado else ""
         rows = conn.execute(
-            """SELECT f.id, f.tipo, f.punto_venta, f.numero, f.fecha, f.cliente_razon, f.total
+            f"""SELECT f.id, f.tipo, f.punto_venta, f.numero, f.fecha, f.cliente_razon, f.total
                FROM facturas f
-               LEFT JOIN caja_movimientos c ON c.factura_id = f.id AND c.tipo = 'ingreso'
+               LEFT JOIN caja_movimientos c ON c.factura_id = f.id AND c.tipo = 'ingreso'{join_cc}
                WHERE f.tipo IN (1,6,11) AND c.id IS NULL
                ORDER BY f.id DESC LIMIT 8""",
         ).fetchall()
@@ -65,9 +74,10 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str) -> dict:
             # mostrar el anulado con su marca—, pero eso vale donde la pantalla
             # PUEDE marcarlo. El tablero muestra seis movimientos de un vistazo,
             # sin estado ni columnas: uno anulado ahí se lee como actividad que
-            # quedó, y no quedó.
+            # quedó, y no quedó. Mismo motivo alcanza a `sin_fiado`: un ingreso a
+            # cuenta corriente en este vistazo se lee como plata que entró, y no.
             "SELECT * FROM caja_movimientos"
-            f" WHERE {sql_no_anulado()} ORDER BY fecha DESC, id DESC LIMIT 6"
+            f" WHERE {sql_no_anulado()}{cond_cc} ORDER BY fecha DESC, id DESC LIMIT 6"
         ).fetchall()
         ultimos_movimientos = [dict(r) for r in rows]
 
