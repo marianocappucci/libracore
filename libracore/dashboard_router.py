@@ -33,7 +33,10 @@ def build_dashboard_router(
     usuario_actual: Callable[..., Any],
     extra: Callable[[str], dict] | None = None,
     prefix: str = "/api",
+    sin_fiado: bool = False,
 ) -> APIRouter:
+    """`sin_fiado=True`: los KPIs de caja del tablero dejan afuera las marcas de cuenta corriente, mismo
+    criterio que `build_reportes_router` (fase 8): fiar no es cobrar. Default `False`: lo de siempre."""
     router = APIRouter(prefix=prefix, tags=["dashboard"])
 
     @router.get("/dashboard")
@@ -42,7 +45,7 @@ def build_dashboard_router(
         hoy_iso = hoy.isoformat()
         mes_desde = hoy.replace(day=1).isoformat()
 
-        data = db_dashboard.get_dashboard_data(mes_desde, hoy_iso)
+        data = db_dashboard.get_dashboard_data(mes_desde, hoy_iso, sin_fiado=sin_fiado)
 
         for f in data["facturas_sin_cobrar"]:
             f["letra"] = _TIPO_LETRA.get(f["tipo"], "")

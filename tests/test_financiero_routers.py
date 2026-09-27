@@ -368,3 +368,51 @@ def test_dashboard_y_el_extra_del_producto(entorno):
     assert d["mes_hasta"] == HOY and d["salon"] == HOY
     assert d["facturas_sin_cobrar"][0]["letra"] == "C" and d["facturas_sin_cobrar"][0]["label_numero"] == "0005-00000011"
     assert d["facturado_mes"] == 100.0
+
+
+def _con_fiado(conn, numero_factura: int):
+    """Una factura de 500 cobrada a cuenta corriente (la capa ERP escribe un movimiento por cada medio,
+    cuenta corriente incluido) y una venta de 100 en efectivo -- mismo criterio que `_con_fiado` de
+    `test_logs_reportes_libros.py` (reportes, fase 8), acá con la factura atada al movimiento."""
+    conn.execute(
+        "INSERT INTO facturas (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, cliente_iva_cond, "
+        "items, subtotal, iva_amount, total, ambiente) VALUES (11, 5, ?, ?, '', 'CF', 5, '[]', 500, 0, 500, 'produccion')",
+        (numero_factura, HOY),
+    )
+    fid = conn.execute("SELECT id FROM facturas WHERE numero=?", (numero_factura,)).fetchone()[0]
+    conn.execute(
+        "INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago, factura_id) "
+        "VALUES (?, 'ingreso', 'Venta a cuenta corriente', 500, 'cuenta_corriente', ?)", (HOY, fid),
+    )
+    conn.execute(
+        "INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago) "
+        "VALUES (?, 'ingreso', 'Venta en efectivo', 100, 'efectivo')", (HOY,),
+    )
+    conn.commit()
+
+
+def test_por_default_el_tablero_cuenta_el_fiado_como_cobrado(entorno):
+    app = FastAPI()
+    app.include_router(build_dashboard_router(usuario_actual=_usuario))
+    client = TestClient(app)
+    with core.get_connection() as conn:
+        _con_fiado(conn, 20)
+    d = client.get("/api/dashboard").json()
+    assert d["cobrado_mes"] == 600.0 and d["saldo_total"] == 600.0  # 100 efectivo + 500 a cuenta corriente
+    assert d["facturas_sin_cobrar"] == []  # la cuenta corriente cuenta como cobro por default
+
+
+def test_sin_fiado_el_tablero_no_cuenta_la_cuenta_corriente(entorno):
+    """Fiar no es cobrar: mismo criterio y misma razón que `build_reportes_router` (fase 8) -- acá para el
+    tablero (fase 13)."""
+    app = FastAPI()
+    app.include_router(build_dashboard_router(usuario_actual=_usuario, sin_fiado=True))
+    client = TestClient(app)
+    with core.get_connection() as conn:
+        _con_fiado(conn, 21)
+    d = client.get("/api/dashboard").json()
+    assert d["cobrado_mes"] == 100.0 and d["saldo_total"] == 100.0
+    # La factura sigue "sin cobrar": el fiado no es plata real, y el último movimiento a la vista es sólo
+    # el de efectivo.
+    assert [f["numero"] for f in d["facturas_sin_cobrar"]] == [21]
+    assert [m["medio_pago"] for m in d["ultimos_movimientos"]] == ["efectivo"]
