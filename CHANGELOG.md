@@ -7,6 +7,27 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.115.0] — Recibos y consulta de CUIT como factories de router
+
+Sin migración. Dos routers nuevos, extraídos de Contalibra (el mismo código, salvo el auth de cada producto).
+
+### Qué llega
+
+- `recibos_router.build_recibos_router(usuario_actual, solo_admin, get_venta=None)`: listar, detalle, PDF, emitir de
+  factura/venta/cobranza y anular (gateado a `solo_admin`), sobre `libracore.db.recibos` y `libracore.recibos`. El único
+  gancho es `get_venta` — de qué tabla sale una venta de mostrador (`ventas` del propio esquema o `sales` de LibraCommerce,
+  según el producto); `emitir_recibo_factura`/`emitir_recibo_cobranza` no necesitan ninguno, ya resuelven contra tablas que
+  todo producto comparte (`facturas`, `caja_movimientos`, `clients`, `cc_pagos`). Sin `require_module` fijo: un recibo nace
+  de tres módulos distintos, así que el gate real vive en el botón que lo emite.
+- `consultar_cuit_router.build_consultar_cuit_router(usuario_actual)`: `GET /api/consultar-cuit/{cuit}` contra el padrón de
+  ARCA (WSPadron), usando `libracore.arca_credenciales`/`arca_wsaa`/`arca_wspadron` y la config ya cargada
+  (`libracore.db.arca_config`). Sin certificados configurados, 503 en vez de fallar.
+
+### Para quien ya usa `arca_credenciales.paths_en_disco`
+
+El barrido `test_el_par_en_disco_es_una_sola_llamada.py::test_los_tres_call_sites_del_motor_la_usan` ahora espera **cuatro**
+call sites (se sumó `consultar_cuit_router.py`); es de mantenimiento del propio repo, no afecta a un consumidor.
+
 ## [v1.113.0] — Los reportes de caja pueden dejar afuera la cuenta corriente (`sin_fiado`)
 
 Sin migración. Aditivo: sin `sin_fiado` el comportamiento es **exactamente** el de siempre (el de Contalibra y Restolibra).

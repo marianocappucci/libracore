@@ -97,7 +97,9 @@ def test_los_tres_call_sites_del_motor_la_usan():
         if _llama_a(ast.parse(f.read_text(encoding="utf-8")), "paths_en_disco")
         and f.name != "arca_credenciales.py"
     ]
-    assert sorted(usan) == ["arca_facturacion.py", "arca_router.py", "facturas_router.py"], usan
+    assert sorted(usan) == [
+        "arca_facturacion.py", "arca_router.py", "consultar_cuit_router.py", "facturas_router.py",
+    ], usan
 
 
 # -- El comportamiento ------------------------------------------------------
