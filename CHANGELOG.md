@@ -20,9 +20,14 @@ restaurar el backup. El gate del schema congelado pasa a **376 columnas** (las d
   como antes. `GET /{id}` devuelve `facturas_pendientes`. Caso: Municipalidad de Suipacha, FC 74 y 75.
 - `DELETE /pagos/{id}` **anula en el motor** todos los movimientos de caja del pago (`cc_pago_id`), igual en
   todos los productos. Antes sólo lo hacía el gancho `al_eliminar_pago` de VentaLibra; Contalibra y Restolibra
-  dejaban la plata en el arqueo. El gancho sigue decidiendo si la baja procede (es idempotente con el motor y
-  ya no hace falta que anule: puede simplificarse). Los pagos anteriores a la migración no tienen movimientos
-  ligados y se dan de baja como siempre.
+  dejaban la plata en el arqueo. El gancho sigue decidiendo si la baja procede.
+  Los pagos anteriores a la migración no tienen movimientos ligados: en Contalibra y Restolibra se dan de baja
+  como siempre (sin anular nada, como antes).
+  ⚠️ **VentaLibra: no quitar todavía la búsqueda por referencia (`cc-pago-<id>`) ni el anulado de su gancho.**
+  Es la única forma de encontrar el movimiento de sus pagos viejos, que no tienen `cc_pago_id`; con el motor
+  anulando también no chocan (es idempotente), pero sacarlos ahora dejaría esa plata en el arqueo. Para
+  normalizarlo: al subir el pin, backfill de `cc_pago_id` en VentaLibra a partir de esa referencia, y recién
+  después simplificar el gancho.
 - `db.caja.create_caja_movimiento(..., cc_pago_id=)` y `db.caja.anular_movimientos_de_cc_pago()`.
 - `db.cuenta_corriente.get_facturas_pendientes_cc()`.
 
