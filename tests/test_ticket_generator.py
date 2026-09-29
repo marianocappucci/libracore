@@ -122,6 +122,47 @@ def test_el_descuento_aparece_cuando_lo_hay():
     assert "Descuento" in con_descuento
 
 
+def test_las_promociones_aplicadas_salen_una_por_fila_con_su_ahorro():
+    texto = _texto_del_pdf(ticket_generator.generar_ticket_venta(_venta(
+        descuento=1500.0, total=2400.0,
+        promociones=[{"nombre": "2x1 yerba", "veces": 1, "ahorro": 1500.0}],
+    )))
+    assert "Promo 2x1 yerba" in texto
+    assert "1.500,00" in texto
+
+
+def test_una_promocion_aplicada_varias_veces_dice_cuantas():
+    texto = _texto_del_pdf(ticket_generator.generar_ticket_venta(_venta(
+        descuento=3000.0, total=900.0,
+        promociones=[{"nombre": "2x1 yerba", "veces": 2, "ahorro": 3000.0}],
+    )))
+    assert "Promo 2x1 yerba x2" in texto
+
+
+def test_con_promociones_la_fila_descuento_muestra_solo_lo_que_no_es_promocion():
+    """El `descuento` de la venta ya incluye el ahorro de las promociones: no se cuenta dos veces."""
+    solo_promo = _texto_del_pdf(ticket_generator.generar_ticket_venta(_venta(
+        descuento=1500.0, total=2400.0,
+        promociones=[{"nombre": "2x1 yerba", "veces": 1, "ahorro": 1500.0}],
+    )))
+    assert "Descuento" not in solo_promo
+
+    con_manual = _texto_del_pdf(ticket_generator.generar_ticket_venta(_venta(
+        descuento=1700.0, total=2200.0,
+        promociones=[{"nombre": "2x1 yerba", "veces": 1, "ahorro": 1500.0}],
+    )))
+    assert "Descuento" in con_manual
+    assert "200,00" in con_manual
+
+
+def test_sin_promociones_el_ticket_no_cambia():
+    """Contalibra y Restolibra nunca mandan `promociones`: el papel sale como siempre."""
+    base = ticket_generator.generar_ticket_venta(_venta(descuento=400.0))
+    assert ticket_generator.generar_ticket_venta(_venta(descuento=400.0, promociones=[])) == base
+    assert ticket_generator.generar_ticket_venta(_venta(descuento=400.0, promociones=None)) == base
+    assert "Promo" not in _texto_del_pdf(base)
+
+
 def test_los_medios_de_pago_salen_en_el_ticket():
     texto = _texto_del_pdf(ticket_generator.generar_ticket_venta(_venta(
         pagos=[
