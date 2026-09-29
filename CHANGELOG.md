@@ -7,7 +7,7 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Sin versionar] — Un pago a cuenta se aplica a facturas y se da de baja limpio
+## [v1.117.0] — Un pago a cuenta se aplica a facturas y se da de baja limpio
 
 Migración `0013`: agrega `caja_movimientos.cc_pago_id` (nullable, sin FK). **No baja** (patrón de la
 generación `0004`-`0008`): perder el vínculo cobro → pago dejaría los pagos aplicados sin baja limpia; para atrás,
