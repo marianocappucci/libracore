@@ -220,3 +220,19 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
   con tres niveles distinguidos por qué FK llevan puesta) y un caso adicional
   de "tabla que puede no existir todavía" que el motor tiene que tolerar en su
   camino más transitado.
+
+## ADR-012 — El ticket de venta imprime las promociones aplicadas, opcional y sin doble conteo
+
+- Estado: aceptada
+- Fecha: 2026-09-29
+- Contexto: VentaLibra aplica promociones («llevá N pagá M» y combos, ADR-014 de `libracommerce`) y suma su
+  ahorro al `descuento` de la venta, anotando cuáles se aplicaron en `sale_promotions`. El ticket
+  (`generar_ticket_venta`) sólo sabía imprimir un `Descuento` genérico, así que el cliente veía un monto sin
+  saber de qué era. El generador es de este motor y lo comparten todos los productos.
+- Decisión: `venta` acepta una clave opcional `promociones` (`[{nombre, veces, ahorro}]`). Se imprime una
+  fila `Promo <nombre> [xN]` con su ahorro por cada una, antes del total. **El `descuento` de la venta ya las
+  incluye**, así que con promociones la fila `Descuento` muestra sólo lo que quede (un descuento manual) y
+  desaparece si no queda nada: el mismo ahorro no sale impreso dos veces.
+- Consecuencias: sin la clave, o con una lista vacía o `None`, el papel sale byte a byte igual que hasta hoy
+  (Contalibra y Restolibra no la mandan); lo fija un test. El producto arma la lista desde su propio registro
+  de promociones: el motor no sabe de dónde sale.
