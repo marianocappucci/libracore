@@ -169,3 +169,20 @@ def test_sin_caja_igual_queda_el_cobro_ligado_a_la_factura(client):
     client.post("/api/cuenta-corriente/1/pagar", json={
         "monto": 920000, "fecha": HOY, "medio_pago": "transferencia", "facturas": [f74]})
     assert _cobrado(f74) == 920000
+
+
+def test_venta_fiada_de_ventalibra_y_facturada_no_duplica_la_deuda_y_se_puede_cobrar(client):
+    """VentaLibra fía por `cc_debitos` y NO escribe movimiento de caja (lo fiado no es plata que entró).
+    Al facturar la venta la factura sale 'Cuenta Corriente' pero sin ningún movimiento de cuenta
+    corriente: la deuda es la de `cc_debitos`, una sola vez, y la factura aparece pendiente."""
+    fid = _factura(9, 9000, cond="Cuenta Corriente")
+    with core.get_connection() as conn:
+        conn.execute("DELETE FROM caja_movimientos WHERE factura_id=?", (fid,))
+        conn.execute("INSERT INTO cc_debitos (cliente_id, monto, fecha, concepto, referencia)"
+                     " VALUES (1, 9000, ?, 'Venta POS-000009', 'sale-9')", (HOY,))
+    detalle = client.get("/api/cuenta-corriente/1").json()
+    assert detalle["saldo"] == 9000                        # no se cuenta dos veces
+    assert [p["id"] for p in detalle["facturas_pendientes"]] == [fid]
+    r = _pagar(client, 9000, facturas=[fid]).json()
+    assert r["saldo"] == 0 and r["facturas_pendientes"] == []
+    assert _cobrado(fid) == 9000
