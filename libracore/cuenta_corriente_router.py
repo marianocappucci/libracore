@@ -61,6 +61,10 @@ class PagoCCPayload(BaseModel):
     referencia: str = ""
     medio_pago: str = "efectivo"
     caja_id: int | None = None
+    #: Facturas a las que se aplica el pago. Un pago sin facturas baja el saldo
+    #: pero deja cada factura en "Sin cobrar": sólo el cobro de una factura
+    #: escribe el movimiento de caja que la marca "Cobrada".
+    facturas: list[int] = []
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,34 @@ class OpcionesCuentaCorriente:
     validar_pago: Callable[[PagoCCPayload, dict], CobroAprobado] | None = None
     cajas: Callable[[dict], list[dict]] | None = None
     al_eliminar_pago: Callable[[int, dict], None] | None = None
+
+
+def _repartir(payload: PagoCCPayload, pendientes: list[dict]) -> list[tuple[dict, float]]:
+    """Reparte el pago entre las facturas elegidas, la más vieja primero.
+
+    Cada factura recibe como mucho su pendiente; lo que sobra queda como pago a
+    cuenta. Levanta 422 si se pide una factura que no está pendiente de este
+    cliente (ya cobrada, anulada, de otro cliente): aplicarle plata sería
+    inventar un cobro.
+    """
+    if not payload.facturas:
+        return []
+    por_id = {f["id"]: f for f in pendientes}
+    invalidas = [i for i in payload.facturas if i not in por_id]
+    if invalidas:
+        raise HTTPException(
+            422, f"Factura sin cobro pendiente en esta cuenta: {', '.join(map(str, invalidas))}"
+        )
+    restante = round(payload.monto, 2)
+    aplicaciones = []
+    for factura in sorted((por_id[i] for i in set(payload.facturas)),
+                          key=lambda f: (f["fecha"], f["id"])):
+        if restante <= 0:
+            break
+        monto = min(restante, factura["pendiente"])
+        aplicaciones.append((factura, monto))
+        restante = round(restante - monto, 2)
+    return aplicaciones
 
 
 def build_cuenta_corriente_router(
@@ -119,6 +151,7 @@ def build_cuenta_corriente_router(
             "cliente": cliente,
             "movimientos": db_cc.get_cc_movimientos(cliente_id, origen=origen),
             "saldo": db_cc.get_cc_saldo(cliente_id, origen=origen),
+            "facturas_pendientes": db_cc.get_facturas_pendientes_cc(cliente_id),
         }
 
     @router.post("/{cliente_id}/pagar")
@@ -126,6 +159,10 @@ def build_cuenta_corriente_router(
         cliente = db_clients.get_client(cliente_id)
         if not cliente:
             raise HTTPException(404, "Cliente no encontrado")
+
+        # Se decide a qué facturas va el pago ANTES de escribir nada: un id que
+        # no está pendiente es un error del pedido y no puede dejar un pago a medias.
+        aplicaciones = _repartir(payload, db_cc.get_facturas_pendientes_cc(cliente_id))
 
         # El producto puede rechazar el pago (HTTPException) y decidir la caja, el turno y la referencia.
         cobro = (opciones.validar_pago(payload, user) if opciones.validar_pago is not None
@@ -137,19 +174,34 @@ def build_cuenta_corriente_router(
             medio_pago=payload.medio_pago, caja_id=cobro.caja_id, usuario_id=user.get("id"),
         )
 
-        if cobro.caja_id:
-            referencia = (cobro.referencia_movimiento.format(pago_id=pago_id)
-                          if cobro.referencia_movimiento else payload.referencia)
+        referencia = (cobro.referencia_movimiento.format(pago_id=pago_id)
+                      if cobro.referencia_movimiento else payload.referencia)
+        # Una fila de caja por factura, con el mismo monto y medio que el pago:
+        # es el "Registrar cobro" de cada comprobante, pero sin un segundo abono
+        # (el pago a cuenta ya es el abono). La plata entra a caja una sola vez.
+        for factura, monto in aplicaciones:
+            db_caja.create_caja_movimiento(
+                fecha=payload.fecha, tipo="ingreso",
+                concepto=f"Cobro {factura['concepto']} — {cliente['name']}",
+                monto=monto, referencia=referencia, factura_id=factura["id"],
+                caja_id=cobro.caja_id, medio_pago=payload.medio_pago,
+                usuario_id=user.get("id"), turno_id=cobro.turno_id,
+                cc_pago_id=pago_id,
+            )
+        # Lo que no cubre ninguna factura sigue siendo un pago a cuenta suelto.
+        resto = round(payload.monto - sum(m for _, m in aplicaciones), 2)
+        if cobro.caja_id and resto > 0:
             db_caja.create_caja_movimiento(
                 fecha=payload.fecha, tipo="ingreso", concepto=f"Pago CC - {cliente['name']}",
-                monto=payload.monto, referencia=referencia,
+                monto=resto, referencia=referencia,
                 caja_id=cobro.caja_id, medio_pago=payload.medio_pago, usuario_id=user.get("id"),
-                turno_id=cobro.turno_id,
+                turno_id=cobro.turno_id, cc_pago_id=pago_id,
             )
 
         respuesta = {
             "movimientos": db_cc.get_cc_movimientos(cliente_id, origen=origen),
             "saldo": db_cc.get_cc_saldo(cliente_id, origen=origen),
+            "facturas_pendientes": db_cc.get_facturas_pendientes_cc(cliente_id),
         }
         if con_recibos:
             # El recibo sale con el cobro, no cuando alguien se acuerda: quien
@@ -180,6 +232,11 @@ def build_cuenta_corriente_router(
             for recibo in db_recibos.get_recibos_de_origen(db_recibos.ORIGEN_CC_PAGO, pago_id):
                 db_recibos.anular_recibo(recibo["id"], motivo="Se elimino el pago que lo origino",
                                          usuario_id=user.get("id"))
+        # Los movimientos de caja del pago (los cobros por factura y el resto suelto)
+        # se anulan en el motor, igual para todos los productos: el gancho de arriba
+        # sólo decide si la baja procede. Sin esto, borrar un pago dejaba las facturas
+        # "Cobradas" y la plata en el arqueo.
+        db_caja.anular_movimientos_de_cc_pago(pago_id)
         db_cc.delete_cc_pago(pago_id)
         return {"ok": True}
 
