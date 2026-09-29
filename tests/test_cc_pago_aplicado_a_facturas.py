@@ -186,3 +186,64 @@ def test_venta_fiada_de_ventalibra_y_facturada_no_duplica_la_deuda_y_se_puede_co
     r = _pagar(client, 9000, facturas=[fid]).json()
     assert r["saldo"] == 0 and r["facturas_pendientes"] == []
     assert _cobrado(fid) == 9000
+
+
+def _eliminar(client, pago_id):
+    return client.delete(f"/api/cuenta-corriente/pagos/{pago_id}")
+
+
+def _ultimo_pago():
+    with core.get_connection() as conn:
+        return conn.execute("SELECT MAX(id) FROM cc_pagos").fetchone()[0]
+
+
+def test_dar_de_baja_un_pago_aplicado_devuelve_las_facturas_a_sin_cobrar(client):
+    f74, f75 = _factura(74, 920000), _factura(75, 573750)
+    _pagar(client, 1500000, facturas=[f74, f75])          # cubre las dos y deja 6.250 suelto
+    pago = _ultimo_pago()
+    assert _cobrado(f74) == 920000 and _cobrado(f75) == 573750
+
+    assert _eliminar(client, pago).json() == {"ok": True}
+
+    assert _cobrado(f74) == 0 and _cobrado(f75) == 0
+    detalle = client.get("/api/cuenta-corriente/1").json()
+    assert detalle["saldo"] == 1493750                    # la deuda vuelve
+    assert [p["id"] for p in detalle["facturas_pendientes"]] == [f74, f75]
+    with core.get_connection() as conn:
+        # Nada del pago queda vivo en el arqueo —ni los cobros ni el resto suelto—,
+        # pero las filas quedan (se anula, no se borra).
+        vivos = conn.execute(
+            "SELECT COUNT(*) FROM caja_movimientos WHERE cc_pago_id=? AND anulado=0", (pago,)).fetchone()[0]
+        total = conn.execute(
+            "SELECT COUNT(*) FROM caja_movimientos WHERE cc_pago_id=?", (pago,)).fetchone()[0]
+    assert vivos == 0 and total == 3
+
+
+def test_dar_de_baja_un_pago_sin_facturas_saca_tambien_su_ingreso_de_caja(client):
+    _factura(74, 920000)
+    _pagar(client, 100000)
+    pago = _ultimo_pago()
+    _eliminar(client, pago)
+    with core.get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM caja_movimientos WHERE concepto LIKE 'Pago CC%' AND anulado=0"
+        ).fetchone()[0] == 0
+
+
+def test_la_baja_no_toca_los_cobros_de_otros_pagos_ni_los_pagos_anteriores_a_la_columna(client):
+    f74, f75 = _factura(74, 920000), _factura(75, 573750)
+    _pagar(client, 920000, facturas=[f74])
+    primero = _ultimo_pago()
+    _pagar(client, 573750, facturas=[f75])
+    # Un pago viejo: sin `cc_pago_id` en su movimiento. Darlo de baja sigue sin tocar nada de caja.
+    with core.get_connection() as conn:
+        conn.execute("INSERT INTO cc_pagos (cliente_id, monto, fecha, concepto) VALUES (1, 10, ?, 'viejo')", (HOY,))
+        viejo = conn.execute("SELECT MAX(id) FROM cc_pagos").fetchone()[0]
+        conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago)"
+                     " VALUES (?, 'ingreso', 'Pago CC - viejo', 10, 'efectivo')", (HOY,))
+    _eliminar(client, viejo)
+    with core.get_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM caja_movimientos WHERE concepto='Pago CC - viejo' AND anulado=0"
+                            ).fetchone()[0] == 1
+    _eliminar(client, primero)
+    assert _cobrado(f74) == 0 and _cobrado(f75) == 573750

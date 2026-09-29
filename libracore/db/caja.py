@@ -306,7 +306,7 @@ def delete_caja_config(cid: int):
 
 def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_id=None,
                            usuario_id=None, caja_id=None, medio_pago="", turno_id=None,
-                           conn: Conexion | None = None):
+                           conn: Conexion | None = None, cc_pago_id=None):
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         # Idempotencia: si ya existe un movimiento con la misma referencia PARA LA MISMA
@@ -350,10 +350,10 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
         cur = c.execute(
             """INSERT INTO caja_movimientos
                (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id,
-                medio_pago, turno_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                medio_pago, turno_id, cc_pago_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id,
-             medio_pago, turno_id),
+             medio_pago, turno_id, cc_pago_id),
         )
         return cur.lastrowid
 
@@ -443,6 +443,22 @@ def get_cobros_factura(factura_id) -> list[dict]:
             (factura_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def anular_movimientos_de_cc_pago(pago_id) -> int:
+    """Anula todos los movimientos de caja que generó un pago a cuenta y devuelve cuántos.
+
+    Los cobros por factura y el resto suelto del pago comparten `cc_pago_id`:
+    dar de baja el pago tiene que devolver las facturas a "Sin cobrar" y sacar la
+    plata del arqueo, no dejar cobros huérfanos. Anula, no borra (ver
+    `anular_caja_movimiento`). Idempotente. Un pago anterior a la columna no
+    tiene movimientos ligados y devuelve 0.
+    """
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE caja_movimientos SET anulado=1 WHERE cc_pago_id=? AND anulado=0", (pago_id,)
+        )
+        return cur.rowcount
 
 
 def delete_caja_movimiento(mov_id):

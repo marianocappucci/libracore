@@ -186,6 +186,7 @@ def build_cuenta_corriente_router(
                 monto=monto, referencia=referencia, factura_id=factura["id"],
                 caja_id=cobro.caja_id, medio_pago=payload.medio_pago,
                 usuario_id=user.get("id"), turno_id=cobro.turno_id,
+                cc_pago_id=pago_id,
             )
         # Lo que no cubre ninguna factura sigue siendo un pago a cuenta suelto.
         resto = round(payload.monto - sum(m for _, m in aplicaciones), 2)
@@ -194,7 +195,7 @@ def build_cuenta_corriente_router(
                 fecha=payload.fecha, tipo="ingreso", concepto=f"Pago CC - {cliente['name']}",
                 monto=resto, referencia=referencia,
                 caja_id=cobro.caja_id, medio_pago=payload.medio_pago, usuario_id=user.get("id"),
-                turno_id=cobro.turno_id,
+                turno_id=cobro.turno_id, cc_pago_id=pago_id,
             )
 
         respuesta = {
@@ -231,6 +232,11 @@ def build_cuenta_corriente_router(
             for recibo in db_recibos.get_recibos_de_origen(db_recibos.ORIGEN_CC_PAGO, pago_id):
                 db_recibos.anular_recibo(recibo["id"], motivo="Se elimino el pago que lo origino",
                                          usuario_id=user.get("id"))
+        # Los movimientos de caja del pago (los cobros por factura y el resto suelto)
+        # se anulan en el motor, igual para todos los productos: el gancho de arriba
+        # sólo decide si la baja procede. Sin esto, borrar un pago dejaba las facturas
+        # "Cobradas" y la plata en el arqueo.
+        db_caja.anular_movimientos_de_cc_pago(pago_id)
         db_cc.delete_cc_pago(pago_id)
         return {"ok": True}
 

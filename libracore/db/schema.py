@@ -309,7 +309,8 @@ def init_core_schema(conn: Conexion):
             factura_id  INTEGER,
             created_at  TEXT DEFAULT (datetime('now','-3 hours')),
             turno_id    INTEGER REFERENCES turnos_caja(id) ON DELETE SET NULL,
-            anulado     INTEGER NOT NULL DEFAULT 0
+            anulado     INTEGER NOT NULL DEFAULT 0,
+            cc_pago_id  INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS mp_pagos (
@@ -998,6 +999,12 @@ def init_core_schema(conn: Conexion):
         conn.execute(
             "ALTER TABLE caja_movimientos ADD COLUMN anulado INTEGER NOT NULL DEFAULT 0"
         )
+    # El pago a cuenta que originó este movimiento (`cc_pagos.id`), o NULL.
+    # Sin FK: el pago se puede borrar y el movimiento queda —anulado— como
+    # rastro. Es lo que deja dar de baja un pago sin adivinar sus movimientos
+    # por fecha o referencia, igual en todos los productos.
+    if cm_cols and "cc_pago_id" not in cm_cols:
+        conn.execute("ALTER TABLE caja_movimientos ADD COLUMN cc_pago_id INTEGER")
     # El arqueo se cuenta sobre la caja, no sobre las ventas: con `turno_id`
     # el resumen de un turno sale de `caja_movimientos` directo.
     # Contalibra/Restolibra lo derivan hoy de `ventas.turno_id`, que solo
