@@ -286,7 +286,18 @@ def generar_ticket_venta(venta: dict) -> bytes:
 
     pdf._separador()
     descuento = float(venta.get("descuento", 0) or 0)
-    if descuento:
+    # Promociones aplicadas (opcional, 2026-09-29: VentaLibra, `sale_promotions`): una fila por
+    # promoción con su ahorro. El `descuento` de la venta YA las incluye, así que con promociones
+    # la fila «Descuento» pasa a mostrar sólo lo que quede (un descuento manual); si no hay
+    # promociones el ticket sale exactamente como siempre.
+    promociones = venta.get("promociones") or []
+    for promo in promociones:
+        veces = int(promo.get("veces", 1) or 1)
+        rotulo = "Promo " + str(promo.get("nombre", ""))[:22] + (f" x{veces}" if veces > 1 else "")
+        ahorro = float(promo.get("ahorro", 0) or 0)
+        pdf._row(rotulo + ":", "-$" + _ar(ahorro))
+        descuento -= ahorro
+    if descuento > 0.004 if promociones else descuento:
         pdf._row("Descuento:", "-$" + _ar(descuento))
     pdf._row("TOTAL:", "$" + _ar(float(venta.get('total', 0))), bold_der=True)
 
