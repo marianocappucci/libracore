@@ -49,7 +49,11 @@ tabla real, `tabla` es una subconsulta que resuelve el cliente por
 import contextlib
 from dataclasses import dataclass
 
-from libracore.db.caja import sql_es_cuenta_corriente, sql_no_anulado
+from libracore.db.caja import (
+    sql_es_cuenta_corriente,
+    sql_no_anulado,
+    sql_no_es_cuenta_corriente,
+)
 from libracore.db.core import get_connection
 
 from .core import Conexion
@@ -220,6 +224,61 @@ def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE)
             })
 
     return sorted(movs, key=lambda x: x["fecha"])
+
+
+def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
+    """Las facturas a cuenta corriente del cliente que todavía no tienen cobro.
+
+    Es lo que separa un **pago a cuenta** de un **cobro de factura**. Los dos
+    bajan el saldo (`cc_pagos`), pero sólo el segundo escribe un movimiento de
+    caja ligado a la factura, y de ese movimiento sale el "Cobrada" de la lista
+    de comprobantes. Un pago a cuenta suelto deja la factura en "Sin cobrar"
+    para siempre, aunque el saldo del cliente ya la descuente. Incidente real:
+    Municipalidad de Suipacha, FC 74 y 75, 2026-09-14.
+
+    Excluye las notas, las facturas sin CAE y las anuladas por una nota de
+    crédito (esas ya se cancelaron por `cc_pagos` sin ningún cobro, así que
+    aparecerían pendientes para siempre). Se cruza por CUIT normalizado, por
+    la misma razón que `_cuit_de`. Orden: la más vieja primero, que es el orden
+    en que se aplica un pago.
+    """
+    with get_connection() as conn:
+        cuit = _cuit_de(conn, cliente_id)
+        if not cuit:
+            return []
+        rows = conn.execute(f"""
+            SELECT f.id, f.tipo, f.punto_venta, f.numero, f.fecha, f.total,
+                   COALESCE((
+                       SELECT SUM(cm.monto) FROM caja_movimientos cm
+                       WHERE cm.factura_id = f.id AND cm.tipo = 'ingreso'
+                         AND {sql_no_es_cuenta_corriente('cm.medio_pago')}
+                         AND {sql_no_anulado('cm')}
+                   ), 0) AS cobrado
+            FROM facturas f
+            WHERE REPLACE(f.cliente_cuit, '-', '') = ?
+              AND f.tipo IN (1, 6, 11)
+              AND f.condicion_venta = 'Cuenta Corriente'
+              AND COALESCE(f.cae, '') NOT IN ('', 'PENDIENTE')
+              AND NOT EXISTS (
+                  SELECT 1 FROM facturas n
+                  WHERE n.tipo IN (3, 8, 13) AND n.cbte_asoc_tipo = f.tipo
+                    AND n.cbte_asoc_pv = f.punto_venta AND n.cbte_asoc_nro = f.numero
+              )
+            ORDER BY f.fecha, f.id
+        """, (cuit,)).fetchall()
+    resultado = []
+    for r in rows:
+        pendiente = round(float(r["total"]) - float(r["cobrado"]), 2)
+        if pendiente <= 0:
+            continue
+        d = dict(r)
+        d["concepto"] = (
+            f"{_TIPO_LABEL.get(r['tipo'], 'COMP')} "
+            f"{str(r['punto_venta']).zfill(4)}-{str(r['numero']).zfill(8)}"
+        )
+        d["pendiente"] = pendiente
+        resultado.append(d)
+    return resultado
 
 
 def get_cc_movimientos_periodo(

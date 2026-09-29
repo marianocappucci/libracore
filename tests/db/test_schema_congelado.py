@@ -140,7 +140,10 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
-        # 375 desde el 2026-09-24, cuando entró `cajas.mp_pos_id` — el POS de
+        # 376 desde el 2026-09-29, cuando entró `caja_movimientos.cc_pago_id` — el
+        # pago a cuenta que originó cada movimiento, para poder darlo de baja.
+        #
+        # Era 375 desde el 2026-09-24, cuando entró `cajas.mp_pos_id` — el POS de
         # MercadoPago por caja: con dos cajas compartiendo el POS de la
         # instancia, la última venta pisa el monto de las anteriores.
         #
@@ -159,7 +162,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (376)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (377)"}
     finally:
         conn.close()
         _liberar()
