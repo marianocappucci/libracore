@@ -236,3 +236,17 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
 - Consecuencias: sin la clave, o con una lista vacía o `None`, el papel sale byte a byte igual que hasta hoy
   (Contalibra y Restolibra no la mandan); lo fija un test. El producto arma la lista desde su propio registro
   de promociones: el motor no sabe de dónde sale.
+
+## ADR-012 — El tema de la suite se guarda en cada instancia y se lee de ella, no del backoffice
+
+- Estado: aceptada (decisión del humano, 2026-10-01); fase 2 de 4
+- Fecha: 2026-10-01 (`v1.118.0`)
+- Contexto: el humano pidió poder cambiar ciertos colores desde el backoffice de cada suite, para todas sus instancias. El backoffice es un
+  plano de control: no abre las bases de las instancias y les habla por HTTP con el token de servicio.
+- Decisión: cada instancia **guarda su tema** (`tema` en el `config.json`) y lo sirve en `GET /api/tema`, público. El backoffice lo
+  **empuja** con `PUT /api/tema` (como ya hace con el correo y los usuarios). La SPA lee de su propia instancia al arrancar.
+  Se descartó que las SPAs lean del backoffice: ataría cada instancia de cliente a que el control plane esté arriba.
+- La validación es **sólo de forma** (ver `tema_router`): el catálogo de colores y el contraste viven en `libra-ui/tema`, que es la única
+  lista. Copiarla a Python sería una segunda copia que se desactualiza sola.
+- Consecuencias: una instancia caída o dada de alta después queda sin el tema hasta que el backoffice lo reintente (fase 3); una clave
+  que el kit no conoce se guarda y la SPA la ignora, así agregar un color al kit no obliga a tocar este router.
