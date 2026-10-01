@@ -22,6 +22,9 @@ from libracore.reportes import MEDIO_LABEL, PuertoDeReportes, pivot_caja_medios,
 from libracore.reportes_router import build_reportes_export_router, build_reportes_router
 
 HOY = datetime.date.today().isoformat()
+#: El primer día del mes en curso: los datos de la fixture están fechados HOY, así que un rango FIJO (p. ej. septiembre) los deja
+#: afuera apenas cambia el mes y el test se rompe solo.
+DESDE_DEL_MES = datetime.date.today().replace(day=1).isoformat()
 ADMIN = {"x-rol": "admin"}
 
 
@@ -179,8 +182,8 @@ def test_reportes_router_con_el_puerto_del_producto(entorno):
     app.include_router(build_reportes_router(reportes=puerto))
     app.include_router(build_reportes_export_router(sesion=_gate_admin, reportes=puerto))
     client = TestClient(app)
-    r = client.get("/api/reportes?desde=2026-09-01&hasta=2026-09-30&agrupacion=mes").json()
-    assert r["ventas_ts"][0]["periodo"] == "2026-09-01" and r["agrupacion"] == "mes"
+    r = client.get(f"/api/reportes?desde={DESDE_DEL_MES}&hasta={HOY}&agrupacion=mes").json()
+    assert r["ventas_ts"][0]["periodo"] == DESDE_DEL_MES and r["agrupacion"] == "mes"
     assert r["caja"][0]["tipo"] in ("ingreso", "egreso") and r["stock_bajo"][0]["nombre"] == "Yerba"
     assert r["medio_label"]["efectivo"] == "Efectivo" and r["resumen"]["ventas_total"] == 100.0
     # Sin fechas, el mes en curso.
@@ -188,8 +191,8 @@ def test_reportes_router_con_el_puerto_del_producto(entorno):
     cm = client.get("/api/reportes/caja-medios").json()
     assert cm["cajas"][0]["saldo"] == 70.0 and cm["totales"]["efectivo"]["ingresos"] == 100.0 and cm["cajas_config"][0]["nombre"]
     assert client.get("/reportes/export/ventas").status_code == 403
-    r = client.get("/reportes/export/ventas?desde=2026-09-01&hasta=2026-09-30", headers=ADMIN)
-    assert r.headers["content-disposition"].endswith('ventas_2026-09-01_2026-09-30.csv"') and "periodo,cantidad,total" in r.text
+    r = client.get(f"/reportes/export/ventas?desde={DESDE_DEL_MES}&hasta={HOY}", headers=ADMIN)
+    assert r.headers["content-disposition"].endswith(f'ventas_{DESDE_DEL_MES}_{HOY}.csv"') and "periodo,cantidad,total" in r.text
     assert "efectivo,1,100.0" in client.get("/reportes/export/medios", headers=ADMIN).text
     r = client.get("/reportes/export/productos", headers=ADMIN)
     assert "Yerba,2,100.0" in r.text and limites[-1] == 500  # el export pide 500, la pantalla 20
