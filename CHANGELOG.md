@@ -226,7 +226,8 @@ Sin migración. Fase 2 de 4 del tema por suite (ADR-012; ADR-007 de `libra-ui`).
 
 - `libracore.tema_router`: `build_tema_router()` (`GET /api/tema` → `{"tema": {clave: "#rrggbb"}}`, **sin gate** y con
   `Cache-Control: no-cache`: el login también va con los colores de la suite) y `build_tema_admin_router()` (`PUT /api/tema`, el tema
-  COMPLETO; `{}` lo borra). El producto monta la escritura con su gate de admin, que deja pasar el token de servicio del backoffice.
+  COMPLETO; `{}` lo borra). El producto monta la escritura con su gate de admin, **que tiene que aceptar también el token de servicio del backoffice** (en VentaLibra,
+  `requiere_o_servicio("config")`; con `requiere("config")` a secas el backoffice no entra).
 - El tema vive en la clave `tema` del `config.json` de la instancia. Una instancia, un tema: sigue andando igual si el backoffice no responde.
 - Sólo se valida la **forma** (clave de hasta 40 letras y números, valor `#rgb`/`#rrggbb` normalizado a `#rrggbb`, máximo 32 colores;
   422 si no). La lista de colores editables y el contraste viven en `libra-ui/tema`: no se copian acá.

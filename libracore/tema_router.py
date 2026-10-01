@@ -14,8 +14,9 @@ el formulario del backoffice y, de nuevo, `aplicarTema` antes de pintar.
 ## El gate lo pone el producto
 
 Como en el resto de los routers del motor. La lectura es **pública a propósito** (el login también va con los colores de la suite) y
-no expone nada sensible. La escritura va detrás del gate de admin del producto, que también deja pasar el token de servicio del
-backoffice: ése es el camino de la pantalla «Apariencia».
+no expone nada sensible. La escritura va detrás del gate de admin del producto. 🔴 Para que el backoffice pueda empujar el tema (pantalla «Apariencia»), esa guarda
+tiene que aceptar TAMBIÉN el token de servicio (`X-Internal-Auth`): en VentaLibra es `requiere_o_servicio("config")`, y `requiere("config")` a
+secas NO lo acepta (lo descubrió el test de la adopción).
 """
 
 from __future__ import annotations
@@ -102,7 +103,7 @@ def build_tema_router(*, prefix: str = "/api/tema") -> APIRouter:
 
 
 def build_tema_admin_router(*, prefix: str = "/api/tema") -> APIRouter:
-    """Escritura del tema. Va montado con el gate de admin del producto, que deja pasar el token de servicio del backoffice."""
+    """Escritura del tema. Va montado con el gate de admin del producto, que tiene que aceptar también el token de servicio del backoffice."""
     router = APIRouter(prefix=prefix, tags=["tema"])
 
     @router.put("", response_model=TemaOut)
