@@ -218,6 +218,19 @@ tabla `secretos_instancia` en la revisión `0002` de su cadena.
   `config.json`**: la instancia sigue funcionando con la credencial que
   tiene, y la clave queda listada en `fallaron`.
 
+## [v1.118.0] — El tema de la suite de una instancia: `GET /api/tema` público y `PUT /api/tema` detrás del gate
+
+Sin migración. Fase 2 de 4 del tema por suite (ADR-012; ADR-007 de `libra-ui`).
+
+### Agregado
+
+- `libracore.tema_router`: `build_tema_router()` (`GET /api/tema` → `{"tema": {clave: "#rrggbb"}}`, **sin gate** y con
+  `Cache-Control: no-cache`: el login también va con los colores de la suite) y `build_tema_admin_router()` (`PUT /api/tema`, el tema
+  COMPLETO; `{}` lo borra). El producto monta la escritura con su gate de admin, que deja pasar el token de servicio del backoffice.
+- El tema vive en la clave `tema` del `config.json` de la instancia. Una instancia, un tema: sigue andando igual si el backoffice no responde.
+- Sólo se valida la **forma** (clave de hasta 40 letras y números, valor `#rgb`/`#rrggbb` normalizado a `#rrggbb`, máximo 32 colores;
+  422 si no). La lista de colores editables y el contraste viven en `libra-ui/tema`: no se copian acá.
+
 ## [v1.107.0] — Reabrir día: un admin puede anular un cierre diario, con motivo
 
 Migración de Alembic: `0011_reabrir_cierre_diario`.
