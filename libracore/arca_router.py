@@ -471,8 +471,8 @@ def build_arca_router(
 
         os.makedirs(_certs_dir(), exist_ok=True)
         destino = os.path.join(_certs_dir(), _nombres_de(amb)[1])
-        with open(destino, "wb") as f:
-            f.write(contenido)
+        # 🔴 0600 y no `open(..., "wb")`: ver `escribir_clave_privada`.
+        arca_certificados.escribir_clave_privada(destino, contenido)
         _guardar_path(empresa, amb, clave_path=destino)
         # De la clave no va NADA más que de cuál ambiente es. No hay un dato
         # público equivalente al sujeto del certificado, y el nombre del archivo
