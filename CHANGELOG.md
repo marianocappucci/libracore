@@ -7,11 +7,16 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Sin publicar] — Factura de Crédito Electrónica MiPyME (FCE)
+## [v1.119.0] — Facturación con ARCA: condición del receptor, ticket, letra y FCE MiPyME
+
+Migración de Alembic: `0014_fce_mipyme`. Cuatro cambios, cada uno medido contra ARCA
+homologación el 2026-10-02: lo que sigue es cada uno, del más nuevo al más viejo.
+
+### Factura de Crédito Electrónica MiPyME (FCE)
 
 Migración de Alembic: `0014_fce_mipyme`.
 
-### Agregado
+#### Agregado
 
 - **FCE A, B y C (201, 206, 211) y sus notas de débito y crédito** (202/203,
   207/208, 212/213), por el mismo camino que ya existía: `facturas_router`,
@@ -30,7 +35,7 @@ Migración de Alembic: `0014_fce_mipyme`.
 - `GET /api/facturas/tipos` suma las FCE al selector **sólo si el emisor cargó su
   CBU y su modalidad**. `es_monotributista` no cambia.
 
-### Lo que ARCA exige y se midió
+#### Lo que ARCA exige y se midió
 
 - La FCE manda `FchVtoPago` **aunque el concepto sea Productos** (10163), el CUIT
   del receptor (con consumidor final, 10015), el CBU de 22 dígitos (opcional 2101)
@@ -41,13 +46,13 @@ Migración de Alembic: `0014_fce_mipyme`.
 - Todo lo que falta se valida **antes** de pedir el número (422 en el alta, o un
   error de `arca_wsfe`): el número es fiscal y no se devuelve.
 
-### Cambia
+#### Cambia
 
 - ⚠️ Las FCE se emiten sólo desde `POST /api/facturas`; sus notas, desde la
   factura. `POST /api/facturas` con el tipo de una nota de FCE da 422.
-## [Sin publicar] — La letra de la factura corresponde al receptor
+### La letra de la factura corresponde al receptor
 
-### Corregido
+#### Corregido
 
 - 🔴 Un emisor inscripto le emitía **Factura B a un receptor Monotributista**, y
   ARCA la rechaza (10243): medido en homologación el 2026-10-02, una A al mismo
@@ -59,9 +64,9 @@ Migración de Alembic: `0014_fce_mipyme`.
   letra no corresponde al receptor, en vez de dejar un comprobante numerado y sin
   CAE. Si la condición del cliente es desconocida no se opina.
 
-## [Sin publicar] — Caché del ticket de WSAA
+### Caché del ticket de WSAA
 
-### Corregido
+#### Corregido
 
 - 🔴 `arca_wsaa.autenticar` pedía un ticket nuevo en cada llamada, y WSAA no
   entrega otro mientras haya uno vigente (`coe.alreadyAuthenticated`): se podía
@@ -74,9 +79,9 @@ Migración de Alembic: `0014_fce_mipyme`.
   está en la caché, el error lo explica en vez de repetir el de ARCA.
 - Sin directorio escribible se emite sin caché, como antes.
 - La firma de `autenticar` no cambia; el login crudo pasó a `_pedir_ticket`.
-## [Sin publicar] — WSFE manda la condición de IVA del receptor (RG 5616)
+### WSFE manda la condición de IVA del receptor (RG 5616)
 
-### Corregido
+#### Corregido
 
 - 🔴 `arca_wsfe.solicitar_cae` no mandaba `CondicionIVAReceptorId`, y ARCA
   rechaza el comprobante sin él (error 10246; medido en homologación el
