@@ -25,7 +25,7 @@ esquive.
 """
 from __future__ import annotations
 
-from libracore import config_manager
+from libracore import arca_certificados, config_manager
 from libracore.db import arca_config as db_arca_config
 
 
@@ -46,6 +46,12 @@ def paths_en_disco(config: dict | None, ambiente: str = "") -> tuple[str, str]:
     # conclusión correcta fue que sobraba, no que faltaba un test.
     cfg = config or {}
     amb = ambiente or cfg.get("ambiente") or ""
-    return config_manager.resolve_cert_paths(
+    cert, clave = config_manager.resolve_cert_paths(
         *db_arca_config.paths_de(cfg, amb), ambiente=amb,
     )
+    # 🔴 Las claves guardadas abiertas (644) se cierran acá, que es por donde pasa
+    # toda emisión: así las instancias vivas se corrigen solas al actualizar el
+    # motor, sin un paso manual. Ver `escribir_clave_privada`.
+    if clave:
+        arca_certificados.cerrar_permisos_de_la_clave(clave)
+    return cert, clave

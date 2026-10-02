@@ -208,3 +208,56 @@ def revisar_par_de_archivos(cert_path: str, key_path: str) -> list[str]:
     except ArchivoInvalido as e:
         return [str(e)]
     return revisar_par(certificado, clave)
+
+
+# ── Los permisos de la clave privada ────────────────────────────────────────
+
+
+def escribir_clave_privada(destino: str, contenido: bytes) -> None:
+    """Guarda la clave privada **sólo legible por su dueño** (0600).
+
+    🔴 Hasta el 2026-10-02 la pantalla la escribía con `open(destino, "wb")`, o sea
+    con la umask del proceso: **644, legible por cualquiera dentro del contenedor**
+    (medido en la instancia dev de LibraCargo). El certificado es público; la
+    clave es la identidad fiscal del cliente.
+
+    Se escribe a un temporal creado ya con 0600 y se reemplaza: así **no hay
+    instante con la clave abierta**, y un archivo previo en 644 deja de existir
+    en vez de conservar su modo (que es lo que pasaría abriéndolo con `os.open`
+    sobre el mismo nombre).
+    """
+    import os
+    carpeta = os.path.dirname(destino) or "."
+    tmp = os.path.join(carpeta, f".{os.path.basename(destino)}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(contenido)
+        os.replace(tmp, destino)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def cerrar_permisos_de_la_clave(path: str) -> bool:
+    """Deja en 0600 una clave que ya estaba guardada abierta. `True` si la cambió.
+
+    Existe para las instancias vivas, que ya tienen la clave en 644, y para lo
+    que la reescribe sin pasar por la pantalla (restaurar un ZIP de respaldo, la
+    migración `0008`). **Nunca levanta**: si el archivo es de otro usuario o el
+    volumen no deja, la emisión sigue como estaba, que es mejor que dejarla
+    caída por un permiso.
+    """
+    import os
+    import stat
+    try:
+        modo = stat.S_IMODE(os.stat(path).st_mode)
+        if modo & 0o077:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+            return True
+    except OSError:
+        pass
+    return False

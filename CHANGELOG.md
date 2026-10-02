@@ -7,6 +7,28 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Sin publicar] — La clave privada de ARCA se guarda en 0600
+
+### Corregido
+
+- 🔴 **La clave privada que sube la pantalla quedaba en 644** —legible por cualquiera
+  dentro del contenedor—, porque `arca_router` la escribía con
+  `open(destino, "wb")` y la umask del proceso. Medido en la instancia dev de
+  LibraCargo el 2026-10-02 (clave de homologación); por cómo está el código, lo
+  mismo en todos los productos. El certificado es público; la clave es la
+  identidad fiscal del cliente.
+- `arca_certificados.escribir_clave_privada()`: escribe a un temporal creado ya
+  con 0600 y reemplaza, así **no hay instante con la clave abierta** y una clave
+  previa en 644 deja de existir en vez de conservar su modo.
+- **Las instancias vivas se corrigen solas:** `arca_credenciales.paths_en_disco()`,
+  por donde pasa toda emisión, deja en 0600 una clave que estaba abierta
+  (`cerrar_permisos_de_la_clave`). También cubre lo que reescribe la clave sin pasar
+  por la pantalla (restaurar un ZIP de respaldo). **Nunca levanta**: si el archivo
+  es de otro usuario o el volumen no deja, la emisión sigue como estaba.
+- ⚠️ Si un producto lee la clave con **otro usuario** del contenedor que el dueño
+  del archivo, 0600 se la corta. Con los productos de la familia no pasa (un solo
+  usuario), pero es lo primero a mirar si una emisión empieza a fallar al leerla.
+
 ## [v1.120.0] — El rechazo de ARCA deja de tragarse
 
 Migración de Alembic: `0015_cae_error_en_facturas`.
