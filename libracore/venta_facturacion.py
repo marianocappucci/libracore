@@ -38,7 +38,12 @@ from dataclasses import dataclass
 
 from libracore import config_manager
 from libracore import pdf_generator as pdf_gen
-from libracore.arca_facturacion import ambiente_de, get_next_numero_with_arca, solicitar_cae
+from libracore.arca_facturacion import (
+    ambiente_de,
+    get_next_numero_with_arca,
+    solicitar_cae,
+    tipo_de_comprobante,
+)
 from libracore.db import arca_config as db_arca
 from libracore.db import clients as db_clients
 from libracore.db import facturas as db_facturas
@@ -135,12 +140,8 @@ class PuertoDeVentas:
 
 
 def _tipo_comprobante(emisor_cond: str, cliente_cond: str) -> int:
-    """A/B/C según el emisor, y A sólo si el cliente también es RI."""
-    if emisor_cond == "Monotributista":
-        return 11
-    if cliente_cond in ("Responsable Inscripto", "IVA Responsable Inscripto"):
-        return 1
-    return 6
+    """A/B/C según el emisor y la condición del cliente (ver `tipo_de_comprobante`)."""
+    return tipo_de_comprobante(emisor_cond, cliente_cond)
 
 
 def _armar_items(venta: dict, iva_rate: float) -> tuple[list, float, float, float]:

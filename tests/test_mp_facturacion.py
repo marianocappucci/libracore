@@ -162,6 +162,22 @@ def test_factura_b_separa_el_iva_del_total_cobrado(conn, mp_fact):
     assert round(factura["subtotal"] + factura["iva_amount"], 2) == factura["total"]
 
 
+@pytest.mark.parametrize("condicion, esperado", [
+    ("Monotributista", "Factura A"),          # 🔴 antes salía B y ARCA la rechaza (10243)
+    ("Responsable Inscripto", "Factura A"),
+    ("Consumidor Final", "Factura B"),
+])
+def test_un_emisor_inscripto_elige_a_o_b_segun_el_cliente(conn, mp_fact, condicion, esperado):
+    cfg = {**CFG_MONOTRIBUTO, "empresa_iva_condition": "Responsable Inscripto",
+           "mp_iva_rate": "0.21"}
+    cliente = db_clients.create_client(
+        name="Cliente", email="c@test", cuit_dni="20111111112", iva_condition=condicion)
+    factura_id, _, tipo_lb, _ = _facturar(
+        mp_fact, cfg=cfg, cliente_override=db_clients.get_client(cliente))
+    assert tipo_lb == esperado
+    assert db_facturas.get_factura(factura_id)["tipo"] == {"Factura A": 1, "Factura B": 6}[esperado]
+
+
 # ── El número que se nombra ──────────────────────────────────────────────────
 
 def test_la_caja_nombra_el_numero_que_quedo_no_el_que_se_pidio(
