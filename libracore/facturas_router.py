@@ -812,6 +812,8 @@ def build_comprobantes_router(
         except HTTPException:
             raise
         except Exception as e:
+            # El motivo queda en el comprobante, no sólo en la respuesta de esta request.
+            db_facturas.update_factura_cae_error(factura_id, str(e))
             # 502 y no 500: el que falló es ARCA, no esta aplicación.
             raise HTTPException(502, str(e)) from e
 
