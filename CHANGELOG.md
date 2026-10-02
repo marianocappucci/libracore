@@ -7,7 +7,7 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Sin publicar] — La clave privada de ARCA se guarda en 0600
+## [v1.121.0] — La clave privada de ARCA se guarda en 0600
 
 ### Corregido
 
