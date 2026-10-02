@@ -7,7 +7,7 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Sin publicar] — El rechazo de ARCA deja de tragarse
+## [v1.120.0] — El rechazo de ARCA deja de tragarse
 
 Migración de Alembic: `0015_cae_error_en_facturas`.
 
