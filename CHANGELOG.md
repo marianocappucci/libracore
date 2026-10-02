@@ -7,6 +7,20 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Sin publicar] — La letra de la factura corresponde al receptor
+
+### Corregido
+
+- 🔴 Un emisor inscripto le emitía **Factura B a un receptor Monotributista**, y
+  ARCA la rechaza (10243): medido en homologación el 2026-10-02, una A al mismo
+  receptor sale con CAE. `arca_facturacion.tipo_de_comprobante()` es ahora la
+  regla única: A a inscriptos y monotributistas, B a todos los demás, C si el
+  emisor es monotributista. La usan `venta_facturacion` y `mp_facturacion` (que
+  daba B siempre a un emisor inscripto).
+- La emisión manual (`POST /api/facturas`) responde **422** con el motivo si la
+  letra no corresponde al receptor, en vez de dejar un comprobante numerado y sin
+  CAE. Si la condición del cliente es desconocida no se opina.
+
 ## [Sin publicar] — WSFE manda la condición de IVA del receptor (RG 5616)
 
 ### Corregido

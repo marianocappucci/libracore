@@ -32,6 +32,31 @@ def _mock_cae() -> dict:
     return {"cae": cae, "cae_vto": vto}
 
 
+#: Los receptores a los que ARCA acepta **Factura A** y sólo A (o C): los
+#: inscriptos y los monotributistas. A todos los demás les corresponde B (o C).
+#:
+#: 🔴 **Un monotributista NO recibe B.** Medido contra homologación el
+#: 2026-10-02: una B con receptor Monotributo (6) o Responsable Inscripto (1) se
+#: rechaza con 10243, y una A al mismo receptor sale con CAE. Antes de la
+#: RG 5616 ARCA no miraba esta combinación y el código daba B a todo lo que no
+#: fuera inscripto.
+RECEPTORES_DE_FACTURA_A = frozenset({
+    "Responsable Inscripto", "IVA Responsable Inscripto",
+    "Monotributista", "Responsable Monotributo",
+})
+
+
+def tipo_de_comprobante(emisor_cond: str, receptor_cond: str) -> int:
+    """El tipo de factura que un emisor le emite a un receptor: 1 (A), 6 (B) u 11 (C).
+
+    Un monotributista emite C a cualquiera; uno inscripto emite A al receptor que
+    ARCA acepta con A (`RECEPTORES_DE_FACTURA_A`) y B a todos los demás.
+    """
+    if emisor_cond == "Monotributista":
+        return 11
+    return 1 if receptor_cond in RECEPTORES_DE_FACTURA_A else 6
+
+
 #: Los dos ambientes de ARCA. Cualquier otra cosa no es un ambiente.
 AMBIENTES = ("homologacion", "produccion")
 

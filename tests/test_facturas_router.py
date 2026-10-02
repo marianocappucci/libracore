@@ -855,3 +855,29 @@ def test_sin_SMTP_en_ninguno_de_los_dos_el_400_dice_donde_configurarlo(tmp_path,
     r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "c@example.com"})
     assert r.status_code == 400, r.text
     assert "Configuración → Integraciones" in r.json()["detail"]
+
+
+# ── La letra tiene que corresponder al receptor (medido en ARCA, 10243) ─────
+
+
+@pytest.mark.parametrize("receptor", [
+    "Monotributista", "Responsable Monotributo",
+    "Responsable Inscripto", "IVA Responsable Inscripto",
+])
+def test_una_b_a_un_inscripto_o_monotributista_se_rechaza_antes_de_ir_a_arca(client, receptor):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    r = client.post(API, json=_factura(tipo=6, client_iva=receptor))
+    assert r.status_code == 422 and "Factura A" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("receptor", ["Consumidor Final", "IVA Exento", "No Alcanzado"])
+def test_una_a_a_cualquiera_que_no_sea_inscripto_ni_monotributista_se_rechaza(client, receptor):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    r = client.post(API, json=_factura(tipo=1, client_iva=receptor))
+    assert r.status_code == 422 and "Factura B" in r.json()["detail"]
+
+
+def test_una_a_a_un_monotributista_se_emite(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    r = client.post(API, json=_factura(tipo=1, client_iva="Monotributista"))
+    assert r.status_code == 200, r.text

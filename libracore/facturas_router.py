@@ -60,7 +60,7 @@ from pydantic import BaseModel, ConfigDict
 
 from libracore import arca_credenciales, arca_facturacion, arca_wsaa, arca_wsfe, config_manager, email_sender
 from libracore import pdf_generator as pdf_gen
-from libracore.arca_facturacion import get_next_numero_with_arca, solicitar_cae
+from libracore.arca_facturacion import RECEPTORES_DE_FACTURA_A, get_next_numero_with_arca, solicitar_cae
 from libracore.cobros import MedioNoEsDeCobro, registrar_cobro_factura
 from libracore.db import arca_config as db_arca
 from libracore.db import caja as db_caja
@@ -126,6 +126,25 @@ IVA_CODES = {
 }
 
 PAGE_SIZE = 50
+
+
+def exigir_tipo_valido_para_el_receptor(tipo: int, receptor_cond: str) -> None:
+    """Falla con un 422 legible si ARCA va a rechazar esa letra para ese receptor.
+
+    A inscriptos y monotributistas les corresponde **A**; a todos los demás,
+    **B**. Sin esto la combinación inválida llega a ARCA (error 10243), que ahí
+    rechaza, y el comprobante queda numerado y sin CAE. Si la condición es
+    desconocida no se opina: ahí decide `arca_wsfe.condicion_iva_receptor_id`.
+    """
+    if tipo not in (1, 6) or receptor_cond not in IVA_CODES:
+        return
+    pide_a = receptor_cond in RECEPTORES_DE_FACTURA_A
+    if tipo == 6 and pide_a:
+        raise HTTPException(
+            422, f"A un cliente «{receptor_cond}» le corresponde Factura A, no B.")
+    if tipo == 1 and not pide_a:
+        raise HTTPException(
+            422, f"A un cliente «{receptor_cond}» le corresponde Factura B, no A.")
 
 
 def calcular_totales(items: list[dict], tax_rate: float) -> dict:
@@ -577,6 +596,7 @@ def build_comprobantes_router(
         cliente = _resolve_cliente(payload)
         if not cliente["client_name"]:
             raise HTTPException(422, "El nombre/razón social del cliente es requerido.")
+        exigir_tipo_valido_para_el_receptor(payload.tipo, cliente["client_iva"])
 
         items = [
             {
