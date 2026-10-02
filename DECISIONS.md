@@ -244,7 +244,7 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
 - Contexto: el humano pidió poder cambiar ciertos colores desde el backoffice de cada suite, para todas sus instancias. El backoffice es un
   plano de control: no abre las bases de las instancias y les habla por HTTP con el token de servicio.
 - Decisión: cada instancia **guarda su tema** (`tema` en el `config.json`) y lo sirve en `GET /api/tema`, público. El backoffice lo
-  **empuja** con `PUT /api/tema` (como ya hace con el correo y los usuarios). La SPA lee de su propia instancia al arrancar.
+  **empuja** con `PUT /api/tema` (como ya hace con el correo y los usuarios), con el token de servicio: la guarda del producto tiene que aceptarlo. La SPA lee de su propia instancia al arrancar.
   Se descartó que las SPAs lean del backoffice: ataría cada instancia de cliente a que el control plane esté arriba.
 - La validación es **sólo de forma** (ver `tema_router`): el catálogo de colores y el contraste viven en `libra-ui/tema`, que es la única
   lista. Copiarla a Python sería una segunda copia que se desactualiza sola.

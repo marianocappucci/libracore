@@ -60,7 +60,7 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from libracore import arca_certificados, arca_credenciales, arca_wsaa, config_manager
 from libracore.db import arca_config as db_arca_config
@@ -118,6 +118,27 @@ class ArcaPayload(BaseModel):
     punto_venta: int = Field(default=1, ge=1)
     ambiente: str = "homologacion"
     alias: str = ""
+    #: FCE MiPyME: el CBU del emisor (22 dígitos) y la modalidad de transmisión.
+    #: 🔑 `None` es «no lo toqués» y `""` es «borralo»: una pantalla que no conoce
+    #: la FCE no manda el campo, y no tiene que dejar el CBU en blanco.
+    fce_cbu: str | None = None
+    fce_transmision: str | None = None
+
+    @field_validator("fce_cbu")
+    @classmethod
+    def _cbu(cls, v):
+        v = None if v is None else v.strip()
+        if v and not (len(v) == 22 and v.isdigit()):
+            raise ValueError("El CBU tiene 22 dígitos.")
+        return v
+
+    @field_validator("fce_transmision")
+    @classmethod
+    def _transmision(cls, v):
+        v = None if v is None else v.strip().upper()
+        if v and v not in ("SCA", "ADC"):
+            raise ValueError("La modalidad de transmisión es SCA o ADC.")
+        return v
 
 
 def _resolver(empresa: str) -> dict | None:
@@ -312,6 +333,8 @@ def build_arca_router(
             "punto_venta":      cfg.get("punto_venta", 1),
             "ambiente":         cfg.get("ambiente", "homologacion"),
             "alias":            cfg.get("alias", "") or "",
+            "fce_cbu":          cfg.get("fce_cbu", "") or "",
+            "fce_transmision":  cfg.get("fce_transmision", "") or "",
             # 🔑 El estado de LOS DOS pares, no sólo el del selector. La pantalla
             # tiene que poder decir "ya tenés cargado el de producción" mientras
             # el operador sube el de homologación: sin eso, mover la llave es un
@@ -332,6 +355,7 @@ def build_arca_router(
             db_arca_config.actualizar_arca_config(
                 empresa, cuit=payload.cuit, punto_venta=payload.punto_venta,
                 ambiente=ambiente, alias=payload.alias,
+                fce_cbu=payload.fce_cbu, fce_transmision=payload.fce_transmision,
             )
         else:
             db_arca_config.crear_arca_config(
@@ -339,6 +363,9 @@ def build_arca_router(
                 clave_path="", certificado_path="", ambiente=ambiente,
                 alias=payload.alias,
             )
+            if payload.fce_cbu or payload.fce_transmision:
+                db_arca_config.actualizar_arca_config(
+                    empresa, fce_cbu=payload.fce_cbu, fce_transmision=payload.fce_transmision)
         _avisar("configurar", {
             "empresa": empresa, "cuit": payload.cuit,
             "punto_venta": payload.punto_venta, "ambiente": ambiente,
@@ -444,8 +471,8 @@ def build_arca_router(
 
         os.makedirs(_certs_dir(), exist_ok=True)
         destino = os.path.join(_certs_dir(), _nombres_de(amb)[1])
-        with open(destino, "wb") as f:
-            f.write(contenido)
+        # 🔴 0600 y no `open(..., "wb")`: ver `escribir_clave_privada`.
+        arca_certificados.escribir_clave_privada(destino, contenido)
         _guardar_path(empresa, amb, clave_path=destino)
         # De la clave no va NADA más que de cuál ambiente es. No hay un dato
         # público equivalente al sujeto del certificado, y el nombre del archivo

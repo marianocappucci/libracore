@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (376)
+## tablas (383)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -11,6 +11,8 @@ arca_config|clave_path|TEXT|NN|
 arca_config|created_at|TEXT||datetime('now','-3 hours')
 arca_config|cuit|TEXT|NN|
 arca_config|empresa|TEXT|NN|
+arca_config|fce_cbu|TEXT|NN|''
+arca_config|fce_transmision|TEXT|NN|''
 arca_config|id|INTEGER||
 arca_config|punto_venta|INTEGER|NN|
 arca_config|updated_at|TEXT||datetime('now','-3 hours')
@@ -162,8 +164,10 @@ facturacion_alias|id|INTEGER||
 facturacion_alias|tipo|TEXT|NN|
 facturacion_alias|valor|TEXT|NN|
 facturas|ambiente|TEXT|NN|'produccion'
+facturas|cae_error|TEXT|NN|''
 facturas|cae_vto|TEXT||
 facturas|cae|TEXT||
+facturas|cbte_asoc_fecha|TEXT|NN|''
 facturas|cbte_asoc_nro|INTEGER||0
 facturas|cbte_asoc_pv|INTEGER||0
 facturas|cbte_asoc_tipo|INTEGER||0
@@ -174,6 +178,9 @@ facturas|cliente_razon|TEXT||
 facturas|concepto|INTEGER|NN|1
 facturas|condicion_venta|TEXT||''
 facturas|created_at|TEXT||datetime('now','-3 hours')
+facturas|fce_anulacion|TEXT|NN|''
+facturas|fce_cbu|TEXT|NN|''
+facturas|fce_transmision|TEXT|NN|''
 facturas|fch_serv_desde|TEXT||''
 facturas|fch_serv_hasta|TEXT||''
 facturas|fch_vto_pago|TEXT||''

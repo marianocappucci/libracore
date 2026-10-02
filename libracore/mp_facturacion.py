@@ -168,6 +168,10 @@ async def generar_factura_mp(
 
     iva_cond = cfg.get("empresa_iva_condition", "Monotributista")
     tipo = TIPO_POR_CONDICION.get(iva_cond, 11)
+    if iva_cond == "Responsable Inscripto":
+        # Inscripto: A o B según a quién se le factura, no siempre B.
+        tipo = arca_facturacion.tipo_de_comprobante(
+            iva_cond, client.get("iva_condition", "Consumidor Final"))
     subtotal, iva_amount, total = _importes(monto, tipo, cfg)
 
     descripcion = (

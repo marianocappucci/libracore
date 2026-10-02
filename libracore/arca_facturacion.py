@@ -32,6 +32,31 @@ def _mock_cae() -> dict:
     return {"cae": cae, "cae_vto": vto}
 
 
+#: Los receptores a los que ARCA acepta **Factura A** y sólo A (o C): los
+#: inscriptos y los monotributistas. A todos los demás les corresponde B (o C).
+#:
+#: 🔴 **Un monotributista NO recibe B.** Medido contra homologación el
+#: 2026-10-02: una B con receptor Monotributo (6) o Responsable Inscripto (1) se
+#: rechaza con 10243, y una A al mismo receptor sale con CAE. Antes de la
+#: RG 5616 ARCA no miraba esta combinación y el código daba B a todo lo que no
+#: fuera inscripto.
+RECEPTORES_DE_FACTURA_A = frozenset({
+    "Responsable Inscripto", "IVA Responsable Inscripto",
+    "Monotributista", "Responsable Monotributo",
+})
+
+
+def tipo_de_comprobante(emisor_cond: str, receptor_cond: str) -> int:
+    """El tipo de factura que un emisor le emite a un receptor: 1 (A), 6 (B) u 11 (C).
+
+    Un monotributista emite C a cualquiera; uno inscripto emite A al receptor que
+    ARCA acepta con A (`RECEPTORES_DE_FACTURA_A`) y B a todos los demás.
+    """
+    if emisor_cond == "Monotributista":
+        return 11
+    return 1 if receptor_cond in RECEPTORES_DE_FACTURA_A else 6
+
+
 #: Los dos ambientes de ARCA. Cualquier otra cosa no es un ambiente.
 AMBIENTES = ("homologacion", "produccion")
 
@@ -60,6 +85,13 @@ def ambiente_de(arca) -> str:
         if ambiente in AMBIENTES:
             return ambiente
     return "produccion"
+
+
+#: Cuando no hay ticket de ARCA pese a estar configurada; el motivo concreto está en el log.
+MOTIVO_SIN_TICKET = (
+    "No se pudo autenticar ni pedir el número a ARCA (certificado, conexión o "
+    "servicio caído); el comprobante quedó con numeración local y sin CAE."
+)
 
 
 async def get_next_numero_with_arca(punto_venta: int, tipo: int):
@@ -123,8 +155,14 @@ async def solicitar_cae(factura_id: int, factura: dict, ta, arca) -> dict:
         db_facturas.update_factura_cae(factura_id, mock["cae"], mock["cae_vto"])
         return db_facturas.get_factura(factura_id)
 
+    if arca and not ta:
+        # ARCA está configurada y no hubo ticket: falló la autenticación o el
+        # pedido del número (`get_next_numero_with_arca` lo registró en el log y
+        # cayó a numeración local). Sin esto el comprobante queda sin CAE y mudo.
+        db_facturas.update_factura_cae_error(factura_id, MOTIVO_SIN_TICKET)
+        return db_facturas.get_factura(factura_id)
     if not (ta and arca):
-        return factura
+        return factura   # una instancia sin ARCA: no hay CAE que pedir
 
     try:
         cae_data = await arca_wsfe.solicitar_cae(
@@ -134,4 +172,9 @@ async def solicitar_cae(factura_id: int, factura: dict, ta, arca) -> dict:
         return db_facturas.get_factura(factura_id)
     except Exception as e:
         logger.error("Error al solicitar CAE para factura %s: %s", factura_id, e)
-        return factura
+        # 🔴 **No se relanza**: el comprobante ya existe y quien llama sigue con el
+        # cobro o con el vínculo a la venta; levantar acá dejaría un cobro sin
+        # factura o una factura huérfana. Se guarda el motivo en la factura, que
+        # es lo que ven la pantalla y el reintento (`/autorizar`).
+        db_facturas.update_factura_cae_error(factura_id, str(e))
+        return db_facturas.get_factura(factura_id)

@@ -855,3 +855,112 @@ def test_sin_SMTP_en_ninguno_de_los_dos_el_400_dice_donde_configurarlo(tmp_path,
     r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "c@example.com"})
     assert r.status_code == 400, r.text
     assert "Configuración → Integraciones" in r.json()["detail"]
+
+
+# ── FCE MiPyME ──────────────────────────────────────────────────────────────
+
+CBU = "0" * 22
+EMPRESA = {"cuit": "20123456789", "punto_venta": 1}
+
+
+def _habilitar_fce(**extra):
+    """El emisor con su CBU y modalidad cargados, que es lo que habilita la FCE."""
+    from libracore.db import arca_config as db_arca
+    db_arca.crear_arca_config(
+        empresa="x", cuit="20123456789", punto_venta=1,
+        clave_path="", certificado_path="", ambiente="homologacion")
+    db_arca.actualizar_arca_config(
+        "x", fce_cbu=extra.get("fce_cbu", CBU), fce_transmision=extra.get("fce_transmision", "SCA"))
+
+
+def _fce(**extra):
+    return _factura(tipo=201, client_iva="Responsable Inscripto", client_cuit="30709332852",
+                    fch_vto_pago="2026-09-30", **extra)
+
+
+def test_la_fce_aparece_en_el_selector_sólo_si_el_emisor_cargó_su_cbu(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    assert [t["value"] for t in client.get(f"{API}/tipos").json()["tipos"]] == [1, 6]
+    _habilitar_fce()
+    datos = client.get(f"{API}/tipos").json()
+    assert [t["value"] for t in datos["tipos"]] == [1, 6, 201, 206]
+    # el selector común no cambia lo que la pantalla decide con `es_monotributista`
+    assert datos["es_monotributista"] is False
+
+
+def test_emitir_una_fce_guarda_el_cbu_con_el_que_salio(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce()
+    factura = _emitir(client, **_fce())
+    assert factura["tipo"] == 201 and factura["cae"]
+    from libracore.db import facturas as db_facturas
+    guardada = db_facturas.get_factura(factura["id"])
+    assert guardada["fce_cbu"] == CBU and guardada["fce_transmision"] == "SCA"
+    assert guardada["fch_vto_pago"] == "2026-09-30"
+
+
+def test_una_fce_sin_cbu_cargado_se_rechaza_antes_de_gastar_un_numero(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    r = client.post(API, json=_fce())
+    assert r.status_code == 422 and "CBU" in r.json()["detail"]
+    assert client.get(API).json()["total"] == 0
+
+
+def test_una_fce_sin_vencimiento_o_sin_cuit_se_rechaza(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce()
+    r = client.post(API, json={**_fce(), "fch_vto_pago": ""})
+    assert r.status_code == 422 and "vencimiento" in r.json()["detail"]
+    r = client.post(API, json={**_fce(), "client_cuit": ""})
+    assert r.status_code == 422 and "CUIT" in r.json()["detail"]
+
+
+def test_la_nota_de_credito_de_una_fce_es_una_nota_de_fce_con_la_fecha_del_asociado(client):
+    from libracore.db import facturas as db_facturas
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce()
+    original = _emitir(client, **_fce())
+    nota = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).json()
+    guardada = db_facturas.get_factura(nota["id"])
+    assert guardada["tipo"] == 203
+    assert guardada["cbte_asoc_tipo"] == 201
+    assert guardada["cbte_asoc_fecha"] == original["fecha"]
+    assert guardada["fce_anulacion"] == "N"
+    nd = client.post(f"{API}/{original['id']}/nota-debito", headers=ADMIN).json()
+    assert db_facturas.get_factura(nd["id"])["tipo"] == 202
+
+
+def test_las_notas_de_una_fce_no_se_emiten_desde_el_alta(client):
+    r = client.post(API, json=_factura(tipo=203))
+    assert r.status_code == 422
+# ── La letra tiene que corresponder al receptor (medido en ARCA, 10243) ─────
+
+
+@pytest.mark.parametrize("receptor", [
+    "Monotributista", "Responsable Monotributo",
+    "Responsable Inscripto", "IVA Responsable Inscripto",
+])
+def test_una_b_a_un_inscripto_o_monotributista_se_rechaza_antes_de_ir_a_arca(client, receptor):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    r = client.post(API, json=_factura(tipo=6, client_iva=receptor))
+    assert r.status_code == 422 and "Factura A" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("receptor", ["Consumidor Final", "IVA Exento", "No Alcanzado"])
+def test_una_a_a_cualquiera_que_no_sea_inscripto_ni_monotributista_se_rechaza(client, receptor):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    r = client.post(API, json=_factura(tipo=1, client_iva=receptor))
+    assert r.status_code == 422 and "Factura B" in r.json()["detail"]
+
+
+def test_una_a_a_un_monotributista_se_emite(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    r = client.post(API, json=_factura(tipo=1, client_iva="Monotributista"))
+    assert r.status_code == 200, r.text
+
+
+def test_una_fce_b_a_un_inscripto_se_rechaza_igual_que_una_b_comun(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce()
+    r = client.post(API, json={**_fce(), "tipo": 206})   # el cliente de _fce es Responsable Inscripto
+    assert r.status_code == 422 and "Factura A" in r.json()["detail"]

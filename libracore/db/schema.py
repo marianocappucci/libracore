@@ -876,7 +876,27 @@ def init_core_schema(conn: Conexion):
                 f"ALTER TABLE arca_config ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''"
             )
 
+    # FCE MiPyME. El CBU y la modalidad de transmisión (SCA/ADC) son del EMISOR:
+    # viven en su config de ARCA y se copian a cada FCE al emitirla, para que el
+    # comprobante diga con qué CBU se emitió aunque la config cambie después.
+    for columna in ("fce_cbu", "fce_transmision"):
+        if columna not in cols_arca:
+            conn.execute(
+                f"ALTER TABLE arca_config ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''"
+            )
+
     cols_f = [r[1] for r in conn.execute("PRAGMA table_info(facturas)").fetchall()]
+    # Lo propio de una FCE: lo que ARCA exige y no tenía dónde guardarse. La
+    # fecha del asociado la pide una nota de FCE (error 10158); `fce_anulacion`
+    # es `S`/`N` y sólo lo llevan las notas.
+    for columna in ("fce_cbu", "fce_transmision", "fce_anulacion", "cbte_asoc_fecha"):
+        if columna not in cols_f:
+            conn.execute(f"ALTER TABLE facturas ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''")
+    # 🔴 Por qué ARCA no dio CAE. Antes el rechazo sólo iba al log del servidor y
+    # el comprobante quedaba numerado y sin CAE sin que nadie lo viera. `''` es
+    # «sin error»: lo borra un CAE obtenido, con `update_factura_cae`.
+    if "cae_error" not in cols_f:
+        conn.execute("ALTER TABLE facturas ADD COLUMN cae_error TEXT NOT NULL DEFAULT ''")
     if "ambiente" not in cols_f:
         conn.execute(
             "ALTER TABLE facturas ADD COLUMN ambiente TEXT NOT NULL DEFAULT 'produccion' "

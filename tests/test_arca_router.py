@@ -425,3 +425,63 @@ def test_el_control__sin_declararlo_sigue_siendo_default(client):
     arriba y les crearia la fila con el nombre de otro producto."""
     r = client.put("/config/arca", headers=ADMIN, json={"cuit": "30111111118", "punto_venta": 3})
     assert r.json()["empresa"] == "default"
+
+
+# ── FCE MiPyME: el CBU y la modalidad ───────────────────────────────────────
+
+
+def test_el_cbu_y_la_modalidad_se_guardan_y_un_put_sin_ellos_no_los_borra(client):
+    base = {"empresa": "default", "cuit": "20289933604", "punto_venta": 1,
+            "ambiente": "homologacion"}
+    client.put("/config/arca", headers=ADMIN,
+               json={**base, "fce_cbu": "0" * 22, "fce_transmision": "sca"})
+    # 🔑 una pantalla que no conoce la FCE manda el PUT sin esos campos
+    leido = client.put("/config/arca", headers=ADMIN, json=base).json()
+    assert leido["fce_cbu"] == "0" * 22 and leido["fce_transmision"] == "SCA"
+    # y `""` sí es «borralo»
+    borrado = client.put("/config/arca", headers=ADMIN, json={**base, "fce_cbu": ""}).json()
+    assert borrado["fce_cbu"] == ""
+
+
+@pytest.mark.parametrize("campo, valor", [("fce_cbu", "123"), ("fce_cbu", "x" * 22),
+                                          ("fce_transmision", "XYZ")])
+def test_un_cbu_o_una_modalidad_invalidos_se_rechazan(client, campo, valor):
+    r = client.put("/config/arca", headers=ADMIN, json={
+        "empresa": "default", "cuit": "20289933604", "punto_venta": 1, campo: valor})
+    assert r.status_code == 422
+
+
+# ── La clave privada no se guarda legible por cualquiera ────────────────────
+
+
+def _modo(path) -> int:
+    import stat
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+def test_la_clave_subida_queda_en_0600_y_el_certificado_no_hace_falta_cerrarlo(client, tmp_path):
+    """🔴 Medido en dev de LibraCargo: la clave quedaba en 644 (la umask del proceso),
+    legible por cualquiera dentro del contenedor."""
+    certificado, clave = _bytes_de(tmp_path)
+    _subir_cert(client, certificado)
+    leido = _subir_clave(client, clave).json()
+    assert _modo(leido["clave_path"]) == 0o600
+    assert open(leido["clave_path"], "rb").read() == clave
+
+
+def test_subir_la_clave_sobre_una_que_estaba_abierta_la_deja_en_0600(client, tmp_path):
+    """Las instancias vivas ya tienen el archivo en 644: reescribirlo con
+    `os.open(..., 0o600)` sobre el mismo nombre CONSERVARÍA ese modo."""
+    certificado, clave = _bytes_de(tmp_path)
+    _subir_cert(client, certificado)
+    ruta = _subir_clave(client, clave).json()["clave_path"]
+    os.chmod(ruta, 0o644)
+    assert _subir_clave(client, clave).status_code == 200
+    assert _modo(ruta) == 0o600
+
+
+def test_subir_la_clave_no_deja_temporales_en_el_volumen(client, tmp_path):
+    certificado, clave = _bytes_de(tmp_path)
+    _subir_cert(client, certificado)
+    ruta = _subir_clave(client, clave).json()["clave_path"]
+    assert [n for n in os.listdir(os.path.dirname(ruta)) if n.endswith(".tmp")] == []

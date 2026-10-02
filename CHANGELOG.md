@@ -7,6 +7,138 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.121.0] — La clave privada de ARCA se guarda en 0600
+
+### Corregido
+
+- 🔴 **La clave privada que sube la pantalla quedaba en 644** —legible por cualquiera
+  dentro del contenedor—, porque `arca_router` la escribía con
+  `open(destino, "wb")` y la umask del proceso. Medido en la instancia dev de
+  LibraCargo el 2026-10-02 (clave de homologación); por cómo está el código, lo
+  mismo en todos los productos. El certificado es público; la clave es la
+  identidad fiscal del cliente.
+- `arca_certificados.escribir_clave_privada()`: escribe a un temporal creado ya
+  con 0600 y reemplaza, así **no hay instante con la clave abierta** y una clave
+  previa en 644 deja de existir en vez de conservar su modo.
+- **Las instancias vivas se corrigen solas:** `arca_credenciales.paths_en_disco()`,
+  por donde pasa toda emisión, deja en 0600 una clave que estaba abierta
+  (`cerrar_permisos_de_la_clave`). También cubre lo que reescribe la clave sin pasar
+  por la pantalla (restaurar un ZIP de respaldo). **Nunca levanta**: si el archivo
+  es de otro usuario o el volumen no deja, la emisión sigue como estaba.
+- ⚠️ Si un producto lee la clave con **otro usuario** del contenedor que el dueño
+  del archivo, 0600 se la corta. Con los productos de la familia no pasa (un solo
+  usuario), pero es lo primero a mirar si una emisión empieza a fallar al leerla.
+
+## [v1.120.0] — El rechazo de ARCA deja de tragarse
+
+Migración de Alembic: `0015_cae_error_en_facturas`.
+
+### Corregido
+
+- 🔴 `arca_facturacion.solicitar_cae` tragaba el rechazo de ARCA —sólo
+  `logger.error`— y devolvía la factura numerada, cobrada y **sin CAE, sin que
+  nadie lo viera**. Medido en producción el 2026-10-02: hoy no hay ninguna así,
+  pero el día que ARCA exija algo (pasó con `CondicionIVAReceptorId` en
+  homologación) quedarían todas en silencio.
+- **No levanta la excepción, a propósito**: en los tres caminos que lo llaman
+  (alta manual y notas, ventas, MercadoPago) el comprobante ya está numerado y se
+  sigue con el cobro o el vínculo a la venta; relanzar dejaría un cobro sin
+  factura o una factura huérfana. Lo que hace es **guardar el motivo en la
+  factura**: `facturas.cae_error`, que viaja en el comprobante (alta, detalle,
+  listado) y lo ve cualquier pantalla. Lo borra un CAE obtenido; el reintento
+  (`POST /api/facturas/{id}/autorizar`) también lo deja anotado si vuelve a fallar.
+- Con ARCA configurada y sin ticket (falló la autenticación o el pedido del
+  número, y se numeró local) la factura queda con un motivo genérico
+  (`MOTIVO_SIN_TICKET`); el concreto sigue en el log. Una instancia **sin** ARCA no
+  muestra error: no hay CAE que pedir.
+
+## [v1.119.0] — Facturación con ARCA: condición del receptor, ticket, letra y FCE MiPyME
+
+Migración de Alembic: `0014_fce_mipyme`. Cuatro cambios, cada uno medido contra ARCA
+homologación el 2026-10-02: lo que sigue es cada uno, del más nuevo al más viejo.
+
+### Factura de Crédito Electrónica MiPyME (FCE)
+
+Migración de Alembic: `0014_fce_mipyme`.
+
+#### Agregado
+
+- **FCE A, B y C (201, 206, 211) y sus notas de débito y crédito** (202/203,
+  207/208, 212/213), por el mismo camino que ya existía: `facturas_router`,
+  `arca_facturacion` y `arca_wsfe`. **Sin pantallas nuevas.** Probado contra
+  ARCA homologación el 2026-10-02: alta, nota de crédito y nota de débito con CAE
+  por el router real.
+- `libracore.tipos_comprobante`: los tipos (facturas, notas, FCE, clase C, la
+  letra y de qué factura sale qué nota) **en un solo lugar**. Reemplaza las
+  copias de `(1, 6, 11)` / `(3, 8, 13)` de `db.facturas`, `db.resumen`,
+  `db.dashboard`, `db.cuenta_corriente`, `libros_iva` y `pdf_generator`: una FCE
+  que falta en una de esas consultas desaparece de ese listado sin error.
+- `arca_config.fce_cbu` y `fce_transmision` (`SCA` o `ADC`), editables por
+  `PUT /config/arca` (`None` = no lo toqués, `""` = borralo: un cliente de la API
+  que no conoce la FCE no borra el CBU). `facturas` suma `fce_cbu`,
+  `fce_transmision`, `fce_anulacion` y `cbte_asoc_fecha`.
+- `GET /api/facturas/tipos` suma las FCE al selector **sólo si el emisor cargó su
+  CBU y su modalidad**. `es_monotributista` no cambia.
+
+#### Lo que ARCA exige y se midió
+
+- La FCE manda `FchVtoPago` **aunque el concepto sea Productos** (10163), el CUIT
+  del receptor (con consumidor final, 10015), el CBU de 22 dígitos (opcional 2101)
+  y la modalidad de transmisión (opcional 27, 10216).
+- Una nota de FCE manda **la fecha del comprobante asociado** (10158) y **sólo** el
+  opcional 22 (`S`/`N`): con el CBU o el 27, 10172. La nota sale con `N`; `S` sólo
+  lo acepta ARCA si el comprador rechazó la factura (10154).
+- Todo lo que falta se valida **antes** de pedir el número (422 en el alta, o un
+  error de `arca_wsfe`): el número es fiscal y no se devuelve.
+
+#### Cambia
+
+- ⚠️ Las FCE se emiten sólo desde `POST /api/facturas`; sus notas, desde la
+  factura. `POST /api/facturas` con el tipo de una nota de FCE da 422.
+### La letra de la factura corresponde al receptor
+
+#### Corregido
+
+- 🔴 Un emisor inscripto le emitía **Factura B a un receptor Monotributista**, y
+  ARCA la rechaza (10243): medido en homologación el 2026-10-02, una A al mismo
+  receptor sale con CAE. `arca_facturacion.tipo_de_comprobante()` es ahora la
+  regla única: A a inscriptos y monotributistas, B a todos los demás, C si el
+  emisor es monotributista. La usan `venta_facturacion` y `mp_facturacion` (que
+  daba B siempre a un emisor inscripto).
+- La emisión manual (`POST /api/facturas`) responde **422** con el motivo si la
+  letra no corresponde al receptor, en vez de dejar un comprobante numerado y sin
+  CAE. Si la condición del cliente es desconocida no se opina.
+
+### Caché del ticket de WSAA
+
+#### Corregido
+
+- 🔴 `arca_wsaa.autenticar` pedía un ticket nuevo en cada llamada, y WSAA no
+  entrega otro mientras haya uno vigente (`coe.alreadyAuthenticated`): se podía
+  emitir **una factura cada 12 horas** por certificado y servicio. Ahora el
+  ticket se guarda en `ARCA_TA_DIR` (por defecto `$DATA_DIR/arca_ta`), con
+  permisos 0600, **una entrada por ambiente + servicio + huella del
+  certificado**, y se reusa hasta 5 minutos antes de vencer.
+- Es compartida entre workers (archivo, no memoria) y un `flock` evita dos
+  logins simultáneos. Si ARCA contesta `alreadyAuthenticated` y el ticket no
+  está en la caché, el error lo explica en vez de repetir el de ARCA.
+- Sin directorio escribible se emite sin caché, como antes.
+- La firma de `autenticar` no cambia; el login crudo pasó a `_pedir_ticket`.
+### WSFE manda la condición de IVA del receptor (RG 5616)
+
+#### Corregido
+
+- 🔴 `arca_wsfe.solicitar_cae` no mandaba `CondicionIVAReceptorId`, y ARCA
+  rechaza el comprobante sin él (error 10246; medido en homologación el
+  2026-10-02). Ahora sale de `cliente_iva_cond` con
+  `arca_wsfe.condicion_iva_receptor_id()`: traduce el código de la base al de
+  ARCA (el `3` «No Responsable» pasa a `15` «No Alcanzado»), acepta los ids de
+  ARCA tal cual, y **sin condición falla con un mensaje claro** —sólo infiere
+  consumidor final cuando el comprobante no lleva CUIT y no es un A—. No hay
+  valor por defecto silencioso.
+- ⚠️ Un comprobante con CUIT del receptor y sin condición cargada, que antes se
+  emitía, ahora no obtiene CAE hasta cargarla en la ficha del cliente.
+
 ## [v1.117.0] — Un pago a cuenta se aplica a facturas y se da de baja limpio
 
 Migración `0013`: agrega `caja_movimientos.cc_pago_id` (nullable, sin FK). **No baja** (patrón de la
@@ -226,7 +358,8 @@ Sin migración. Fase 2 de 4 del tema por suite (ADR-012; ADR-007 de `libra-ui`).
 
 - `libracore.tema_router`: `build_tema_router()` (`GET /api/tema` → `{"tema": {clave: "#rrggbb"}}`, **sin gate** y con
   `Cache-Control: no-cache`: el login también va con los colores de la suite) y `build_tema_admin_router()` (`PUT /api/tema`, el tema
-  COMPLETO; `{}` lo borra). El producto monta la escritura con su gate de admin, que deja pasar el token de servicio del backoffice.
+  COMPLETO; `{}` lo borra). El producto monta la escritura con su gate de admin, **que tiene que aceptar también el token de servicio del backoffice** (en VentaLibra,
+  `requiere_o_servicio("config")`; con `requiere("config")` a secas el backoffice no entra).
 - El tema vive en la clave `tema` del `config.json` de la instancia. Una instancia, un tema: sigue andando igual si el backoffice no responde.
 - Sólo se valida la **forma** (clave de hasta 40 letras y números, valor `#rgb`/`#rrggbb` normalizado a `#rrggbb`, máximo 32 colores;
   422 si no). La lista de colores editables y el contraste viven en `libra-ui/tema`: no se copian acá.

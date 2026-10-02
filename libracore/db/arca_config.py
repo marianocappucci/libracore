@@ -81,7 +81,8 @@ def obtener_todas_arca_configs():
 def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None,
                           certificado_path=None, ambiente=None, alias=None,
                           clave_path_homologacion=None,
-                          certificado_path_homologacion=None):
+                          certificado_path_homologacion=None,
+                          fce_cbu=None, fce_transmision=None):
     """Actualiza configuración ARCA."""
     with get_connection() as conn:
         config = obtener_arca_config(empresa)
@@ -93,6 +94,7 @@ def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None
                SET cuit=?, punto_venta=?, clave_path=?, certificado_path=?,
                    ambiente=?, alias=?,
                    clave_path_homologacion=?, certificado_path_homologacion=?,
+                   fce_cbu=?, fce_transmision=?,
                    updated_at=datetime('now','-3 hours')
                WHERE empresa=?""",
             (
@@ -108,6 +110,11 @@ def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None
                  else config.get("clave_path_homologacion") or ""),
                 (certificado_path_homologacion if certificado_path_homologacion is not None
                  else config.get("certificado_path_homologacion") or ""),
+                # Igual: `None` es «no lo toqués», así que un PUT de la pantalla
+                # que no conoce la FCE no borra el CBU que ya estaba.
+                fce_cbu if fce_cbu is not None else config.get("fce_cbu") or "",
+                (fce_transmision if fce_transmision is not None
+                 else config.get("fce_transmision") or ""),
                 empresa,
             ),
         )

@@ -15,12 +15,13 @@ el numero real puede ser cualquiera — seria el tope, no el dato.
 
 Ver wiki/analyses/panel-del-dueno-multisucursal.md.
 """
+from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
 #: Los tipos que son factura. Las notas de credito y debito quedan afuera de
 #  "facturado": restan o suman por otro lado y mezclarlas infla el numero.
-TIPOS_FACTURA = (1, 6, 11)
+TIPOS_FACTURA = tipos.FACTURAS
 
 
 def get_resumen_core(desde: str, hasta: str) -> dict:
