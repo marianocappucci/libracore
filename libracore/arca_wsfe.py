@@ -19,6 +19,47 @@ _NS = "http://ar.gov.afip.dif.FEV1/"
 _IVA_ID = {0: 3, 10: 4, 10.5: 4, 21: 5, 27: 6}
 
 
+#: `cliente_iva_cond` —el código con que la familia guarda la condición del
+#: receptor— → `CondicionIVAReceptorId` de ARCA (RG 5616).
+#:
+#: 🔴 **No son la misma tabla.** El `3` de la base es «IVA No Responsable» y
+#: **ARCA ya no lo acepta como receptor**: «IVA No Alcanzado» es el `15`. Pasar
+#: el código de la base derecho manda un id que ARCA rechaza.
+_RECEPTOR_POR_COD = {1: 1, 3: 15, 4: 4, 5: 5, 6: 6}
+#: Ids que ARCA reconoce y que la base nunca guardó: se aceptan tal cual.
+_RECEPTOR_ARCA = {1, 4, 5, 6, 7, 8, 9, 10, 13, 15, 16}
+#: Los comprobantes A (y FCE A): sólo se le emiten a inscriptos y monotributistas.
+_TIPOS_A = {1, 2, 3, 201, 202, 203}
+
+
+def condicion_iva_receptor_id(factura: dict) -> int:
+    """El `CondicionIVAReceptorId` que ARCA exige en cada comprobante.
+
+    🔴 **Desde la RG 5616 el WSFE rechaza el comprobante sin este dato.** Antes
+    no se mandaba y alcanzaba.
+
+    Sin condición guardada sólo se infiere donde no hay duda: un comprobante
+    **sin CUIT del receptor** (DocTipo 99) es consumidor final. Con CUIT, o con
+    un A, **no se adivina** —podría ser inscripto, monotributista, exento— y
+    falla acá con un mensaje que dice qué hacer, en vez de mandar un dato
+    inventado o dejar que ARCA conteste con un código. No hay valor por
+    defecto silencioso.
+    """
+    cod = int(factura.get("cliente_iva_cond") or 0)
+    if cod in _RECEPTOR_POR_COD:
+        return _RECEPTOR_POR_COD[cod]
+    if cod in _RECEPTOR_ARCA:
+        return cod
+    cuit = (factura.get("cliente_cuit") or "").replace("-", "").replace(" ", "")
+    tiene_cuit = len(cuit) == 11 and cuit.isdigit()
+    if not tiene_cuit and int(factura.get("tipo") or 0) not in _TIPOS_A:
+        return 5
+    raise RuntimeError(
+        "WSFE: falta la condición de IVA del cliente, que ARCA exige en cada "
+        "comprobante (RG 5616). Cargala en la ficha del cliente."
+    )
+
+
 def _ssl_ctx():
     """SSL context que acepta los parámetros DH legacy de los servidores ARCA."""
     ctx = ssl.create_default_context()
@@ -183,6 +224,7 @@ async def solicitar_cae(
         + f"<ImpIVA>{imp_iva}</ImpIVA>"
         + "<ImpTrib>0.00</ImpTrib>"
         + "<MonId>PES</MonId><MonCotiz>1</MonCotiz>"
+        + f"<CondicionIVAReceptorId>{condicion_iva_receptor_id(factura)}</CondicionIVAReceptorId>"
         + iva_block
         + _cbte_asoc_block(factura, empresa_cuit)
         + "</FECAEDetRequest></FeDetReq></FeCAEReq>"

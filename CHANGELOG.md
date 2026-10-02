@@ -22,6 +22,20 @@ del ecosistema.
   está en la caché, el error lo explica en vez de repetir el de ARCA.
 - Sin directorio escribible se emite sin caché, como antes.
 - La firma de `autenticar` no cambia; el login crudo pasó a `_pedir_ticket`.
+## [Sin publicar] — WSFE manda la condición de IVA del receptor (RG 5616)
+
+### Corregido
+
+- 🔴 `arca_wsfe.solicitar_cae` no mandaba `CondicionIVAReceptorId`, y ARCA
+  rechaza el comprobante sin él (error 10246; medido en homologación el
+  2026-10-02). Ahora sale de `cliente_iva_cond` con
+  `arca_wsfe.condicion_iva_receptor_id()`: traduce el código de la base al de
+  ARCA (el `3` «No Responsable» pasa a `15` «No Alcanzado»), acepta los ids de
+  ARCA tal cual, y **sin condición falla con un mensaje claro** —sólo infiere
+  consumidor final cuando el comprobante no lleva CUIT y no es un A—. No hay
+  valor por defecto silencioso.
+- ⚠️ Un comprobante con CUIT del receptor y sin condición cargada, que antes se
+  emitía, ahora no obtiene CAE hasta cargarla en la ficha del cliente.
 
 ## [v1.117.0] — Un pago a cuenta se aplica a facturas y se da de baja limpio
 

@@ -93,6 +93,7 @@ def _factura_base(**overrides):
         "iva_amount": 21.0,
         "total": 121.0,
         "cliente_cuit": "20123456789",
+        "cliente_iva_cond": 5,
     }
     factura.update(overrides)
     return factura
@@ -156,3 +157,48 @@ def test_solicitar_cae_tipo_c_no_lleva_iva(monkeypatch):
     )
     assert "<Iva>" not in captured["body"]
     assert "<ImpOpEx>0.00</ImpOpEx>" in captured["body"]
+
+
+# ── Condición de IVA del receptor (RG 5616) ─────────────────────────────────
+
+
+@pytest.mark.parametrize("cod, esperado", [
+    (1, 1), (4, 4), (5, 5), (6, 6),
+    (3, 15),    # «IVA No Responsable» de la base → «No Alcanzado» de ARCA
+    (13, 13),   # un id de ARCA que la base nunca guardó pasa tal cual
+])
+def test_condicion_receptor_traduce_el_codigo_de_la_base(cod, esperado):
+    assert arca_wsfe.condicion_iva_receptor_id(
+        _factura_base(tipo=1, cliente_iva_cond=cod)) == esperado
+
+
+@pytest.mark.parametrize("cond", [0, None])
+def test_sin_cuit_ni_condicion_un_b_o_c_va_a_consumidor_final(cond):
+    for tipo in (6, 11):
+        assert arca_wsfe.condicion_iva_receptor_id(
+            _factura_base(tipo=tipo, cliente_iva_cond=cond, cliente_cuit="")) == 5
+
+
+@pytest.mark.parametrize("tipo, cuit", [(1, ""), (1, "20123456789"), (6, "20123456789")])
+def test_sin_condicion_no_se_adivina(tipo, cuit):
+    with pytest.raises(RuntimeError, match="condición de IVA del cliente"):
+        arca_wsfe.condicion_iva_receptor_id(
+            _factura_base(tipo=tipo, cliente_iva_cond=0, cliente_cuit=cuit))
+
+
+def test_solicitar_cae_manda_la_condicion_del_receptor(monkeypatch):
+    captured = {}
+
+    def handler(request):
+        captured["body"] = request.content.decode()
+        return httpx.Response(200, text=(
+            "<soap:Envelope xmlns:soap='http://schemas.xmlsoap.org/soap/envelope/'>"
+            "<soap:Body><FECAESolicitarResponse><FECAESolicitarResult><FeDetResp>"
+            "<FECAEDetResponse><Resultado>A</Resultado><CAE>1</CAE><CAEFchVto>20260101</CAEFchVto>"
+            "</FECAEDetResponse></FeDetResp></FECAESolicitarResult></FECAESolicitarResponse>"
+            "</soap:Body></soap:Envelope>"))
+
+    _patch_client(monkeypatch, handler)
+    asyncio.run(arca_wsfe.solicitar_cae(
+        _factura_base(tipo=1, cliente_iva_cond=1), "20-12345678-9", "TKN", "SGN", "homologacion"))
+    assert "<CondicionIVAReceptorId>1</CondicionIVAReceptorId>" in captured["body"]
