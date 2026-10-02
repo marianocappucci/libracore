@@ -892,6 +892,11 @@ def init_core_schema(conn: Conexion):
     for columna in ("fce_cbu", "fce_transmision", "fce_anulacion", "cbte_asoc_fecha"):
         if columna not in cols_f:
             conn.execute(f"ALTER TABLE facturas ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''")
+    # 🔴 Por qué ARCA no dio CAE. Antes el rechazo sólo iba al log del servidor y
+    # el comprobante quedaba numerado y sin CAE sin que nadie lo viera. `''` es
+    # «sin error»: lo borra un CAE obtenido, con `update_factura_cae`.
+    if "cae_error" not in cols_f:
+        conn.execute("ALTER TABLE facturas ADD COLUMN cae_error TEXT NOT NULL DEFAULT ''")
     if "ambiente" not in cols_f:
         conn.execute(
             "ALTER TABLE facturas ADD COLUMN ambiente TEXT NOT NULL DEFAULT 'produccion' "

@@ -201,11 +201,23 @@ def get_factura(factura_id):
 
 
 def update_factura_cae(factura_id, cae, cae_vto):
-    """Actualiza CAE de una factura después de obtenerlo de ARCA."""
+    """Actualiza CAE de una factura después de obtenerlo de ARCA.
+
+    Borra `cae_error`: un comprobante autorizado ya no tiene un rechazo que mostrar.
+    """
     with get_connection() as conn:
         conn.execute(
-            "UPDATE facturas SET cae=?, cae_vto=? WHERE id=?",
+            "UPDATE facturas SET cae=?, cae_vto=?, cae_error='' WHERE id=?",
             (cae, cae_vto, factura_id)
+        )
+
+
+def update_factura_cae_error(factura_id, motivo):
+    """Deja anotado por qué ARCA no autorizó el comprobante (`''` lo borra)."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE facturas SET cae_error=? WHERE id=?",
+            ((motivo or "")[:1000], factura_id)
         )
 
 

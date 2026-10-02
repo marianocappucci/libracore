@@ -206,6 +206,67 @@ def test_solicitar_cae_prod_failure_returns_original_factura(conn, monkeypatch, 
             fid, factura, {"token": "TKN", "sign": "SGN"}, {"cuit": "20123456789", "ambiente": "homologacion"},
         ))
 
-    assert result == factura
+    # Igual que antes en todo salvo el motivo: no se relanza y no hay CAE.
+    assert {**result, "cae_error": ""} == factura
     assert result["cae"] == ""
+    assert result["cae_error"] == "ARCA rechazo el comprobante"
     assert "Error al solicitar CAE" in caplog.text
+
+
+# ── El rechazo de ARCA no se traga ──────────────────────────────────────────
+
+
+def _factura_creada(conn):
+    fid = db_facturas.create_factura(
+        6, 1, 1, "2026-07-22", "20123456789", "Cliente Test", "Consumidor Final",
+        [], 100.0, 21.0, 121.0, ambiente="produccion",
+    )
+    return fid, db_facturas.get_factura(fid)
+
+
+def _arca_cfg():
+    return {"cuit": "20123456789", "ambiente": "homologacion"}
+
+
+def test_un_rechazo_de_arca_queda_guardado_en_la_factura_y_no_se_relanza(conn, monkeypatch):
+    """🔴 Antes sólo iba al log del servidor: la factura quedaba numerada, sin CAE
+    y sin que nadie lo viera. No se relanza porque quien llama sigue con el cobro."""
+    fid, factura = _factura_creada(conn)
+
+    async def rechaza(*a, **kw):
+        raise RuntimeError("WSFE rechazó el comprobante: [10246] falta la condición")
+
+    monkeypatch.setattr(arca_facturacion.arca_wsfe, "solicitar_cae", rechaza)
+    resultado = asyncio.run(arca_facturacion.solicitar_cae(
+        fid, factura, {"token": "T", "sign": "S"}, _arca_cfg()))
+    assert not resultado["cae"]
+    assert "10246" in resultado["cae_error"]
+    assert "10246" in db_facturas.get_factura(fid)["cae_error"]
+
+
+def test_un_cae_obtenido_borra_el_error_anterior(conn, monkeypatch):
+    fid, factura = _factura_creada(conn)
+    db_facturas.update_factura_cae_error(fid, "WSFE rechazó el comprobante: [10246]")
+
+    async def autoriza(*a, **kw):
+        return {"cae": "75312345678901", "cae_vto": "20260801"}
+
+    monkeypatch.setattr(arca_facturacion.arca_wsfe, "solicitar_cae", autoriza)
+    resultado = asyncio.run(arca_facturacion.solicitar_cae(
+        fid, db_facturas.get_factura(fid), {"token": "T", "sign": "S"}, _arca_cfg()))
+    assert resultado["cae"] and resultado["cae_error"] == ""
+
+
+def test_con_arca_configurada_y_sin_ticket_el_motivo_queda_anotado(conn):
+    """El pedido del número falló y se numeró local: la factura queda sin CAE y
+    el operador tiene que enterarse."""
+    fid, factura = _factura_creada(conn)
+    resultado = asyncio.run(arca_facturacion.solicitar_cae(fid, factura, None, _arca_cfg()))
+    assert not resultado["cae"]
+    assert resultado["cae_error"] == arca_facturacion.MOTIVO_SIN_TICKET
+
+
+def test_una_instancia_sin_arca_no_inventa_un_error(conn):
+    fid, factura = _factura_creada(conn)
+    resultado = asyncio.run(arca_facturacion.solicitar_cae(fid, factura, None, None))
+    assert resultado["cae_error"] == ""

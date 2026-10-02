@@ -7,6 +7,29 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Sin publicar] — El rechazo de ARCA deja de tragarse
+
+Migración de Alembic: `0015_cae_error_en_facturas`.
+
+### Corregido
+
+- 🔴 `arca_facturacion.solicitar_cae` tragaba el rechazo de ARCA —sólo
+  `logger.error`— y devolvía la factura numerada, cobrada y **sin CAE, sin que
+  nadie lo viera**. Medido en producción el 2026-10-02: hoy no hay ninguna así,
+  pero el día que ARCA exija algo (pasó con `CondicionIVAReceptorId` en
+  homologación) quedarían todas en silencio.
+- **No levanta la excepción, a propósito**: en los tres caminos que lo llaman
+  (alta manual y notas, ventas, MercadoPago) el comprobante ya está numerado y se
+  sigue con el cobro o el vínculo a la venta; relanzar dejaría un cobro sin
+  factura o una factura huérfana. Lo que hace es **guardar el motivo en la
+  factura**: `facturas.cae_error`, que viaja en el comprobante (alta, detalle,
+  listado) y lo ve cualquier pantalla. Lo borra un CAE obtenido; el reintento
+  (`POST /api/facturas/{id}/autorizar`) también lo deja anotado si vuelve a fallar.
+- Con ARCA configurada y sin ticket (falló la autenticación o el pedido del
+  número, y se numeró local) la factura queda con un motivo genérico
+  (`MOTIVO_SIN_TICKET`); el concreto sigue en el log. Una instancia **sin** ARCA no
+  muestra error: no hay CAE que pedir.
+
 ## [v1.119.0] — Facturación con ARCA: condición del receptor, ticket, letra y FCE MiPyME
 
 Migración de Alembic: `0014_fce_mipyme`. Cuatro cambios, cada uno medido contra ARCA
