@@ -3,6 +3,7 @@ Datos agregados del dashboard principal. Extraído de database.py de
 Contalibra/Restolibra (idéntico en ambos) como parte de la migración real
 a libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
+from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 
@@ -14,11 +15,10 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) 
     (`sql_no_es_cuenta_corriente`), mismo criterio y misma razón que `db.reportes.get_reporte_resumen`
     (P9-M4/fase 8): **fiar no es cobrar**. Sin esto, "Cobrado del mes", "Saldo de caja" y "Facturas sin
     cobrar" cuentan una venta a cuenta corriente como plata ya entrada. Default `False`: lo de siempre."""
-    _TIPOS_FACTURA = (1, 6, 11)
     with get_connection() as conn:
         # KPI 1: total facturado en el mes (solo facturas, no NC/ND)
         row = conn.execute(
-            "SELECT COALESCE(SUM(total), 0) FROM facturas WHERE tipo IN (1,6,11) AND fecha BETWEEN ? AND ?",
+            f"SELECT COALESCE(SUM(total), 0) FROM facturas WHERE tipo IN ({tipos.en_sql(tipos.FACTURAS)}) AND fecha BETWEEN ? AND ?",
             (mes_desde, mes_hasta),
         ).fetchone()
         facturado_mes = row[0]
@@ -44,7 +44,7 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) 
 
         # Cantidad de facturas emitidas en el mes
         cant_facturas_mes = conn.execute(
-            "SELECT COUNT(*) FROM facturas WHERE tipo IN (1,6,11) AND fecha BETWEEN ? AND ?",
+            f"SELECT COUNT(*) FROM facturas WHERE tipo IN ({tipos.en_sql(tipos.FACTURAS)}) AND fecha BETWEEN ? AND ?",
             (mes_desde, mes_hasta),
         ).fetchone()[0]
 
@@ -56,7 +56,7 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) 
             f"""SELECT f.id, f.tipo, f.punto_venta, f.numero, f.fecha, f.cliente_razon, f.total
                FROM facturas f
                LEFT JOIN caja_movimientos c ON c.factura_id = f.id AND c.tipo = 'ingreso'{join_cc}
-               WHERE f.tipo IN (1,6,11) AND c.id IS NULL
+               WHERE f.tipo IN ({tipos.en_sql(tipos.FACTURAS)}) AND c.id IS NULL
                ORDER BY f.id DESC LIMIT 8""",
         ).fetchall()
         facturas_sin_cobrar = [dict(r) for r in rows]

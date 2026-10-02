@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import datetime
 
+from libracore import tipos_comprobante as tipos
+
 # ── Constantes ARCA/REGINFO ───────────────────────────────────────────────────
 
-_TIPO_C = {11, 12, 13}   # Factura C, ND C, NC C — Monotributista / Consumidor Final
-_NC = {3, 8, 13}         # Notas de Crédito (importes negativos)
+_TIPO_C = tipos.C        # Factura C, ND C, NC C (y FCE C) — Monotributista / Consumidor Final
+_NC = frozenset(tipos.NC)  # Notas de Crédito (importes negativos)
 
 # Código alícuota ARCA → código REGINFO
 _ALIC_CODE = {0.0: "3", 2.5: "9", 5.0: "8", 10.5: "4", 21.0: "5", 27.0: "6"}

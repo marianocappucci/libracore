@@ -49,6 +49,7 @@ tabla real, `tabla` es una subconsulta que resuelve el cliente por
 import contextlib
 from dataclasses import dataclass
 
+from libracore import tipos_comprobante as tipos
 from libracore.db.caja import (
     sql_es_cuenta_corriente,
     sql_no_anulado,
@@ -61,6 +62,9 @@ from .core import Conexion
 _TIPO_LABEL = {
     1: "FACTURA A", 6: "FACTURA B", 11: "FACTURA C",
     2: "ND A", 3: "NC A", 7: "ND B", 8: "NC B", 12: "ND C", 13: "NC C",
+    201: "FCE A", 206: "FCE B", 211: "FCE C",
+    202: "ND FCE A", 203: "NC FCE A", 207: "ND FCE B", 208: "NC FCE B",
+    212: "ND FCE C", 213: "NC FCE C",
 }
 
 
@@ -256,12 +260,12 @@ def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
                    ), 0) AS cobrado
             FROM facturas f
             WHERE REPLACE(f.cliente_cuit, '-', '') = ?
-              AND f.tipo IN (1, 6, 11)
+              AND f.tipo IN ({tipos.en_sql(tipos.FACTURAS)})
               AND f.condicion_venta = 'Cuenta Corriente'
               AND COALESCE(f.cae, '') NOT IN ('', 'PENDIENTE')
               AND NOT EXISTS (
                   SELECT 1 FROM facturas n
-                  WHERE n.tipo IN (3, 8, 13) AND n.cbte_asoc_tipo = f.tipo
+                  WHERE n.tipo IN ({tipos.en_sql(tipos.NC)}) AND n.cbte_asoc_tipo = f.tipo
                     AND n.cbte_asoc_pv = f.punto_venta AND n.cbte_asoc_nro = f.numero
               )
             ORDER BY f.fecha, f.id

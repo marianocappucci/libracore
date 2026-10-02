@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 
 import httpx
 
+from libracore import tipos_comprobante as tipos
+
 WSFE_URL = {
     "homologacion": "https://wswhomo.afip.gov.ar/wsfev1/service.asmx",
     "produccion":   "https://servicios1.afip.gov.ar/wsfev1/service.asmx",
@@ -60,6 +62,47 @@ def condicion_iva_receptor_id(factura: dict) -> int:
     )
 
 
+# Los tipos viven en `tipos_comprobante`; acá sólo se les da el nombre que usa este módulo.
+TIPOS_FCE_FACTURA = tipos.FCE_FACTURA
+TIPOS_FCE_NOTA = tipos.FCE_NOTA
+TIPOS_FCE = tipos.FCE
+_TIPOS_C = tipos.C   # C y FCE C: todo el importe va como neto, sin alícuotas de IVA
+
+
+def _opcionales_fce(factura: dict, tipo: int) -> str:
+    """El bloque `<Opcionales>` de una FCE (`""` si el tipo no es FCE).
+
+    Una **factura** FCE lleva el CBU del emisor (id 2101, 22 dígitos) y la
+    modalidad de transmisión (id 27: `SCA` o `ADC`). Una **nota** lleva **sólo**
+    el id 22 —`S` si anula la factura, `N` si no—: con cualquiera de los otros
+    ARCA contesta 10172. Medido en homologación el 2026-10-02.
+    """
+    if tipo in TIPOS_FCE_FACTURA:
+        cbu = str(factura.get("fce_cbu") or "").strip()
+        if not (len(cbu) == 22 and cbu.isdigit()):
+            raise RuntimeError(
+                "WSFE: la factura de crédito electrónica (FCE) exige el CBU del "
+                "emisor, de 22 dígitos. Cargalo en la configuración de ARCA.")
+        trans = str(factura.get("fce_transmision") or "").strip().upper()
+        if trans not in ("SCA", "ADC"):
+            raise RuntimeError(
+                "WSFE: la FCE exige la modalidad de transmisión: SCA "
+                "(circulación abierta) o ADC (agente de depósito colectivo).")
+        return (
+            "<Opcionales>"
+            f"<Opcional><Id>2101</Id><Valor>{cbu}</Valor></Opcional>"
+            f"<Opcional><Id>27</Id><Valor>{trans}</Valor></Opcional>"
+            "</Opcionales>"
+        )
+    if tipo in TIPOS_FCE_NOTA:
+        anula = str(factura.get("fce_anulacion") or "").strip().upper()
+        if anula not in ("S", "N"):
+            raise RuntimeError(
+                "WSFE: una nota de una FCE exige indicar si anula la factura (S o N).")
+        return f"<Opcionales><Opcional><Id>22</Id><Valor>{anula}</Valor></Opcional></Opcionales>"
+    return ""
+
+
 def _ssl_ctx():
     """SSL context que acepta los parámetros DH legacy de los servidores ARCA."""
     ctx = ssl.create_default_context()
@@ -104,13 +147,16 @@ def _cbte_asoc_block(factura: dict, empresa_cuit: str) -> str:
     if not asoc_tipo or not asoc_nro:
         return ""
     cuit = empresa_cuit.replace("-", "")
+    # La fecha del comprobante asociado la exige una nota de FCE (10158).
+    fecha = (factura.get("cbte_asoc_fecha") or "").replace("-", "")
     return (
         "<CbtesAsoc><CbteAsoc>"
         f"<Tipo>{asoc_tipo}</Tipo>"
         f"<PtoVta>{asoc_pv}</PtoVta>"
         f"<Nro>{asoc_nro}</Nro>"
         f"<Cuit>{cuit}</Cuit>"
-        "</CbteAsoc></CbtesAsoc>"
+        + (f"<CbteFch>{fecha}</CbteFch>" if fecha else "")
+        + "</CbteAsoc></CbtesAsoc>"
     )
 
 
@@ -165,9 +211,8 @@ async def solicitar_cae(
     tipo     = int(factura.get("tipo", 6))
     pct      = round(iva / sub * 100, 1) if sub > 0 else 0
 
-    # Comprobantes tipo C (11=FC, 12=ND-C, 13=NC-C): todo el importe va como ImpNeto,
+    # Comprobantes tipo C (11=FC, 12=ND-C, 13=NC-C, y FCE C): todo el importe va como ImpNeto,
     # ImpOpEx debe ser 0, sin bloque de alícuotas de IVA
-    _TIPOS_C = {11, 12, 13}
     if tipo in _TIPOS_C:
         imp_neto = f"{total:.2f}"
         imp_iva  = "0.00"
@@ -185,8 +230,17 @@ async def solicitar_cae(
     cuit_cli = (factura.get("cliente_cuit") or "").replace("-", "").replace(" ", "")
     if len(cuit_cli) == 11 and cuit_cli.isdigit():
         doc_tipo, doc_nro = 80, cuit_cli
+    elif tipo in TIPOS_FCE:
+        # Una FCE se le emite a una empresa: con consumidor final ARCA contesta 10015.
+        raise RuntimeError("WSFE: la FCE exige el CUIT del receptor.")
     else:
         doc_tipo, doc_nro = 99, 0
+
+    # 🔴 La FCE exige la fecha de vencimiento de pago **aunque el concepto sea
+    # Productos** (sin ella, 10163), que es cuando el resto de los comprobantes
+    # no la manda.
+    if tipo in TIPOS_FCE_FACTURA and not (factura.get("fch_vto_pago") or "").strip():
+        raise RuntimeError("WSFE: la FCE exige la fecha de vencimiento de pago.")
 
     # Bloque IVA — comprobantes C nunca llevan alícuotas
     iva_block = ""
@@ -216,7 +270,8 @@ async def solicitar_cae(
         + f"<CbteFch>{fecha}</CbteFch>"
         + (f"<FchServDesde>{fch_desde}</FchServDesde>"
            f"<FchServHasta>{fch_hasta}</FchServHasta>"
-           f"<FchVtoPago>{fch_vto}</FchVtoPago>" if concepto_n in (2, 3) else "")
+           f"<FchVtoPago>{fch_vto}</FchVtoPago>" if concepto_n in (2, 3)
+           else f"<FchVtoPago>{fch_vto}</FchVtoPago>" if tipo in TIPOS_FCE_FACTURA else "")
         + f"<ImpTotal>{total:.2f}</ImpTotal>"
         + "<ImpTotConc>0.00</ImpTotConc>"
         + f"<ImpNeto>{imp_neto}</ImpNeto>"
@@ -227,6 +282,7 @@ async def solicitar_cae(
         + f"<CondicionIVAReceptorId>{condicion_iva_receptor_id(factura)}</CondicionIVAReceptorId>"
         + iva_block
         + _cbte_asoc_block(factura, empresa_cuit)
+        + _opcionales_fce(factura, tipo)
         + "</FECAEDetRequest></FeDetReq></FeCAEReq>"
         + "</FECAESolicitar>"
     )
