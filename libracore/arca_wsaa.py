@@ -3,13 +3,22 @@ Autenticación WSAA (Web Service de Autenticación y Autorización) de ARCA/AFIP
 Implementa el flujo: TRA → firma CMS → llamada SOAP → token+sign.
 """
 
+import asyncio
 import base64
 import contextlib
+import fcntl
+import hashlib
+import json
+import logging
+import os
 import random
+import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta, timezone
 
 from libracore import arca_certificados
+
+logger = logging.getLogger(__name__)
 
 WSAA_URL = {
     "homologacion": "https://wsaahomo.afip.gov.ar/ws/services/LoginCms",
@@ -99,10 +108,12 @@ def _firmar_tra(tra_bytes, cert_path, key_path):
         os.unlink(tra_file)
 
 
-async def autenticar(cert_path, key_path, ambiente="homologacion", servicio="wsfe"):
+async def _pedir_ticket(cert_path, key_path, ambiente="homologacion", servicio="wsfe"):
     """
-    Autentica contra WSAA y devuelve dict con token, sign y expiracion.
+    Hace el login contra WSAA y devuelve dict con token, sign y expiracion.
     Lanza RuntimeError con mensaje legible ante cualquier falla.
+
+    Es el login **crudo**, sin caché: quien llama de afuera usa `autenticar`.
     """
     import httpx
 
@@ -181,6 +192,151 @@ async def autenticar(cert_path, key_path, ambiente="homologacion", servicio="wsf
         raise RuntimeError(f"Error al parsear respuesta de WSAA: {e}\n{resp.text[:400]}")
 
     return {"token": token, "sign": sign, "expiracion": exp}
+
+
+# ── La caché del ticket ──────────────────────────────────────────────────────
+#
+# 🔴 **El ticket dura 12 horas y WSAA no entrega otro mientras haya uno vigente**:
+# contesta `coe.alreadyAuthenticated`. Pedir uno por emisión, como se hizo hasta
+# acá, deja emitir **una factura cada 12 horas** por certificado y servicio
+# (medido en homologación el 2026-10-02).
+#
+# El ticket se guarda **en disco** y no en memoria porque la instancia corre con
+# varios workers y cada uno tiene la suya: con la caché en memoria el segundo
+# worker pide otro ticket y se choca con el del primero.
+
+#: Se renueva cuando faltan menos de estos segundos. Un ticket que vence en medio
+#: de un pedido a WSFE es un rechazo que no se explica solo.
+MARGEN_DE_RENOVACION = 5 * 60
+#: Cuánto se espera a que otro proceso termine de pedir el ticket.
+ESPERA_DEL_CERROJO = 45
+
+
+def _dir_de_tickets() -> str:
+    """Dónde viven los tickets: `ARCA_TA_DIR`, o `$DATA_DIR/arca_ta`.
+
+    No va junto al certificado porque los productos que guardan el par en la base
+    lo escriben en un temporal que se borra: el ticket tiene que sobrevivirlo.
+    """
+    return (os.environ.get("ARCA_TA_DIR")
+            or os.path.join(os.environ.get("DATA_DIR", os.getcwd()), "arca_ta"))
+
+
+def _ruta_del_ticket(cert_path, ambiente, servicio) -> str:
+    """Un archivo por (ambiente, servicio, certificado).
+
+    🔑 **La clave incluye la huella del certificado**: si el cliente sube uno
+    nuevo, el ticket del viejo no se reusa. Con sólo ambiente+servicio, cambiar
+    de certificado seguiría firmando con un ticket que ya no corresponde.
+    """
+    with open(cert_path, "rb") as f:
+        huella = hashlib.sha256(f.read()).hexdigest()[:16]
+    return os.path.join(_dir_de_tickets(), f"ta-{ambiente}-{servicio}-{huella}.json")
+
+
+def _vigente(ticket) -> bool:
+    try:
+        vence = datetime.fromisoformat(ticket["expiracion"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if vence.tzinfo is None:
+        return False
+    restan = (vence - datetime.now(UTC)).total_seconds()
+    return restan > MARGEN_DE_RENOVACION and bool(ticket.get("token") and ticket.get("sign"))
+
+
+def _leer_ticket(ruta):
+    """El ticket guardado si sigue vigente; `None` si no hay, está roto o venció."""
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            ticket = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return ticket if isinstance(ticket, dict) and _vigente(ticket) else None
+
+
+def _guardar_ticket(ruta, ticket) -> None:
+    """Escribe con permisos 0600 y reemplazo atómico: token+sign son credenciales
+    y un lector concurrente nunca tiene que ver el archivo a medio escribir."""
+    tmp = f"{ruta}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(ticket, f)
+    os.replace(tmp, ruta)
+
+
+@contextlib.asynccontextmanager
+async def _cerrojo(ruta):
+    """Un solo login a la vez por ticket, entre tareas y entre procesos.
+
+    `flock` sin bloquear y con espera por `asyncio.sleep`: un `flock` bloqueante
+    congelaría el loop de todo el worker mientras otro proceso hace el login.
+    """
+    fd = os.open(f"{ruta}.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        limite = time.monotonic() + ESPERA_DEL_CERROJO
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > limite:
+                    raise RuntimeError(
+                        "WSAA: otro proceso está pidiendo el ticket y no terminó. "
+                        "Reintentá en un momento.")
+                await asyncio.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+async def autenticar(cert_path, key_path, ambiente="homologacion", servicio="wsfe"):
+    """
+    Devuelve dict con token, sign y expiracion, **reusando el ticket vigente**.
+
+    Pide uno nuevo sólo si no hay, venció o vence en menos de
+    `MARGEN_DE_RENOVACION`. Lanza RuntimeError con mensaje legible ante falla.
+    """
+    try:
+        ruta = _ruta_del_ticket(cert_path, ambiente, servicio)
+        os.makedirs(os.path.dirname(ruta), mode=0o700, exist_ok=True)
+    except OSError as e:
+        # Sin certificado legible el login crudo da el error de siempre; sin
+        # directorio escribible se emite sin caché, que es lo de antes.
+        logger.warning("WSAA sin caché de ticket (%s): %s", ambiente, e)
+        return await _pedir_ticket(cert_path, key_path, ambiente, servicio)
+
+    ticket = _leer_ticket(ruta)
+    if ticket:
+        return ticket
+
+    async with _cerrojo(ruta):
+        # Otro proceso pudo dejar el ticket mientras esperábamos el cerrojo.
+        ticket = _leer_ticket(ruta)
+        if ticket:
+            return ticket
+        try:
+            ticket = await _pedir_ticket(cert_path, key_path, ambiente, servicio)
+        except RuntimeError as e:
+            if "alreadyAuthenticated" not in str(e):
+                raise
+            ticket = _leer_ticket(ruta)
+            if ticket:
+                return ticket
+            raise RuntimeError(
+                "WSAA: ARCA ya emitió un ticket vigente para este certificado y "
+                "servicio, pero no está en la caché de esta instancia (lo pidió "
+                "otro sistema o se perdió el archivo). No se puede pedir otro "
+                "hasta que venza, dentro de 12 horas como máximo."
+            ) from e
+        try:
+            _guardar_ticket(ruta, ticket)
+        except OSError as e:
+            logger.warning("WSAA: no se pudo guardar el ticket (%s): %s", ambiente, e)
+        return ticket
 
 
 # ── El par en memoria, para el producto que no lo guarda en el volumen ──────

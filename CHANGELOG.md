@@ -7,6 +7,22 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Sin publicar] — Caché del ticket de WSAA
+
+### Corregido
+
+- 🔴 `arca_wsaa.autenticar` pedía un ticket nuevo en cada llamada, y WSAA no
+  entrega otro mientras haya uno vigente (`coe.alreadyAuthenticated`): se podía
+  emitir **una factura cada 12 horas** por certificado y servicio. Ahora el
+  ticket se guarda en `ARCA_TA_DIR` (por defecto `$DATA_DIR/arca_ta`), con
+  permisos 0600, **una entrada por ambiente + servicio + huella del
+  certificado**, y se reusa hasta 5 minutos antes de vencer.
+- Es compartida entre workers (archivo, no memoria) y un `flock` evita dos
+  logins simultáneos. Si ARCA contesta `alreadyAuthenticated` y el ticket no
+  está en la caché, el error lo explica en vez de repetir el de ARCA.
+- Sin directorio escribible se emite sin caché, como antes.
+- La firma de `autenticar` no cambia; el login crudo pasó a `_pedir_ticket`.
+
 ## [v1.117.0] — Un pago a cuenta se aplica a facturas y se da de baja limpio
 
 Migración `0013`: agrega `caja_movimientos.cc_pago_id` (nullable, sin FK). **No baja** (patrón de la

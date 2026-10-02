@@ -147,3 +147,9 @@ def bases():
         yield b
     finally:
         b.limpiar()
+
+
+@pytest.fixture(autouse=True)
+def _tickets_de_wsaa_aislados(tmp_path, monkeypatch):
+    """Ningún test lee ni escribe los tickets reales de WSAA, ni se pisan entre sí."""
+    monkeypatch.setenv("ARCA_TA_DIR", str(tmp_path / "_arca_ta"))
