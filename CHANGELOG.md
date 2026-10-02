@@ -21,6 +21,21 @@ del ecosistema.
   letra no corresponde al receptor, en vez de dejar un comprobante numerado y sin
   CAE. Si la condición del cliente es desconocida no se opina.
 
+## [Sin publicar] — Caché del ticket de WSAA
+
+### Corregido
+
+- 🔴 `arca_wsaa.autenticar` pedía un ticket nuevo en cada llamada, y WSAA no
+  entrega otro mientras haya uno vigente (`coe.alreadyAuthenticated`): se podía
+  emitir **una factura cada 12 horas** por certificado y servicio. Ahora el
+  ticket se guarda en `ARCA_TA_DIR` (por defecto `$DATA_DIR/arca_ta`), con
+  permisos 0600, **una entrada por ambiente + servicio + huella del
+  certificado**, y se reusa hasta 5 minutos antes de vencer.
+- Es compartida entre workers (archivo, no memoria) y un `flock` evita dos
+  logins simultáneos. Si ARCA contesta `alreadyAuthenticated` y el ticket no
+  está en la caché, el error lo explica en vez de repetir el de ARCA.
+- Sin directorio escribible se emite sin caché, como antes.
+- La firma de `autenticar` no cambia; el login crudo pasó a `_pedir_ticket`.
 ## [Sin publicar] — WSFE manda la condición de IVA del receptor (RG 5616)
 
 ### Corregido
