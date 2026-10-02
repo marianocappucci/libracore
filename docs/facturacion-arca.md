@@ -228,6 +228,36 @@ el que valida es el producto.
 
 ---
 
+## Factura de Crédito Electrónica MiPyME (FCE)
+
+Tipos `201/206/211` (A, B, C) y sus notas `202/203`, `207/208`, `212/213`; viven
+en `libracore.tipos_comprobante`, que es **la** lista: no copiar `(1, 6, 11)` en
+un listado nuevo.
+
+**Habilitarla** es cargar el CBU (22 dígitos) y la modalidad (`SCA` o `ADC`) en
+`PUT /config/arca` (`fce_cbu`, `fce_transmision`). Hasta entonces el selector no
+la ofrece y `POST /api/facturas` contesta 422. Sin pantalla nueva: entra como una
+opción más del selector de tipos.
+
+Lo que ARCA exige, **medido en homologación** (2026-10-02):
+
+| Qué | Error si falta |
+|---|---|
+| `FchVtoPago`, **aunque el concepto sea Productos** | 10163 |
+| CUIT del receptor (no consumidor final) | 10015 |
+| Opcional `2101`: CBU del emisor, 22 dígitos | |
+| Opcional `27`: `SCA` o `ADC` | 10216 |
+| Nota: `CbtesAsoc.CbteFch`, la fecha del asociado | 10158 |
+| Nota: **sólo** el opcional `22` (`S`/`N`), nunca el 2101 ni el 27 | 10172 |
+
+🔴 El `22 = S` (anula) sólo lo acepta ARCA si el comprador **rechazó** la factura
+(10154); la nota sale siempre con `N`.
+
+La condición del receptor es válida **por clase** (`CondicionIVAReceptorId`): una
+FCE B a un inscripto da 10243.
+
+---
+
 ## Los dos filtros de MercadoPago que NO hay que agregar
 
 > 🔴 **No filtrar la bandeja por `operation_type == account_fund` ni por

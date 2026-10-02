@@ -140,7 +140,11 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
-        # 376 desde el 2026-09-29, cuando entró `caja_movimientos.cc_pago_id` — el
+        # 382 desde el 2026-10-02, cuando entró la FCE MiPyME: `arca_config.fce_cbu` y
+        # `fce_transmision`, y `facturas.fce_cbu`, `fce_transmision`, `fce_anulacion` y
+        # `cbte_asoc_fecha` — lo que ARCA exige en una FCE y no tenía dónde vivir.
+        #
+        # Era 376 desde el 2026-09-29, cuando entró `caja_movimientos.cc_pago_id` — el
         # pago a cuenta que originó cada movimiento, para poder darlo de baja.
         #
         # Era 375 desde el 2026-09-24, cuando entró `cajas.mp_pos_id` — el POS de
@@ -162,7 +166,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (377)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (383)"}
     finally:
         conn.close()
         _liberar()

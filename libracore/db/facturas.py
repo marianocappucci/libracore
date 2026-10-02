@@ -8,6 +8,7 @@ ver wiki/entities/libracore.md).
 import json
 import sqlite3
 
+from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection, sql_busqueda
 
@@ -59,7 +60,9 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                    concepto=1, cae="", cae_vto="", observaciones="", pdf_path="",
                    cliente_domicilio="", fch_serv_desde="", fch_serv_hasta="",
                    fch_vto_pago="", cbte_asoc_tipo=0, cbte_asoc_pv=0, cbte_asoc_nro=0,
-                   condicion_venta="", usuario_id=None, *, ambiente: str):
+                   condicion_venta="", usuario_id=None,
+                   fce_cbu="", fce_transmision="", fce_anulacion="", cbte_asoc_fecha="",
+                   *, ambiente: str):
     """Crea una nueva factura electrónica. `numero` es el número calculado por el
     caller (local o vía ARCA) pero puede haber quedado obsoleto si otra factura
     concurrente para el mismo tipo+punto_venta se creó en el medio (no había
@@ -96,14 +99,14 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                         cae, cae_vto, observaciones, pdf_path, cliente_domicilio,
                         fch_serv_desde, fch_serv_hasta, fch_vto_pago,
                         cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
-                        ambiente)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
                      cliente_iva_cond, json.dumps(items, ensure_ascii=False), subtotal,
                      iva_amount, total, concepto, cae, cae_vto, observaciones, pdf_path,
                      cliente_domicilio, fch_serv_desde, fch_serv_hasta, fch_vto_pago,
                      cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
-                     ambiente),
+                     ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha),
                 )
                 return cur.lastrowid
         except sqlite3.IntegrityError:
@@ -112,9 +115,9 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
             numero = get_next_factura_numero(punto_venta, tipo, ambiente)
 
 
-_TIPOS_FACTURA = (1, 6, 11)
-_TIPOS_NC      = (3, 8, 13)
-_TIPOS_ND      = (2, 7, 12)
+_TIPOS_FACTURA = tipos.FACTURAS
+_TIPOS_NC      = tipos.NC
+_TIPOS_ND      = tipos.ND
 
 _VISTA_TIPOS = {
     "facturas": _TIPOS_FACTURA,

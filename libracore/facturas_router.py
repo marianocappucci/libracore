@@ -60,6 +60,7 @@ from pydantic import BaseModel, ConfigDict
 
 from libracore import arca_credenciales, arca_facturacion, arca_wsaa, arca_wsfe, config_manager, email_sender
 from libracore import pdf_generator as pdf_gen
+from libracore import tipos_comprobante as tipos_cbte
 from libracore.arca_facturacion import RECEPTORES_DE_FACTURA_A, get_next_numero_with_arca, solicitar_cae
 from libracore.cobros import MedioNoEsDeCobro, registrar_cobro_factura
 from libracore.db import arca_config as db_arca
@@ -90,18 +91,21 @@ TIPOS_DEFAULT = TIPOS_POR_CONDICION["Monotributista"]
 
 #: De qué factura sale qué nota. La letra se conserva: una NC de una Factura C
 #: es una Nota de Crédito C.
-TIPO_NC = {1: 3, 6: 8, 11: 13}
-TIPO_ND = {1: 2, 6: 7, 11: 12}
+TIPO_NC = tipos_cbte.TIPO_NC
+TIPO_ND = tipos_cbte.TIPO_ND
 
 TIPO_LABEL = {
     1: "Factura A", 6: "Factura B", 11: "Factura C",
     3: "Nota de Crédito A", 8: "Nota de Crédito B", 13: "Nota de Crédito C",
     2: "Nota de Débito A", 7: "Nota de Débito B", 12: "Nota de Débito C",
+    201: "FCE MiPyME A", 206: "FCE MiPyME B", 211: "FCE MiPyME C",
+    202: "Nota de Débito FCE A", 207: "Nota de Débito FCE B", 212: "Nota de Débito FCE C",
+    203: "Nota de Crédito FCE A", 208: "Nota de Crédito FCE B", 213: "Nota de Crédito FCE C",
 }
 
 #: Los tres que son factura —y no nota—. Se usa para decidir si un comprobante
 #: puede tener notas colgando y si se le pueden imputar cobros.
-TIPOS_FACTURA = (1, 6, 11)
+TIPOS_FACTURA = tipos_cbte.FACTURAS
 
 CONCEPTOS = [
     {"value": 1, "label": "Productos"},
@@ -128,6 +132,52 @@ IVA_CODES = {
 PAGE_SIZE = 50
 
 
+def _datos_de_fce(payload, cliente: dict) -> tuple[str, str]:
+    """`(cbu, transmisión)` para una FCE, o `("", "")` si no lo es. 422 si falta algo.
+
+    El CBU y la modalidad son del emisor y salen de su config de ARCA; el
+    vencimiento de pago lo pone quien factura; y el receptor tiene que ser una
+    empresa con CUIT (con consumidor final ARCA contesta 10015).
+    """
+    if payload.tipo in tipos_cbte.FCE_NOTA:
+        raise HTTPException(
+            422, "Las notas de una FCE se emiten desde la factura, no desde el alta.")
+    if payload.tipo not in tipos_cbte.FCE_FACTURA:
+        return "", ""
+    cuit = (cliente["client_cuit"] or "").replace("-", "").replace(" ", "")
+    if not (len(cuit) == 11 and cuit.isdigit()):
+        raise HTTPException(422, "La FCE se le emite a una empresa: falta el CUIT del cliente.")
+    if not (payload.fch_vto_pago or "").strip():
+        raise HTTPException(422, "La FCE exige la fecha de vencimiento de pago.")
+    configs = db_arca.obtener_todas_arca_configs()
+    cfg = configs[0] if configs else {}
+    cbu = (cfg.get("fce_cbu") or "").strip()
+    transmision = (cfg.get("fce_transmision") or "").strip().upper()
+    if not cbu or transmision not in ("SCA", "ADC"):
+        raise HTTPException(
+            422, "Para emitir una FCE falta cargar el CBU y la modalidad de "
+                 "transmisión (SCA o ADC) en la configuración de ARCA.")
+    return cbu, transmision
+
+
+#: Qué FCE puede emitir un emisor, según su condición: la letra sigue a la de
+#: sus facturas comunes.
+TIPOS_FCE_POR_CONDICION = {
+    "Responsable Inscripto": [201, 206],
+    "Monotributista": [211],
+}
+
+
+def _tipos_fce_del_emisor() -> list[dict]:
+    """Las opciones de FCE para el selector, o `[]` si el emisor no la habilitó."""
+    configs = db_arca.obtener_todas_arca_configs()
+    cfg = configs[0] if configs else {}
+    if not (cfg.get("fce_cbu") and cfg.get("fce_transmision")):
+        return []
+    emisor = config_manager.load().get("empresa_iva_condition", "Monotributista")
+    return [{"value": t, "label": TIPO_LABEL[t]} for t in TIPOS_FCE_POR_CONDICION.get(emisor, [])]
+
+
 def exigir_tipo_valido_para_el_receptor(tipo: int, receptor_cond: str) -> None:
     """Falla con un 422 legible si ARCA va a rechazar esa letra para ese receptor.
 
@@ -136,13 +186,15 @@ def exigir_tipo_valido_para_el_receptor(tipo: int, receptor_cond: str) -> None:
     rechaza, y el comprobante queda numerado y sin CAE. Si la condición es
     desconocida no se opina: ahí decide `arca_wsfe.condicion_iva_receptor_id`.
     """
-    if tipo not in (1, 6) or receptor_cond not in IVA_CODES:
+    # La letra manda, sea común o FCE: una FCE B a un inscripto da 10243 igual.
+    letra = tipos_cbte.LETRA.get(tipo)
+    if letra not in ("A", "B") or receptor_cond not in IVA_CODES:
         return
     pide_a = receptor_cond in RECEPTORES_DE_FACTURA_A
-    if tipo == 6 and pide_a:
+    if letra == "B" and pide_a:
         raise HTTPException(
             422, f"A un cliente «{receptor_cond}» le corresponde Factura A, no B.")
-    if tipo == 1 and not pide_a:
+    if letra == "A" and not pide_a:
         raise HTTPException(
             422, f"A un cliente «{receptor_cond}» le corresponde Factura B, no A.")
 
@@ -425,6 +477,11 @@ async def _crear_nota(
         fch_vto_pago=fecha_hoy,
         cbte_asoc_tipo=orig["tipo"], cbte_asoc_pv=orig["punto_venta"],
         cbte_asoc_nro=orig["numero"], usuario_id=usuario_id,
+        # Una nota de FCE exige la fecha del asociado (10158) y decir si anula
+        # (opcional 22). `N` es lo normal: `S` sólo lo acepta ARCA si el
+        # comprador rechazó la factura (10154, medido), y eso no lo decide esta pantalla.
+        cbte_asoc_fecha=orig["fecha"],
+        fce_anulacion="N" if nuevo_tipo in tipos_cbte.FCE_NOTA else "",
     )
     nota = db_facturas.get_factura(nota_id)
     nota = await solicitar_cae(nota_id, nota, ta, arca)
@@ -490,7 +547,9 @@ def build_comprobantes_router(
         """
         tipos_emisor = _tipos_emisor()
         return {
-            "tipos": tipos_emisor,
+            # La FCE aparece como una opción más del mismo selector, y sólo si el
+            # emisor ya cargó su CBU: sin él ARCA la rechazaría.
+            "tipos": tipos_emisor + _tipos_fce_del_emisor(),
             "conceptos": CONCEPTOS,
             "condiciones_venta": CONDICIONES_VENTA,
             "punto_venta": (
@@ -556,7 +615,7 @@ def build_comprobantes_router(
             }]
 
         # Una C no discrimina IVA: el neto ES el total.
-        tax_rate = 0.0 if payload.tipo == 11 else payload.tax_rate
+        tax_rate = 0.0 if payload.tipo in tipos_cbte.C else payload.tax_rate
         totales = calcular_totales(items, tax_rate)
 
         borrador = {
@@ -610,13 +669,19 @@ def build_comprobantes_router(
         if not items:
             raise HTTPException(422, "Debe agregar al menos un ítem válido.")
 
-        tax_rate = 0.0 if payload.tipo == 11 else payload.tax_rate
+        tax_rate = 0.0 if payload.tipo in tipos_cbte.C else payload.tax_rate
         totales = calcular_totales(items, tax_rate)
+
+        # 🔑 Todo lo que una FCE exige se valida ANTES de pedir el número: el
+        # número es fiscal y no se devuelve, y un comprobante numerado que ARCA
+        # va a rechazar es un hueco en la correlatividad.
+        fce_cbu, fce_transmision = _datos_de_fce(payload, cliente)
 
         numero, ta, arca = asyncio.run(get_next_numero_with_arca(
             payload.punto_venta, payload.tipo
         ))
         factura_id = db_facturas.create_factura(
+            fce_cbu=fce_cbu, fce_transmision=fce_transmision,
             # 🔑 El ambiente con el que se emitió, que es lo que separa un
             # comprobante real de uno de prueba en el libro IVA.
             #

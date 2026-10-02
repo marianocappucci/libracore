@@ -425,3 +425,27 @@ def test_el_control__sin_declararlo_sigue_siendo_default(client):
     arriba y les crearia la fila con el nombre de otro producto."""
     r = client.put("/config/arca", headers=ADMIN, json={"cuit": "30111111118", "punto_venta": 3})
     assert r.json()["empresa"] == "default"
+
+
+# ── FCE MiPyME: el CBU y la modalidad ───────────────────────────────────────
+
+
+def test_el_cbu_y_la_modalidad_se_guardan_y_un_put_sin_ellos_no_los_borra(client):
+    base = {"empresa": "default", "cuit": "20289933604", "punto_venta": 1,
+            "ambiente": "homologacion"}
+    client.put("/config/arca", headers=ADMIN,
+               json={**base, "fce_cbu": "0" * 22, "fce_transmision": "sca"})
+    # 🔑 una pantalla que no conoce la FCE manda el PUT sin esos campos
+    leido = client.put("/config/arca", headers=ADMIN, json=base).json()
+    assert leido["fce_cbu"] == "0" * 22 and leido["fce_transmision"] == "SCA"
+    # y `""` sí es «borralo»
+    borrado = client.put("/config/arca", headers=ADMIN, json={**base, "fce_cbu": ""}).json()
+    assert borrado["fce_cbu"] == ""
+
+
+@pytest.mark.parametrize("campo, valor", [("fce_cbu", "123"), ("fce_cbu", "x" * 22),
+                                          ("fce_transmision", "XYZ")])
+def test_un_cbu_o_una_modalidad_invalidos_se_rechazan(client, campo, valor):
+    r = client.put("/config/arca", headers=ADMIN, json={
+        "empresa": "default", "cuit": "20289933604", "punto_venta": 1, campo: valor})
+    assert r.status_code == 422

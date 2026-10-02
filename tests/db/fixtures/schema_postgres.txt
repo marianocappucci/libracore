@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (376)
+## tablas (382)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -11,6 +11,8 @@ arca_config|clave_path|text|NN|
 arca_config|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
 arca_config|cuit|text|NN|
 arca_config|empresa|text|NN|
+arca_config|fce_cbu|text|NN|''::text
+arca_config|fce_transmision|text|NN|''::text
 arca_config|id|bigint|NN|nextval('arca_config_id_seq'::regclass)
 arca_config|punto_venta|integer|NN|
 arca_config|updated_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
@@ -164,6 +166,7 @@ facturacion_alias|valor|text|NN|
 facturas|ambiente|text|NN|'produccion'::text
 facturas|cae_vto|text||
 facturas|cae|text||
+facturas|cbte_asoc_fecha|text|NN|''::text
 facturas|cbte_asoc_nro|integer||0
 facturas|cbte_asoc_pv|integer||0
 facturas|cbte_asoc_tipo|integer||0
@@ -174,6 +177,9 @@ facturas|cliente_razon|text||
 facturas|concepto|integer|NN|1
 facturas|condicion_venta|text||''::text
 facturas|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+facturas|fce_anulacion|text|NN|''::text
+facturas|fce_cbu|text|NN|''::text
+facturas|fce_transmision|text|NN|''::text
 facturas|fch_serv_desde|text||''::text
 facturas|fch_serv_hasta|text||''::text
 facturas|fch_vto_pago|text||''::text

@@ -7,6 +7,44 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Sin publicar] — Factura de Crédito Electrónica MiPyME (FCE)
+
+Migración de Alembic: `0014_fce_mipyme`.
+
+### Agregado
+
+- **FCE A, B y C (201, 206, 211) y sus notas de débito y crédito** (202/203,
+  207/208, 212/213), por el mismo camino que ya existía: `facturas_router`,
+  `arca_facturacion` y `arca_wsfe`. **Sin pantallas nuevas.** Probado contra
+  ARCA homologación el 2026-10-02: alta, nota de crédito y nota de débito con CAE
+  por el router real.
+- `libracore.tipos_comprobante`: los tipos (facturas, notas, FCE, clase C, la
+  letra y de qué factura sale qué nota) **en un solo lugar**. Reemplaza las
+  copias de `(1, 6, 11)` / `(3, 8, 13)` de `db.facturas`, `db.resumen`,
+  `db.dashboard`, `db.cuenta_corriente`, `libros_iva` y `pdf_generator`: una FCE
+  que falta en una de esas consultas desaparece de ese listado sin error.
+- `arca_config.fce_cbu` y `fce_transmision` (`SCA` o `ADC`), editables por
+  `PUT /config/arca` (`None` = no lo toqués, `""` = borralo: un cliente de la API
+  que no conoce la FCE no borra el CBU). `facturas` suma `fce_cbu`,
+  `fce_transmision`, `fce_anulacion` y `cbte_asoc_fecha`.
+- `GET /api/facturas/tipos` suma las FCE al selector **sólo si el emisor cargó su
+  CBU y su modalidad**. `es_monotributista` no cambia.
+
+### Lo que ARCA exige y se midió
+
+- La FCE manda `FchVtoPago` **aunque el concepto sea Productos** (10163), el CUIT
+  del receptor (con consumidor final, 10015), el CBU de 22 dígitos (opcional 2101)
+  y la modalidad de transmisión (opcional 27, 10216).
+- Una nota de FCE manda **la fecha del comprobante asociado** (10158) y **sólo** el
+  opcional 22 (`S`/`N`): con el CBU o el 27, 10172. La nota sale con `N`; `S` sólo
+  lo acepta ARCA si el comprador rechazó la factura (10154).
+- Todo lo que falta se valida **antes** de pedir el número (422 en el alta, o un
+  error de `arca_wsfe`): el número es fiscal y no se devuelve.
+
+### Cambia
+
+- ⚠️ Las FCE se emiten sólo desde `POST /api/facturas`; sus notas, desde la
+  factura. `POST /api/facturas` con el tipo de una nota de FCE da 422.
 ## [Sin publicar] — La letra de la factura corresponde al receptor
 
 ### Corregido

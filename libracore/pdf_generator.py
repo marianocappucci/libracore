@@ -9,6 +9,7 @@ from fpdf.enums import Corner as _Cor
 from fpdf.enums import RenderStyle as _RS
 
 from . import config_manager, medios_pago
+from . import tipos_comprobante as tipos
 
 
 def fecha_de_documento(valor) -> datetime | None:
@@ -258,20 +259,29 @@ RESUMENES_CC_PDF_DIR = os.path.join(_DATA_DIR, "resumenes_cc_pdf")
 
 _TIPO_LABELS     = {1:"FACTURA A",       6:"FACTURA B",       11:"FACTURA C",
                     3:"NOTA CREDITO A", 8:"NOTA CREDITO B", 13:"NOTA CREDITO C",
-                    2:"NOTA DEBITO A",  7:"NOTA DEBITO B",  12:"NOTA DEBITO C"}
+                    2:"NOTA DEBITO A",  7:"NOTA DEBITO B",  12:"NOTA DEBITO C",
+                    201:"FACTURA DE CREDITO ELECTRONICA MIPYME A",
+                    206:"FACTURA DE CREDITO ELECTRONICA MIPYME B",
+                    211:"FACTURA DE CREDITO ELECTRONICA MIPYME C",
+                    202:"NOTA DE DEBITO ELECTRONICA MIPYME A", 207:"NOTA DE DEBITO ELECTRONICA MIPYME B",
+                    212:"NOTA DE DEBITO ELECTRONICA MIPYME C",
+                    203:"NOTA DE CREDITO ELECTRONICA MIPYME A", 208:"NOTA DE CREDITO ELECTRONICA MIPYME B",
+                    213:"NOTA DE CREDITO ELECTRONICA MIPYME C"}
 _CONCEPTO_LABELS = {1:"Productos", 2:"Servicios", 3:"Productos y Servicios"}
-_TIPO_LETRA      = {1:"A", 6:"B", 11:"C", 3:"A", 8:"B", 13:"C", 2:"A", 7:"B", 12:"C"}
-_TIPO_COD        = {1:"001", 6:"006", 11:"011", 3:"003", 8:"008", 13:"013",
-                    2:"002", 7:"007", 12:"012"}
+_TIPO_LETRA      = tipos.LETRA
+_TIPO_COD        = {t: f"{t:03d}" for t in tipos.LETRA}
 _TIPO_NOMBRE_DOC = {1:"Factura",         6:"Factura",         11:"Factura",
                     3:"Nota de Crédito", 8:"Nota de Crédito", 13:"Nota de Crédito",
-                    2:"Nota de Débito",  7:"Nota de Débito",  12:"Nota de Débito"}
+                    2:"Nota de Débito",  7:"Nota de Débito",  12:"Nota de Débito",
+                    **{t: "Factura de Crédito Electrónica MiPyME" for t in (201, 206, 211)},
+                    **{t: "Nota de Débito Electrónica MiPyME" for t in (202, 207, 212)},
+                    **{t: "Nota de Crédito Electrónica MiPyME" for t in (203, 208, 213)}}
 _IVA_LABELS      = {1:"Responsable Inscripto", 6:"Monotributista", 4:"IVA Exento",
                     5:"Consumidor Final", 3:"No Alcanzado"}
 _IVA_EMISOR_LABEL = {"Monotributista":        "Responsable Monotributo",
                      "Responsable Inscripto": "IVA Responsable Inscripto",
                      "IVA Exento":            "IVA Exento"}
-_TIPOS_C = {11, 12, 13}
+_TIPOS_C = tipos.C
 
 # ── Paleta (de la plantilla HTML) ────────────────────────────────────────────
 _INK         = (40,  37,  29)    # --ink:          #28251d
@@ -1286,6 +1296,19 @@ def generate_pdf_factura(factura, output_dir=None):
         txt = f"Per. facturado: {desde} al {hasta}"
         if vto:
             txt += f"  ·  Vto. pago: {vto}"
+        pdf.cell(_CW, 5, txt, ln=True)
+        pdf.set_text_color(*_INK)
+        pdf.ln(2)
+
+    # FCE MiPyME: el comprobante tiene que decir a qué CBU se paga y cuándo vence.
+    if factura.get("tipo") in tipos.FCE_FACTURA and factura.get("fce_cbu"):
+        pdf.set_font("Helvetica", "", 8)
+        pdf.set_text_color(*_MUTED)
+        pdf.set_x(_LX)
+        txt = f"CBU del emisor: {factura['fce_cbu']}"
+        vto_fce = _fmt_fecha(factura.get("fch_vto_pago", ""))
+        if vto_fce:
+            txt += f"  ·  Vto. pago: {vto_fce}"
         pdf.cell(_CW, 5, txt, ln=True)
         pdf.set_text_color(*_INK)
         pdf.ln(2)
