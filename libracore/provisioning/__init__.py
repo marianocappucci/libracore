@@ -31,6 +31,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+#: Variable de entorno que mueve el directorio de instancias sin tocar código.
+#: Ver `ProductConfig.clientes_dir` para la precedencia.
+CLIENTES_DIR_ENV = "LIBRA_CLIENTES_DIR"
+
 # requirements.txt de cada producto depende de libracore (paquete interno
 # privado, ver wiki/entities/libracore.md) vía git+ssh — el build necesita
 # BuildKit + --ssh con la deploy key dedicada. Misma ruta/variable de
@@ -418,6 +422,11 @@ class ProductConfig:
     # correr acá, y por eso el default es vacío en vez de `alembic upgrade head`.
     migraciones: tuple[tuple[str, ...], ...] = ()
 
+    # Directorio que fijó `configure(clientes_dir=...)`, o `None` si el producto
+    # no lo pasó. **No se lee directo**: la fuente es la propiedad `clientes_dir`,
+    # que decide la precedencia.
+    clientes_dir_override: Path | None = None
+
     @property
     def usa_postgres(self) -> bool:
         return bool(self.postgres)
@@ -464,6 +473,38 @@ class ProductConfig:
 
     @property
     def clientes_dir(self) -> Path:
+        """Dónde viven las instancias (`<dir>/<slug>/cliente.json`, compose, `data/`).
+
+        🔑 **Es la ÚNICA fuente de verdad** de esa ubicación: el alta
+        (`nuevo_cliente`), el panel de línea de comandos (`panel_admin`) y el
+        backoffice (`libracore.admin.services`) leen esta propiedad. Antes cada
+        producto repetía `CLIENTES_DIR = REPO_ROOT / "clientes"` y el backoffice
+        usaba esa constante, no ésta: cambiar una sola dejaba al cron y al panel
+        mirando carpetas distintas.
+
+        Precedencia, de mayor a menor:
+
+        1. el parámetro `clientes_dir` de `configure()`;
+        2. la variable de entorno `LIBRA_CLIENTES_DIR` (vacía cuenta como no
+           definida);
+        3. `repo_root / "clientes"` — **el default de siempre**, así que un
+           producto que no pase nada ni defina la variable se comporta igual.
+
+        La variable se lee **en cada acceso**, no al configurar: el proceso que
+        la define (cron, `Environment=` de systemd, `environment:` del compose
+        del backoffice) no tiene que haberla exportado antes del import.
+        Usar una ruta absoluta: una relativa se resuelve contra el directorio
+        desde el que corra cada proceso, y el cron y el backoffice no comparten
+        ninguno.
+
+        🔴 Nadie más en el motor debe escribir `repo_root / "clientes"`: lo cuida
+        `tests/provisioning/test_clientes_dir.py`.
+        """
+        if self.clientes_dir_override is not None:
+            return self.clientes_dir_override
+        del_entorno = os.environ.get(CLIENTES_DIR_ENV, "").strip()
+        if del_entorno:
+            return Path(del_entorno)
         return self.repo_root / "clientes"
 
     @property
@@ -875,7 +916,8 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
               base_core_separada: bool = False,
               postgres_image: str = "postgres:16-alpine",
               backup_zip: bool = False, health_path: str = "/health",
-              migraciones: tuple[tuple[str, ...], ...] = ()):
+              migraciones: tuple[tuple[str, ...], ...] = (),
+              clientes_dir=None):
     """Configura el producto activo. Llamar una sola vez, al principio de
     `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto.
 
@@ -898,6 +940,11 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
 
     ⚠️ **Van anidados aunque sea uno solo.** La forma plana se rechaza con un
     `TypeError` — ver `_migraciones_normalizadas`.
+
+    `clientes_dir` fija dónde viven las instancias. Precedencia: este parámetro
+    > la variable de entorno `LIBRA_CLIENTES_DIR` > `repo_root / "clientes"`
+    (el default de siempre). Con `None` —lo que pasa si el producto no lo
+    declara— no cambia nada. Ver `ProductConfig.clientes_dir`.
     """
     global _cfg
     with _lock:
@@ -911,6 +958,7 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
             postgres_image=postgres_image, backup_zip=backup_zip,
             health_path=health_path,
             migraciones=_migraciones_normalizadas(migraciones),
+            clientes_dir_override=None if clientes_dir is None else Path(clientes_dir),
         )
         for p in (repo_root, repo_root / "scripts"):
             sp = str(p)
