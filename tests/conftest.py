@@ -13,6 +13,17 @@ from cryptography.x509.oid import NameOID
 RAIZ = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def _sin_clientes_dir_del_entorno(monkeypatch):
+    """`LIBRA_CLIENTES_DIR` mueve el directorio de instancias de `provisioning`.
+
+    Si quien corre la suite la tiene exportada (un VPS, un shell con el panel),
+    todos los tests que esperan el default `repo_root / "clientes"` fallarían por
+    algo que no es del código. Los que prueban la variable la setean ellos.
+    """
+    monkeypatch.delenv("LIBRA_CLIENTES_DIR", raising=False)
+
+
 @pytest.fixture
 def crear_schema():
     """Devuelve el helper que arma el schema de una instancia REAL.

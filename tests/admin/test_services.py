@@ -11,6 +11,7 @@ import types
 
 import pytest
 
+from libracore import provisioning
 from libracore.admin import services
 
 
@@ -55,7 +56,10 @@ def fake_scripts(monkeypatch, tmp_path):
         return [_find_client(p.name) for p in clientes_dir.iterdir() if p.is_dir()]
 
     fake_pa = types.ModuleType("panel_admin")
-    fake_pa.CLIENTES_DIR = clientes_dir
+    # Un señuelo a propósito: `services` ya no lee esta constante (la fuente es
+    # `provisioning.get_config().clientes_dir`), y si volviera a leerla el backup
+    # caería acá y `test_backup_cliente_crea_tar` se pondría rojo.
+    fake_pa.CLIENTES_DIR = tmp_path / "clientes-del-producto-que-no-manda"
     fake_pa._NPM_AVAILABLE = False
     fake_pa.load_clients = _load_clients
     fake_pa.find_client = _find_client
@@ -120,9 +124,16 @@ def fake_scripts(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "plans", fake_plans)
 
     services.configure(repo_root=tmp_path, db_filename="test.db")
+    # En producción lo configura el import del `panel_admin.py` del producto.
+    provisioning.configure(
+        product_name="TESTPROD", image_name="testprod:latest",
+        container_prefix="testprod", db_filename="test.db",
+        repo_root=tmp_path, clientes_dir=clientes_dir,
+    )
 
-    return {"clientes_dir": clientes_dir, "mkclient": _mkclient,
-            "pa": fake_pa, "plans": fake_plans}
+    yield {"clientes_dir": clientes_dir, "mkclient": _mkclient,
+           "pa": fake_pa, "plans": fake_plans}
+    provisioning._cfg = None
 
 
 def test_listar_clientes_vacio(fake_scripts):
@@ -325,6 +336,21 @@ def test_backup_cliente_crea_tar(fake_scripts):
     from pathlib import Path
     assert Path(out_file).exists()
     assert out_file.endswith(".tar.gz")
+
+
+def test_backup_cliente_cae_en_el_directorio_del_motor_no_en_la_constante_del_producto(fake_scripts):
+    """La única fuente es `provisioning.get_config().clientes_dir`.
+
+    `panel_admin.CLIENTES_DIR` (la constante que cada producto calcula por su
+    cuenta) es acá un señuelo: si `services` volviera a leerla, el respaldo
+    quedaría en una carpeta que ni el panel ni el cron miran.
+    """
+    from pathlib import Path
+    fake_scripts["mkclient"]("Cliente Siete", "cliente-siete")
+    out = Path(services.backup_cliente("cliente-siete"))
+    assert out.parent == fake_scripts["clientes_dir"]
+    assert out.parent != fake_scripts["pa"].CLIENTES_DIR
+    assert services._clientes_dir() == provisioning.get_config().clientes_dir
 
 
 def test_eliminar_cliente_borra_directorio(fake_scripts):

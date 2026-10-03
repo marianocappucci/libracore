@@ -100,7 +100,8 @@ dijiste contra qué base" de "no hay cadena que aplicar".
 ### `libracore.provisioning` — aprovisionamiento de instancias
 
 - **`provisioning/panel_admin.py`** (1645 líneas): operación de las instancias
-  Docker. Recorre `clientes/*/cliente.json`, levanta/actualiza contenedores
+  Docker. Recorre `<clientes_dir>/*/cliente.json` (ver abajo dónde queda ese
+  directorio), levanta/actualiza contenedores
   (`docker`/`compose`), consulta estado e imagen del contenedor
   (`container_status`, `container_image`, `container_image_id`), pinea y lee la
   imagen desplegada (`pinear_image`, `leer_image_pineada`). Es el motor del
@@ -112,6 +113,17 @@ dijiste contra qué base" de "no hay cadena que aplicar".
 - **`provisioning/mail_cuentas.py`**, **`resguardo_externo.py`**: cuentas de
   correo y respaldo externo de la instancia.
 
+**Dónde viven las instancias: `ProductConfig.clientes_dir`.** Es la **única**
+fuente de verdad de esa carpeta (`<dir>/<slug>/{cliente.json, docker-compose.yml,
+data/}`): el alta, `panel_admin` y `admin/services.py` la leen de ahí, y un test de
+barrido (`tests/provisioning/test_clientes_dir.py`) falla si alguien vuelve a
+armar `repo_root / "clientes"` por su cuenta. Precedencia: parámetro
+`clientes_dir` de `configure()` > variable de entorno `LIBRA_CLIENTES_DIR` >
+`repo_root / "clientes"` (el default de siempre). La variable se lee en cada
+acceso y conviene que sea una ruta absoluta. `CLIENTES_DIR` en los
+`scripts/panel_admin.py` y `scripts/nuevo_cliente.py` de los productos sigue
+existiendo por compatibilidad, pero el backoffice **ya no lo lee**.
+
 > Estos módulos se consumen **por atributo**, no por import directo de cada
 > función: `libracore.admin.services` hace `import panel_admin as pa` y llama
 > `pa.find_client(...)`. Es la razón por la que un `ruff --fix` de F401 sobre los
@@ -122,7 +134,9 @@ dijiste contra qué base" de "no hay cadena que aplicar".
 
 App FastAPI mínima (`admin/app.py`) con sus servicios (`admin/services.py`, 481
 líneas) que envuelven `provisioning`: `configure(repo_root, db_filename)` fija el
-contexto, y `_pa()`/`_nc()` exponen los módulos de provisioning ya cargados. Es
+contexto, y `_pa()`/`_nc()` exponen los módulos de provisioning ya cargados. El
+directorio de instancias no sale de acá sino de
+`provisioning.get_config().clientes_dir` (`_clientes_dir()`). Es
 lo que los backoffices `admin.<producto>.com.ar` montan; el gating y el
 enriquecimiento del listado de clientes (`_enrich`) viven acá.
 

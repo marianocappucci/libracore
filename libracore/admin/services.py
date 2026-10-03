@@ -76,7 +76,22 @@ def _plans():
 
 
 def _clientes_dir() -> Path:
-    return _pa().CLIENTES_DIR
+    """Directorio de instancias: **el mismo** que usan `panel_admin` y el alta.
+
+    Sale de `provisioning.get_config().clientes_dir` y de ningún otro lado. Antes
+    leía `panel_admin.CLIENTES_DIR`, una constante que cada producto calculaba por
+    su cuenta (`REPO_ROOT / "clientes"`): con una ubicación configurable, el
+    backoffice y el cron habrían mirado carpetas distintas. `CLIENTES_DIR` sigue
+    existiendo en los scripts de los productos por compatibilidad, pero **ya no
+    manda** acá.
+
+    Se pide `_pa()` antes porque es el import del `panel_admin.py` del producto lo
+    que llama a `provisioning.configure()`: sin él, un backoffice que todavía no
+    tocó ningún servicio no tendría configuración.
+    """
+    _pa()
+    from ..provisioning import get_config
+    return get_config().clientes_dir
 
 
 class ServiceError(Exception):

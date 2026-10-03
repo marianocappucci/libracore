@@ -7,6 +7,43 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [v1.123.0] — El directorio de instancias deja de estar fijo en `repo_root/clientes`
+
+Sin migración ni cambio de esquema. **El default no cambia**: un producto que no pase
+nada ni defina la variable usa `repo_root / "clientes"`, igual que hasta ahora.
+
+### Agregado
+
+- `configure(clientes_dir=None)` y la variable de entorno `LIBRA_CLIENTES_DIR`.
+  `ProductConfig.clientes_dir` resuelve, de mayor a menor: el parámetro, la variable
+  (vacía cuenta como no definida) y `repo_root / "clientes"`. La variable se lee en cada
+  acceso, no al configurar; usar una ruta absoluta.
+- `ProductConfig.clientes_dir_override` (el valor que fijó `configure()`) y la constante
+  `provisioning.CLIENTES_DIR_ENV`.
+
+### Cambiado
+
+- 🔑 **Una sola fuente de verdad.** `admin.services` leía `panel_admin.CLIENTES_DIR`, la
+  constante que cada producto calculaba por su cuenta, mientras que `panel_admin` y el alta
+  leían `get_config().clientes_dir`: con la ubicación configurable, el cron y el
+  backoffice habrían mirado carpetas distintas. Ahora `services._clientes_dir()` usa
+  `get_config().clientes_dir`. `CLIENTES_DIR` sigue en los scripts de los productos por
+  compatibilidad, pero el backoffice ya no lo lee.
+- `tests/provisioning/test_clientes_dir.py`: precedencia, default idéntico, panel y
+  backoffice sobre el mismo directorio, y un barrido que falla si aparece
+  `repo_root / "clientes"` fuera de la propiedad.
+
+### ⚠️ Al subir el pin
+
+- **Un producto que pase `clientes_dir=` a `configure()` exige este pin en TODO proceso que
+  importe su `scripts/panel_admin.py`**, incluido el contenedor de `libra-backoffice`
+  (pineado en una libracore vieja): con una anterior, `configure()` revienta con
+  `TypeError: unexpected keyword argument 'clientes_dir'` (mismo mecanismo que
+  `backup_zip`, 2026-08-12). Para mover la carpeta sin tocar código, usar la variable de
+  entorno.
+- La variable sólo surte efecto en los procesos que corren esta versión o una posterior:
+  un backoffice con un motor viejo seguiría leyendo `repo_root/clientes`.
+
 ## [v1.121.0] — La clave privada de ARCA se guarda en 0600
 
 ### Corregido
