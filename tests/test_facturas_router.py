@@ -247,6 +247,50 @@ def test_una_nota_no_admite_otra_nota(client):
     assert r.status_code == 400, r.text
 
 
+def test_una_factura_no_admite_dos_notas_de_credito_totales(client):
+    """La nota de crédito copia el original **entero**: una segunda sobre la misma factura
+    acredita dos veces lo mismo.
+
+    ARCA no lo frena (medido en homologación el 2026-10-03: acepta la segunda nota total y
+    ni siquiera la observa), así que la única defensa es esta. Un doble clic en el botón, o
+    dos admins a la vez, llegarían a emitir dos notas por el mismo importe.
+    """
+    original = _emitir(client)
+    primera = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+    assert primera.status_code == 200, primera.text
+
+    segunda = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+
+    assert segunda.status_code in (400, 409), (
+        f"la segunda nota total salió con {segunda.status_code}: la factura quedó acreditada "
+        "dos veces")
+    detalle = client.get(f"{API}/{original['id']}").json()
+    assert len(detalle["notas_credito"]) == 1, "la factura tiene que tener una sola nota"
+
+
+def test_dos_notas_totales_no_dejan_saldo_a_favor_en_la_cuenta_corriente(client):
+    """La consecuencia en plata: cada nota total registra un abono por el importe completo.
+
+    Con una factura a cuenta corriente de 14.000, **una** nota deja el saldo en 0. Una segunda
+    lo lleva a −14.000: el cliente quedaría con un crédito que no tiene, y nadie lo ve en
+    ARCA porque ARCA aceptó las dos notas.
+    """
+    from libracore.db import clients as db_clients
+    from libracore.db import cuenta_corriente as db_cc
+
+    cliente_id = db_clients.create_client("Juan Perez", cuit_dni="20304050607")
+    original = _emitir(client, condicion_venta="Cuenta Corriente")
+    assert db_cc.get_cc_saldo(cliente_id) == 14000.0, "la factura a crédito es deuda"
+
+    client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+    assert db_cc.get_cc_saldo(cliente_id) == 0.0, "una nota cancela la deuda"
+
+    client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+
+    assert db_cc.get_cc_saldo(cliente_id) == 0.0, (
+        f"el saldo quedó en {db_cc.get_cc_saldo(cliente_id)}: la segunda nota abonó de más")
+
+
 def test_las_notas_son_de_admin(client):
     """Emitir una nota mueve plata ya facturada; no es del mostrador.
 
