@@ -364,6 +364,27 @@ Sin migración. Fase 2 de 4 del tema por suite (ADR-012; ADR-007 de `libra-ui`).
 - Sólo se valida la **forma** (clave de hasta 40 letras y números, valor `#rgb`/`#rrggbb` normalizado a `#rrggbb`, máximo 32 colores;
   422 si no). La lista de colores editables y el contraste viven en `libra-ui/tema`: no se copian acá.
 
+## [v1.122.0] — `libracore.testing.pg_por_worker`: una base por worker de xdist, restaurada desde plantillas
+
+Sin migración ni cambio de runtime: sólo se importa desde tests.
+
+### Agregado
+
+- `libracore.testing.pg_por_worker.base_por_worker(clave, url)`: crea (y borra al
+  salir) la base de PostgreSQL de **este** worker de pytest-xdist, y devuelve un
+  objeto con `.url` y `.restaurar(plantilla, construir)`. `restaurar` arma la
+  plantilla la primera vez con `construir(url)` y deja la base del worker como una
+  copia nueva con `CREATE DATABASE ... TEMPLATE` (~0,1 s contra ~1,5 s de rearmar
+  el schema, medido en VentaLibra y LibraCommerce).
+- Es idempotente por proceso: un `conftest.py` importado dos veces, o el proceso
+  que lanza a los workers, no recrean ni comparten la base.
+
+### ⚠️ Al subir el pin
+
+- No cambia nada si no se usa. Para usarlo hace falta PostgreSQL >= 13 (`DROP
+  DATABASE ... WITH (FORCE)`) y un rol con CREATEDB. Receta y criterios en
+  `reglas/ci.md` del wiki.
+
 ## [v1.107.0] — Reabrir día: un admin puede anular un cierre diario, con motivo
 
 Migración de Alembic: `0011_reabrir_cierre_diario`.
