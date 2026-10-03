@@ -7,6 +7,28 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Una factura se acredita una sola vez
+
+Sin migración ni cambio de esquema. **Cambia el comportamiento de
+`POST /api/facturas/{id}/nota-credito`** (Contalibra y Restolibra): si la factura **ya tiene
+una nota de crédito** —incluida una que quedó sin CAE— contesta `409` con el nombre de esa
+nota, y dos pedidos simultáneos sobre la misma factura emiten una sola.
+
+**Por qué:** la nota copia el original entero, ARCA no lleva el saldo de una factura común
+(medido en homologación el 2026-10-03: acepta una segunda nota total sin una observación) y
+cada nota registra un abono por el importe completo. Una factura a cuenta corriente de
+14.000 quedaba en saldo 0 con una nota y en **−14.000** con la segunda. Un doble clic o dos
+admins a la vez bastaban.
+
+**Cómo:** consulta de las notas existentes más un candado en memoria por factura (el motor
+corre con un solo proceso por instancia). Se descartó una restricción única en la base: una
+base con duplicados históricos no podría crearla. Una nota sin CAE se autoriza
+(`/autorizar`) o se borra; no se pide otra encima. Las notas de débito no cambian.
+
+**Lo que no cubre:** facturas que **ya** tienen más de una nota; la guarda no las corrige ni las
+detecta (hay que mirar cada producto). Tampoco hay nota parcial: la nota sigue copiando el
+original.
+
 ## [v1.123.0] — El directorio de instancias deja de estar fijo en `repo_root/clientes`
 
 Sin migración ni cambio de esquema. **El default no cambia**: un producto que no pase

@@ -49,9 +49,11 @@ tolerable.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import logging
 import os
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -435,6 +437,69 @@ def _detalle(factura: dict) -> dict:
         "pendiente": pendiente,
         "cliente_email": cliente.get("email", "") if cliente else "",
     }
+
+
+#: Las facturas que tienen una nota de crédito **en camino** en este proceso. Ver
+#: `_una_nota_a_la_vez`.
+_NOTAS_EN_CURSO: set[int] = set()
+_NOTAS_EN_CURSO_LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _una_nota_a_la_vez(factura_id: int):
+    """Un solo pedido de nota de crédito por factura a la vez.
+
+    🔴 **Sin esto la consulta «¿ya tiene una nota?» no alcanza**: dos pedidos que llegan
+    juntos —un doble clic, o dos admins— la contestan los dos antes de que ninguno haya
+    creado la nota, y los dos emiten. La nota tarda: pide número a ARCA, crea la fila y
+    pide el CAE.
+
+    Alcanza con un candado **en memoria** porque el motor corre con un solo proceso por
+    instancia (`uvicorn` sin `--workers`). Una restricción única en la base sería más
+    fuerte, pero una base con duplicados históricos no podría crearla, y esta guarda no
+    tiene que poder fallar el arranque de un producto en producción.
+    """
+    with _NOTAS_EN_CURSO_LOCK:
+        if factura_id in _NOTAS_EN_CURSO:
+            raise HTTPException(
+                409,
+                "Ya hay una nota de crédito en curso para esta factura: esperá a que "
+                "termine antes de pedir otra.",
+            )
+        _NOTAS_EN_CURSO.add(factura_id)
+    try:
+        yield
+    finally:
+        with _NOTAS_EN_CURSO_LOCK:
+            _NOTAS_EN_CURSO.discard(factura_id)
+
+
+def _nota_previa(orig: dict) -> HTTPException | None:
+    """El error que corresponde si la factura **ya tiene** una nota de crédito, o `None`.
+
+    La nota de crédito copia el original entero, así que una segunda acredita dos veces lo
+    mismo. ARCA no lo frena (medido en homologación el 2026-10-03: acepta la segunda nota
+    total sin ni una observación), y cada nota registra un abono por el importe completo:
+    una factura a cuenta corriente quedaba con el saldo en −total.
+
+    Cuenta **cualquier** nota, también la que quedó sin CAE: esa ya tiene número, y lo que
+    corresponde es autorizarla (`/autorizar`) o borrarla, no pedir otra encima.
+    """
+    previas = db_facturas.get_nc_de_factura(orig["tipo"], orig["punto_venta"], orig["numero"])
+    if not previas:
+        return None
+    nota = previas[0]
+    nombre = f"{TIPO_LABEL.get(nota['tipo'], 'Nota de crédito')} {_numero(nota)}"
+    if not nota.get("cae") or nota["cae"] == "PENDIENTE":
+        return HTTPException(
+            409,
+            f"Esta factura ya tiene la {nombre}, que todavía no tiene CAE: autorizala o "
+            "eliminala; no se pide otra nota encima.",
+        )
+    return HTTPException(
+        409,
+        f"Esta factura ya tiene la {nombre}: una factura se acredita una sola vez.",
+    )
 
 
 async def _crear_nota(
@@ -904,26 +969,32 @@ def build_comprobantes_router(
         nc_tipo = TIPO_NC.get(orig["tipo"])
         if not nc_tipo:
             raise HTTPException(400, "Tipo de comprobante no admite nota de crédito")
-        nota_id = asyncio.run(_crear_nota(orig, nc_tipo, "Anula", usuario["id"]))
+        # El candado cubre la consulta **y** la emisión: si sólo cubriera la consulta,
+        # el segundo pedido la haría antes de que el primero cree la nota.
+        with _una_nota_a_la_vez(factura_id):
+            previa = _nota_previa(orig)
+            if previa:
+                raise previa
+            nota_id = asyncio.run(_crear_nota(orig, nc_tipo, "Anula", usuario["id"]))
 
-        # Si el original era a crédito, la deuda del cliente se cancela: quedó
-        # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
-        # no debe.
-        if orig.get("condicion_venta") == "Cuenta Corriente":
-            cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
-            if cliente:
-                db_cc.create_cc_pago(
-                    cliente_id=cliente["id"], monto=orig["total"],
-                    fecha=datetime.date.today().isoformat(),
-                    concepto=(
-                        f"NC {_numero(orig)} (anula "
-                        f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
-                        f"{_numero(orig)})"
-                    ),
-                    referencia="", medio_pago="Cuenta Corriente", caja_id=None,
-                    usuario_id=usuario["id"],
-                )
-        return db_facturas.get_factura(nota_id)
+            # Si el original era a crédito, la deuda del cliente se cancela: quedó
+            # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
+            # no debe.
+            if orig.get("condicion_venta") == "Cuenta Corriente":
+                cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
+                if cliente:
+                    db_cc.create_cc_pago(
+                        cliente_id=cliente["id"], monto=orig["total"],
+                        fecha=datetime.date.today().isoformat(),
+                        concepto=(
+                            f"NC {_numero(orig)} (anula "
+                            f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
+                            f"{_numero(orig)})"
+                        ),
+                        referencia="", medio_pago="Cuenta Corriente", caja_id=None,
+                        usuario_id=usuario["id"],
+                    )
+            return db_facturas.get_factura(nota_id)
 
     @router.post("/{factura_id}/nota-debito", dependencies=admin)
     def nota_debito(factura_id: int, usuario: dict = Depends(usuario_actual)):

@@ -291,6 +291,110 @@ def test_dos_notas_totales_no_dejan_saldo_a_favor_en_la_cuenta_corriente(client)
         f"el saldo quedó en {db_cc.get_cc_saldo(cliente_id)}: la segunda nota abonó de más")
 
 
+def test_la_segunda_nota_dice_cual_es_la_primera(client):
+    """El 409 nombra la nota que ya existe, para que quien lo lee sepa dónde mirar."""
+    original = _emitir(client)
+    primera = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).json()
+
+    r = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+
+    assert r.status_code == 409, r.text
+    assert "Nota de Crédito C 0001-" in r.json()["detail"]
+    assert str(primera["numero"]).zfill(8) in r.json()["detail"]
+    assert "una sola vez" in r.json()["detail"]
+
+
+def test_una_nota_sin_cae_se_autoriza_o_se_borra_no_se_pide_otra_encima(client):
+    """Una nota que quedó sin CAE ya tiene número: pedir otra la duplicaría.
+
+    Y el camino de salida existe: borrarla (sin CAE se puede) libera a la factura.
+    """
+    original = _emitir(client)
+    nota = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).json()
+    conn = core.get_connection()
+    conn.execute("UPDATE facturas SET cae = 'PENDIENTE' WHERE id = ?", (nota["id"],))
+    conn.commit()
+    conn.close()
+
+    r = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+    assert r.status_code == 409, r.text
+    assert "todavía no tiene CAE" in r.json()["detail"]
+    assert "autorizala o eliminala" in r.json()["detail"]
+
+    assert client.delete(f"{API}/{nota['id']}", headers=ADMIN).status_code == 200
+    assert client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).status_code == 200
+
+
+def test_la_guarda_es_por_factura_y_no_frena_a_las_notas_de_debito(client):
+    """El control de los de arriba: sin esto, bloquear **todas** las notas pasaría igual."""
+    una = _emitir(client)
+    otra = _emitir(client)
+    assert client.post(f"{API}/{una['id']}/nota-credito", headers=ADMIN).status_code == 200
+
+    assert client.post(f"{API}/{otra['id']}/nota-credito", headers=ADMIN).status_code == 200, (
+        "la nota de otra factura no tiene por qué bloquearse")
+    assert client.post(f"{API}/{una['id']}/nota-debito", headers=ADMIN).status_code == 200
+    assert client.post(f"{API}/{una['id']}/nota-debito", headers=ADMIN).status_code == 200, (
+        "una factura admite varias notas de débito: sólo la de crédito acredita todo")
+
+
+def test_dos_pedidos_simultaneos_emiten_una_sola_nota(client, monkeypatch):
+    """🔑 El caso que la consulta sola no cubre: dos pedidos que llegan juntos.
+
+    La emisión de la nota tarda (número de ARCA, fila, CAE). Sin el candado, los dos
+    pedidos preguntan «¿ya tiene una nota?» antes de que ninguno la haya creado, y los
+    dos emiten. Se simula la demora y se lanzan los dos a la vez.
+    """
+    import asyncio
+    import threading
+
+    original = _emitir(client)
+    real = fr._crear_nota
+    entro = threading.Event()
+
+    async def lenta(*args, **kwargs):
+        entro.set()
+        await asyncio.sleep(0.4)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(fr, "_crear_nota", lenta)
+    resultados = []
+
+    def pedir():
+        resultados.append(client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN))
+
+    primero = threading.Thread(target=pedir)
+    primero.start()
+    assert entro.wait(5), "el primer pedido nunca llegó a emitir"
+    segundo = threading.Thread(target=pedir)
+    segundo.start()
+    primero.join()
+    segundo.join()
+
+    codigos = sorted(r.status_code for r in resultados)
+    assert codigos == [200, 409], f"salieron {codigos}: tiene que salir una nota y un rechazo"
+    assert "en curso" in next(r for r in resultados if r.status_code == 409).json()["detail"]
+    detalle = client.get(f"{API}/{original['id']}").json()
+    assert len(detalle["notas_credito"]) == 1
+
+
+def test_si_la_emision_de_la_nota_falla_el_candado_se_libera(client, monkeypatch):
+    """Un candado que queda tomado dejaría a la factura sin poder acreditarse nunca."""
+    original = _emitir(client)
+    real = fr._crear_nota
+
+    async def rota(*args, **kwargs):
+        raise RuntimeError("ARCA no contesta")
+
+    monkeypatch.setattr(fr, "_crear_nota", rota)
+    with pytest.raises(RuntimeError):
+        client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+    assert original["id"] not in fr._NOTAS_EN_CURSO, "el candado quedó tomado"
+
+    monkeypatch.setattr(fr, "_crear_nota", real)
+    assert client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).status_code == 200
+
+
 def test_las_notas_son_de_admin(client):
     """Emitir una nota mueve plata ya facturada; no es del mostrador.
 
