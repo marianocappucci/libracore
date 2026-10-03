@@ -72,6 +72,30 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
 
+      # El PostgreSQL del CI es descartable, asi que no paga el disco: las suites
+      # que crean bases por test fuerzan un checkpoint en cada `CREATE DATABASE`.
+      # Un ALTER SYSTEM por sentencia (varios en una transaccion no se admiten) y
+      # se verifica desde una conexion NUEVA con reintentos, porque
+      # `pg_reload_conf()` es asincrono. Receta de libradesk (reglas/ci.md en el wiki).
+      - name: PostgreSQL del CI sin fsync (descartable)
+        run: |
+          python - <<'PY'
+          import os, time, psycopg
+          url = os.environ["LIBRACORE_POSTGRES_URL"]
+          with psycopg.connect(url, autocommit=True) as c:
+              for s in ("ALTER SYSTEM SET fsync=off", "ALTER SYSTEM SET full_page_writes=off",
+                        "ALTER SYSTEM SET synchronous_commit=off", "SELECT pg_reload_conf()"):
+                  c.execute(s)
+          for intento in range(20):
+              with psycopg.connect(url, autocommit=True) as c:
+                  fsync = c.execute("show fsync").fetchone()[0]
+              if fsync == "off":
+                  break
+              time.sleep(0.5)
+          print("fsync =", fsync, "tras", intento + 1, "intento/s")
+          assert fsync == "off", "el ALTER SYSTEM no quedo aplicado"
+          PY
+
       # `--cov` sin argumento toma el paquete de [tool.coverage.run] del
       # pyproject. El piso (fail_under) tambien esta ahi: es un trinquete
       # fijado 2 puntos debajo de lo medido el 2026-07-31, no una meta.
