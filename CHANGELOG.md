@@ -28,6 +28,17 @@ corre sobre su `create_app()` y afirma `== []`).
 **Lo que puede romper al subir el pin:** una fixture de un producto que mande un booleano en uno de esos campos (se corrige el cuerpo de la fixture). Los productos que suman un campo numérico propio sin el
 helper lo ven con la guardia. `libracommerce` reexporta el helper y la guardia de acá en un release aparte.
 
+## [Unreleased] — La guarda del CUIT no bloquea las notas (corrige v1.124.0)
+
+Sin migración. **Corrige un error de `v1.124.0`:** `problema_del_receptor` aplicaba la regla del dígito
+verificador también a las **notas de crédito y de débito**. Una nota hereda el receptor de una factura que
+ARCA ya autorizó; si esa factura salió a un CUIT que no existe (en una clase A ARCA la autoriza con el aviso
+`10238`: «tenés que emitir una Nota de Crédito o anular la operación»), la guarda **impedía justamente la
+nota que ARCA pide**. **Medido en homologación el 2026-10-04:** la nota de crédito A al mismo CUIT
+inexistente, asociada a esa factura, ARCA la autoriza (CAE con el mismo aviso). Ahora el verificador se
+exige sólo a las **facturas**; las notas de clase A y FCE siguen exigiendo CUIT de 11 dígitos. Ningún
+producto con emisión real desplegó `v1.124.0` antes de esta corrección.
+
 ## [Unreleased] — La guarda del CUIT del receptor vive en el motor
 
 Sin migración ni cambio de esquema. **Cambia el comportamiento de `arca_wsfe.solicitar_cae`**

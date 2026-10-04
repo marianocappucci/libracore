@@ -341,6 +341,9 @@ def test_la_guarda_dice_que_cliente_y_que_cargar(tipo, cuit, dice):
     (6, ""), (6, "1"), (11, ""), (11, "1"), (7, ""), (13, ""),    # B y C: consumidor final
     (1, CUIT_BIEN), (3, CUIT_BIEN), (201, CUIT_BIEN), (6, CUIT_BIEN),
     (1, "20.12345678.6"), (1, "20-12345678-6"),                    # CUIT con puntos o guiones
+    # Una nota hereda el receptor de una factura ya autorizada: aunque el CUIT no cierre (ARCA autorizó
+    # esa factura con aviso), hay que poder corregirla. Medido el 2026-10-04: la NC A a ese CUIT sale.
+    (3, CUIT_MAL), (8, CUIT_MAL), (13, CUIT_MAL), (203, CUIT_MAL), (2, CUIT_MAL), (7, CUIT_MAL),
 ])
 def test_la_guarda_deja_pasar_lo_que_sirve(tipo, cuit):
     assert arca_wsfe.problema_del_receptor(_factura_base(tipo=tipo, cliente_cuit=cuit)) is None
@@ -382,3 +385,10 @@ def test_un_cuit_con_puntos_sale_como_cuit_y_no_como_consumidor_final(monkeypatc
 
     assert "<DocTipo>80</DocTipo>" in enviado[0]
     assert "<DocNro>20123456786</DocNro>" in enviado[0]
+
+
+@pytest.mark.parametrize("tipo, cuit", [(3, ""), (3, "1"), (203, ""), (2, "")])
+def test_una_nota_de_clase_a_o_fce_sigue_exigiendo_cuit_de_11_digitos(tipo, cuit):
+    """La excepción de las notas es sólo del verificador: sin CUIT, ARCA rechaza una A (10013/10015)."""
+    problema = arca_wsfe.problema_del_receptor(_factura_base(tipo=tipo, cliente_cuit=cuit, cliente_razon="Agro Norte"))
+    assert problema and "Agro Norte" in problema and "ficha del cliente" in problema, problema
