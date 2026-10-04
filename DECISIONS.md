@@ -399,3 +399,16 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
 - Decisión 2 — **`build_nota_de_credito_router`** monta sólo `POST {prefix}/{factura_id}/nota-credito` con el gate `solo_admin`. La nota no toca la caja, así que no depende del turno.
 - Lo que **no** hace: no ofrece listado ni detalle de facturas (el producto que lo monte tiene que sacar el `factura_id` de su venta).
 
+## ADR-018 — La nota de crédito parcial y el tope acumulado son del motor
+
+**Estado:** aceptada (2026-10-04). **Contexto:** la fase 1 (ADR-014) sólo emite la nota **total**: sirve para «me equivoqué, rehago», no para una diferencia de kilos, un descuento o una bonificación. ARCA no lleva el saldo de una factura común (acepta de más y dos veces: medido el 2026-10-03), así que el tope es nuestro.
+
+- Decisión 1 — **`importe` es el monto a acreditar, con IVA incluido**, de hasta dos decimales y mayor que cero. Sin `importe`, nota total (nada cambia para quien ya la usa).
+- Decisión 2 — **tope acumulado:** lo acreditado por las notas **con CAE** más el importe no puede superar el total de la factura (`SUPERA_SALDO`, 409). La nota total sólo se admite sobre una factura sin notas; con parciales, se pide una nota por el saldo (el mensaje dice cuánto).
+- Decisión 3 — **el reparto es del motor:** el neto sale del importe con la alícuota de la factura (el motor arma un solo bloque de IVA por comprobante) y el IVA es la resta. Medido en homologación: ARCA tolera el IVA a hasta 15 centavos del exacto. Una C no discrimina IVA.
+- Decisión 4 — **la nota parcial acredita un monto, no unas líneas:** un solo ítem que dice qué acredita; no copia los del original.
+- Decisión 5 — **FCE:** sólo por menos que el saldo (medido: una nota sin anulación sobre el saldo entero da `10184`; revertirla entera exige que el comprador la rechace).
+- Decisión 6 — **cuenta corriente por nota:** el abono es el de cada nota y la marca `nc:factura:<id>:<nota_id>` (la de la fase 1 sigue valiendo). El motivo sigue sin guardarse en el motor.
+- Compatibilidad: una nota previa que no informa `total` cuenta como la factura entera (el lado seguro, igual que la fase 1).
+- Lo que **no** resuelve: los totales y conciliaciones de cada producto con notas parciales (LibraCargo: ver el diseño en el wiki), la pantalla para elegir el importe y `anular_venta` con varias notas (libracommerce).
+
