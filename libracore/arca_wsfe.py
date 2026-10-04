@@ -3,6 +3,7 @@ Cliente WSFE (Facturación Electrónica v1) de ARCA/AFIP.
 Solicita CAE y consulta el último comprobante autorizado.
 """
 
+import re
 import ssl
 import xml.etree.ElementTree as ET
 
@@ -60,6 +61,69 @@ def condicion_iva_receptor_id(factura: dict) -> int:
         "WSFE: falta la condición de IVA del cliente, que ARCA exige en cada "
         "comprobante (RG 5616). Cargala en la ficha del cliente."
     )
+
+
+def cuit_del_receptor(factura: dict) -> str:
+    """El CUIT del receptor **sólo en dígitos**, o `""`.
+
+    Se quitan guiones, puntos, espacios y todo lo que no sea un dígito: un CUIT cargado como
+    `30.70933285.2` llegaba antes como «no es un CUIT» y el comprobante salía a consumidor final
+    (o, en una clase A, rebotaba en ARCA con un error que no explica nada).
+    """
+    return re.sub(r"\D", "", str(factura.get("cliente_cuit") or ""))
+
+
+def cuit_con_verificador_valido(digitos: str) -> bool:
+    """¿Son 11 dígitos con el dígito verificador de AFIP/ARCA bien calculado?
+
+    Es la regla pública del CUIT/CUIL (módulo 11, pesos 5-4-3-2-7-6-5-4-3-2). Que cierre **no**
+    prueba que la CUIT exista en el padrón de ARCA; que no cierre prueba que no existe.
+    """
+    if len(digitos) != 11 or not digitos.isdigit():
+        return False
+    pesos = (5, 4, 3, 2, 7, 6, 5, 4, 3, 2)
+    resto = sum(int(d) * p for d, p in zip(digitos[:10], pesos, strict=True)) % 11
+    verificador = (11 - resto) % 11
+    return int(digitos[10]) == (9 if verificador == 10 else verificador)
+
+
+def problema_del_receptor(factura: dict) -> str | None:
+    """Por qué el receptor de esta factura no sirve para emitirla por ARCA, o `None`.
+
+    Es **la** guarda del CUIT de la familia: la usa `solicitar_cae` y la puede llamar un producto
+    **antes** de pedirle el número a ARCA, para contestar con un 422 que dice qué cliente y qué
+    cargar. Un producto no escribe su propia versión (`reglas/producto.md` del wiki).
+
+    - Con **11 dígitos**, el verificador tiene que cerrar, en cualquier clase.
+    - Las **clases A** y toda **FCE** exigen CUIT de 11 dígitos (DocTipo 80). Una B o una C sin
+      CUIT, o con uno que no es de 11 dígitos, es un consumidor final y sale bien.
+
+    Medido en homologación el 2026-10-03:
+    - un CUIT `1` en una Factura A vuelve `[10013] DocTipo debe ser igual a 80` y
+      `[10015] DocNro invalido`;
+    - un CUIT de 11 dígitos con el verificador mal vuelve `[10015] … no se encuentra registrado en
+      los padrones` en una **B**, pero en una **A ARCA autoriza con CAE** y sólo avisa (`10238`:
+      «La CUIT receptora que ingresaste no existe. Tenes que emitir una Nota de Credito o anular
+      la operacion»). Por eso la guarda **bloquea también la A**: una factura a un receptor que no
+      existe se emite para anularla después.
+    """
+    crudo = str(factura.get("cliente_cuit") or "").strip()
+    digitos = cuit_del_receptor(factura)
+    razon = str(factura.get("cliente_razon") or "").strip()
+    cliente = f"del cliente {razon!r}" if razon else "del cliente"
+    if len(digitos) == 11:
+        if cuit_con_verificador_valido(digitos):
+            return None
+        return (f"el CUIT {crudo!r} {cliente} no es válido (el dígito verificador no cierra): "
+                "revisalo en la ficha del cliente")
+    tipo = int(factura.get("tipo") or 0)
+    if tipo not in _TIPOS_A and tipo not in tipos.FCE:
+        return None
+    que = "una FCE" if tipo in tipos.FCE else f"un comprobante clase {tipos.LETRA.get(tipo, 'A')}"
+    cargado = f"tiene {crudo!r}" if crudo else "no tiene CUIT cargado"
+    cliente_sujeto = f"el cliente {razon!r}" if razon else "el cliente"
+    return (f"{cliente_sujeto} {cargado}, y {que} se emite a un receptor con CUIT de 11 dígitos: "
+            "cargalo en la ficha del cliente antes de emitir por ARCA")
 
 
 # Los tipos viven en `tipos_comprobante`; acá sólo se les da el nombre que usa este módulo.
@@ -226,15 +290,13 @@ async def solicitar_cae(
         imp_iva  = "0.00"
         imp_opex = f"{sub:.2f}"
 
-    # Receptor
-    cuit_cli = (factura.get("cliente_cuit") or "").replace("-", "").replace(" ", "")
-    if len(cuit_cli) == 11 and cuit_cli.isdigit():
-        doc_tipo, doc_nro = 80, cuit_cli
-    elif tipo in TIPOS_FCE:
-        # Una FCE se le emite a una empresa: con consumidor final ARCA contesta 10015.
-        raise RuntimeError("WSFE: la FCE exige el CUIT del receptor.")
-    else:
-        doc_tipo, doc_nro = 99, 0
+    # Receptor. La guarda va **antes de cualquier llamada a ARCA** y es la misma que usa un
+    # producto para contestar antes de pedir el número.
+    problema = problema_del_receptor(factura)
+    if problema:
+        raise RuntimeError(f"WSFE: {problema}")
+    cuit_cli = cuit_del_receptor(factura)
+    doc_tipo, doc_nro = (80, cuit_cli) if len(cuit_cli) == 11 else (99, 0)
 
     # 🔴 La FCE exige la fecha de vencimiento de pago **aunque el concepto sea
     # Productos** (sin ella, 10163), que es cuando el resto de los comprobantes

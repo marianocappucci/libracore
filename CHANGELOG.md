@@ -7,6 +7,37 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La guarda del CUIT del receptor vive en el motor
+
+Sin migración ni cambio de esquema. **Cambia el comportamiento de `arca_wsfe.solicitar_cae`**
+(todos los productos que emiten por ARCA): antes de cualquier llamada a ARCA rechaza, con un
+mensaje que dice qué cliente y qué cargar, un receptor que no sirve. Se expone además
+`problema_del_receptor(factura)`, para que un producto conteste con un 422 **antes de pedir el
+número**, y `cuit_con_verificador_valido` y `cuit_del_receptor`.
+
+**Qué exige:** CUIT de 11 dígitos en las clases **A** y en toda **FCE**; y, si el CUIT tiene 11
+dígitos, que el dígito verificador cierre, **en cualquier clase**. Una B o una C sin CUIT, o con uno
+que no es de 11 dígitos, siguen saliendo a consumidor final.
+
+**Medido en homologación (2026-10-03):** una Factura A con CUIT `1` vuelve `[10013]` y `[10015]`;
+un CUIT de 11 dígitos con el verificador mal vuelve `[10015]` («no se encuentra registrado en los
+padrones») en una **B**, pero en una **A ARCA autoriza con CAE** y sólo avisa (`10238`: «la CUIT
+receptora que ingresaste no existe, tenés que emitir una Nota de Crédito o anular la operación»).
+Por eso la guarda **bloquea también la A**: sin ella se emite una factura a un receptor que no
+existe para anularla después.
+
+**También corrige** que un CUIT con puntos (`30.70933285.2`) no se reconocía como CUIT y el
+comprobante salía con DocTipo 99; ahora se normaliza a dígitos. Y reemplaza la guarda parcial
+«la FCE exige el CUIT del receptor» por esta, con otro mensaje.
+
+**Lo que puede romper al subir el pin:** los tests de un producto que pasen por el
+`solicitar_cae` real con un CUIT inventado (la fixture de este repo, `20123456789`, tampoco
+cerraba). Se arreglan con un CUIT que cierre, p. ej. `20123456786`; no con una excepción.
+
+**Por qué acá y no en cada producto:** es lógica fiscal que todos comparten (regla del 2026-10-03:
+el arreglo de fondo vive siempre en el motor). LibraCargo la había escrito en su repo
+([libracargo#243](https://github.com/marianocappucci/libracargo/pull/243)) y se muda acá.
+
 ## [Unreleased] — Una factura se acredita una sola vez
 
 Sin migración ni cambio de esquema. **Cambia el comportamiento de
