@@ -14,8 +14,11 @@ admin, alta de clientes), la generación de PDFs/tickets, las migraciones del
 schema común, y un puñado de routers FastAPI listos para montar. Lo que **no**
 vive acá es la lógica de negocio propia de cada vertical: recetas y comandas
 (Restolibra), historia clínica (MedLibra), catálogo comercial (Gestiolibra). El
-criterio de qué sube al motor y qué queda en el producto es explícito y se
-discute caso por caso, no por conveniencia.
+criterio de qué sube al motor y qué queda en el producto es explícito: **sube todo lo
+que otro producto comparte o podría compartir** (protocolo, reglas fiscales y sus
+validaciones, guardas, numeración, cuenta corriente) y **sólo queda en el producto lo propio
+de su vertical** (pantallas, textos, modelo de datos y lógica de negocio del vertical). El
+arreglo de fondo se hace siempre acá, nunca en un producto.
 
 El principio de diseño que atraviesa todo el paquete es **mínima huella en el
 consumidor**: LibraCore se integra por configuración inyectada y callbacks, no
@@ -240,3 +243,12 @@ tag de LibraCore y abre el PR de actualización.
   re-exports, migraciones empaquetadas, guarda de motor en el producto) viven
   ahí; un `DECISIONS.md` propio en formato ADR queda pendiente si se replica el
   patrón de gestiolibra al resto de los motores.
+
+## Dónde se arregla (regla de la familia, 2026-10-03)
+
+**Este repo es un motor: el arreglo de fondo de lo que le toca vive siempre acá**, nunca en cada
+producto que lo consume. Lo que otro producto comparte o podría compartir se escribe y se arregla
+acá y llega a los productos subiendo el pin; el producto aporta sólo costuras (hooks) y lo suyo
+(pantallas, textos, modelo de datos propio). Si falta una costura, se agrega acá. Si un producto
+necesita el arreglo antes, se hace acá igual (PR y tag): no se deja «provisorio» en el producto.
+Detalle y motivo: `reglas/producto.md` del wiki.

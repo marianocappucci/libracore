@@ -219,8 +219,9 @@ es obligatorio.
 ### La alícuota que no está en la tabla cae al 21%
 
 `arca_wsfe._iva_id()` mapea `{0: 3, 10.5: 4, 21: 5, 27: 6}` y **cae al 21 ante un
-porcentaje que no conoce**, sin avisar. Si un producto permite alícuotas libres,
-el que valida es el producto.
+porcentaje que no conoce**, sin avisar. **Es un hueco del motor, no del producto:** lo que
+corresponde es que el motor rechace una alícuota que no conoce en lugar de caer al 21%
+(pendiente). Mientras tanto ningún producto agrega su propia validación: se arregla acá.
 
 ### El tag de la consulta
 
