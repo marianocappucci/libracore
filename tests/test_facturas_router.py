@@ -18,7 +18,7 @@ import pytest
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
-from libracore import config_manager
+from libracore import config_manager, notas_de_credito
 from libracore import facturas_router as fr
 from libracore import pdf_generator as pdf_gen
 from libracore.db import core
@@ -349,7 +349,7 @@ def test_dos_pedidos_simultaneos_emiten_una_sola_nota(client, monkeypatch):
     import threading
 
     original = _emitir(client)
-    real = fr._crear_nota
+    real = fr.get_next_numero_with_arca
     entro = threading.Event()
 
     async def lenta(*args, **kwargs):
@@ -357,7 +357,7 @@ def test_dos_pedidos_simultaneos_emiten_una_sola_nota(client, monkeypatch):
         await asyncio.sleep(0.4)
         return await real(*args, **kwargs)
 
-    monkeypatch.setattr(fr, "_crear_nota", lenta)
+    monkeypatch.setattr(fr, "get_next_numero_with_arca", lenta)
     resultados = []
 
     def pedir():
@@ -381,17 +381,17 @@ def test_dos_pedidos_simultaneos_emiten_una_sola_nota(client, monkeypatch):
 def test_si_la_emision_de_la_nota_falla_el_candado_se_libera(client, monkeypatch):
     """Un candado que queda tomado dejaría a la factura sin poder acreditarse nunca."""
     original = _emitir(client)
-    real = fr._crear_nota
+    real = fr.get_next_numero_with_arca
 
     async def rota(*args, **kwargs):
         raise RuntimeError("ARCA no contesta")
 
-    monkeypatch.setattr(fr, "_crear_nota", rota)
+    monkeypatch.setattr(fr, "get_next_numero_with_arca", rota)
     with pytest.raises(RuntimeError):
         client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
-    assert original["id"] not in fr._NOTAS_EN_CURSO, "el candado quedó tomado"
+    assert not notas_de_credito.en_curso(("facturas", original["id"])), "el candado quedó tomado"
 
-    monkeypatch.setattr(fr, "_crear_nota", real)
+    monkeypatch.setattr(fr, "get_next_numero_with_arca", real)
     assert client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).status_code == 200
 
 

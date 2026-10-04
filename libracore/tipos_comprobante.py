@@ -38,3 +38,15 @@ LETRA = {
 def en_sql(tipos) -> str:
     """`1,6,11` para un `IN (...)`. Son enteros de este módulo, nunca entrada de usuario."""
     return ",".join(str(int(t)) for t in tipos)
+
+
+#: Cómo se lee cada tipo en un papel argentino. Antes vivía en `facturas_router`; una nota de crédito lo usa
+#: para nombrar a la factura que acredita y a la nota que ya la acreditó, y no puede depender del router.
+NOMBRE = {
+    1: "Factura A", 6: "Factura B", 11: "Factura C",
+    3: "Nota de Crédito A", 8: "Nota de Crédito B", 13: "Nota de Crédito C",
+    2: "Nota de Débito A", 7: "Nota de Débito B", 12: "Nota de Débito C",
+    201: "FCE MiPyME A", 206: "FCE MiPyME B", 211: "FCE MiPyME C",
+    202: "Nota de Débito FCE A", 207: "Nota de Débito FCE B", 212: "Nota de Débito FCE C",
+    203: "Nota de Crédito FCE A", 208: "Nota de Crédito FCE B", 213: "Nota de Crédito FCE C",
+}
