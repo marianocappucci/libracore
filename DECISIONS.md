@@ -320,3 +320,21 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
     conservan el validador; los que suman un campo numérico nuevo sin `sin_booleanos` lo ven con `assert campos_numericos_que_aceptan_booleano(app) == []`, que conviene agregar a su suite.
   - **Para `libracommerce`:** su `web/_validacion.sin_booleanos` y su `testing.campos_numericos_que_aceptan_booleano` pasan a reexportar las de acá en un release aparte (hoy son copias fieles: mismo código, mismo mensaje).
   - `libracore.testing` ahora importa FastAPI y pydantic, que ya eran dependencias del motor (no hay extra nuevo).
+
+## ADR-014 — La nota de crédito es una sola, del motor, y los productos aportan costuras
+
+- Estado: aceptada
+- Fecha: 2026-10-04 (decisión del humano)
+- Contexto: el motor ya emitía notas de crédito para Contalibra, Restolibra y LibraClub (`facturas_router`), pero
+  la lógica estaba atada a su tabla `facturas`, no tenía guardas (una factura se podía acreditar dos veces: ARCA lo
+  acepta, y la cuenta corriente quedaba en −total) y LibraCargo, VentaLibra, GestioLibra y MedLibra no tenían nada.
+  La alternativa era que cada producto escribiera la suya.
+- Decisión: **una sola implementación en el motor**, `libracore.notas_de_credito`, igual para todos. El motor pone
+  el tipo de nota, las guardas, el armado de la nota y el orden de las operaciones; el producto aporta como
+  **costuras** (callables) lo que depende de su modelo: cargar las notas previas, numerar, registrar, pedir el CAE y
+  lo suyo después. El router del motor es sólo el primer consumidor. Si a un producto le falta una costura, se
+  agrega al motor.
+- Consecuencias: una guarda o un arreglo llega a los siete productos con un bump de pin; hay un solo lugar donde
+  mirar cuando una nota sale mal; y un producto que adopte la nota no puede divergir en las reglas. Costo: el
+  núcleo no puede conocer ningún modelo de producto, así que habla en diccionarios y en callables.
+

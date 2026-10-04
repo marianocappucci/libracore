@@ -49,18 +49,24 @@ tolerable.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import datetime
 import logging
 import os
-import threading
 from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from libracore import arca_credenciales, arca_facturacion, arca_wsaa, arca_wsfe, config_manager, email_sender
+from libracore import (
+    arca_credenciales,
+    arca_facturacion,
+    arca_wsaa,
+    arca_wsfe,
+    config_manager,
+    email_sender,
+    notas_de_credito,
+)
 from libracore import pdf_generator as pdf_gen
 from libracore import tipos_comprobante as tipos_cbte
 from libracore.arca_facturacion import RECEPTORES_DE_FACTURA_A, get_next_numero_with_arca, solicitar_cae
@@ -97,14 +103,7 @@ TIPOS_DEFAULT = TIPOS_POR_CONDICION["Monotributista"]
 TIPO_NC = tipos_cbte.TIPO_NC
 TIPO_ND = tipos_cbte.TIPO_ND
 
-TIPO_LABEL = {
-    1: "Factura A", 6: "Factura B", 11: "Factura C",
-    3: "Nota de Crédito A", 8: "Nota de Crédito B", 13: "Nota de Crédito C",
-    2: "Nota de Débito A", 7: "Nota de Débito B", 12: "Nota de Débito C",
-    201: "FCE MiPyME A", 206: "FCE MiPyME B", 211: "FCE MiPyME C",
-    202: "Nota de Débito FCE A", 207: "Nota de Débito FCE B", 212: "Nota de Débito FCE C",
-    203: "Nota de Crédito FCE A", 208: "Nota de Crédito FCE B", 213: "Nota de Crédito FCE C",
-}
+TIPO_LABEL = tipos_cbte.NOMBRE
 
 #: Los tres que son factura —y no nota—. Se usa para decidir si un comprobante
 #: puede tener notas colgando y si se le pueden imputar cobros.
@@ -455,120 +454,71 @@ def _detalle(factura: dict) -> dict:
     }
 
 
-#: Las facturas que tienen una nota de crédito **en camino** en este proceso. Ver
-#: `_una_nota_a_la_vez`.
-_NOTAS_EN_CURSO: set[int] = set()
-_NOTAS_EN_CURSO_LOCK = threading.Lock()
+#: Cómo traduce este router cada motivo del núcleo (`notas_de_credito`) a su respuesta HTTP. Los otros
+#: productos que emiten notas traducen los mismos códigos como les convenga.
+_STATUS_DE_NOTA = {
+    notas_de_credito.NotaNoPermitida.TIPO: 400,
+    notas_de_credito.NotaNoPermitida.YA_TIENE_NOTA: 409,
+    notas_de_credito.NotaNoPermitida.NOTA_SIN_CAE: 409,
+    notas_de_credito.NotaNoPermitida.EN_CURSO: 409,
+    notas_de_credito.NotaNoPermitida.RECEPTOR: 422,
+}
 
 
-@contextlib.contextmanager
-def _una_nota_a_la_vez(factura_id: int):
-    """Un solo pedido de nota de crédito por factura a la vez.
-
-    🔴 **Sin esto la consulta «¿ya tiene una nota?» no alcanza**: dos pedidos que llegan
-    juntos —un doble clic, o dos admins— la contestan los dos antes de que ninguno haya
-    creado la nota, y los dos emiten. La nota tarda: pide número a ARCA, crea la fila y
-    pide el CAE.
-
-    Alcanza con un candado **en memoria** porque el motor corre con un solo proceso por
-    instancia (`uvicorn` sin `--workers`). Una restricción única en la base sería más
-    fuerte, pero una base con duplicados históricos no podría crearla, y esta guarda no
-    tiene que poder fallar el arranque de un producto en producción.
-    """
-    with _NOTAS_EN_CURSO_LOCK:
-        if factura_id in _NOTAS_EN_CURSO:
-            raise HTTPException(
-                409,
-                "Ya hay una nota de crédito en curso para esta factura: esperá a que "
-                "termine antes de pedir otra.",
-            )
-        _NOTAS_EN_CURSO.add(factura_id)
-    try:
-        yield
-    finally:
-        with _NOTAS_EN_CURSO_LOCK:
-            _NOTAS_EN_CURSO.discard(factura_id)
-
-
-def _nota_previa(orig: dict) -> HTTPException | None:
-    """El error que corresponde si la factura **ya tiene** una nota de crédito, o `None`.
-
-    La nota de crédito copia el original entero, así que una segunda acredita dos veces lo
-    mismo. ARCA no lo frena (medido en homologación el 2026-10-03: acepta la segunda nota
-    total sin ni una observación), y cada nota registra un abono por el importe completo:
-    una factura a cuenta corriente quedaba con el saldo en −total.
-
-    Cuenta **cualquier** nota, también la que quedó sin CAE: esa ya tiene número, y lo que
-    corresponde es autorizarla (`/autorizar`) o borrarla, no pedir otra encima.
-    """
-    previas = db_facturas.get_nc_de_factura(orig["tipo"], orig["punto_venta"], orig["numero"])
-    if not previas:
-        return None
-    nota = previas[0]
-    nombre = f"{TIPO_LABEL.get(nota['tipo'], 'Nota de crédito')} {_numero(nota)}"
-    if not nota.get("cae") or nota["cae"] == "PENDIENTE":
-        return HTTPException(
-            409,
-            f"Esta factura ya tiene la {nombre}, que todavía no tiene CAE: autorizala o "
-            "eliminala; no se pide otra nota encima.",
-        )
-    return HTTPException(
-        409,
-        f"Esta factura ya tiene la {nombre}: una factura se acredita una sola vez.",
+def _registrar_nota(nota: dict, ambiente: str, usuario_id: int) -> int:
+    """Guarda la nota en la tabla `facturas` de este router (todavía sin CAE) y devuelve su id."""
+    return db_facturas.create_factura(
+        # 🔑 El ambiente con el que se emitió, que es lo que separa un comprobante real de uno de prueba en el
+        # libro IVA. Sin ARCA configurado no hay CAE y el número es el de la propia instancia: ese comprobante
+        # **es** el real del cliente, así que va como `produccion`. No es un default silencioso: es la respuesta
+        # a «¿contra qué se emitió?» cuando no se emitió contra nada.
+        ambiente=ambiente, usuario_id=usuario_id, **nota,
     )
 
 
 async def _crear_nota(
     orig: dict, nuevo_tipo: int, obs_prefijo: str, usuario_id: int,
 ) -> int:
-    """Emite una nota que referencia al comprobante original.
+    """Emite una nota **de débito** que referencia al comprobante original.
 
-    🔑 **La nota copia los ítems y los importes del original tal cual.** Una NC
-    que anula tiene que decir exactamente lo mismo que anula: si los recalculara
-    —con la tasa de hoy, o con un precio que cambió— anularía un importe distinto
-    del que se facturó, y ante ARCA quedarían dos comprobantes que no cierran.
-
-    `cbte_asoc_*` es lo que ata la nota a su factura ante ARCA; sin eso es un
-    comprobante suelto.
+    La nota de **crédito** ya no pasa por acá: es una sola para toda la familia y vive en
+    `libracore.notas_de_credito` (`emitir_nota_de_credito`). Esta función arma la nota con el mismo
+    `armar_nota` (importes copiados, fecha de hoy, comprobante asociado), pero la nota de débito no tiene
+    guardas propias: una factura admite varias.
     """
-    fecha_hoy = datetime.date.today().isoformat()
-    punto_venta = orig["punto_venta"]
-    numero, ta, arca = await get_next_numero_with_arca(punto_venta, nuevo_tipo)
-
-    nota_id = db_facturas.create_factura(
-        # 🔑 El ambiente con el que se emitió, que es lo que separa un
-        # comprobante real de uno de prueba en el libro IVA.
-        #
-        # Sin ARCA configurado no hay CAE y el número es el de la propia
-        # instancia: ese comprobante **es** el real del cliente, así que va
-        # como `produccion`. No es un default silencioso — es la respuesta a
-        # "¿contra qué se emitió?" cuando no se emitió contra nada.
-        ambiente=arca_facturacion.ambiente_de(arca),
-        tipo=nuevo_tipo, punto_venta=punto_venta, numero=numero, fecha=fecha_hoy,
-        cliente_cuit=orig["cliente_cuit"], cliente_razon=orig["cliente_razon"],
-        cliente_iva_cond=orig.get("cliente_iva_cond") or 0, items=orig["items"],
-        subtotal=orig["subtotal"], iva_amount=orig["iva_amount"], total=orig["total"],
-        concepto=orig.get("concepto", 1),
-        observaciones=(
-            f"{obs_prefijo} {TIPO_LABEL.get(orig['tipo'], 'comprobante')} {_numero(orig)}"
-        ),
-        cliente_domicilio=orig.get("cliente_domicilio", ""),
-        fch_serv_desde=orig.get("fch_serv_desde", ""),
-        fch_serv_hasta=orig.get("fch_serv_hasta", ""),
-        fch_vto_pago=fecha_hoy,
-        cbte_asoc_tipo=orig["tipo"], cbte_asoc_pv=orig["punto_venta"],
-        cbte_asoc_nro=orig["numero"], usuario_id=usuario_id,
-        # Una nota de FCE exige la fecha del asociado (10158) y decir si anula
-        # (opcional 22). `N` es lo normal: `S` sólo lo acepta ARCA si el
-        # comprador rechazó la factura (10154, medido), y eso no lo decide esta pantalla.
-        cbte_asoc_fecha=orig["fecha"],
-        fce_anulacion="N" if nuevo_tipo in tipos_cbte.FCE_NOTA else "",
-    )
-    nota = db_facturas.get_factura(nota_id)
-    nota = await solicitar_cae(nota_id, nota, ta, arca)
-    pdf_path = pdf_gen.generate_pdf_factura(nota)
-    db_facturas.update_factura_pdf_path(nota_id, pdf_path)
+    nota = notas_de_credito.armar_nota(orig, nuevo_tipo, prefijo=obs_prefijo)
+    numero, ta, arca = await get_next_numero_with_arca(orig["punto_venta"], nuevo_tipo)
+    nota["numero"] = numero
+    nota_id = _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id)
+    nota_db = db_facturas.get_factura(nota_id)
+    nota_db = await solicitar_cae(nota_id, nota_db, ta, arca)
+    db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db))
     return nota_id
+
+
+async def _emitir_nota_de_credito(orig: dict, usuario_id: int) -> int:
+    """La nota de crédito de este router: el núcleo del motor con las costuras de la tabla `facturas`."""
+    async def numerar(tipo_nota: int, punto_venta: int):
+        numero, ta, arca = await get_next_numero_with_arca(punto_venta, tipo_nota)
+        return numero, (ta, arca)
+
+    def registrar(nota: dict, contexto) -> int:
+        _ta, arca = contexto
+        return _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id)
+
+    async def pedir_cae(nota_id: int, _nota: dict, contexto) -> int:
+        ta, arca = contexto
+        nota_db = await solicitar_cae(nota_id, db_facturas.get_factura(nota_id), ta, arca)
+        db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db))
+        return nota_id
+
+    emitida = await notas_de_credito.emitir_nota_de_credito(
+        orig,
+        clave=("facturas", orig["id"]),
+        cargar_previas=lambda: db_facturas.get_nc_de_factura(orig["tipo"], orig["punto_venta"], orig["numero"]),
+        numerar=numerar, registrar=registrar, pedir_cae=pedir_cae,
+    )
+    return emitida.registro
 
 
 def build_comprobantes_router(
@@ -982,35 +932,29 @@ def build_comprobantes_router(
     @router.post("/{factura_id}/nota-credito", dependencies=admin)
     def nota_credito(factura_id: int, usuario: dict = Depends(usuario_actual)):
         orig = _exigir(factura_id)
-        nc_tipo = TIPO_NC.get(orig["tipo"])
-        if not nc_tipo:
-            raise HTTPException(400, "Tipo de comprobante no admite nota de crédito")
-        # El candado cubre la consulta **y** la emisión: si sólo cubriera la consulta,
-        # el segundo pedido la haría antes de que el primero cree la nota.
-        with _una_nota_a_la_vez(factura_id):
-            previa = _nota_previa(orig)
-            if previa:
-                raise previa
-            nota_id = asyncio.run(_crear_nota(orig, nc_tipo, "Anula", usuario["id"]))
+        try:
+            nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"]))
+        except notas_de_credito.NotaNoPermitida as e:
+            raise HTTPException(_STATUS_DE_NOTA[e.codigo], str(e)) from None
 
-            # Si el original era a crédito, la deuda del cliente se cancela: quedó
-            # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
-            # no debe.
-            if orig.get("condicion_venta") == "Cuenta Corriente":
-                cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
-                if cliente:
-                    db_cc.create_cc_pago(
-                        cliente_id=cliente["id"], monto=orig["total"],
-                        fecha=datetime.date.today().isoformat(),
-                        concepto=(
-                            f"NC {_numero(orig)} (anula "
-                            f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
-                            f"{_numero(orig)})"
-                        ),
-                        referencia="", medio_pago="Cuenta Corriente", caja_id=None,
-                        usuario_id=usuario["id"],
-                    )
-            return db_facturas.get_factura(nota_id)
+        # Si el original era a crédito, la deuda del cliente se cancela: quedó
+        # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
+        # no debe.
+        if orig.get("condicion_venta") == "Cuenta Corriente":
+            cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
+            if cliente:
+                db_cc.create_cc_pago(
+                    cliente_id=cliente["id"], monto=orig["total"],
+                    fecha=datetime.date.today().isoformat(),
+                    concepto=(
+                        f"NC {_numero(orig)} (anula "
+                        f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
+                        f"{_numero(orig)})"
+                    ),
+                    referencia="", medio_pago="Cuenta Corriente", caja_id=None,
+                    usuario_id=usuario["id"],
+                )
+        return db_facturas.get_factura(nota_id)
 
     @router.post("/{factura_id}/nota-debito", dependencies=admin)
     def nota_debito(factura_id: int, usuario: dict = Depends(usuario_actual)):

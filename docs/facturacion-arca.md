@@ -216,6 +216,8 @@ es Servicios o Ambos.
 El bloque `CbtesAsoc` con tipo, punto de venta y número del comprobante original
 es obligatorio.
 
+**La nota de crédito de la familia es una sola, del motor:** ver [`notas-de-credito.md`](notas-de-credito.md).
+
 ### La alícuota que no está en la tabla cae al 21%
 
 `arca_wsfe._iva_id()` mapea `{0: 3, 10.5: 4, 21: 5, 27: 6}` y **cae al 21 ante un

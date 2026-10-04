@@ -28,6 +28,24 @@ corre sobre su `create_app()` y afirma `== []`).
 **Lo que puede romper al subir el pin:** una fixture de un producto que mande un booleano en uno de esos campos (se corrige el cuerpo de la fixture). Los productos que suman un campo numérico propio sin el
 helper lo ven con la guardia. `libracommerce` reexporta el helper y la guardia de acá en un release aparte.
 
+## [Unreleased] — La nota de crédito es una sola, del motor (fase 1)
+
+Sin migración ni cambio de esquema. **Módulo nuevo `libracore.notas_de_credito`**: el núcleo de la nota de
+crédito, igual para todos los productos (decisión del humano, 2026-10-04; ADR-014; `docs/notas-de-credito.md`).
+Pone el tipo de nota, las guardas (la factura no se acredita dos veces, la nota sin CAE no se duplica, el
+receptor sirve, un solo pedido a la vez por comprobante), el armado de la nota (importes copiados, **fecha de hoy**,
+comprobante asociado, marca de la FCE) y el orden previas → numerar → registrar → pedir el CAE; el producto aporta
+sólo costuras. `emitir_nota_de_credito` es la entrada; levanta `NotaNoPermitida` con un `codigo`.
+
+**`facturas_router` pasa a ser un consumidor:** `POST /api/facturas/{id}/nota-credito` usa el núcleo y **su
+comportamiento no cambia** (mismos códigos 400/409, mismos mensajes; los 66 tests del router siguen verdes). La
+lista de nombres de tipo pasa a `tipos_comprobante.NOMBRE` (el router conserva `TIPO_LABEL` apuntando a ella). El
+candado y la consulta de nota previa salen del router y viven en el núcleo. La nota de **débito** usa el mismo
+`armar_nota`, sin guardas propias (una factura admite varias).
+
+**Lo que puede notar un consumidor:** el 422 por receptor inválido ahora llega **antes** de numerar, también en
+`nota-credito` (antes llegaba dentro de `solicitar_cae`).
+
 ## [Unreleased] — La guarda del CUIT no bloquea las notas (corrige v1.124.0)
 
 Sin migración. **Corrige un error de `v1.124.0`:** `problema_del_receptor` aplicaba la regla del dígito
