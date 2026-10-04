@@ -44,11 +44,14 @@ from libracore import (
 from libracore.db import facturas as db_facturas
 from libracore.db import mp as db_mp
 from libracore.registro_de_clientes import RegistroDeClientes, el_registro
+from libracore.validacion import sin_booleanos
 
 logger = logging.getLogger(__name__)
 
 class SincronizarPayload(BaseModel):
     dias: int = 7
+
+    _no_son_booleanos = sin_booleanos("dias")
 
 
 class CrearClientePayload(BaseModel):
@@ -85,6 +88,8 @@ class PagoDeDemo(BaseModel):
     #: bancarios entrantes. La pantalla tiene las dos solapas y con una sola
     #: llena queda a medias.
     clase: str = "pago"
+
+    _no_son_booleanos = sin_booleanos("monto")
 
 
 def _con_cliente(items: list, registro: RegistroDeClientes) -> list:

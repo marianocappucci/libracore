@@ -26,6 +26,7 @@ from libracore import config_manager
 from libracore.db import clients as _clients
 from libracore.db import remitos_presupuestos as _rp
 from libracore.facturas_router import calcular_totales
+from libracore.validacion import sin_booleanos
 
 _ESTADOS_VALIDOS = {"borrador", "enviado", "aceptado", "rechazado", "vencido", "facturado"}
 
@@ -41,6 +42,8 @@ class _ItemPayload(BaseModel):
     # necesita. Por eso viaja vacio por default y se guarda solo si tiene texto.
     detalle: str = ""
 
+    _no_son_booleanos = sin_booleanos("qty", "unit_price")
+
 
 class _PresupuestoPayload(BaseModel):
     date: str
@@ -50,6 +53,8 @@ class _PresupuestoPayload(BaseModel):
     tax_rate: float = 0.21
     observations: str = ""
     items: list[_ItemPayload]
+
+    _no_son_booleanos = sin_booleanos("client_id", "tax_rate")
 
 
 class _EstadoPayload(BaseModel):

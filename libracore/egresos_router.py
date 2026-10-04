@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from libracore.db import caja as db_caja
 from libracore.db import egresos as db_egresos
+from libracore.validacion import sin_booleanos
 
 TIPOS_COMPROBANTE = [
     {"id": "factura", "label": "Factura"},
@@ -58,6 +59,8 @@ class EgresoPayload(BaseModel):
     monto_neto: float = 0
     iva_pct: float = 0
 
+    _no_son_booleanos = sin_booleanos("proveedor_id", "monto_neto", "iva_pct")
+
 
 class PagoEgresoPayload(BaseModel):
     monto: float | None = None
@@ -65,6 +68,8 @@ class PagoEgresoPayload(BaseModel):
     caja_id: int | None = None
     fecha: str = ""
     referencia: str = ""
+
+    _no_son_booleanos = sin_booleanos("monto", "caja_id")
 
 
 class CategoriaPayload(BaseModel):

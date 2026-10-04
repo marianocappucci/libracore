@@ -182,6 +182,16 @@ consumido del grupo.
 `pdf_generator` (14 sitios de import) arma los PDFs de comprobantes/recibos;
 `ticket_generator` los tickets de caja/venta.
 
+### Entrada de los routers — `validacion` y `testing`
+
+Los routers reciben cuerpos JSON como modelos pydantic, y pydantic (en el modo laxo de FastAPI) convierte
+`true`/`false` en `1`/`0` en un campo `int`/`float`: `{"monto": true}` sería un pago de 1 peso.
+`libracore.validacion.sin_booleanos(*campos)` lo rechaza (422) en cada campo numérico donde un 1 o un 0 cambian
+algo del negocio, y `libracore.testing.campos_numericos_que_aceptan_booleano(app)` mide una app entera y devuelve
+los campos que todavía lo aceptan: cada producto la corre sobre su `create_app()` y afirma `== []`. Un campo
+numérico nuevo en un modelo de entrada lleva el helper; si se olvida, la guardia lo avisa. Lo que la guardia
+no ve (un `list[dict]`, un cuerpo leído a mano) usa `rechazar_booleanos(valor, campos, donde)`. ADR-013.
+
 ## Diseño dual SQLite/PostgreSQL
 
 LibraCore mantiene **una sola** capa de acceso a datos que corre contra los dos

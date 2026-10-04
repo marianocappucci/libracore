@@ -254,3 +254,69 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
   lista. Copiarla a Python sería una segunda copia que se desactualiza sola.
 - Consecuencias: una instancia caída o dada de alta después queda sin el tema hasta que el backoffice lo reintente (fase 3); una clave
   que el kit no conoce se guarda y la SPA la ignora, así agregar un color al kit no obliga a tocar este router.
+
+## ADR-013 — Un booleano no es un número en los cuerpos de los routers: `sin_booleanos` y su guardia viven en el motor
+
+- Estado: aceptada (regla del humano, 2026-10-03: el arreglo de fondo vive siempre en el motor)
+- Fecha: 2026-10-04 (propuesta: `v1.125.0`)
+- Contexto: pydantic, en el modo laxo que usa FastAPI, convierte `true` en `1` y `false` en `0` en cualquier campo `int`/`float` **antes** de que el servicio lo valide: `{"monto": true}` entraba como un
+  pago de 1 peso y `{"caja_id": true}` como la caja 1. Medido (2026-10-04, `tests/test_routers_booleanos.py` contra los routers de `develop`): esos cuerpos daban 200 y escribían. `libracommerce`
+  lo cerró en su motor con `web/_validacion.sin_booleanos` (ADR-026/027) y le sumó una guardia reutilizable (`libracommerce.testing.campos_numericos_que_aceptan_booleano`, ADR-028); corrida sobre la
+  app completa de VentaLibra, esa guardia encontró 23 campos **de este motor** que seguían aceptando el booleano, y los 23 mueven plata o ids (cajas, turnos, cuenta corriente, egresos, tesorería, ARCA).
+- Decisión:
+  - **El helper canónico vive acá:** `libracore/validacion.py::sin_booleanos(*campos)`, un `field_validator(mode="before")` que rechaza `bool` (suelto, dentro de una lista y dentro de un diccionario, claves y
+    valores) con el mensaje «<campo> tiene que ser un número, no un booleano» (422). Mismo código y mismo mensaje que el de `libracommerce`, que pasará a reexportar éste en otro release. Un `0` numérico,
+    un entero, un texto numérico, `None` y un `Decimal` pasan como antes.
+  - **La guardia canónica también:** `libracore.testing.campos_numericos_que_aceptan_booleano(app, *, ignorar=frozenset())` (`libracore/testing/booleanos.py`, reexportada desde `libracore.testing`), con el
+    contrato de la de `libracommerce` (recorre las rutas con `fastapi.routing.iter_route_contexts`, instancia el modelo real con `True`/`False` en cada hoja numérica y devuelve las que lo aceptan). Cada producto
+    la corre sobre su `create_app()` completa y afirma `== []`.
+  - **Se aplica sólo donde un 1 o un 0 cambian algo del negocio** (plata, ids, cantidades, porcentajes, puntos de venta). Los `bool` de verdad (`activo`, `auto_facturar`) y los `Decimal` (pydantic ya los
+    rechaza) no lo necesitan. Un modelo que hereda (`CajaUpdatePayload` de `CajaPayload`) conserva el validador del padre.
+- Relevamiento (guardia sobre una app con **todas** las factories de `libracore/`, con las opciones que suman rutas prendidas: la siembra de la bandeja de MercadoPago sólo existe en una demo y `/reabrir` del cierre
+  diario sólo con `autorizar_reabrir`). 60 campos aceptaban el booleano y se arreglan todos (los 23 de la guardia de `libracommerce` y 37 más del relevamiento):
+
+  | Router | Ruta | Campos | Arreglado |
+  |---|---|---|---|
+  | `caja_router` | `POST /api/caja` | `monto`, `caja_id`, `factura_id` | sí (no estaba entre los 23) |
+  | `caja_router` | `POST /api/cajas`, `PUT /api/cajas/{cid}` | `punto_venta`, `sucursal_id` | sí |
+  | `caja_router` | `POST /api/turnos/abrir` | `monto_inicial`, `caja_id` | sí |
+  | `caja_router` | `POST /api/turnos/{tid}/cerrar` | `monto_declarado` | sí |
+  | `caja_router` | `POST /api/cierre-diario/cerrar` | `sucursal_id` | sí |
+  | `cuenta_corriente_router` | `POST /{cliente_id}/pagar` | `monto`, `caja_id`, `facturas[]` | sí |
+  | `egresos_router` | `POST /api/egresos` | `proveedor_id`, `monto_neto`, `iva_pct` | sí |
+  | `egresos_router` | `POST /api/egresos/{eid}/pagar` | `monto`, `caja_id` | sí |
+  | `tesoreria_router` | `POST /cuentas`, `PUT /cuentas/{cid}` | `saldo_inicial` | sí |
+  | `tesoreria_router` | `POST /cuentas/{cid}/movimiento` | `monto` | sí |
+  | `tesoreria_router` | `POST /transferencia` | `cuenta_origen_id`, `cuenta_destino_id`, `monto` | sí |
+  | `arca_router` | `PUT /config/arca` | `punto_venta` (con `ge=1`: `false` ya fallaba, pero por el rango; `true` pasaba como el punto de venta 1) | sí |
+  | `comprobantes_router` | `POST /api/comprobantes-pendientes` | `cliente_id`, `items[].qty`, `items[].unit_price`, `items[].iva_rate` (`true` era una alícuota del 100%) | sí (nuevo) |
+  | `comprobantes_router` | `POST /facturar-prefill`, `POST /marcar-facturado` | `ids[]`, `factura_id` | sí (nuevo) |
+  | `remitos_router` | `POST /api/remitos` | `client_id`, `items[].qty` | sí (nuevo) |
+  | `presupuestos_router` | `POST /api/presupuestos`, `PUT /{pres_id}` | `client_id`, `tax_rate`, `items[].qty`, `items[].unit_price` | sí (nuevo) |
+  | `mp_bandeja_router` | `POST /sincronizar` | `dias` | sí (nuevo) |
+  | `mp_bandeja_router` | `POST /demo/sembrar` (sólo en demos) | `items[].monto` | sí (nuevo) |
+  | `facturas_router` | `POST /api/facturas`, `POST /api/facturas/borrador-pdf` | `tipo`, `concepto`, `punto_venta` (viajan al comprobante que se pide a ARCA: `tipo: true` pedía una Factura A), `client_id`, `tax_rate`, `items[].qty`, `items[].unit_price` | sí (nuevo) |
+  | `facturas_router` | `POST /api/facturas/{factura_id}/cobrar` | `caja_id` | sí (nuevo) |
+
+  Sin campos numéricos de entrada que acepten el booleano (medidos, no supuestos; query y path llegan como texto y pydantic no convierte «true» en número): `clientes_router`, `config_router` (empresa y respaldo),
+  `consultar_cuit_router`, `dashboard_router`, `libros_iva_router`, `logs_router`, `mp_config_router`, `mp_webhook`, `recibos_router`, `reportes_router`, `resumen_router`, `smtp_router`, `tema_router`,
+  `ventas_cobro_router`, `geografia`, `feriados`, `resguardo_enlace`. El backoffice (`libracore/admin`) recibe todo como `str` de formulario y no se mide.
+- **Sin pendientes en los routers de libracore:** la guardia sobre las 37 factories da `[]` sin excepciones (`ignorar` vacío). `facturas_router` se arregló en un segundo paso, cuando la sesión que
+  trabajaba en él (la guarda del CUIT, `v1.124.0`) terminó y se mergeó. `arca_wsfe` no declara modelos de entrada HTTP: no tiene campos que listar y no se tocó.
+- Lo que la guardia no mide (heredado de la de `libracommerce`): un `Any`, una tupla de largo fijo, una dataclass, un cuerpo leído a mano con `request.json()` (hoy no hay ninguno en `libracore/`), y una ruta que
+  el producto no monta. **Cuerpos sin tipar (barrido de todos los routers, 2026-10-04):** se buscaron `dict`, `list[dict]`, `Any`, `object`, `Json`, `Body(...)` sin modelo, `await request.json()` y `float()/int()/Decimal()` sobre el cuerpo.
+  Un solo acierto, y es dinero: `CobroPayload.pagos` (`list[dict]`, `facturas_router.py`), donde `cobros.registrar_cobro_factura` hace `float(pago["monto"])` y `{"monto": true}` registraba un cobro de 1 peso. Se
+  conserva el contrato (es `list[dict]` a propósito: la pantalla manda filas vacías con `""`, sin `monto` o con claves de más, y el motor las ignora; un modelo tipado con `monto: float` habría dado 422 a un `""`),
+  así que el arreglo es un `field_validator("pagos", mode="before")` que usa el helper nuevo `libracore.validacion.rechazar_booleanos(valor, campos, donde)` (dict o lista de dicts) para rechazar un booleano en `monto`
+  («pagos[].monto tiene que ser un número, no un booleano») y en `medio_id` («un texto»), **y** la misma defensa en el borde de `registrar_cobro_factura` (un `ValueError` antes de escribir nada), por si otro
+  llamador pasa el dict directo. Un producto que reemplaza la escritura con su `registrar_cobro=` queda cubierto por el validador del modelo. Descartados por el barrido, sin cambio: `tema_router` (`dict[str, str]`,
+  sólo colores), `mp_config_router`/`config_router` (modelos de `str` y `bool`; `mp_iva_rate` es `str` y pydantic no convierte un booleano en texto), `mp_webhook` (lee a mano el cuerpo de MercadoPago:
+  `type` y `data.id` sólo se usan como texto, el monto sale de la API de MP, y un `id` booleano termina en una consulta que da 404; línea 148-155) y `FacturaPayload` con `extra="allow"` (`facturas_router.py:331`, `822`:
+  los campos de más de cada producto viajan sin tocar al hook `al_emitir`; si el hook los convierte en número, el helper `rechazar_booleanos` es el que tiene que usar el producto). Como el barrido también es
+  una medida, no una prueba, la guardia sigue sin ver lo que no está tipado: lo nuevo con `dict`/`Any` y un número adentro hay que revisarlo a mano.
+- Consecuencias:
+  - **Para los productos:** un cuerpo con `true`/`false` en uno de esos campos ahora da **422** (antes 200 con un 1 o un 0). Un cliente que mande el número —o el texto numérico— no nota nada. Al subir el pin,
+    cada producto corre su suite: si alguna fixture manda un booleano por accidente, se pone roja ahí y se corrige el cuerpo, no el helper. Los productos con routers propios que heredan estos payloads
+    conservan el validador; los que suman un campo numérico nuevo sin `sin_booleanos` lo ven con `assert campos_numericos_que_aceptan_booleano(app) == []`, que conviene agregar a su suite.
+  - **Para `libracommerce`:** su `web/_validacion.sin_booleanos` y su `testing.campos_numericos_que_aceptan_booleano` pasan a reexportar las de acá en un release aparte (hoy son copias fieles: mismo código, mismo mensaje).
+  - `libracore.testing` ahora importa FastAPI y pydantic, que ya eran dependencias del motor (no hay extra nuevo).

@@ -41,6 +41,7 @@ from libracore.db import cierre_diario as db_cierre_diario
 from libracore.db import turnos as db_turnos
 from libracore.db.caja import ExternalIdMercadoPagoInvalido, PuntoDeVentaRepetido
 from libracore.db.cierre_diario import DiaCerradoError
+from libracore.validacion import sin_booleanos
 
 # ── Caja: los movimientos ────────────────────────────────────────────────
 
@@ -54,6 +55,8 @@ class MovimientoPayload(BaseModel):
     factura_id: int | None = None
     caja_id: int | None = None
     medio_pago: str = ""
+
+    _no_son_booleanos = sin_booleanos("monto", "factura_id", "caja_id")
 
 
 def _periodo_actual():
@@ -117,6 +120,8 @@ class CajaPayload(BaseModel):
     #: crear: una caja no se muda de sede (se da de baja y se crea otra donde
     #: corresponda). `None` deja la caja sin sucursal, que es lo de siempre.
     sucursal_id: int | None = None
+
+    _no_son_booleanos = sin_booleanos("punto_venta", "sucursal_id")
 
 
 class CajaUpdatePayload(CajaPayload):
@@ -253,10 +258,14 @@ class AbrirPayload(BaseModel):
     #: abre suelto, como siempre.
     caja_id: int | None = None
 
+    _no_son_booleanos = sin_booleanos("monto_inicial", "caja_id")
+
 
 class CerrarPayload(BaseModel):
     monto_declarado: float = 0
     notas: str = ""
+
+    _no_son_booleanos = sin_booleanos("monto_declarado")
 
 
 def _puede_ver(turno: dict, user: dict) -> bool:
@@ -356,6 +365,8 @@ class CerrarDiaPayload(BaseModel):
     #: `cierre_diario.cerrar_dia`. Formato `YYYY-MM-DD`.
     fecha: str = ""
     notas: str = ""
+
+    _no_son_booleanos = sin_booleanos("sucursal_id")
 
 
 class ReabrirDiaPayload(BaseModel):

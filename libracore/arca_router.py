@@ -64,6 +64,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from libracore import arca_certificados, arca_credenciales, arca_wsaa, config_manager
 from libracore.db import arca_config as db_arca_config
+from libracore.validacion import sin_booleanos
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,8 @@ class ArcaPayload(BaseModel):
     #: la FCE no manda el campo, y no tiene que dejar el CBU en blanco.
     fce_cbu: str | None = None
     fce_transmision: str | None = None
+
+    _no_son_booleanos = sin_booleanos("punto_venta")
 
     @field_validator("fce_cbu")
     @classmethod

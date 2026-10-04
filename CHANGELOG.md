@@ -7,6 +7,27 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Un booleano ya no es un número en los cuerpos de los routers (propuesta: v1.125.0)
+
+Sin migración ni cambio de esquema. **Cambia el comportamiento de 60 campos de entrada** de los routers del motor: `true` y `false` en un campo numérico daban 200 (pydantic los convertía en `1` y `0`:
+`{"monto": true}` era un pago de 1 peso y `{"caja_id": true}` la caja 1); ahora dan **422** con «<campo> tiene que ser un número, no un booleano» y no escriben nada. Un número y un texto numérico
+(`"2"`) siguen pasando igual. Detalle y relevamiento en ADR-013.
+
+**Qué se agrega:** `libracore.validacion.sin_booleanos(*campos)` (el helper canónico, el mismo código y mensaje que `libracommerce.web._validacion`) y
+`libracore.testing.campos_numericos_que_aceptan_booleano(app, *, ignorar=...)` (la guardia: instancia el modelo real con `True`/`False` en cada hoja numérica y devuelve los campos que lo aceptan; cada producto la
+corre sobre su `create_app()` y afirma `== []`).
+
+**Qué se arregla:** `caja_router` (movimientos, cajas, turnos, cierre diario), `cuenta_corriente_router` (pagar), `egresos_router` (alta y pago), `tesoreria_router` (cuentas, movimiento, transferencia),
+`arca_router` (`punto_venta`), `facturas_router` (`tipo`, `concepto` y `punto_venta`, que viajan al comprobante que se pide a ARCA, más `client_id`, `tax_rate`, `items[]` y el `caja_id` de cobrar), `comprobantes_router` (ingesta, prefill y marcar), `remitos_router`, `presupuestos_router` y `mp_bandeja_router` (`dias` y la siembra de la demo).
+
+**Sin pendientes en los routers del motor:** la guardia sobre todas las factories da `[]`. Además, el barrido de cuerpos sin tipar (`dict`, `list[dict]`, `Any`, `request.json()`) encontró uno, con dinero:
+`CobroPayload.pagos` de `POST /api/facturas/{id}/cobrar`, donde `{"pagos": [{"monto": true}]}` registraba un cobro de 1 peso. Ahora da 422 («pagos[].monto tiene que ser un número, no un booleano»; también
+`medio_id`), sin cambiar el contrato (mismas claves, filas vacías y texto numérico). `libracore.validacion.rechazar_booleanos(valor, campos, donde)` es el helper para dicts sin tipar, y
+`cobros.registrar_cobro_factura` levanta `ValueError` ante un booleano en `monto` o `medio_id`, antes de escribir, por si otro llamador le pasa el dict directo.
+
+**Lo que puede romper al subir el pin:** una fixture de un producto que mande un booleano en uno de esos campos (se corrige el cuerpo de la fixture). Los productos que suman un campo numérico propio sin el
+helper lo ven con la guardia. `libracommerce` reexporta el helper y la guardia de acá en un release aparte.
+
 ## [Unreleased] — La guarda del CUIT del receptor vive en el motor
 
 Sin migración ni cambio de esquema. **Cambia el comportamiento de `arca_wsfe.solicitar_cae`**
