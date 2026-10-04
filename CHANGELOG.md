@@ -7,6 +7,12 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La nota de crédito deja su marca en la cuenta corriente (propuesta: v1.128.0)
+
+Sin migración ni cambio de esquema. Detalle en ADR-016.
+
+**Nuevo:** `notas_de_credito.referencia_cc_de_nota(factura_id)` y `notas_de_credito.cc_acreditada_por_nota(conn, factura_id)`. El abono que la nota de una factura **a cuenta corriente** deja al cliente (`POST /api/facturas/{id}/nota-credito`) ahora lleva en `cc_pagos.referencia` la marca `nc:factura:<id>` (antes quedaba vacía). Es lo que le permite a `anular_venta` de libracommerce **no acreditar la misma deuda por segunda vez** cuando la venta tiene una factura con nota. No cambia el importe ni el concepto del abono.
+
 ## [Unreleased] — El webhook de MercadoPago no da 500 ante un cuerpo raro y una guardia lista los cuerpos sin tipar (propuesta: v1.127.0)
 
 Sin migración ni cambio de esquema. Detalle en ADR-015.

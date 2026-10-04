@@ -381,3 +381,13 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
   No apareció ningún cuerpo sin tipar nuevo: el barrido manual de ADR-013 había encontrado el único real (`CobroPayload.pagos`).
 - Consecuencias: el webhook deja de poder dar 500 por la forma del cuerpo; un producto que monta su propio router puede correr la guardia sobre su `create_app()` y fijar lo que acepta. Costo: la guardia no
   entiende lo que un endpoint hace con el cuerpo, así que el comentario de cada entrada lo escribe una persona. `libracommerce` puede reexportarla igual que la de booleanos, en un release aparte.
+
+## ADR-016 — La nota de crédito marca su abono en la cuenta corriente
+
+**Estado:** aceptada (2026-10-04). **Contexto:** anular una venta cuya factura tiene CAE deja la factura vigente en ARCA; la salida es la nota de crédito del motor (ADR-014). Pero la nota (de una factura a cuenta corriente) y `anular_venta` de libracommerce **acreditan los dos la misma deuda** y ninguna sabe que la otra ya lo hizo: el saldo queda en −total (relevamiento del 2026-10-04; ningún test lo cubría). Se decidió (opción A del diseño `nota-de-credito-en-ventas-diseno` del wiki) que anular una venta con factura CAE **exija la nota antes**, y que la anulación no acredite de nuevo.
+
+- Decisión 1 — **el abono de la nota lleva una marca**: `cc_pagos.referencia = "nc:factura:<id>"`, función única `referencia_cc_de_nota`. El texto del concepto y el importe no cambian.
+- Decisión 2 — **la pregunta «¿ya abonó la nota?» es del motor**: `cc_acreditada_por_nota(conn, factura_id)`. Los productos y libracommerce no reescriben la regla ni parsean el concepto.
+- Lo que **no** resuelve: una venta anulada *antes* de este cambio y con factura CAE a la que después se le emita la nota (acreditaría dos veces); no se midió que exista alguna. Tampoco la nota parcial.
+- Consecuencias: sin migración. El abono de notas ya emitidas queda sin marca (referencia vacía), así que `cc_acreditada_por_nota` da `False` para ellas.
+
