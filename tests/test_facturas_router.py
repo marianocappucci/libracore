@@ -1142,3 +1142,58 @@ def test_una_fce_b_a_un_inscripto_se_rechaza_igual_que_una_b_comun(client):
     _habilitar_fce()
     r = client.post(API, json={**_fce(), "tipo": 206})   # el cliente de _fce es Responsable Inscripto
     assert r.status_code == 422 and "Factura A" in r.json()["detail"]
+
+
+# ── El router que sólo ofrece la nota (productos sin pantallas de facturas) ──
+
+
+def _solo_la_nota():
+    """Una app con SÓLO `build_nota_de_credito_router`, sobre la misma base que `client`."""
+    def gate_admin(x_rol: str = Header(default="")):
+        if x_rol != "admin":
+            raise HTTPException(403, "solo administradores")
+
+    app = FastAPI()
+    app.include_router(fr.build_nota_de_credito_router(usuario_actual=lambda: USUARIO, solo_admin=gate_admin))
+    return TestClient(app)
+
+
+def test_el_router_de_la_nota_expone_una_sola_ruta():
+    """El motivo de que exista: VentaLibra no necesita (ni debe exponer) el alta, el borrado ni el cobro."""
+    rutas = [(r.path, sorted(r.methods)) for r in fr.build_nota_de_credito_router(
+        usuario_actual=lambda: USUARIO, solo_admin=lambda: None).routes]
+    assert rutas == [("/api/facturas/{factura_id}/nota-credito", ["POST"])]
+
+
+def test_el_router_de_la_nota_emite_la_misma_nota_que_el_completo(client):
+    original = _emitir(client)
+    solo = _solo_la_nota()
+
+    r = solo.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+
+    assert r.status_code == 200, r.text
+    nota = r.json()
+    assert nota["tipo"] == 13 and nota["cbte_asoc_nro"] == original["numero"]
+    # Y las guardas son las del núcleo: una factura se acredita una sola vez, también por este camino.
+    assert solo.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).status_code == 409
+
+
+def test_el_router_de_la_nota_exige_admin_y_contesta_404(client):
+    original = _emitir(client)
+    solo = _solo_la_nota()
+    assert solo.post(f"{API}/{original['id']}/nota-credito").status_code == 403
+    assert solo.post(f"{API}/9999/nota-credito", headers=ADMIN).status_code == 404
+    assert client.get(f"{API}/{original['id']}").json().get("cbte_asoc_nro", 0) == 0, "no se emitió nada"
+
+
+def test_el_router_de_la_nota_deja_la_marca_en_la_cuenta_corriente(client):
+    from libracore.db import clients as db_clients
+
+    db_clients.create_client("Juan Perez", cuit_dni="20304050607")
+    original = _emitir(client, condicion_venta="Cuenta Corriente")
+    assert _solo_la_nota().post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).status_code == 200
+    conn = core.get_connection()
+    try:
+        assert notas_de_credito.cc_acreditada_por_nota(conn, original["id"])
+    finally:
+        conn.close()

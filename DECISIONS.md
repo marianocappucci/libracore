@@ -391,3 +391,11 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
 - Lo que **no** resuelve: una venta anulada *antes* de este cambio y con factura CAE a la que después se le emita la nota (acreditaría dos veces); no se midió que exista alguna. Tampoco la nota parcial.
 - Consecuencias: sin migración. El abono de notas ya emitidas queda sin marca (referencia vacía), así que `cc_acreditada_por_nota` da `False` para ellas.
 
+## ADR-017 — `build_nota_de_credito_router`: la nota de crédito se puede montar sola
+
+**Estado:** aceptada (2026-10-04). **Contexto:** con `anular_venta` exigiendo la nota antes (ADR-032 de libracommerce), un producto con ventas facturadas necesita un camino para emitirla. `build_comprobantes_router` son doce endpoints (alta manual, borrador, cobro, email, borrado…); VentaLibra no tiene esas pantallas y lleva la caja por turno (el cobro por defecto entraría sin `turno_id`). Montarlo entero exponía superficie sin uso.
+
+- Decisión 1 — **la ruta de la nota se extrae a `_registrar_nota_de_credito(router, …)`** y la usan los dos factories. Hay una sola implementación; el router completo conserva exactamente sus rutas y su orden.
+- Decisión 2 — **`build_nota_de_credito_router`** monta sólo `POST {prefix}/{factura_id}/nota-credito` con el gate `solo_admin`. La nota no toca la caja, así que no depende del turno.
+- Lo que **no** hace: no ofrece listado ni detalle de facturas (el producto que lo monte tiene que sacar el `factura_id` de su venta).
+

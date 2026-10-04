@@ -7,6 +7,12 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Un router que sólo ofrece la nota de crédito (propuesta: v1.129.0)
+
+Sin migración ni cambio de comportamiento. Detalle en ADR-017.
+
+**Nuevo:** `facturas_router.build_nota_de_credito_router(usuario_actual, solo_admin, prefix="/api/facturas")`: **una sola ruta**, `POST {prefix}/{factura_id}/nota-credito`, para los productos que facturan desde otra pantalla (la venta) y no tienen pantallas de facturas, como VentaLibra. Es **el mismo código** que usa `build_comprobantes_router` (se extrajo a `_registrar_nota_de_credito`): mismas guardas, mismos códigos HTTP, mismo abono marcado a la cuenta corriente. Contalibra, Restolibra y LibraClub no cambian.
+
 ## [Unreleased] — La nota de crédito deja su marca en la cuenta corriente (propuesta: v1.128.0)
 
 Sin migración ni cambio de esquema. Detalle en ADR-016.

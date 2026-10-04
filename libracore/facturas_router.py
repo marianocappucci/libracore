@@ -521,6 +521,63 @@ async def _emitir_nota_de_credito(orig: dict, usuario_id: int) -> int:
     return emitida.registro
 
 
+def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..., Any],
+                               solo_admin: Callable[..., Any]) -> None:
+    """Registra `POST /{factura_id}/nota-credito` en `router`. **Una sola implementación**, la usan los dos factories.
+
+    Existe para que un producto que no tiene pantallas de facturas (VentaLibra) pueda ofrecer la nota de crédito
+    sin montar los otros once endpoints —alta manual, borrador, cobro, email, borrado—, que no usa. La lógica
+    de fondo está en `notas_de_credito` (ADR-014); esto es el borde HTTP y el abono a la cuenta corriente.
+    """
+    @router.post("/{factura_id}/nota-credito", dependencies=[Depends(solo_admin)])
+    def nota_credito(factura_id: int, usuario: dict = Depends(usuario_actual)):
+        orig = db_facturas.get_factura(factura_id)
+        if not orig:
+            raise HTTPException(404, "Factura no encontrada")
+        try:
+            nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"]))
+        except notas_de_credito.NotaNoPermitida as e:
+            raise HTTPException(_STATUS_DE_NOTA[e.codigo], str(e)) from None
+
+        # Si el original era a crédito, la deuda del cliente se cancela: quedó
+        # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
+        # no debe.
+        if orig.get("condicion_venta") == "Cuenta Corriente":
+            cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
+            if cliente:
+                db_cc.create_cc_pago(
+                    cliente_id=cliente["id"], monto=orig["total"],
+                    fecha=datetime.date.today().isoformat(),
+                    concepto=(
+                        f"NC {_numero(orig)} (anula "
+                        f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
+                        f"{_numero(orig)})"
+                    ),
+                    # La marca que dice que la nota ya abonó: `anular_venta` no acredita otra vez.
+                    referencia=notas_de_credito.referencia_cc_de_nota(factura_id),
+                    medio_pago="Cuenta Corriente", caja_id=None,
+                    usuario_id=usuario["id"],
+                )
+        return db_facturas.get_factura(nota_id)
+
+
+def build_nota_de_credito_router(
+    *,
+    usuario_actual: Callable[..., Any],
+    solo_admin: Callable[..., Any],
+    prefix: str = "/api/facturas",
+) -> APIRouter:
+    """Sólo `POST {prefix}/{factura_id}/nota-credito`: la nota de crédito total de una factura, autorizada por ARCA.
+
+    Para los productos que facturan desde otra pantalla (la venta) y no necesitan el router completo de
+    comprobantes. Mismas guardas, mismos códigos HTTP y mismo abono a la cuenta corriente que
+    `build_comprobantes_router`: es el mismo código. `solo_admin` gatea la ruta.
+    """
+    router = APIRouter(prefix=prefix, tags=["facturas"])
+    _registrar_nota_de_credito(router, usuario_actual=usuario_actual, solo_admin=solo_admin)
+    return router
+
+
 def build_comprobantes_router(
     *,
     usuario_actual: Callable[..., Any],
@@ -929,34 +986,7 @@ def build_comprobantes_router(
 
     # ── Notas ─────────────────────────────────────────────────────────────
 
-    @router.post("/{factura_id}/nota-credito", dependencies=admin)
-    def nota_credito(factura_id: int, usuario: dict = Depends(usuario_actual)):
-        orig = _exigir(factura_id)
-        try:
-            nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"]))
-        except notas_de_credito.NotaNoPermitida as e:
-            raise HTTPException(_STATUS_DE_NOTA[e.codigo], str(e)) from None
-
-        # Si el original era a crédito, la deuda del cliente se cancela: quedó
-        # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
-        # no debe.
-        if orig.get("condicion_venta") == "Cuenta Corriente":
-            cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
-            if cliente:
-                db_cc.create_cc_pago(
-                    cliente_id=cliente["id"], monto=orig["total"],
-                    fecha=datetime.date.today().isoformat(),
-                    concepto=(
-                        f"NC {_numero(orig)} (anula "
-                        f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
-                        f"{_numero(orig)})"
-                    ),
-                    # La marca que dice que la nota ya abonó: `anular_venta` no acredita otra vez.
-                    referencia=notas_de_credito.referencia_cc_de_nota(factura_id),
-                    medio_pago="Cuenta Corriente", caja_id=None,
-                    usuario_id=usuario["id"],
-                )
-        return db_facturas.get_factura(nota_id)
+    _registrar_nota_de_credito(router, usuario_actual=usuario_actual, solo_admin=solo_admin)
 
     @router.post("/{factura_id}/nota-debito", dependencies=admin)
     def nota_debito(factura_id: int, usuario: dict = Depends(usuario_actual)):
