@@ -338,3 +338,46 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
   mirar cuando una nota sale mal; y un producto que adopte la nota no puede divergir en las reglas. Costo: el
   núcleo no puede conocer ningún modelo de producto, así que habla en diccionarios y en callables.
 
+
+## ADR-015 — El webhook de MercadoPago no da 500 ante un cuerpo raro, y una guardia informativa lista los cuerpos sin tipar
+
+- Estado: aceptada
+- Fecha: 2026-10-04 (propuesta: `v1.127.0`; sin cambio de esquema ni migración)
+- Contexto: dos hallazgos del cierre de ADR-013, una misma familia (un cuerpo que el tipo no restringe).
+  1. `mp_webhook._procesar` hacía `json.loads(body)` y después `payload.get(...)` y `payload.get("data", {}).get("id", "")`. El endpoint es **público** (lo llama MercadoPago, pero también cualquiera con
+     la URL) y no sabe qué forma tiene lo que le llega. Medido el 2026-10-04 con un test de HTTP contra el router real (`TestClient(raise_server_exceptions=False)`): un JSON que no es un objeto (`[]`,
+     `[1]`, `1`, `true`, `null`, `"x"`) y un `data` que no es un dict (`null`, `[]`, `"x"`, `5`) daban **500** (`AttributeError` sin atrapar), y MercadoPago reintenta ante un 500 (la regla 3 del módulo
+     ya decía que un error propio no puede ser un 500). Además dos ids pasaban por `str()` y seguían de largo como si fueran un id: `{"id": true}` (llegaba a la API de MercadoPago como `"True"`) y
+     `{"id": {"a": 1}}` (como `"{'a': 1}"`).
+  2. `campos_numericos_que_aceptan_booleano` sólo ve campos **tipados**: un `dict`, un `list[dict]`, un `Any`, un modelo con `extra="allow"` o un endpoint que lee `request.json()` a mano reciben
+     cualquier cosa, con números adentro que nadie valida. Así quedó `CobroPayload.pagos` (`{"pagos": [{"monto": true}]}` era un cobro de 1 peso), que se encontró leyendo el código.
+- Decisión:
+  - **`mp_webhook`**: un JSON que no es un objeto da 400 `{"ok": false, "error": "invalid json"}` (lo mismo que un JSON roto: el reintento tampoco lo va a poder leer). Un `type` que no es `"payment"`
+    (incluido un no-string, `["payment"]`) da 200 `ignored`, **como hoy**. Un `data` que no es un dict, o sin un `id` utilizable, da 400 `{"ok": false, "error": "no payment id"}` (lo que ya daba un
+    id vacío o ausente). Un id utilizable es un `int`, un `float` o un `str` no vacío, pasado por `str()` como siempre (MercadoPago manda un número); un `bool` **no** es un id, ni un dict ni una lista.
+    El id se valida **antes** de usarlo en la firma: un id inválido ni siquiera llega a `verificar_firma`. La firma, la idempotencia, el 200 «not configured» y el resto del flujo no cambian: **los cuerpos
+    válidos y los códigos que MercadoPago recibía no se tocan**; sólo cambian los que hoy daban 500 (ahora 400) y los dos ids basura (ahora 400 en vez de 200 o de un pedido a la API).
+  - **`libracore.testing.cuerpos_sin_tipar(app, *, ignorar=frozenset()) -> list[tuple[str, str, str]]`** (`libracore/testing/sin_tipar.py`, reexportada desde `libracore.testing`), con el mismo
+    recorrido que la guardia de booleanos, que se extrajo a `libracore/testing/_recorrido.py` (rutas con `iter_route_contexts`, `Mount`, `Depends`, `ignorar`; **el comportamiento de la guardia de
+    booleanos no cambia**: sus 14 tests siguen igual). Devuelve `(método y ruta, campo, tipo)`.
+    - **Ve:** un campo de entrada (cuerpo, query, formulario, path, header, cookie) de tipo `dict`/`Mapping`, `list`/`set`/`tuple` sin tipo de elemento, `Any`, `object`, `JsonValue` o que los contiene
+      (`list[dict]`, `dict[str, Any]`, `X | None`); un modelo con `extra="allow"` (el nombre del tipo informado lo dice: `FacturaPayload(extra="allow")`), bajando por los modelos anidados; y un endpoint
+      `POST`/`PUT`/`PATCH`/`DELETE` que declara `Request` él mismo y no tiene ningún cuerpo tipado (candidato a leer `request.json()` a mano), con el tipo `request-sin-cuerpo-tipado`.
+    - **No ve:** qué hace el endpoint con lo que recibe (sólo mira tipos: un `request.json()` o `request.body()` en un endpoint que además tiene un cuerpo tipado no aparece); una dependencia que recibe
+      `Request`; un `GET` con `Request`; un texto que después se parsea como JSON, `bytes`, `UploadFile`, `dataclass` y `TypedDict` (tienen forma); un validador `mode="before"` que acepta cualquier cosa; un
+      endpoint que no es de FastAPI. `dict[str, int]` **no** se informa (sus valores tienen tipo y los mide la guardia de booleanos).
+    - **Es informativa, no un `assert == []`**: da falsos positivos a propósito (un `dict[str, Any]` puede ser el contrato real, un `Request` puede servir sólo para armar una URL). Se usa fijando el conjunto
+      conocido en un test con un comentario por entrada que diga por qué es aceptable (como hace `tests/test_guardia_sin_tipar.py`), o con `ignorar` y un comentario por excepción: un cuerpo sin tipar
+      **nuevo** rompe el test y obliga a mirarlo.
+- Resultado sobre la app con todas las factories de `libracore` (5 entradas, todas fijadas con su porqué en el test):
+
+  | Ruta | Campo | Tipo | Por qué se acepta |
+  |---|---|---|---|
+  | `POST /api/facturas`, `POST /api/facturas/borrador-pdf` | `payload` | `FacturaPayload(extra="allow")` | `extra="allow"` a propósito: cada producto suma campos propios; los que usa el motor están tipados y con `sin_booleanos` |
+  | `POST /api/facturas/{factura_id}/cobrar` | `pagos` | `list[dict]` | el hueco de ADR-013: validado con `rechazar_booleanos` y en `cobros.registrar_cobro_factura`; el tipo sigue libre |
+  | `POST /webhooks/mercadopago` | `request` | `request-sin-cuerpo-tipado` | lo lee a mano a propósito; tolera cualquier forma (este ADR) y no cree el contenido: el estado sale de la API |
+  | `POST /api/config/resguardo-externo/enlace/{proveedor}` | `request` | `request-sin-cuerpo-tipado` | falso positivo: usa `Request` sólo para armar la URL de retorno del OAuth |
+
+  No apareció ningún cuerpo sin tipar nuevo: el barrido manual de ADR-013 había encontrado el único real (`CobroPayload.pagos`).
+- Consecuencias: el webhook deja de poder dar 500 por la forma del cuerpo; un producto que monta su propio router puede correr la guardia sobre su `create_app()` y fijar lo que acepta. Costo: la guardia no
+  entiende lo que un endpoint hace con el cuerpo, así que el comentario de cada entrada lo escribe una persona. `libracommerce` puede reexportarla igual que la de booleanos, en un release aparte.

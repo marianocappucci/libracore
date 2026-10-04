@@ -331,3 +331,144 @@ def test_un_pago_rechazado_se_registra_pero_no_entra_a_la_bandeja(armar):
     guardado = db_mp.get_mp_pago(PAYMENT_ID)
     assert guardado is not None, "queda el rastro del intento"
     assert guardado["estado_factura"] is None
+
+
+# ── Un cuerpo que no es lo esperado: 400 o 200, nunca 500 (ADR-015) ──────────
+#
+# El endpoint es público: lo puede llamar cualquiera con cualquier cuerpo. Un
+# JSON válido que no es un objeto (`[]`, `null`, un número) o un `data` que no
+# es un dict hacía explotar `.get` con una excepción sin atrapar, o sea un 500
+# (y MercadoPago reintenta ante un 500). Los códigos que ya recibía por los
+# demás cuerpos no cambian.
+
+_INVALIDO = {"ok": False, "error": "invalid json"}
+_SIN_ID = {"ok": False, "error": "no payment id"}
+_IGNORADO = {"ok": True, "msg": "ignored"}
+
+#: (cuerpo en JSON, status, respuesta). Todos son JSON bien formado.
+CUERPOS_QUE_NO_SON_LO_ESPERADO = [
+    # No es un objeto: es lo mismo que un JSON roto.
+    ("[]", 400, _INVALIDO),
+    ("[1]", 400, _INVALIDO),
+    ('[{"type": "payment"}]', 400, _INVALIDO),
+    ("1", 400, _INVALIDO),
+    ("1.5", 400, _INVALIDO),
+    ("true", 400, _INVALIDO),
+    ("null", 400, _INVALIDO),
+    ('"x"', 400, _INVALIDO),
+    ('"payment"', 400, _INVALIDO),
+    # Un `type` que no es «payment», sea lo que sea, se ignora.
+    ('{"type": ["payment"]}', 200, _IGNORADO),
+    ('{"type": {"a": 1}}', 200, _IGNORADO),
+    ('{"type": null, "data": {"id": 1}}', 200, _IGNORADO),
+    ('{"type": 1, "data": {"id": 1}}', 200, _IGNORADO),
+    ("{}", 200, _IGNORADO),
+    # `data` que no es un dict, o sin un id utilizable.
+    ('{"type": "payment"}', 400, _SIN_ID),
+    ('{"type": "payment", "data": null}', 400, _SIN_ID),
+    ('{"type": "payment", "data": []}', 400, _SIN_ID),
+    ('{"type": "payment", "data": [{"id": 1}]}', 400, _SIN_ID),
+    ('{"type": "payment", "data": "x"}', 400, _SIN_ID),
+    ('{"type": "payment", "data": 5}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {}}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {"id": null}}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {"id": ""}}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {"id": true}}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {"id": false}}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {"id": {}}}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {"id": {"a": 1}}}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {"id": []}}', 400, _SIN_ID),
+    ('{"type": "payment", "data": {"id": [1]}}', 400, _SIN_ID),
+]
+
+
+@pytest.fixture
+def sin_excepciones(entorno):
+    """Como `armar`, pero el cliente devuelve el 500 en vez de relanzar la
+    excepción: lo que importa es el código que vería MercadoPago."""
+    def _armar(**kw):
+        aplicacion, mw = _app(**kw)
+        consultas, firmadas = [], []
+
+        async def obtener_pago(payment_id, access_token):
+            consultas.append(payment_id)
+            return _pago()
+
+        verdadera = mw.verificar_firma
+
+        def verificar_firma(firma, pedido, payment_id, secreto):
+            firmadas.append(payment_id)
+            return verdadera(firma, pedido, payment_id, secreto)
+
+        mw.mp_api.obtener_pago = obtener_pago
+        mw.verificar_firma = verificar_firma
+        cliente = TestClient(aplicacion, raise_server_exceptions=False)
+        cliente.consultas, cliente.firmadas = consultas, firmadas
+        return cliente
+    return _armar
+
+
+@pytest.mark.parametrize("cuerpo,status,respuesta", CUERPOS_QUE_NO_SON_LO_ESPERADO)
+@pytest.mark.parametrize("con_secreto", [False, True], ids=["sin-secreto", "con-secreto"])
+def test_un_cuerpo_que_no_es_lo_esperado_no_da_500(sin_excepciones, entorno, cuerpo, status, respuesta, con_secreto):
+    """Los dos órdenes del flujo: sin secreto y con él, que el id inválido se
+    rechaza antes de usarse en la firma (no es una firma inválida: no hay id)."""
+    if con_secreto:
+        entorno.save({**entorno.load(), "mp_webhook_secret": SECRETO})
+    cliente = sin_excepciones()
+    r = _postear(cliente, cuerpo.encode())
+    assert r.status_code == status, r.text
+    assert r.json() == respuesta
+    assert cliente.consultas == [], "un cuerpo así no puede llegar a consultar a MercadoPago"
+    assert cliente.firmadas == [], "ni a verificar una firma con un id que no existe"
+    assert db_mp.get_mp_pago(PAYMENT_ID) is None
+
+
+def test_los_cuerpos_que_no_son_lo_esperado_cubren_los_tres_codigos():
+    """Control del propio test: que la tabla no se vacíe de a poco y que cada
+    código, incluido el 200, siga representado."""
+    assert {s for _, s, _ in CUERPOS_QUE_NO_SON_LO_ESPERADO} == {200, 400}
+    assert {tuple(r.items()) for *_, r in CUERPOS_QUE_NO_SON_LO_ESPERADO} == {
+        tuple(_INVALIDO.items()), tuple(_SIN_ID.items()), tuple(_IGNORADO.items())}
+    assert len(CUERPOS_QUE_NO_SON_LO_ESPERADO) >= 25
+
+
+@pytest.mark.parametrize("payment_id", [123456789, "123456789"], ids=["id-numerico", "id-texto"])
+def test_un_id_numerico_o_de_texto_sigue_siendo_valido(sin_excepciones, payment_id):
+    """MercadoPago manda el id como número en el JSON. Es la otra mitad de los
+    rechazos de arriba: sólo rechazar pasaría igual con un endpoint que rechaza
+    todo. El id llega a la API y a la base como texto, igual que siempre."""
+    cliente = sin_excepciones()
+    r = _postear(cliente, json.dumps({"type": "payment", "data": {"id": payment_id}}).encode())
+    assert r.status_code == 200, r.text
+    assert cliente.consultas == ["123456789"]
+    assert db_mp.get_mp_pago("123456789") is not None
+    again = _postear(cliente, json.dumps({"type": "payment", "data": {"id": payment_id}}).encode())
+    assert again.json()["msg"] == "already processed"
+    assert cliente.consultas == ["123456789"]
+
+
+def test_el_id_numerico_se_firma_como_texto_y_una_firma_mala_sigue_siendo_400(sin_excepciones, entorno):
+    """La verificación de firma no cambia: con un id numérico la plantilla lleva
+    el mismo texto que antes."""
+    entorno.save({**entorno.load(), "mp_webhook_secret": SECRETO})
+    cliente = sin_excepciones()
+    cuerpo = json.dumps({"type": "payment", "data": {"id": int(PAYMENT_ID)}}).encode()
+
+    mala = _postear(cliente, cuerpo, headers={"x-signature": "ts=1,v1=deadbeef", "x-request-id": "req-1"})
+    assert mala.status_code == 400
+    assert mala.json() == {"ok": False, "error": "invalid signature"}
+    assert db_mp.get_mp_pago(PAYMENT_ID) is None
+
+    buena = _postear(cliente, cuerpo, headers=_firmar(PAYMENT_ID, "req-1"))
+    assert buena.status_code == 200, buena.text
+    assert cliente.firmadas == [PAYMENT_ID, PAYMENT_ID]
+    assert db_mp.get_mp_pago(PAYMENT_ID) is not None
+
+
+def test_un_booleano_no_es_un_id_aunque_str_lo_convierta_en_texto(sin_excepciones):
+    """`str(True)` es «True»: sin la guardia el booleano llegaba a la API de
+    MercadoPago como si fuera un id."""
+    cliente = sin_excepciones()
+    assert _postear(cliente, b'{"type": "payment", "data": {"id": true}}').status_code == 400
+    assert cliente.consultas == []
