@@ -12,9 +12,13 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
   MercadoPago, provisioning y acceso a datos, cada uno con su copia.
 - Decisión: extraer lo transversal a un paquete interno versionado (`libracore`)
   que los productos consumen y **componen**; LibraCore no expone una app propia.
-- Consecuencias: una sola implementación probada para todos; el criterio de qué
-  sube al motor y qué queda en el producto se discute caso por caso, no por
-  conveniencia.
+- Consecuencias: una sola implementación probada para todos.
+- **Enmienda (2026-10-03, decisión del humano):** el criterio de qué sube al motor ya no se
+  discute caso por caso. **Sube todo lo que otro producto comparte o podría compartir**, y el
+  **arreglo de fondo vive siempre en el motor, nunca en un producto**: el producto aporta
+  costuras (hooks) y lo propio de su vertical. Si falta la costura se agrega acá; si un producto
+  necesita el arreglo antes, se hace acá igual y el producto sube el pin. La redacción original
+  («caso por caso, no por conveniencia») queda como historia: la reemplaza esta enmienda.
 
 ## ADR-002 — Integración por configuración inyectada, mínima huella en el consumidor
 
