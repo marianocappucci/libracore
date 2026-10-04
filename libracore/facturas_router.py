@@ -951,7 +951,9 @@ def build_comprobantes_router(
                         f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
                         f"{_numero(orig)})"
                     ),
-                    referencia="", medio_pago="Cuenta Corriente", caja_id=None,
+                    # La marca que dice que la nota ya abonó: `anular_venta` no acredita otra vez.
+                    referencia=notas_de_credito.referencia_cc_de_nota(factura_id),
+                    medio_pago="Cuenta Corriente", caja_id=None,
                     usuario_id=usuario["id"],
                 )
         return db_facturas.get_factura(nota_id)

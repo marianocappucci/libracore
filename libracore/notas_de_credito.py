@@ -261,3 +261,24 @@ async def emitir_nota_de_credito(
         registro = await _esperar(registrar(nota, contexto))
         resultado = await _esperar(pedir_cae(registro, nota, contexto))
         return NotaEmitida(nota=nota, registro=registro, resultado=resultado)
+
+
+# ── La cuenta corriente: quién la acredita ─────────────────────────────────
+
+def referencia_cc_de_nota(factura_id: int) -> str:
+    """La marca con la que la nota de crédito deja su abono en la cuenta corriente.
+
+    🔴 Existe para que **anular una venta no acredite la misma deuda por segunda vez**. La nota de una factura
+    a cuenta corriente abona el importe al cliente; `anular_venta` (libracommerce) también acredita el pago a
+    cuenta corriente de la venta. Sin una marca, ninguna de las dos sabe que la otra ya lo hizo y el saldo
+    queda en −total. La marca va en `cc_pagos.referencia`, que es texto libre y no se usaba.
+    """
+    return f"nc:factura:{int(factura_id)}"
+
+
+def cc_acreditada_por_nota(conn: Any, factura_id: int) -> bool:
+    """¿La nota de esta factura ya abonó la cuenta corriente del cliente? (`conn`: la conexión del producto.)"""
+    fila = conn.execute(
+        "SELECT 1 FROM cc_pagos WHERE referencia=? LIMIT 1", (referencia_cc_de_nota(factura_id),)
+    ).fetchone()
+    return fila is not None

@@ -291,6 +291,36 @@ def test_dos_notas_totales_no_dejan_saldo_a_favor_en_la_cuenta_corriente(client)
         f"el saldo quedó en {db_cc.get_cc_saldo(cliente_id)}: la segunda nota abonó de más")
 
 
+def test_la_nota_de_una_factura_a_credito_deja_su_marca_en_la_cuenta_corriente(client):
+    """La marca es lo que le dice a `anular_venta` que la deuda ya se acreditó: sin ella, anular una venta con
+    nota acreditaba dos veces (saldo −total). Ver `notas_de_credito.cc_acreditada_por_nota`."""
+    from libracore.db import clients as db_clients
+
+    db_clients.create_client("Juan Perez", cuit_dni="20304050607")
+    a_credito = _emitir(client, condicion_venta="Cuenta Corriente")
+    otra = _emitir(client, condicion_venta="Cuenta Corriente")
+
+    conn = core.get_connection()
+    try:
+        assert not notas_de_credito.cc_acreditada_por_nota(conn, a_credito["id"]), "antes de la nota no"
+        client.post(f"{API}/{a_credito['id']}/nota-credito", headers=ADMIN)
+        assert notas_de_credito.cc_acreditada_por_nota(conn, a_credito["id"])
+        # Es de ESA factura: la otra, sin nota, no figura acreditada.
+        assert not notas_de_credito.cc_acreditada_por_nota(conn, otra["id"])
+    finally:
+        conn.close()
+
+
+def test_la_nota_de_una_factura_al_contado_no_toca_la_cuenta_corriente(client):
+    original = _emitir(client)
+    client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+    conn = core.get_connection()
+    try:
+        assert not notas_de_credito.cc_acreditada_por_nota(conn, original["id"])
+    finally:
+        conn.close()
+
+
 def test_la_segunda_nota_dice_cual_es_la_primera(client):
     """El 409 nombra la nota que ya existe, para que quien lo lee sepa dónde mirar."""
     original = _emitir(client)
