@@ -40,6 +40,7 @@ import datetime
 # copiarse: tener dos listas del mismo criterio es cómo se llega a que una
 # consulta cuente un movimiento como deuda y otra no.
 from libracore.db.caja import MEDIOS_CUENTA_CORRIENTE  # noqa: E402
+from libracore.validacion import rechazar_booleanos  # noqa: E402
 
 CONDICION_CUENTA_CORRIENTE = "Cuenta Corriente"
 
@@ -128,6 +129,9 @@ def registrar_cobro_factura(
 
         tipo_label = _TIPO_LABELS.get(factura["tipo"], "Factura")
 
+    # `float(True)` es `1.0`: un `{"monto": true}` registraría un cobro de 1 peso. El router ya lo rechaza (422), pero otro llamador puede pasar el dict directo.
+    rechazar_booleanos(pagos or [], ("monto",), "pagos[].")
+    rechazar_booleanos(pagos or [], ("medio_id",), "pagos[].", esperado="un texto")
     a_registrar = [p for p in (pagos or []) if float(p.get("monto") or 0) > 0]
     for pago in a_registrar:
         if es_medio_cuenta_corriente(pago.get("medio_id", "")):

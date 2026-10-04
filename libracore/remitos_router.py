@@ -23,11 +23,14 @@ from pydantic import BaseModel
 
 from libracore.db import clients as _clients
 from libracore.db import remitos_presupuestos as _rp
+from libracore.validacion import sin_booleanos
 
 
 class _ItemPayload(BaseModel):
     description: str
     qty: float
+
+    _no_son_booleanos = sin_booleanos("qty")
 
 
 class _RemitoPayload(BaseModel):
@@ -36,6 +39,8 @@ class _RemitoPayload(BaseModel):
     client_name: str = ""
     observations: str = ""
     items: list[_ItemPayload]
+
+    _no_son_booleanos = sin_booleanos("client_id")
 
 
 def build_remitos_router(

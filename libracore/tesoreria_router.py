@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from libracore.db import tesoreria as db_tes
+from libracore.validacion import sin_booleanos
 
 
 class CuentaPayload(BaseModel):
@@ -27,6 +28,8 @@ class CuentaPayload(BaseModel):
     descripcion: str = ""
     saldo_inicial: float = 0
 
+    _no_son_booleanos = sin_booleanos("saldo_inicial")
+
 
 class MovimientoTesoreriaPayload(BaseModel):
     tipo: str  # ingreso | egreso
@@ -34,6 +37,8 @@ class MovimientoTesoreriaPayload(BaseModel):
     concepto: str
     fecha: str
     referencia: str = ""
+
+    _no_son_booleanos = sin_booleanos("monto")
 
 
 class TransferenciaPayload(BaseModel):
@@ -43,6 +48,8 @@ class TransferenciaPayload(BaseModel):
     fecha: str
     concepto: str = "Transferencia entre cuentas"
     referencia: str = ""
+
+    _no_son_booleanos = sin_booleanos("cuenta_origen_id", "cuenta_destino_id", "monto")
 
 
 def build_tesoreria_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api/tesoreria") -> APIRouter:

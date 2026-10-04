@@ -50,6 +50,7 @@ from libracore.db import clients as db_clients
 from libracore.db import cuenta_corriente as db_cc
 from libracore.db import recibos as db_recibos
 from libracore.db.cuenta_corriente import VENTAS_LIBRACORE, OrigenVentas
+from libracore.validacion import sin_booleanos
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,8 @@ class PagoCCPayload(BaseModel):
     #: pero deja cada factura en "Sin cobrar": sólo el cobro de una factura
     #: escribe el movimiento de caja que la marca "Cobrada".
     facturas: list[int] = []
+
+    _no_son_booleanos = sin_booleanos("monto", "caja_id", "facturas")
 
 
 @dataclass(frozen=True)

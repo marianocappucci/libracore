@@ -58,7 +58,7 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from libracore import arca_credenciales, arca_facturacion, arca_wsaa, arca_wsfe, config_manager, email_sender
 from libracore import pdf_generator as pdf_gen
@@ -71,6 +71,7 @@ from libracore.db import clients as db_clients
 from libracore.db import cuenta_corriente as db_cc
 from libracore.db import facturas as db_facturas
 from libracore.facturas_borrador import armar_borrador
+from libracore.validacion import rechazar_booleanos, sin_booleanos
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +314,8 @@ class ItemPayload(BaseModel):
     qty: float
     unit_price: float
 
+    _no_son_booleanos = sin_booleanos("qty", "unit_price")
+
 
 class FacturaPayload(BaseModel):
     """Lo que manda el formulario de alta.
@@ -344,12 +347,25 @@ class FacturaPayload(BaseModel):
     client_iva: str = ""
     items: list[ItemPayload]
 
+    _no_son_booleanos = sin_booleanos("tipo", "punto_venta", "concepto", "tax_rate", "client_id")
+
 
 class CobroPayload(BaseModel):
     fecha: str = ""
     caja_id: int | None = None
     #: `[{medio_id, monto, referencia}]`
     pagos: list[dict]
+
+    _no_son_booleanos = sin_booleanos("caja_id")
+
+    @field_validator("pagos", mode="before")
+    @classmethod
+    def _pagos_sin_booleanos(cls, pagos):
+        """Cada pago es un `dict` sin tipar a propósito (la pantalla manda filas con `""` donde no hay monto, y las ignora el motor), así que `sin_booleanos` no llega: `{"monto": true}` era un
+        cobro de 1 peso (`float(True)`). Se rechaza acá, sin cambiar el contrato: mismas claves, mismos opcionales, mismas filas vacías."""
+        rechazar_booleanos(pagos, ("monto",), "pagos[].")
+        rechazar_booleanos(pagos, ("medio_id",), "pagos[].", esperado="un texto")
+        return pagos
 
 
 class EmailPayload(BaseModel):

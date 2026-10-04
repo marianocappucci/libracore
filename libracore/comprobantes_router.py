@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from libracore import comprobantes_pendientes as dominio
 from libracore.db import comprobantes_pendientes as db
+from libracore.validacion import sin_booleanos
 
 _PREFIJO = "/api/comprobantes-pendientes"
 _TAG = "comprobantes_pendientes"
@@ -48,6 +49,8 @@ class ItemPayload(BaseModel):
     # aviso— lo hace `comprobantes_pendientes.armar_prefill`.
     iva_rate: float = 0.21
 
+    _no_son_booleanos = sin_booleanos("qty", "unit_price", "iva_rate")
+
 
 class ComprobantePayload(BaseModel):
     origen_producto: str
@@ -66,14 +69,20 @@ class ComprobantePayload(BaseModel):
     condicion_venta: str = ""
     observaciones: str = ""
 
+    _no_son_booleanos = sin_booleanos("cliente_id")
+
 
 class IdsPayload(BaseModel):
     ids: list[int]
+
+    _no_son_booleanos = sin_booleanos("ids")
 
 
 class MarcarFacturadoPayload(BaseModel):
     ids: list[int]
     factura_id: int
+
+    _no_son_booleanos = sin_booleanos("ids", "factura_id")
 
 
 class DescartarPayload(BaseModel):
