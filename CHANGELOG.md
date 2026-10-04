@@ -7,6 +7,16 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La nota de crédito PARCIAL y el tope acumulado (propuesta: v1.130.0)
+
+Sin migración ni cambio de esquema. Detalle en ADR-018. **Una factura se puede acreditar en varias notas, y la suma nunca supera su total.**
+
+**Nuevo:** `emitir_nota_de_credito(..., importe=...)` y `POST /api/facturas/{id}/nota-credito` con cuerpo opcional `{"importe": 4000.00}`: el monto a acreditar, con IVA, de hasta dos decimales. Sin `importe` la nota sigue siendo **total** (sin cambios). El neto sale del importe con la alícuota de la factura y el IVA es la **resta** (`neto + iva == importe`, sin un centavo perdido); un comprobante C no discrimina IVA. La nota parcial lleva **un solo ítem** (qué acredita), no copia los del original. `validar_nota_de_credito(original, previas, importe=None)` valida el **tope acumulado** (nuevos códigos `NotaNoPermitida.IMPORTE`, 422, y `SUPERA_SALDO`, 409); `acreditado()`, `saldo_acreditable()` y `repartir_importe()` quedan como API para los productos. Una nota previa **sin CAE** frena a cualquier nota nueva, como antes. Una **FCE** sólo admite una nota **por menos que su saldo** (medido: `10184`).
+
+**Cuenta corriente:** el abono de una factura a crédito es ahora **el importe de cada nota** (antes siempre el de la factura) y la marca es **por nota**: `nc:factura:<id>:<nota_id>` (la forma `nc:factura:<id>` de v1.128.0 sigue valiendo). Nuevo `cc_acreditado_por_notas(conn, factura_id)`; `cc_acreditada_por_nota` queda como «¿abonó algo?».
+
+**Compatible hacia atrás:** un producto que no informa `total` en sus notas previas (los de la fase 1) las cuenta como la factura entera, o sea que sigue bloqueando como antes. **Medido contra ARCA de homologación (2026-10-04):** autoriza la nota parcial con el IVA hasta a 15 centavos del exacto, sin observaciones.
+
 ## [Unreleased] — Un router que sólo ofrece la nota de crédito (propuesta: v1.129.0)
 
 Sin migración ni cambio de comportamiento. Detalle en ADR-017.

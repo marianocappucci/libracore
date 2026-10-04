@@ -53,6 +53,7 @@ import datetime
 import logging
 import os
 from collections.abc import Callable
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -462,6 +463,8 @@ _STATUS_DE_NOTA = {
     notas_de_credito.NotaNoPermitida.NOTA_SIN_CAE: 409,
     notas_de_credito.NotaNoPermitida.EN_CURSO: 409,
     notas_de_credito.NotaNoPermitida.RECEPTOR: 422,
+    notas_de_credito.NotaNoPermitida.IMPORTE: 422,
+    notas_de_credito.NotaNoPermitida.SUPERA_SALDO: 409,
 }
 
 
@@ -496,7 +499,7 @@ async def _crear_nota(
     return nota_id
 
 
-async def _emitir_nota_de_credito(orig: dict, usuario_id: int) -> int:
+async def _emitir_nota_de_credito(orig: dict, usuario_id: int, importe: Decimal | None = None) -> int:
     """La nota de crédito de este router: el núcleo del motor con las costuras de la tabla `facturas`."""
     async def numerar(tipo_nota: int, punto_venta: int):
         numero, ta, arca = await get_next_numero_with_arca(punto_venta, tipo_nota)
@@ -516,9 +519,22 @@ async def _emitir_nota_de_credito(orig: dict, usuario_id: int) -> int:
         orig,
         clave=("facturas", orig["id"]),
         cargar_previas=lambda: db_facturas.get_nc_de_factura(orig["tipo"], orig["punto_venta"], orig["numero"]),
-        numerar=numerar, registrar=registrar, pedir_cae=pedir_cae,
+        numerar=numerar, registrar=registrar, pedir_cae=pedir_cae, importe=importe,
     )
     return emitida.registro
+
+
+class NotaCreditoIn(BaseModel):
+    """El cuerpo, **opcional**, de `POST /{factura_id}/nota-credito`.
+
+    Sin cuerpo (o sin `importe`) la nota es **total**, como siempre. Con `importe` es **parcial**: el monto a acreditar,
+    con IVA incluido, de hasta dos decimales. La fecha, la letra y el comprobante asociado no se eligen.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    importe: Decimal | None = None
+    _no_son_booleanos = sin_booleanos("importe")
 
 
 def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..., Any],
@@ -530,12 +546,13 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
     de fondo está en `notas_de_credito` (ADR-014); esto es el borde HTTP y el abono a la cuenta corriente.
     """
     @router.post("/{factura_id}/nota-credito", dependencies=[Depends(solo_admin)])
-    def nota_credito(factura_id: int, usuario: dict = Depends(usuario_actual)):
+    def nota_credito(factura_id: int, payload: NotaCreditoIn | None = None, usuario: dict = Depends(usuario_actual)):
         orig = db_facturas.get_factura(factura_id)
         if not orig:
             raise HTTPException(404, "Factura no encontrada")
+        importe = payload.importe if payload else None
         try:
-            nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"]))
+            nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"], importe))
         except notas_de_credito.NotaNoPermitida as e:
             raise HTTPException(_STATUS_DE_NOTA[e.codigo], str(e)) from None
 
@@ -545,8 +562,10 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
         if orig.get("condicion_venta") == "Cuenta Corriente":
             cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
             if cliente:
+                nota_db = db_facturas.get_factura(nota_id)
                 db_cc.create_cc_pago(
-                    cliente_id=cliente["id"], monto=orig["total"],
+                    # El importe de ESTA nota (en la total es el de la factura; en una parcial, el acreditado).
+                    cliente_id=cliente["id"], monto=nota_db["total"],
                     fecha=datetime.date.today().isoformat(),
                     concepto=(
                         f"NC {_numero(orig)} (anula "
@@ -554,7 +573,7 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
                         f"{_numero(orig)})"
                     ),
                     # La marca que dice que la nota ya abonó: `anular_venta` no acredita otra vez.
-                    referencia=notas_de_credito.referencia_cc_de_nota(factura_id),
+                    referencia=notas_de_credito.referencia_cc_de_nota(factura_id, nota_id),
                     medio_pago="Cuenta Corriente", caja_id=None,
                     usuario_id=usuario["id"],
                 )

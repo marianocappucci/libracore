@@ -1197,3 +1197,104 @@ def test_el_router_de_la_nota_deja_la_marca_en_la_cuenta_corriente(client):
         assert notas_de_credito.cc_acreditada_por_nota(conn, original["id"])
     finally:
         conn.close()
+
+
+# ── La nota parcial y el tope acumulado (ADR-018) ─────────────────────────
+
+
+def _parcial(client, factura_id, importe, **extra):
+    return client.post(f"{API}/{factura_id}/nota-credito", headers=ADMIN, json={"importe": importe, **extra})
+
+
+def test_una_nota_parcial_acredita_solo_su_importe_y_queda_asociada(client):
+    original = _emitir(client)                                         # Factura C de 14000
+    r = _parcial(client, original["id"], 4000)
+
+    assert r.status_code == 200, r.text
+    nota = r.json()
+    assert nota["tipo"] == 13 and nota["total"] == 4000.0 and nota["subtotal"] == 4000.0
+    assert nota["iva_amount"] == 0.0, "una C no discrimina IVA"
+    assert nota["cbte_asoc_nro"] == original["numero"] and nota["cae"]
+    assert [i["description"] for i in nota["items"]] == [f"Acredita 4000.00 de Factura C 0001-{str(original['numero']).zfill(8)}"]
+
+
+def test_las_notas_parciales_suman_y_el_tope_acumulado_se_cumple(client):
+    original = _emitir(client)
+    assert _parcial(client, original["id"], 9000).status_code == 200
+    assert _parcial(client, original["id"], 4000).status_code == 200          # van 13000, quedan 1000
+
+    r = _parcial(client, original["id"], 1000.01)
+    assert r.status_code == 409, r.text
+    assert "supera lo que queda por acreditar" in r.json()["detail"] and "1000.00" in r.json()["detail"]
+
+    assert _parcial(client, original["id"], 1000).status_code == 200          # justo el saldo
+    r = _parcial(client, original["id"], 0.01)
+    assert r.status_code == 409 and "acreditada por completo" in r.json()["detail"]
+
+
+def test_la_nota_total_no_se_admite_si_ya_hay_parciales_y_dice_el_saldo(client):
+    original = _emitir(client)
+    assert _parcial(client, original["id"], 4000).status_code == 200
+    r = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+    assert r.status_code == 409, r.text
+    assert "10000.00" in r.json()["detail"], "dice cuánto se puede acreditar"
+
+
+@pytest.mark.parametrize("importe", [0, -10, 10.005, "abc"])
+def test_un_importe_que_no_es_un_monto_da_422(client, importe):
+    original = _emitir(client)
+    assert _parcial(client, original["id"], importe).status_code == 422
+    assert client.get(f"{API}/{original['id']}").json().get("cbte_asoc_nro", 0) == 0, "no se emitió nada"
+
+
+def test_el_cuerpo_rechaza_un_booleano_y_los_campos_que_no_se_eligen(client):
+    original = _emitir(client)
+    assert _parcial(client, original["id"], True).status_code == 422
+    for campo in ({"fecha": "2026-01-01"}, {"tipo": 8}, {"total": 1}):
+        assert _parcial(client, original["id"], 100, **campo).status_code == 422, campo
+
+
+def test_el_abono_a_cuenta_corriente_es_el_de_cada_nota_y_queda_marcado_por_nota(client):
+    from libracore.db import clients as db_clients
+    from libracore.db import cuenta_corriente as db_cc
+
+    cliente_id = db_clients.create_client("Juan Perez", cuit_dni="20304050607")
+    original = _emitir(client, condicion_venta="Cuenta Corriente")
+    assert db_cc.get_cc_saldo(cliente_id) == 14000.0
+
+    n1 = _parcial(client, original["id"], 4000).json()
+    assert db_cc.get_cc_saldo(cliente_id) == 10000.0, "una nota parcial abona SU importe, no el de la factura"
+    n2 = _parcial(client, original["id"], 10000).json()
+    assert db_cc.get_cc_saldo(cliente_id) == 0.0
+
+    conn = core.get_connection()
+    try:
+        marcas = sorted(r[0] for r in conn.execute("SELECT referencia FROM cc_pagos WHERE referencia != ''").fetchall())
+        assert marcas == sorted([f"nc:factura:{original['id']}:{n1['id']}", f"nc:factura:{original['id']}:{n2['id']}"])
+        assert notas_de_credito.cc_acreditado_por_notas(conn, original["id"]) == 14000
+        assert notas_de_credito.cc_acreditada_por_nota(conn, original["id"])
+    finally:
+        conn.close()
+
+
+def test_la_nota_total_sigue_abonando_toda_la_factura_con_su_marca_por_nota(client):
+    from libracore.db import clients as db_clients
+    from libracore.db import cuenta_corriente as db_cc
+
+    cliente_id = db_clients.create_client("Juan Perez", cuit_dni="20304050607")
+    original = _emitir(client, condicion_venta="Cuenta Corriente")
+    nota = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).json()
+    assert db_cc.get_cc_saldo(cliente_id) == 0.0 and nota["total"] == 14000.0
+    conn = core.get_connection()
+    try:
+        assert conn.execute("SELECT referencia FROM cc_pagos WHERE referencia != ''").fetchone()[0] \
+            == f"nc:factura:{original['id']}:{nota['id']}"
+    finally:
+        conn.close()
+
+
+def test_una_nota_parcial_por_el_router_que_solo_ofrece_la_nota_tambien_funciona(client):
+    original = _emitir(client)
+    r = _solo_la_nota().post(f"{API}/{original['id']}/nota-credito", headers=ADMIN, json={"importe": 2500})
+    assert r.status_code == 200, r.text
+    assert r.json()["total"] == 2500.0

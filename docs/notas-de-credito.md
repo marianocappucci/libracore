@@ -5,7 +5,7 @@ productos.** No hay una nota «de LibraCargo» ni una «de Contalibra». Quien n
 contra ARCA usa `libracore.notas_de_credito`; si le falta algo, **lo agrega al motor** (regla del 2026-10-03: el
 arreglo de fondo vive siempre en el motor, nunca en un producto).
 
-Cubre hoy la nota de crédito **total**. La nota parcial se enchufa después en `validar_nota_de_credito`, sin
+Cubre la nota de crédito **total** y, desde la fase 2 (ADR-018), la **parcial** por importe con su **tope acumulado**; se enchufó en `validar_nota_de_credito`, sin
 cambiar a los productos.
 
 ## Qué pone el motor y qué pone el producto
@@ -55,7 +55,17 @@ rechazó), el motor no atrapa nada: el producto decide qué queda (en una transa
 - **Una nota a un CUIT inexistente se autoriza** (2026-10-04), igual que la factura que se emitió a ese CUIT (ARCA
   la autoriza con el aviso `10238` y pide justamente la nota). La guarda del receptor no puede impedir corregirla.
 
+## La nota parcial y el tope acumulado (fase 2)
+
+`emitir_nota_de_credito(..., importe=Decimal('4000.00'))`, o `POST /api/facturas/{id}/nota-credito` con `{"importe": 4000.00}`: el monto a acreditar, **con IVA**. Una factura se acredita en una o varias notas, y **la suma de las notas con CAE nunca supera su total** (`SUPERA_SALDO`). Sin `importe`, la nota es total y sólo se admite sobre una factura sin notas.
+
+- `acreditado(original, previas)` y `saldo_acreditable(original, previas)`: lo que ya acreditan las notas con CAE y lo que queda. Cada `previa` informa `cae` y `total`; una que no informa `total` cuenta como la factura entera (compatibilidad con la fase 1).
+- `repartir_importe(original, importe)`: `(neto, iva)` con la alícuota de la factura; el IVA es la resta, así que `neto + iva == importe`. Una C no discrimina IVA.
+- La nota parcial lleva un solo ítem; la **FCE** sólo admite una nota por **menos que su saldo**.
+- **Cuenta corriente:** el abono de una factura a crédito es el de cada nota, con la marca `nc:factura:<id>:<nota_id>`; `cc_acreditado_por_notas(conn, factura_id)` suma lo abonado.
+- Medido en homologación (2026-10-04): ARCA autoriza la nota parcial con el IVA hasta a 15 centavos del exacto.
+
 ## Qué falta (fases siguientes)
 
-La nota **parcial** y el tope acumulado; el **motivo** obligatorio y guardado; guardar y mostrar las observaciones
+El **motivo** obligatorio y guardado; guardar y mostrar las observaciones
 de ARCA; y que `anular_venta` use esto cuando la venta tiene factura con CAE.
