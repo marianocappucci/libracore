@@ -7,6 +7,24 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El webhook de MercadoPago no da 500 ante un cuerpo raro y una guardia lista los cuerpos sin tipar (propuesta: v1.127.0)
+
+Sin migración ni cambio de esquema. Detalle en ADR-015.
+
+**`mp_webhook` (corrección):** un cuerpo que no era lo esperado daba **500** (excepción sin atrapar) y MercadoPago reintenta ante un 500. Medido con un test de HTTP al router real: un JSON que no es un
+objeto (`[]`, `[1]`, `1`, `true`, `null`, `"x"`) y un `data` que no es un dict (`null`, `[]`, `"x"`, `5`). Ahora un JSON que no es un objeto da **400** `invalid json` (igual que un JSON roto), y un `data`
+que no es un dict o sin un `id` utilizable da **400** `no payment id` (igual que un id vacío). Un `id` que es un booleano, un dict o una lista tampoco es un id: antes seguía de largo (`{"id": true}` llegaba a
+la API de MercadoPago como `"True"`), ahora da 400 `no payment id` y no llega a la firma. **No cambia** lo que MercadoPago ya recibe: un `type` que no es `"payment"` (también un no-string) sigue dando 200
+`ignored`; un `id` numérico o de texto sigue siendo válido (`str(id)`); la firma, la idempotencia y el 200 «not configured» son los de siempre.
+
+**Qué se agrega:** `libracore.testing.cuerpos_sin_tipar(app, *, ignorar=frozenset())`, la guardia hermana de `campos_numericos_que_aceptan_booleano`: lista `(método y ruta, campo, tipo)` de los campos de
+entrada de tipo `dict`/`Mapping`/`list[dict]`/`Any`/`object`/`JsonValue` o de un modelo con `extra="allow"`, y de los endpoints `POST`/`PUT`/`PATCH`/`DELETE` que declaran `Request` y no tienen cuerpo tipado
+(`request-sin-cuerpo-tipado`). Es **informativa**, para revisión humana (puede dar falsos positivos): no se afirma `== []`, se fija el conjunto conocido con un comentario por entrada. Sobre las factories de
+libracore da 5 entradas, todas conocidas (`FacturaPayload` con `extra="allow"` en dos rutas, `CobroPayload.pagos`, el webhook y el enlace de resguardo). El recorrido de rutas que comparte con la guardia de
+booleanos se extrajo a `libracore/testing/_recorrido.py` (interno); el comportamiento de esa guardia no cambia.
+
+**Lo que puede romper al subir el pin:** nada que MercadoPago envíe hoy. Un test de un producto que le mande al webhook un JSON que no es un objeto y espere 500 (ninguno debería).
+
 ## [Unreleased] — Un booleano ya no es un número en los cuerpos de los routers (propuesta: v1.125.0)
 
 Sin migración ni cambio de esquema. **Cambia el comportamiento de 60 campos de entrada** de los routers del motor: `true` y `false` en un campo numérico daban 200 (pydantic los convertía en `1` y `0`:

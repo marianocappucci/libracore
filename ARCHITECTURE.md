@@ -161,7 +161,7 @@ contable.
 `mp_api` (cliente), `mp_config_router`/`mp_bandeja_router`/`mp_webhook`
 (configuración, bandeja y webhook como routers), `mp_sync` (sincronización) y
 `mp_facturacion` (puente cobro→comprobante). El webhook (`mp_webhook`) es el más
-consumido del grupo.
+consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo que no es lo esperado (ADR-015).
 
 ### Infra de instancia — `npm_api`, `respaldo`, `config_*`, `smtp_router`
 
@@ -191,6 +191,8 @@ algo del negocio, y `libracore.testing.campos_numericos_que_aceptan_booleano(app
 los campos que todavía lo aceptan: cada producto la corre sobre su `create_app()` y afirma `== []`. Un campo
 numérico nuevo en un modelo de entrada lleva el helper; si se olvida, la guardia lo avisa. Lo que la guardia
 no ve (un `list[dict]`, un cuerpo leído a mano) usa `rechazar_booleanos(valor, campos, donde)`. ADR-013.
+`libracore.testing.cuerpos_sin_tipar(app)` es su guardia hermana, informativa: lista los cuerpos que no tienen forma (`dict`, `Any`, `extra="allow"`, `Request` sin cuerpo tipado) para que una persona los
+revise y el producto fije el conjunto conocido con un comentario por entrada. ADR-015.
 
 ## Diseño dual SQLite/PostgreSQL
 

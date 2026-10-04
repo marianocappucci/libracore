@@ -16,8 +16,10 @@ gobiernan, y que estaban escritas tres veces con tres criterios distintos:
 3. **Contesta 200 casi siempre, y no es descuido.** MercadoPago reintenta ante
    cualquier código que no sea 2xx, así que devolver 500 por un error propio
    convierte un problema en una tormenta de reintentos. Se contesta 200 y el
-   error queda en el log. Las dos excepciones son el JSON ilegible y la firma
-   inválida: ahí el 400 es correcto porque el reintento tampoco va a servir.
+   error queda en el log. Las excepciones son el JSON ilegible (o que no es un
+   objeto), el pago sin un id utilizable y la firma inválida: ahí el 400 es
+   correcto porque el reintento tampoco va a servir. Lo que nunca es: un 500 por
+   un cuerpo raro (ADR-015).
 4. **Idempotencia.** Un mismo `payment_id` no puede generar dos facturas. MP
    reintenta la misma notificación, y sin este corte el reintento duplicaría el
    comprobante.
@@ -102,6 +104,20 @@ def _datos_del_pagador(pago: dict) -> dict:
     }
 
 
+def _id_del_pago(payload: dict) -> str:
+    """El id del pago que trae la notificación, como texto, o `""` si no hay uno utilizable.
+
+    El cuerpo lo manda cualquiera (el endpoint es público): `data` puede no ser un objeto y `id` puede ser
+    cualquier cosa. MercadoPago manda un número (o su texto): se acepta `int`, `float` y `str`, y se pasa por
+    `str` como siempre. Un `bool` **no** es un id (`str(True)` daría «True» y llegaría a la API como tal),
+    ni un dict ni una lista (`str({"a": 1})` no es un id de nadie)."""
+    data = payload.get("data")
+    bruto = data.get("id") if isinstance(data, dict) else None
+    if isinstance(bruto, bool) or not isinstance(bruto, (int, float, str)):
+        return ""
+    return str(bruto or "")
+
+
 def build_mp_webhook_router(
     *,
     prefix: str = "",
@@ -149,10 +165,14 @@ def build_mp_webhook_router(
         except Exception:
             return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
 
+        if not isinstance(payload, dict):
+            # Un JSON válido que no es un objeto (`[]`, `null`, un número) no sirve igual que uno roto.
+            return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+
         if payload.get("type", "") != "payment":
             return JSONResponse({"ok": True, "msg": "ignored"}, status_code=200)
 
-        payment_id = str(payload.get("data", {}).get("id", "") or "")
+        payment_id = _id_del_pago(payload)
         if not payment_id:
             return JSONResponse({"ok": False, "error": "no payment id"}, status_code=400)
 
