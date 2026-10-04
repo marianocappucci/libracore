@@ -94,9 +94,13 @@ def problema_del_receptor(factura: dict) -> str | None:
     **antes** de pedirle el número a ARCA, para contestar con un 422 que dice qué cliente y qué
     cargar. Un producto no escribe su propia versión (`reglas/producto.md` del wiki).
 
-    - Con **11 dígitos**, el verificador tiene que cerrar, en cualquier clase.
-    - Las **clases A** y toda **FCE** exigen CUIT de 11 dígitos (DocTipo 80). Una B o una C sin
-      CUIT, o con uno que no es de 11 dígitos, es un consumidor final y sale bien.
+    - Con **11 dígitos**, en una **factura** el verificador tiene que cerrar, en cualquier clase.
+    - 🔑 **Una nota (de crédito o de débito) NO se valida por el verificador:** hereda el receptor de
+      una factura que ARCA ya autorizó, y si esa factura salió a un CUIT que no existe (ARCA la
+      autoriza con aviso en una A) **hay que poder corregirla con una nota**, que es lo que el propio
+      aviso pide. Bloquearla dejaría la factura sin salida.
+    - Las **clases A** y toda **FCE** exigen CUIT de 11 dígitos (DocTipo 80), **también las notas**.
+      Una B o una C sin CUIT, o con uno que no es de 11 dígitos, es un consumidor final y sale bien.
 
     Medido en homologación el 2026-10-03:
     - un CUIT `1` en una Factura A vuelve `[10013] DocTipo debe ser igual a 80` y
@@ -106,17 +110,19 @@ def problema_del_receptor(factura: dict) -> str | None:
       «La CUIT receptora que ingresaste no existe. Tenes que emitir una Nota de Credito o anular
       la operacion»). Por eso la guarda **bloquea también la A**: una factura a un receptor que no
       existe se emite para anularla después.
+    - Medido el 2026-10-04: la **nota de crédito A al mismo CUIT inexistente, asociada a esa factura,
+      ARCA la autoriza** (CAE con el mismo aviso `10238`).
     """
     crudo = str(factura.get("cliente_cuit") or "").strip()
     digitos = cuit_del_receptor(factura)
     razon = str(factura.get("cliente_razon") or "").strip()
     cliente = f"del cliente {razon!r}" if razon else "del cliente"
+    tipo = int(factura.get("tipo") or 0)
     if len(digitos) == 11:
-        if cuit_con_verificador_valido(digitos):
+        if cuit_con_verificador_valido(digitos) or tipo in tipos.NC or tipo in tipos.ND:
             return None
         return (f"el CUIT {crudo!r} {cliente} no es válido (el dígito verificador no cierra): "
                 "revisalo en la ficha del cliente")
-    tipo = int(factura.get("tipo") or 0)
     if tipo not in _TIPOS_A and tipo not in tipos.FCE:
         return None
     que = "una FCE" if tipo in tipos.FCE else f"un comprobante clase {tipos.LETRA.get(tipo, 'A')}"
