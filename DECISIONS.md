@@ -472,3 +472,15 @@ Detalle en `docs/fce.md`.
 - Una consulta nueva que sume comprobantes tiene que usar `sql_vigente` o `sql_solo_fiscales`. Es la misma disciplina que `sql_no_anulado` en la caja.
 - La cuenta corriente propia de un producto (LibraCargo) no la toca el motor: ese producto asienta su contrapartida, como hoy.
 
+## ADR-023 — Un comprobante registrado a mano conserva su número
+
+**Contexto.** LibraCargo registra a mano el número de los comprobantes que una razón social sin ARCA emitió en otro lado (su ADR-024). El motor sólo tenía `create_factura`: si el número ya existe, reintenta con el siguiente. Eso está bien cuando el motor calcula el número, pero con un número tipeado **registra un comprobante que no existe**. Es el M6 del diseño `libracargo-modelo-normalizado-diseno`.
+
+**Decisión.** `db.facturas.registrar_comprobante`. El número es el dato:
+- Si ya existe para el emisor (ADR-021), levanta `NumeroYaRegistrado`, también si otro lo registró entre la consulta y el `INSERT`.
+- Cualquier otra violación de integridad sale tal cual.
+- Siempre va como `produccion`.
+- No hay endpoint: lo llama el producto desde su propio flujo, que valida y asienta lo suyo.
+
+**Consecuencias.** No cambia el esquema ni `create_factura`. Un producto que quiera exponer el registro manual en su pantalla lo hace con su propio router.
+
