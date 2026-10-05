@@ -6,6 +6,7 @@ libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
+from libracore.db.facturas import sql_vigente
 
 
 def get_reporte_ventas(desde: str = "", hasta: str = "", agrupacion: str = "dia") -> list[dict]:
@@ -161,8 +162,10 @@ def get_reporte_resumen(desde: str = "", hasta: str = "", sin_fiado: bool = Fals
         v = conn.execute(
             f"SELECT COUNT(*) cnt, ROUND(SUM(total),2) total FROM ventas {w}", params
         ).fetchone()
+        # Los anulados no cuentan (ADR-022). Mismo cuidado que con la caja: `w` puede venir vacío.
+        w_fact = "WHERE " + " AND ".join(where + [sql_vigente()])
         f_row = conn.execute(
-            f"SELECT COUNT(*) cnt FROM facturas {w}", params
+            f"SELECT COUNT(*) cnt FROM facturas {w_fact}", params
         ).fetchone()
         # 🔴 El `w` de arriba lo comparten `ventas` y `facturas`, que NO tienen
         # columna `anulado`. Y puede venir vacio ---sin fechas no hay `WHERE`---,

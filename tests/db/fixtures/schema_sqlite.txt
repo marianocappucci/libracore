@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (384)
+## tablas (387)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -164,6 +164,9 @@ facturacion_alias|id|INTEGER||
 facturacion_alias|tipo|TEXT|NN|
 facturacion_alias|valor|TEXT|NN|
 facturas|ambiente|TEXT|NN|'produccion'
+facturas|anulacion_motivo|TEXT|NN|''
+facturas|anulada_en|TEXT||
+facturas|anulada_por|INTEGER||
 facturas|cae_error|TEXT|NN|''
 facturas|cae_vto|TEXT||
 facturas|cae|TEXT||
@@ -421,7 +424,7 @@ usuarios|id
 ventas_pagos|id
 ventas|id
 
-## claves foráneas (43)
+## claves foráneas (44)
 caja_movimientos|caja_id|cajas|id|SET NULL|NO ACTION
 caja_movimientos|turno_id|turnos_caja|id|SET NULL|NO ACTION
 caja_movimientos|usuario_id|usuarios|id|SET NULL|NO ACTION
@@ -439,6 +442,7 @@ egresos_pagos|usuario_id|usuarios|id|SET NULL|NO ACTION
 egresos|proveedor_id|proveedores|id|SET NULL|NO ACTION
 egresos|usuario_id|usuarios|id|SET NULL|NO ACTION
 facturacion_alias|cliente_id|clients|id|CASCADE|NO ACTION
+facturas|anulada_por|usuarios|id|SET NULL|NO ACTION
 facturas|emisor_id|arca_config|id|RESTRICT|NO ACTION
 facturas|usuario_id|usuarios|id|SET NULL|NO ACTION
 lista_precio_items|lista_id|listas_precio|id|CASCADE|NO ACTION

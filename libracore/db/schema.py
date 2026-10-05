@@ -906,6 +906,19 @@ def init_core_schema(conn: Conexion):
             "ALTER TABLE facturas ADD COLUMN emisor_id INTEGER "
             "REFERENCES arca_config(id) ON DELETE RESTRICT"
         )
+    # La anulación con rastro de un comprobante SIN CAE. `anulada_en` en `NULL` es
+    # «vigente»: lo que tiene todo comprobante ya emitido. Una factura sin CAE se
+    # puede seguir borrando (`DELETE`); anularla la deja en la base, con su número,
+    # quién y por qué, y fuera de los libros y los totales (`sql_vigente`).
+    if "anulada_en" not in cols_f:
+        conn.execute("ALTER TABLE facturas ADD COLUMN anulada_en TEXT")
+    if "anulada_por" not in cols_f:
+        conn.execute(
+            "ALTER TABLE facturas ADD COLUMN anulada_por INTEGER "
+            "REFERENCES usuarios(id) ON DELETE SET NULL"
+        )
+    if "anulacion_motivo" not in cols_f:
+        conn.execute("ALTER TABLE facturas ADD COLUMN anulacion_motivo TEXT NOT NULL DEFAULT ''")
     if "ambiente" not in cols_f:
         conn.execute(
             "ALTER TABLE facturas ADD COLUMN ambiente TEXT NOT NULL DEFAULT 'produccion' "

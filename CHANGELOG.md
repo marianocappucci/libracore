@@ -7,6 +7,19 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La anulación con rastro de un comprobante sin CAE (propuesta: v1.134.0, junto con la entrada de abajo)
+
+**Migración `0017_anulacion_con_rastro`**. ADR-022. **Opcional**: el `DELETE` de un comprobante sin CAE sigue como estaba, y nada se anula si nadie llama a anular.
+
+- **Nuevo:** `facturas.anulada_en`, `anulada_por` (FK a `usuarios`) y `anulacion_motivo`.
+- **Nuevo:** `db.facturas.anular_factura(factura_id, usuario_id=None, motivo="")`. Sólo anula sin CAE y sin cobros; si no puede, levanta `ComprobanteNoAnulable` con un `codigo` (`no_existe`, `con_cae`, `ya_anulado`, `con_cobros`). En la misma transacción anula el débito de cuenta corriente que había generado el comprobante.
+- **Nuevo:** `POST /api/facturas/{id}/anular` (admin), con cuerpo opcional `{"motivo": "..."}`. Devuelve el detalle, o 404 o 409 según el código.
+- **Cambia:** un comprobante anulado no se autoriza, no se cobra y no admite notas (409). Su número no se reusa.
+- **Cambia:** los anulados quedan fuera del libro IVA y de los totales.
+  - `SOLO_FISCALES` y `sql_solo_fiscales` suman `anulada_en IS NULL`.
+  - Nuevo `sql_vigente(alias)`, que usan el resumen, el tablero, el reporte resumen, las facturas pendientes de cuenta corriente y la búsqueda de notas previas.
+  - Los listados los siguen mostrando, con su marca.
+
 ## [Unreleased] — El emisor de cada comprobante: varias razones sociales en una instancia (propuesta: v1.134.0)
 
 **Migración `0016_emisor_del_comprobante`** (correr `alembic upgrade head` en el deploy, como siempre). ADR-021. **Para los productos de un solo emisor no cambia nada**: no pasan emisor, sus comprobantes quedan con `emisor_id` en `NULL` y se emite con la primera configuración activa, como siempre.

@@ -361,6 +361,23 @@ class FacturaPayload(BaseModel):
         "tipo", "punto_venta", "concepto", "tax_rate", "client_id", "emisor_id")
 
 
+class AnularIn(BaseModel):
+    """El cuerpo, **opcional**, de `POST /{factura_id}/anular`: por qué se anula."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    motivo: str = ""
+
+
+#: Cómo traduce este router cada motivo de `ComprobanteNoAnulable` a su respuesta HTTP.
+_STATUS_DE_ANULACION = {
+    db_facturas.ComprobanteNoAnulable.NO_EXISTE: 404,
+    db_facturas.ComprobanteNoAnulable.CON_CAE: 409,
+    db_facturas.ComprobanteNoAnulable.YA_ANULADO: 409,
+    db_facturas.ComprobanteNoAnulable.CON_COBROS: 409,
+}
+
+
 class CobroPayload(BaseModel):
     fecha: str = ""
     caja_id: int | None = None
@@ -418,6 +435,17 @@ def _resolve_cliente(payload: FacturaPayload) -> dict:
     }
 
 
+def _exigir_vigente(factura: dict) -> None:
+    """409 si el comprobante está anulado (ADR-022): no se autoriza, no se cobra y no admite notas.
+
+    Pedirle CAE a un anulado sería autorizar ante ARCA un comprobante que el
+    operador ya dio de baja; cobrarlo o hacerle una nota, operar sobre algo que
+    no existe.
+    """
+    if factura.get("anulada_en"):
+        raise HTTPException(409, "El comprobante está anulado.")
+
+
 def _numero(factura: dict) -> str:
     return f"{str(factura['punto_venta']).zfill(4)}-{str(factura['numero']).zfill(8)}"
 
@@ -447,7 +475,8 @@ def _detalle(factura: dict) -> dict:
     total_cobrado = sum(c["monto"] for c in cobros)
     # `max(0, ...)`: un cobro de más no puede mostrarse como pendiente negativo.
     pendiente = (
-        max(0.0, round(factura["total"] - total_cobrado, 2)) if es_factura else 0.0
+        max(0.0, round(factura["total"] - total_cobrado, 2))
+        if es_factura and not factura.get("anulada_en") else 0.0
     )
 
     cliente = db_clients.get_client_by_cuit(factura.get("cliente_cuit", ""))
@@ -573,6 +602,7 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
         orig = db_facturas.get_factura(factura_id)
         if not orig:
             raise HTTPException(404, "Factura no encontrada")
+        _exigir_vigente(orig)
         importe = payload.importe if payload else None
         try:
             nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"], importe))
@@ -945,6 +975,7 @@ def build_comprobantes_router(
         factura = _exigir(factura_id)
         if factura.get("cae"):
             return _detalle(factura)
+        _exigir_vigente(factura)
 
         # El par del emisor con el que se numeró: otro CUIT no puede autorizarlo.
         arca = _config_del_emisor(factura.get("emisor_id"))
@@ -983,6 +1014,7 @@ def build_comprobantes_router(
         usuario: dict = Depends(usuario_actual),
     ):
         factura = _exigir(factura_id)
+        _exigir_vigente(factura)
         # La lógica vive en `libracore.cobros`: el movimiento por pago, la
         # acreditación en cuenta corriente si el comprobante era a crédito, y el
         # rechazo de "cuenta corriente" como medio de cobro. Estaba duplicada
@@ -1056,6 +1088,21 @@ def build_comprobantes_router(
         db_facturas.delete_factura(factura_id)
         return {"ok": True}
 
+    @router.post("/{factura_id}/anular", dependencies=admin)
+    def anular(factura_id: int, payload: AnularIn | None = None, usuario: dict = Depends(usuario_actual)):
+        """Anula un comprobante **sin CAE** y lo deja en la base, con quién, cuándo y por qué (ADR-022).
+
+        Es la alternativa al `DELETE` para quien no quiere que un número
+        desaparezca. El comprobante sale de los libros, los totales y la cuenta
+        corriente, y se sigue viendo en el listado con su marca.
+        """
+        try:
+            factura = db_facturas.anular_factura(
+                factura_id, usuario_id=usuario["id"], motivo=payload.motivo if payload else "")
+        except db_facturas.ComprobanteNoAnulable as e:
+            raise HTTPException(_STATUS_DE_ANULACION[e.codigo], str(e)) from None
+        return _detalle(factura)
+
     # ── Notas ─────────────────────────────────────────────────────────────
 
     _registrar_nota_de_credito(router, usuario_actual=usuario_actual, solo_admin=solo_admin)
@@ -1063,6 +1110,7 @@ def build_comprobantes_router(
     @router.post("/{factura_id}/nota-debito", dependencies=admin)
     def nota_debito(factura_id: int, usuario: dict = Depends(usuario_actual)):
         orig = _exigir(factura_id)
+        _exigir_vigente(orig)
         nd_tipo = TIPO_ND.get(orig["tipo"])
         if not nd_tipo:
             raise HTTPException(400, "Tipo de comprobante no admite nota de débito")

@@ -140,7 +140,10 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
-        # 384 desde el 2026-10-05, cuando entró `facturas.emisor_id` — con qué configuración de
+        # 387 desde el 2026-10-05, cuando entraron `facturas.anulada_en`, `anulada_por` y
+        # `anulacion_motivo` — la anulación con rastro de un comprobante sin CAE (ADR-022).
+        #
+        # Era 384 desde el 2026-10-05, cuando entró `facturas.emisor_id` — con qué configuración de
         # ARCA se emitió cada comprobante, para que un producto con varias razones sociales
         # (LibraCargo) use la tabla del motor.
         #
@@ -173,7 +176,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (385)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (388)"}
     finally:
         conn.close()
         _liberar()
