@@ -213,8 +213,8 @@ def _punto_venta(venta: dict) -> int:
     propio = resolver_punto_venta(venta.get("usuario_id"))
     if propio:
         return propio
-    configs = db_arca.obtener_todas_arca_configs()
-    return configs[0].get("punto_venta", 1) if configs else 1
+    cfg = db_arca.config_del_emisor()
+    return cfg.get("punto_venta", 1) if cfg else 1
 
 
 async def facturar_venta(ventas: PuertoDeVentas, venta_id: int, *,

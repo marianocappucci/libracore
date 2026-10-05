@@ -24,12 +24,17 @@ from libracore.db.core import get_connection, sql_busqueda
 SOLO_FISCALES = "ambiente = 'produccion'"
 
 
+#: Filtra por emisor. `NULL` y `0` son lo mismo, «el único de la instancia»: es la
+#: misma expresión que el índice `idx_facturas_numeracion`, así que lo usa.
+SQL_DEL_EMISOR = "COALESCE(emisor_id, 0) = ?"
+
+
 def sql_solo_fiscales(alias: str = "") -> str:
     """El filtro, con el alias de la tabla si la consulta usa uno."""
     return f"{alias}.{SOLO_FISCALES}" if alias else SOLO_FISCALES
 
 
-def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion"):
+def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion", emisor_id=None):
     """El próximo número correlativo para tipo+punto_venta **en ese ambiente**.
 
     🔴 **El ambiente parte la secuencia, y es lo más peligroso de todo esto.**
@@ -45,12 +50,15 @@ def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion"):
 
     El default `produccion` es el caso normal —quien no sabe de ambientes está
     facturando de verdad— y mantiene la firma vieja andando.
+
+    El emisor también parte la secuencia: dos razones sociales con el mismo punto
+    de venta numeran cada una la suya. `None` es el emisor único de la instancia.
     """
     with get_connection() as conn:
         row = conn.execute(
             "SELECT MAX(numero) FROM facturas "
-            "WHERE punto_venta=? AND tipo=? AND ambiente=?",
-            (punto_venta, tipo, ambiente),
+            f"WHERE punto_venta=? AND tipo=? AND ambiente=? AND {SQL_DEL_EMISOR}",
+            (punto_venta, tipo, ambiente, emisor_id or 0),
         ).fetchone()
         return (row[0] or 0) + 1
 
@@ -62,7 +70,7 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                    fch_vto_pago="", cbte_asoc_tipo=0, cbte_asoc_pv=0, cbte_asoc_nro=0,
                    condicion_venta="", usuario_id=None,
                    fce_cbu="", fce_transmision="", fce_anulacion="", cbte_asoc_fecha="",
-                   *, ambiente: str):
+                   *, ambiente: str, emisor_id=None):
     """Crea una nueva factura electrónica. `numero` es el número calculado por el
     caller (local o vía ARCA) pero puede haber quedado obsoleto si otra factura
     concurrente para el mismo tipo+punto_venta se creó en el medio (no había
@@ -81,6 +89,9 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
     marcar de producción un comprobante de prueba ensucia los libros; marcar de
     prueba uno real lo **saca** del libro IVA en silencio, que es peor. Por eso
     no hay default: acá el ambiente **se declara**, o no se escribe la fila.
+
+    `emisor_id` (`arca_config.id`) sólo lo pasa un producto con varias razones
+    sociales. Sin él el comprobante es del emisor único de la instancia.
     """
     ambiente = (ambiente or "").strip().lower()
     if ambiente not in ("homologacion", "produccion"):
@@ -99,20 +110,22 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                         cae, cae_vto, observaciones, pdf_path, cliente_domicilio,
                         fch_serv_desde, fch_serv_hasta, fch_vto_pago,
                         cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
-                        ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha,
+                        emisor_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
                      cliente_iva_cond, json.dumps(items, ensure_ascii=False), subtotal,
                      iva_amount, total, concepto, cae, cae_vto, observaciones, pdf_path,
                      cliente_domicilio, fch_serv_desde, fch_serv_hasta, fch_vto_pago,
                      cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
-                     ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha),
+                     ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha,
+                     emisor_id),
                 )
                 return cur.lastrowid
         except sqlite3.IntegrityError:
             if intento == MAX_INTENTOS - 1:
                 raise
-            numero = get_next_factura_numero(punto_venta, tipo, ambiente)
+            numero = get_next_factura_numero(punto_venta, tipo, ambiente, emisor_id)
 
 
 _TIPOS_FACTURA = tipos.FACTURAS
@@ -251,16 +264,32 @@ def search_facturas(query, vista="facturas"):
         return result
 
 
-def get_notas_de_factura(tipo, punto_venta, numero, tipos_nota):
-    """Devuelve notas (NC o ND) que referencian un comprobante."""
+def _y_ambiente(ambiente) -> tuple[str, tuple]:
+    """El filtro opcional por ambiente: `("", ())` sin ambiente, que es no filtrar."""
+    return (" AND ambiente=?", (ambiente,)) if ambiente else ("", ())
+
+
+def get_notas_de_factura(tipo, punto_venta, numero, tipos_nota, emisor_id=None, ambiente=None):
+    """Devuelve notas (NC o ND) que referencian un comprobante.
+
+    🔑 **`(tipo, pv, número)` no alcanza para identificar al original**, por dos
+    motivos, y quien tiene el original a mano pasa los dos datos:
+    - **El emisor.** Con dos razones sociales, las dos pueden tener la Factura A
+      0001-00000005. Una nota es siempre del emisor de su original.
+    - **El ambiente.** Homologación y producción numeran por separado, así que la
+      factura de prueba 5 y la real 5 conviven. Sin `ambiente` no se filtra, que
+      es como funcionó siempre.
+    """
     placeholders = ",".join("?" * len(tipos_nota))
+    filtro_amb, param_amb = _y_ambiente(ambiente)
     with get_connection() as conn:
         rows = conn.execute(
             f"""SELECT * FROM facturas
                WHERE tipo IN ({placeholders})
                  AND cbte_asoc_tipo=? AND cbte_asoc_pv=? AND cbte_asoc_nro=?
+                 AND {SQL_DEL_EMISOR}{filtro_amb}
                ORDER BY id DESC""",
-            (*tipos_nota, tipo, punto_venta, numero),
+            (*tipos_nota, tipo, punto_venta, numero, emisor_id or 0, *param_amb),
         ).fetchall()
         result = []
         for r in rows:
@@ -270,22 +299,24 @@ def get_notas_de_factura(tipo, punto_venta, numero, tipos_nota):
         return result
 
 
-def get_nc_de_factura(tipo, punto_venta, numero):
+def get_nc_de_factura(tipo, punto_venta, numero, emisor_id=None, ambiente=None):
     """Devuelve las notas de crédito que anulan un comprobante."""
-    return get_notas_de_factura(tipo, punto_venta, numero, _TIPOS_NC)
+    return get_notas_de_factura(tipo, punto_venta, numero, _TIPOS_NC, emisor_id, ambiente)
 
 
-def get_nd_de_factura(tipo, punto_venta, numero):
+def get_nd_de_factura(tipo, punto_venta, numero, emisor_id=None, ambiente=None):
     """Devuelve las notas de débito asociadas a un comprobante."""
-    return get_notas_de_factura(tipo, punto_venta, numero, _TIPOS_ND)
+    return get_notas_de_factura(tipo, punto_venta, numero, _TIPOS_ND, emisor_id, ambiente)
 
 
-def get_factura_por_tipo_pv_nro(tipo, punto_venta, numero):
-    """Busca un comprobante por tipo + punto de venta + número."""
+def get_factura_por_tipo_pv_nro(tipo, punto_venta, numero, emisor_id=None, ambiente=None):
+    """Busca un comprobante por emisor + tipo + punto de venta + número (y ambiente, si viene)."""
+    filtro_amb, param_amb = _y_ambiente(ambiente)
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT * FROM facturas WHERE tipo=? AND punto_venta=? AND numero=?",
-            (tipo, punto_venta, numero),
+            "SELECT * FROM facturas WHERE tipo=? AND punto_venta=? AND numero=? "
+            f"AND {SQL_DEL_EMISOR}{filtro_amb}",
+            (tipo, punto_venta, numero, emisor_id or 0, *param_amb),
         ).fetchone()
         if not row:
             return None

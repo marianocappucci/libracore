@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (383)
+## tablas (384)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -178,6 +178,7 @@ facturas|cliente_razon|TEXT||
 facturas|concepto|INTEGER|NN|1
 facturas|condicion_venta|TEXT||''
 facturas|created_at|TEXT||datetime('now','-3 hours')
+facturas|emisor_id|INTEGER||
 facturas|fce_anulacion|TEXT|NN|''
 facturas|fce_cbu|TEXT|NN|''
 facturas|fce_transmision|TEXT|NN|''
@@ -420,7 +421,7 @@ usuarios|id
 ventas_pagos|id
 ventas|id
 
-## claves foráneas (42)
+## claves foráneas (43)
 caja_movimientos|caja_id|cajas|id|SET NULL|NO ACTION
 caja_movimientos|turno_id|turnos_caja|id|SET NULL|NO ACTION
 caja_movimientos|usuario_id|usuarios|id|SET NULL|NO ACTION
@@ -438,6 +439,7 @@ egresos_pagos|usuario_id|usuarios|id|SET NULL|NO ACTION
 egresos|proveedor_id|proveedores|id|SET NULL|NO ACTION
 egresos|usuario_id|usuarios|id|SET NULL|NO ACTION
 facturacion_alias|cliente_id|clients|id|CASCADE|NO ACTION
+facturas|emisor_id|arca_config|id|RESTRICT|NO ACTION
 facturas|usuario_id|usuarios|id|SET NULL|NO ACTION
 lista_precio_items|lista_id|listas_precio|id|CASCADE|NO ACTION
 lista_precio_items|producto_id|productos|id|CASCADE|NO ACTION
@@ -480,7 +482,7 @@ comprobantes_pendientes|idx_comprobantes_pendientes_origen|CREATE UNIQUE INDEX i
 facturacion_alias|sqlite_autoindex_facturacion_alias_1|UNIQUE implícito (tipo,valor)
 facturas|idx_facturas_cliente_cuit|CREATE INDEX idx_facturas_cliente_cuit ON facturas(cliente_cuit)
 facturas|idx_facturas_fecha|CREATE INDEX idx_facturas_fecha ON facturas(fecha)
-facturas|idx_facturas_numero_unico|CREATE UNIQUE INDEX idx_facturas_numero_unico ON facturas(tipo, punto_venta, numero)
+facturas|idx_facturas_numeracion|CREATE UNIQUE INDEX idx_facturas_numeracion ON facturas(COALESCE(emisor_id, 0), ambiente, tipo, punto_venta, numero)
 lista_precio_items|sqlite_autoindex_lista_precio_items_1|UNIQUE implícito (lista_id,producto_id)
 modulos|sqlite_autoindex_modulos_1|UNIQUE implícito (modulo)
 movimientos_stock|idx_movimientos_stock_producto|CREATE INDEX idx_movimientos_stock_producto ON movimientos_stock(producto_id)

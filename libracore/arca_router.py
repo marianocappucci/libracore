@@ -155,8 +155,7 @@ def _resolver(empresa: str) -> dict | None:
     """
     if empresa:
         return db_arca_config.obtener_arca_config(empresa)
-    activas = db_arca_config.obtener_todas_arca_configs()
-    return activas[0] if activas else None
+    return db_arca_config.config_del_emisor()
 
 
 def _certs_dir() -> str:

@@ -187,8 +187,8 @@ async def generar_factura_mp(
 
     # El punto de venta sale de la config de ARCA y hace falta ANTES de pedir el
     # número, así que se lee acá aunque `arca_facturacion` vuelva a leerla.
-    configs = db_arca_config.obtener_todas_arca_configs()
-    punto_venta = configs[0]["punto_venta"] if configs else 1
+    emisor = db_arca_config.config_del_emisor()
+    punto_venta = emisor["punto_venta"] if emisor else 1
 
     # 🔑 La numeración y el CAE los pone `arca_facturacion`, que es el mismo
     # camino que usa la facturación manual de los seis productos. Antes esto

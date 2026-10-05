@@ -365,9 +365,9 @@ def test_emitir_un_comprobante_no_frena_el_loop(base, monkeypatch):
     lento = _Lento()
     real = fr.get_next_numero_with_arca
 
-    async def numerar_con_openssl(punto_venta, tipo):
+    async def numerar_con_openssl(punto_venta, tipo, emisor_id=None):
         lento.dormir()
-        return await real(punto_venta, tipo)
+        return await real(punto_venta, tipo, emisor_id)
 
     monkeypatch.setattr(fr, "get_next_numero_with_arca", numerar_con_openssl)
     respuesta, health, fin = _mientras_duerme(

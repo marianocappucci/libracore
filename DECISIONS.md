@@ -443,3 +443,14 @@ Detalle en `docs/fce.md`.
 
 **Límites.** Las rutas propias de un producto fuera de `/api` (`/auth/...`, `/settings/...`, `/logs` en algunos) siguen cayendo en la SPA si no existen, salvo que el producto sume su prefijo. Sin migración.
 
+## ADR-021 — El emisor de cada comprobante es opcional y vive en `facturas`
+
+**Contexto.** El motor suponía un emisor por instancia: diez lugares tomaban `configs[0]` y `facturas` no decía con qué configuración de ARCA se emitió cada comprobante. LibraCargo factura con varias razones sociales (Suitrans: la agencia y el transporte) y por eso tenía su propio modelo de comprobantes, con su numeración, sus notas y su anulación. El humano pidió un solo modelo (2026-10-05): «que haya cosas que use libracargo y que los demás no usen, no quiero que sean modelos separados». El diseño completo está en el wiki del ecosistema (`wiki/analyses/libracargo-modelo-normalizado-diseno.md`); esta es su etapa 1, M1.
+
+**Decisión.** `facturas.emisor_id`, FK **opcional** a `arca_config.id`. `NULL` es «el emisor único de la instancia».
+- `arca_config.config_del_emisor(emisor_id=None)` es el único lugar que elige configuración. Sin emisor, la primera activa, como siempre. Con emisor, esa fila o `EmisorDesconocido`, nunca otra: caer a otra fila sería emitir con el CUIT equivocado.
+- La numeración y la unicidad son por emisor **y por ambiente**, como en ARCA. El índice usa `COALESCE(emisor_id, 0)`, porque en un UNIQUE dos `NULL` no son iguales y los comprobantes de toda la familia quedarían sin unicidad.
+- Una nota es siempre del emisor de su original. La búsqueda de notas y del original filtra por emisor y, cuando se tiene el original, por ambiente.
+
+**Consecuencias.** Los productos de un solo emisor no cambian de comportamiento ni de datos. La migración no toca filas, sólo agrega la columna y cambia el índice por uno más laxo, que no puede fallar donde el viejo existía. La condición de IVA del emisor sigue saliendo de `config_manager`, que es una sola por instancia; si dos razones sociales tienen distinta condición, hará falta llevarla a `arca_config`; se verifica en Suitrans antes de la etapa de LibraCargo. Siguen, en etapas aparte del mismo diseño: la anulación con rastro y el registro manual con número tipeado (M3 y M6), emitir dentro de la transacción del producto (M2) y el dinero en `NUMERIC` (M4).
+

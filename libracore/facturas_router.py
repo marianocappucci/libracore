@@ -153,8 +153,7 @@ def _datos_de_fce(payload, cliente: dict) -> tuple[str, str]:
         raise HTTPException(422, "La FCE se le emite a una empresa: falta el CUIT del cliente.")
     if not (payload.fch_vto_pago or "").strip():
         raise HTTPException(422, "La FCE exige la fecha de vencimiento de pago.")
-    configs = db_arca.obtener_todas_arca_configs()
-    cfg = configs[0] if configs else {}
+    cfg = _config_del_emisor(payload.emisor_id) or {}
     cbu = (cfg.get("fce_cbu") or "").strip()
     transmision = (cfg.get("fce_transmision") or "").strip().upper()
     if not cbu or transmision not in ("SCA", "ADC"):
@@ -172,10 +171,17 @@ TIPOS_FCE_POR_CONDICION = {
 }
 
 
-def _tipos_fce_del_emisor() -> list[dict]:
+def _config_del_emisor(emisor_id: int | None) -> dict | None:
+    """`arca_config.config_del_emisor`, con un emisor que no existe como 422 y no como 500."""
+    try:
+        return db_arca.config_del_emisor(emisor_id)
+    except db_arca.EmisorDesconocido as e:
+        raise HTTPException(422, str(e)) from None
+
+
+def _tipos_fce_del_emisor(emisor_id: int | None = None) -> list[dict]:
     """Las opciones de FCE para el selector, o `[]` si el emisor no la habilitó."""
-    configs = db_arca.obtener_todas_arca_configs()
-    cfg = configs[0] if configs else {}
+    cfg = _config_del_emisor(emisor_id) or {}
     if not (cfg.get("fce_cbu") and cfg.get("fce_transmision")):
         return []
     emisor = config_manager.load().get("empresa_iva_condition", "Monotributista")
@@ -347,8 +353,12 @@ class FacturaPayload(BaseModel):
     client_address: str = ""
     client_iva: str = ""
     items: list[ItemPayload]
+    #: Con qué configuración de ARCA se emite (`arca_config.id`). Sólo la manda un
+    #: producto con varias razones sociales; sin ella, el emisor único de la instancia.
+    emisor_id: int | None = None
 
-    _no_son_booleanos = sin_booleanos("tipo", "punto_venta", "concepto", "tax_rate", "client_id")
+    _no_son_booleanos = sin_booleanos(
+        "tipo", "punto_venta", "concepto", "tax_rate", "client_id", "emisor_id")
 
 
 class CobroPayload(BaseModel):
@@ -380,9 +390,9 @@ def _tipos_emisor() -> list[dict]:
     )
 
 
-def _arca_punto_venta() -> int:
-    configs = db_arca.obtener_todas_arca_configs()
-    return configs[0].get("punto_venta", 1) if configs else 1
+def _arca_punto_venta(emisor_id: int | None = None) -> int:
+    cfg = _config_del_emisor(emisor_id)
+    return cfg.get("punto_venta", 1) if cfg else 1
 
 
 def _resolve_cliente(payload: FacturaPayload) -> dict:
@@ -417,17 +427,20 @@ def _detalle(factura: dict) -> dict:
     es_factura = factura["tipo"] in TIPOS_FACTURA
     ncs = nds = []
     if es_factura:
+        # Del mismo emisor y ambiente: `(tipo, pv, número)` solo no identifica al comprobante.
+        mismo = {"emisor_id": factura.get("emisor_id"), "ambiente": factura.get("ambiente")}
         ncs = db_facturas.get_nc_de_factura(
-            factura["tipo"], factura["punto_venta"], factura["numero"]
+            factura["tipo"], factura["punto_venta"], factura["numero"], **mismo
         )
         nds = db_facturas.get_nd_de_factura(
-            factura["tipo"], factura["punto_venta"], factura["numero"]
+            factura["tipo"], factura["punto_venta"], factura["numero"], **mismo
         )
 
     factura_original = None
     if factura.get("cbte_asoc_tipo") and factura.get("cbte_asoc_nro"):
         factura_original = db_facturas.get_factura_por_tipo_pv_nro(
             factura["cbte_asoc_tipo"], factura["cbte_asoc_pv"], factura["cbte_asoc_nro"],
+            emisor_id=factura.get("emisor_id"), ambiente=factura.get("ambiente"),
         )
 
     cobros = db_caja.get_cobros_factura(factura["id"]) if es_factura else []
@@ -469,9 +482,13 @@ _STATUS_DE_NOTA = {
 }
 
 
-def _registrar_nota(nota: dict, ambiente: str, usuario_id: int) -> int:
-    """Guarda la nota en la tabla `facturas` de este router (todavía sin CAE) y devuelve su id."""
+def _registrar_nota(nota: dict, ambiente: str, usuario_id: int, emisor_id: int | None) -> int:
+    """Guarda la nota en la tabla `facturas` de este router (todavía sin CAE) y devuelve su id.
+
+    La nota es del emisor de su original: lo emite la misma razón social, con su par de ARCA.
+    """
     return db_facturas.create_factura(
+        emisor_id=emisor_id,
         # 🔑 El ambiente con el que se emitió, que es lo que separa un comprobante real de uno de prueba en el
         # libro IVA. Sin ARCA configurado no hay CAE y el número es el de la propia instancia: ese comprobante
         # **es** el real del cliente, así que va como `produccion`. No es un default silencioso: es la respuesta
@@ -491,9 +508,10 @@ async def _crear_nota(
     guardas propias: una factura admite varias.
     """
     nota = notas_de_credito.armar_nota(orig, nuevo_tipo, prefijo=obs_prefijo)
-    numero, ta, arca = await get_next_numero_with_arca(orig["punto_venta"], nuevo_tipo)
+    emisor_id = orig.get("emisor_id")
+    numero, ta, arca = await get_next_numero_with_arca(orig["punto_venta"], nuevo_tipo, emisor_id)
     nota["numero"] = numero
-    nota_id = _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id)
+    nota_id = _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id, emisor_id)
     nota_db = db_facturas.get_factura(nota_id)
     nota_db = await solicitar_cae(nota_id, nota_db, ta, arca)
     db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db))
@@ -502,13 +520,15 @@ async def _crear_nota(
 
 async def _emitir_nota_de_credito(orig: dict, usuario_id: int, importe: Decimal | None = None) -> int:
     """La nota de crédito de este router: el núcleo del motor con las costuras de la tabla `facturas`."""
+    emisor_id = orig.get("emisor_id")
+
     async def numerar(tipo_nota: int, punto_venta: int):
-        numero, ta, arca = await get_next_numero_with_arca(punto_venta, tipo_nota)
+        numero, ta, arca = await get_next_numero_with_arca(punto_venta, tipo_nota, emisor_id)
         return numero, (ta, arca)
 
     def registrar(nota: dict, contexto) -> int:
         _ta, arca = contexto
-        return _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id)
+        return _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id, emisor_id)
 
     async def pedir_cae(nota_id: int, _nota: dict, contexto) -> int:
         ta, arca = contexto
@@ -519,7 +539,9 @@ async def _emitir_nota_de_credito(orig: dict, usuario_id: int, importe: Decimal 
     emitida = await notas_de_credito.emitir_nota_de_credito(
         orig,
         clave=("facturas", orig["id"]),
-        cargar_previas=lambda: db_facturas.get_nc_de_factura(orig["tipo"], orig["punto_venta"], orig["numero"]),
+        cargar_previas=lambda: db_facturas.get_nc_de_factura(
+            orig["tipo"], orig["punto_venta"], orig["numero"],
+            emisor_id=emisor_id, ambiente=orig.get("ambiente")),
         numerar=numerar, registrar=registrar, pedir_cae=pedir_cae, importe=importe,
     )
     return emitida.registro
@@ -641,7 +663,7 @@ def build_comprobantes_router(
     # ── Catálogo y listado ────────────────────────────────────────────────
 
     @router.get("/tipos")
-    def tipos(usuario: dict = Depends(usuario_actual)):
+    def tipos(usuario: dict = Depends(usuario_actual), emisor_id: int | None = None):
         """Qué puede emitir este emisor, y con qué opciones. Lo lee el formulario.
 
         🔑 **El `punto_venta` que devuelve es el del POS donde está parado quien
@@ -652,16 +674,20 @@ def build_comprobantes_router(
         Si esa caja no tiene uno propio —o no hay turno abierto— cae al de la
         empresa, que es como funcionó siempre y es el caso de todas las
         instancias existentes.
+
+        Con `emisor_id` (un producto con varias razones sociales) el punto de
+        venta es el de ESE emisor: la caja no sabe de razones sociales.
         """
         tipos_emisor = _tipos_emisor()
         return {
             # La FCE aparece como una opción más del mismo selector, y sólo si el
             # emisor ya cargó su CBU: sin él ARCA la rechazaría.
-            "tipos": tipos_emisor + _tipos_fce_del_emisor(),
+            "tipos": tipos_emisor + _tipos_fce_del_emisor(emisor_id),
             "conceptos": CONCEPTOS,
             "condiciones_venta": CONDICIONES_VENTA,
             "punto_venta": (
-                db_caja.resolver_punto_venta((usuario or {}).get("id"))
+                _arca_punto_venta(emisor_id) if emisor_id is not None
+                else db_caja.resolver_punto_venta((usuario or {}).get("id"))
                 or _arca_punto_venta()
             ),
             "es_monotributista": (
@@ -674,6 +700,7 @@ def build_comprobantes_router(
         cuit: str = Query(..., description="CUIT del receptor"),
         total: Decimal = Query(..., gt=0, description="total de la factura, con IVA"),
         fecha: datetime.date | None = Query(None, description="fecha de emisión; hoy si no viene"),
+        emisor_id: int | None = Query(None, description="arca_config.id; sin él, el emisor único"),
     ):
         """¿A esta factura le corresponde ser FCE? Lo pregunta el formulario **antes de emitir** (ADR-019).
 
@@ -685,11 +712,10 @@ def build_comprobantes_router(
         digitos = "".join(c for c in cuit if c.isdigit())
         if len(digitos) != 11:
             raise HTTPException(422, "El CUIT del receptor tiene que tener 11 dígitos.")
-        configs = db_arca.obtener_todas_arca_configs()
-        arca = configs[0] if configs else None
+        arca = _config_del_emisor(emisor_id)
         resultado = asyncio.run(arca_wsfecred.corresponde_fce(
             arca, digitos, total, fecha or datetime.date.today()))
-        return resultado | {"fce_habilitada": bool(_tipos_fce_del_emisor())}
+        return resultado | {"fce_habilitada": bool(_tipos_fce_del_emisor(emisor_id))}
 
     @router.get("")
     def listar(
@@ -786,6 +812,9 @@ def build_comprobantes_router(
         if not cliente["client_name"]:
             raise HTTPException(422, "El nombre/razón social del cliente es requerido.")
         exigir_tipo_valido_para_el_receptor(payload.tipo, cliente["client_iva"])
+        # Un emisor que no existe es un 422 antes de cualquier otra cosa: después
+        # se pediría un número con un par que no hay.
+        _config_del_emisor(payload.emisor_id)
 
         items = [
             {
@@ -808,9 +837,10 @@ def build_comprobantes_router(
         fce_cbu, fce_transmision = _datos_de_fce(payload, cliente)
 
         numero, ta, arca = asyncio.run(get_next_numero_with_arca(
-            payload.punto_venta, payload.tipo
+            payload.punto_venta, payload.tipo, payload.emisor_id
         ))
         factura_id = db_facturas.create_factura(
+            emisor_id=payload.emisor_id,
             fce_cbu=fce_cbu, fce_transmision=fce_transmision,
             # 🔑 El ambiente con el que se emitió, que es lo que separa un
             # comprobante real de uno de prueba en el libro IVA.
@@ -916,8 +946,8 @@ def build_comprobantes_router(
         if factura.get("cae"):
             return _detalle(factura)
 
-        configs = db_arca.obtener_todas_arca_configs()
-        arca = configs[0] if configs else None
+        # El par del emisor con el que se numeró: otro CUIT no puede autorizarlo.
+        arca = _config_del_emisor(factura.get("emisor_id"))
         # 🔑 Una llamada: elegir el par del ambiente y resolver dónde está en
         # disco son dos decisiones encadenadas, y separarlas hace que la segunda
         # deshaga a la primera. Ver `arca_credenciales`.
