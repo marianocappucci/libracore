@@ -267,6 +267,9 @@ def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
                   SELECT 1 FROM facturas n
                   WHERE n.tipo IN ({tipos.en_sql(tipos.NC)}) AND n.cbte_asoc_tipo = f.tipo
                     AND n.cbte_asoc_pv = f.punto_venta AND n.cbte_asoc_nro = f.numero
+                    -- Del mismo emisor: con dos razones sociales, las dos pueden
+                    -- tener la Factura A 0001-00000005 (ADR-021).
+                    AND COALESCE(n.emisor_id, 0) = COALESCE(f.emisor_id, 0)
               )
             ORDER BY f.fecha, f.id
         """, (cuit,)).fetchall()

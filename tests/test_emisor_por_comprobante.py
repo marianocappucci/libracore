@@ -203,3 +203,19 @@ def test_la_nota_de_debito_tambien_es_del_emisor(client, base):
     r = client.post(f"{API}/{factura['id']}/nota-debito", headers=ADMIN)
     assert r.status_code == 200, r.text
     assert r.json()["emisor_id"] == base["transporte"]
+
+
+def test_la_nota_de_un_emisor_no_cancela_la_deuda_de_otro(client, base):
+    """Las facturas a crédito pendientes: la nota de la agencia no salda la factura del transporte."""
+    from libracore.db import cuenta_corriente as db_cc
+
+    conn = core.get_connection()
+    cliente_id = conn.execute(
+        "INSERT INTO clients (name, cuit_dni) VALUES ('Cerealera SA', '30555555556')").lastrowid
+    conn.commit()
+    conn.close()
+    de_agencia = _emitir(client, emisor_id=base["agencia"], condicion_venta="Cuenta Corriente")
+    de_transporte = _emitir(client, emisor_id=base["transporte"], condicion_venta="Cuenta Corriente")
+    assert client.post(f"{API}/{de_agencia['id']}/nota-credito", headers=ADMIN).status_code == 200
+
+    assert [f["id"] for f in db_cc.get_facturas_pendientes_cc(cliente_id)] == [de_transporte["id"]]
