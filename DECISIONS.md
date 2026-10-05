@@ -423,7 +423,7 @@ Detalle en `docs/fce.md`.
 - Decisión 1 — ✅ *(hecho, v1.132.0 propuesta)* **`libracore.arca_wsfecred`, sólo consultas** (`monto_obligado`, `estado_de_fce`, `historial`), con el
   mismo WSAA (servicio `wsfecred`) y la misma configuración de ARCA. Aceptar y rechazar son del comprador: no se
   implementan.
-- Decisión 2 — **al emitir, sugerir FCE** cuando `consultarMontoObligadoRecepcion` diga que el receptor está obligado y
+- Decisión 2 — ✅ *(hecho: `corresponde_fce` y `GET /api/facturas/fce/corresponde`)* **al emitir, sugerir FCE** cuando `consultarMontoObligadoRecepcion` diga que el receptor está obligado y
   el total llegue a `montoDesde`. Sugerencia y no bloqueo, salvo que se mida que WSFE rechaza la factura común.
 - Decisión 3 — **la nota total de una FCE sólo con `Rechazado`** en ARCA: entonces sale con anulación `S`. Si no, sigue
   la regla de v1.131.0. Pendiente de medir con un segundo certificado que haga de comprador.

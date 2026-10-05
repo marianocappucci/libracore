@@ -7,6 +7,10 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — ¿Corresponde FCE? El aviso antes de emitir (propuesta: v1.132.0, junto con la entrada de abajo)
+
+Sin migración. ADR-019, decisión 2. **Nuevo:** `arca_wsfecred.corresponde_fce(cfg, cuit_receptor, total, fecha)` → `{disponible, corresponde, obligado, monto_desde}`; **nunca levanta** (sin ARCA, certificado sin `wsfecred` o ARCA caído → `disponible: false` con un motivo que dice qué hacer). Y en el router de comprobantes **`GET /api/facturas/fce/corresponde?cuit=&total=&fecha=`** (fecha opcional, hoy), que suma `fce_habilitada` (si el emisor ya cargó CBU y modalidad). Es un **aviso para el formulario, antes de emitir**: ARCA no lo frena y una factura emitida no se cambia. La emisión no cambia. Probado contra ARCA de homologación: gran empresa por 4.000.000 → corresponde (`montoDesde` 3.958.316); por 100.000 → no; receptor no obligado → no.
+
 ## [Unreleased] — `libracore.arca_wsfecred`: las consultas al registro de FCE (propuesta: v1.132.0)
 
 Sin migración ni cambio de esquema. **Nuevo módulo, nadie lo usa todavía** (ADR-019, paso 1). Consultas de sólo lectura a WSFECRED, el registro de FCE de ARCA: `monto_obligado(cuit_empresa, cuit_receptor, fecha, token, sign, ambiente)` → `MontoObligado(obligado, monto_desde)` con `corresponde(total)`; `estado_de_fce(cuit_empresa, tipo, pto_vta, numero, …)` → `EstadoFce` (cuenta corriente, estado de la FCE y de la cuenta, importe inicial, notas, **saldo**, `rechazada`); `historial(...)`; `dummy(ambiente)`. Autentica con `arca_wsaa.autenticar(..., servicio=arca_wsfecred.SERVICIO)`: **el certificado tiene que tener `wsfecred` autorizado**. Errores: `ErrorWsfecred` y `FceNoRegistrada` (`1102`/`1105`). Tests contra respuestas **reales** de homologación, anonimizadas (`tests/fixtures_wsfecred/`), y probado contra ARCA de homologación el 2026-10-05.
