@@ -897,6 +897,15 @@ def init_core_schema(conn: Conexion):
     # «sin error»: lo borra un CAE obtenido, con `update_factura_cae`.
     if "cae_error" not in cols_f:
         conn.execute("ALTER TABLE facturas ADD COLUMN cae_error TEXT NOT NULL DEFAULT ''")
+    # Con qué configuración de ARCA se emitió el comprobante: el emisor. `NULL` es
+    # «el único de la instancia», que es el caso de casi toda la familia y de todo
+    # lo emitido antes de esta columna. Sólo la llena un producto con varias
+    # razones sociales (LibraCargo), que pasa el emisor al emitir.
+    if "emisor_id" not in cols_f:
+        conn.execute(
+            "ALTER TABLE facturas ADD COLUMN emisor_id INTEGER "
+            "REFERENCES arca_config(id) ON DELETE RESTRICT"
+        )
     if "ambiente" not in cols_f:
         conn.execute(
             "ALTER TABLE facturas ADD COLUMN ambiente TEXT NOT NULL DEFAULT 'produccion' "
@@ -1117,14 +1126,28 @@ def init_core_schema(conn: Conexion):
     # init_db al arrancar la app. Cierra la race condition de numeración
     # (hallazgo cruzado desde la auditoría de Restolibra) junto con el retry
     # en `create_factura()`.
+    #
+    # 🔑 **La numeración es por emisor y por ambiente**, que es como la lleva ARCA:
+    # - Homologación y producción tienen secuencias independientes. Con el índice
+    #   viejo `(tipo, punto_venta, numero)`, una factura de prueba número 5 y la
+    #   real número 5 chocaban: `create_factura` reintentaba con el mismo número
+    #   —`get_next_factura_numero` ya separa por ambiente— y terminaba en error.
+    # - Dos razones sociales de la misma instancia con punto de venta 1 numeran
+    #   cada una desde 1. `COALESCE(emisor_id, 0)` porque un `NULL` no es igual a
+    #   otro en un UNIQUE: sin él, los comprobantes sin emisor —todos los de la
+    #   familia— quedarían sin unicidad.
+    #
+    # Primero se crea el nuevo y después se baja el viejo: el nuevo es más laxo,
+    # así que nunca falla donde el viejo existía, y no hay un momento sin índice.
     try:
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_facturas_numero_unico "
-            "ON facturas(tipo, punto_venta, numero)"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_facturas_numeracion "
+            "ON facturas(COALESCE(emisor_id, 0), ambiente, tipo, punto_venta, numero)"
         )
+        conn.execute("DROP INDEX IF EXISTS idx_facturas_numero_unico")
     except sqlite3.Error as e:
-        print(f"[WARN] No se pudo crear idx_facturas_numero_unico (¿hay duplicados "
-              f"de tipo+punto_venta+numero?): {e}")
+        print(f"[WARN] No se pudo crear idx_facturas_numeracion (¿hay duplicados "
+              f"de emisor+ambiente+tipo+punto_venta+numero?): {e}")
 
     # Categorías de egreso: seed inicial, solo inserta las que no existen aún.
     _CATEGORIAS_EGRESO_DEFAULT = [

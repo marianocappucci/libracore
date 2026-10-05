@@ -94,21 +94,24 @@ MOTIVO_SIN_TICKET = (
 )
 
 
-async def get_next_numero_with_arca(punto_venta: int, tipo: int):
+async def get_next_numero_with_arca(punto_venta: int, tipo: int, emisor_id=None):
     """
     Devuelve (numero, ta, arca).
     En dev: usa contador local y marca ta/arca como mock.
     En prod: intenta ARCA, cae a local si falla.
+
+    `emisor_id` elige la configuración de ARCA (`arca_config.config_del_emisor`);
+    sin él, la del emisor único de la instancia. La numeración local también es
+    la de ese emisor.
     """
     if _es_dev():
         # Sin ARCA la secuencia es la de la propia instancia, que es la real:
         # `ambiente_de("_dev_mock_")` da `produccion` por lo mismo.
         numero = db_facturas.get_next_factura_numero(
-            punto_venta, tipo, ambiente_de("_dev_mock_"))
+            punto_venta, tipo, ambiente_de("_dev_mock_"), emisor_id)
         return numero, "_dev_mock_", "_dev_mock_"
 
-    arca_cfg = db_arca_config.obtener_todas_arca_configs()
-    arca     = arca_cfg[0] if arca_cfg else None
+    arca     = db_arca_config.config_del_emisor(emisor_id)
     ta       = None
 
     # 🔑 Una llamada y no el baile de dos pasos: `paths_de` elige el par del
@@ -137,10 +140,10 @@ async def get_next_numero_with_arca(punto_venta: int, tipo: int):
             # decir cuál desalinea la secuencia contra la de ARCA, y el próximo
             # comprobante choca con el "último autorizado" real.
             numero = db_facturas.get_next_factura_numero(
-                punto_venta, tipo, ambiente_de(arca))
+                punto_venta, tipo, ambiente_de(arca), emisor_id)
     else:
         numero = db_facturas.get_next_factura_numero(
-            punto_venta, tipo, ambiente_de(arca))
+            punto_venta, tipo, ambiente_de(arca), emisor_id)
 
     return numero, ta, arca
 

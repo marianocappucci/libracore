@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from libracore import arca_credenciales, arca_wsaa, arca_wspadron
-from libracore.db.arca_config import obtener_todas_arca_configs
+from libracore.db.arca_config import config_del_emisor
 
 
 def build_consultar_cuit_router(
@@ -45,8 +45,7 @@ def build_consultar_cuit_router(
         if len(cuit_limpio) != 11:
             return JSONResponse({"error": "CUIT inválido. Debe tener 11 dígitos."}, status_code=400)
 
-        arca_cfg = obtener_todas_arca_configs()
-        arca = arca_cfg[0] if arca_cfg else None
+        arca = config_del_emisor()
 
         cert_path, clave_path = arca_credenciales.paths_en_disco(arca)
         if not arca or not cert_path or not clave_path:

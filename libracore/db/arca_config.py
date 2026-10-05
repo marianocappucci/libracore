@@ -78,6 +78,65 @@ def obtener_todas_arca_configs():
         return [dict(r) for r in rows]
 
 
+class EmisorDesconocido(ValueError):
+    """Se pidió emitir con un emisor (`arca_config.id`) que no existe o está inactivo."""
+
+
+class ArcaAmbiguo(ValueError):
+    """Hay más de una configuración activa para el mismo CUIT: no se sabe con cuál emitir."""
+
+
+def obtener_arca_config_por_id(emisor_id):
+    """La configuración activa con ese id, o `None`."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM arca_config WHERE id=? AND activo=1", (emisor_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def config_del_emisor(emisor_id=None):
+    """La configuración con la que emite un comprobante. **El único lugar que elige emisor.**
+
+    Sin `emisor_id`, la primera activa: es lo que la familia hizo siempre
+    (`configs[0]`) y lo que siguen haciendo los productos de un solo emisor, que
+    nunca pasan uno. Con `emisor_id`, esa fila y ninguna otra: un producto con
+    varias razones sociales (LibraCargo) emite con el par de la que factura, y
+    caer a otra sería emitir con el CUIT equivocado. Por eso un id que no existe
+    levanta `EmisorDesconocido` en vez de devolver `None`, que quien llama lee
+    como «no hay ARCA, se numera local».
+    """
+    if emisor_id is None:
+        activas = obtener_todas_arca_configs()
+        return activas[0] if activas else None
+    cfg = obtener_arca_config_por_id(emisor_id)
+    if cfg is None:
+        raise EmisorDesconocido(f"No hay una configuración de ARCA activa con id {emisor_id}.")
+    return cfg
+
+
+def _digitos(valor) -> str:
+    return "".join(c for c in str(valor or "") if c.isdigit())
+
+
+def config_por_cuit(cuit):
+    """La configuración activa de ese CUIT, o `None` si no hay. `ArcaAmbiguo` si hay dos.
+
+    Es la guarda de un producto con varias razones sociales: el certificado es de
+    un CUIT, así que una razón social sólo emite con la fila de su CUIT. Si no
+    hay, registra a mano; si hay dos, no adivina.
+    """
+    digitos = _digitos(cuit)
+    if not digitos:
+        return None
+    candidatas = [c for c in obtener_todas_arca_configs() if _digitos(c.get("cuit")) == digitos]
+    if len(candidatas) > 1:
+        raise ArcaAmbiguo(
+            f"Hay {len(candidatas)} configuraciones de ARCA activas para el CUIT {digitos}."
+        )
+    return candidatas[0] if candidatas else None
+
+
 def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None,
                           certificado_path=None, ambiente=None, alias=None,
                           clave_path_homologacion=None,

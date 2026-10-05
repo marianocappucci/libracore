@@ -140,7 +140,11 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
-        # 383 desde el 2026-10-02, cuando entró `facturas.cae_error` — por qué ARCA no
+        # 384 desde el 2026-10-05, cuando entró `facturas.emisor_id` — con qué configuración de
+        # ARCA se emitió cada comprobante, para que un producto con varias razones sociales
+        # (LibraCargo) use la tabla del motor.
+        #
+        # Era 383 desde el 2026-10-02, cuando entró `facturas.cae_error` — por qué ARCA no
         # autorizó un comprobante, que antes sólo iba al log del servidor.
         #
         # Era 382 desde el 2026-10-02, cuando entró la FCE MiPyME: `arca_config.fce_cbu` y
@@ -169,7 +173,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (384)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (385)"}
     finally:
         conn.close()
         _liberar()
@@ -188,12 +192,12 @@ def test_el_volcado_ve_un_indice_borrado(tmp_path):
         conn.commit()
         antes = volcar_schema(conn)
 
-        conn.execute("DROP INDEX idx_facturas_numero_unico")
+        conn.execute("DROP INDEX idx_facturas_numeracion")
         conn.commit()
         despues = volcar_schema(conn)
 
         perdidas = set(antes.splitlines()) - set(despues.splitlines())
-        assert any("idx_facturas_numero_unico" in linea for linea in perdidas)
+        assert any("idx_facturas_numeracion" in linea for linea in perdidas)
     finally:
         conn.close()
         _liberar()

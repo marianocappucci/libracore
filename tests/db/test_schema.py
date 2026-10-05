@@ -54,10 +54,52 @@ def test_idempotente_correr_dos_veces(conn):
 
 
 def test_indice_unico_facturas_numero(conn):
+    """La numeración es única por emisor y ambiente; el índice viejo, más estricto, ya no está."""
     idxs = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index'"
     ).fetchall()}
-    assert "idx_facturas_numero_unico" in idxs
+    assert "idx_facturas_numeracion" in idxs
+    assert "idx_facturas_numero_unico" not in idxs
+
+
+def _factura(conn, numero, *, ambiente="produccion", emisor_id=None):
+    conn.execute(
+        "INSERT INTO facturas (tipo, punto_venta, numero, fecha, items, subtotal, iva_amount, "
+        "total, ambiente, emisor_id) VALUES (1, 1, ?, '2026-10-05', '[]', 1, 0, 1, ?, ?)",
+        (numero, ambiente, emisor_id),
+    )
+
+
+def test_la_numeracion_choca_dentro_del_mismo_emisor_y_ambiente(conn):
+    """Sin emisor (todos los comprobantes de la familia) la unicidad sigue rigiendo.
+
+    Es la razón del `COALESCE`: en un UNIQUE un `NULL` no es igual a otro, y sin él
+    dos facturas A 0001-00000007 sin emisor entrarían las dos.
+    """
+    _factura(conn, 7)
+    with pytest.raises(sqlite3.IntegrityError):
+        _factura(conn, 7)
+
+
+def test_homologacion_y_produccion_numeran_por_separado(conn):
+    """ARCA lleva secuencias independientes: la factura de prueba 7 y la real 7 conviven."""
+    _factura(conn, 7, ambiente="homologacion")
+    _factura(conn, 7, ambiente="produccion")
+
+
+def test_dos_emisores_numeran_por_separado(conn):
+    """Dos razones sociales con punto de venta 1 tienen, cada una, su Factura A 0001-00000007."""
+    a = conn.execute(
+        "INSERT INTO arca_config (empresa, cuit, punto_venta, clave_path, certificado_path) "
+        "VALUES ('a', '20111111112', 1, '', '')").lastrowid
+    b = conn.execute(
+        "INSERT INTO arca_config (empresa, cuit, punto_venta, clave_path, certificado_path) "
+        "VALUES ('b', '20222222223', 1, '', '')").lastrowid
+    _factura(conn, 7, emisor_id=a)
+    _factura(conn, 7, emisor_id=b)
+    _factura(conn, 7)
+    with pytest.raises(sqlite3.IntegrityError):
+        _factura(conn, 7, emisor_id=a)
 
 
 def test_caja_default_seedeada(conn):

@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (383)
+## tablas (384)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -178,6 +178,7 @@ facturas|cliente_razon|text||
 facturas|concepto|integer|NN|1
 facturas|condicion_venta|text||''::text
 facturas|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+facturas|emisor_id|integer||
 facturas|fce_anulacion|text|NN|''::text
 facturas|fce_cbu|text|NN|''::text
 facturas|fce_transmision|text|NN|''::text
@@ -420,7 +421,7 @@ usuarios|PRIMARY KEY (id)
 ventas_pagos|PRIMARY KEY (id)
 ventas|PRIMARY KEY (id)
 
-## claves foráneas (42)
+## claves foráneas (43)
 caja_movimientos|caja_movimientos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
 caja_movimientos|caja_movimientos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 caja_movimientos|fk_caja_movimientos_turno|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
@@ -438,6 +439,7 @@ egresos_pagos|egresos_pagos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES 
 egresos|egresos_proveedor_id_fkey|FOREIGN KEY (proveedor_id) REFERENCES proveedores(id) ON DELETE SET NULL
 egresos|egresos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 facturacion_alias|facturacion_alias_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
+facturas|facturas_emisor_id_fkey|FOREIGN KEY (emisor_id) REFERENCES arca_config(id) ON DELETE RESTRICT
 facturas|facturas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 lista_precio_items|lista_precio_items_lista_id_fkey|FOREIGN KEY (lista_id) REFERENCES listas_precio(id) ON DELETE CASCADE
 lista_precio_items|lista_precio_items_producto_id_fkey|FOREIGN KEY (producto_id) REFERENCES productos(id) ON DELETE CASCADE
@@ -497,7 +499,7 @@ facturacion_alias|facturacion_alias_tipo_valor_key|CREATE UNIQUE INDEX facturaci
 facturas|facturas_pkey|CREATE UNIQUE INDEX facturas_pkey ON public.facturas USING btree (id)
 facturas|idx_facturas_cliente_cuit|CREATE INDEX idx_facturas_cliente_cuit ON public.facturas USING btree (cliente_cuit)
 facturas|idx_facturas_fecha|CREATE INDEX idx_facturas_fecha ON public.facturas USING btree (fecha)
-facturas|idx_facturas_numero_unico|CREATE UNIQUE INDEX idx_facturas_numero_unico ON public.facturas USING btree (tipo, punto_venta, numero)
+facturas|idx_facturas_numeracion|CREATE UNIQUE INDEX idx_facturas_numeracion ON public.facturas USING btree (COALESCE(emisor_id, 0), ambiente, tipo, punto_venta, numero)
 lista_precio_items|lista_precio_items_pkey|CREATE UNIQUE INDEX lista_precio_items_pkey ON public.lista_precio_items USING btree (lista_id, producto_id)
 listas_precio|listas_precio_pkey|CREATE UNIQUE INDEX listas_precio_pkey ON public.listas_precio USING btree (id)
 modulos|modulos_modulo_key|CREATE UNIQUE INDEX modulos_modulo_key ON public.modulos USING btree (modulo)

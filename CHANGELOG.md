@@ -7,6 +7,16 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El emisor de cada comprobante: varias razones sociales en una instancia (propuesta: v1.134.0)
+
+**Migración `0016_emisor_del_comprobante`** (correr `alembic upgrade head` en el deploy, como siempre). ADR-021. **Para los productos de un solo emisor no cambia nada**: no pasan emisor, sus comprobantes quedan con `emisor_id` en `NULL` y se emite con la primera configuración activa, como siempre.
+
+- **Nuevo:** `facturas.emisor_id` (FK opcional a `arca_config.id`). `arca_config.config_del_emisor(emisor_id=None)` es el único lugar que elige con qué configuración se emite: reemplaza los diez `configs[0]` del motor. Con un id que no existe o está dado de baja levanta `EmisorDesconocido` (422 en el router), nunca cae a otra fila. `config_por_cuit(cuit)` es la guarda de un producto con varias razones sociales y levanta `ArcaAmbiguo` si hay dos filas activas del mismo CUIT.
+- **Router de comprobantes:** `emisor_id` opcional en el alta (`POST /api/facturas`), en `GET /tipos`, donde da el punto de venta de ese emisor, y en `GET /fce/corresponde`. Las notas de crédito y de débito heredan el emisor de su original; `autorizar` usa el par del emisor con el que se numeró.
+- **Numeración:** `get_next_factura_numero`, `create_factura` y `get_next_numero_with_arca` reciben `emisor_id`. El índice único pasa de `(tipo, punto_venta, numero)` a `(COALESCE(emisor_id, 0), ambiente, tipo, punto_venta, numero)` (`idx_facturas_numeracion`).
+- **Arreglo de paso:** el índice viejo no incluía el ambiente, aunque la numeración sí lo separaba. Una factura de homologación y una real con el mismo número chocaban, y `create_factura` reintentaba con el mismo número hasta fallar.
+- **Búsquedas:** `get_nc_de_factura`, `get_nd_de_factura`, `get_notas_de_factura` y `get_factura_por_tipo_pv_nro` reciben `emisor_id` y `ambiente` opcionales. Sin ellos, filtran por «sin emisor» y no filtran por ambiente, que es el comportamiento de siempre para la familia.
+
 ## [Unreleased] — La SPA es del motor; `/api` desconocido da 404 (propuesta: v1.133.0)
 
 Sin migración. ADR-020. **Nuevo:** `libracore.spa` (`montar_spa`, `archivo_publico`, `AssetsInmutables`, `SIN_CACHE`, `PARA_SIEMPRE`, `TIPOS_PROPIOS`, `PREFIJOS_API`, `es_de_la_api`), el `app/spa.py` que seis productos tenían copiado igual. **Cambia el comportamiento** para quien lo adopte: una ruta `/api/...` que no existe contesta **404 JSON** en vez del `index.html` con 200. Adopción: reemplazar `app/spa.py` por `from libracore.spa import *` (o importar de ahí).
