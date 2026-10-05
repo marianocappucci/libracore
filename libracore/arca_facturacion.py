@@ -57,6 +57,16 @@ def tipo_de_comprobante(emisor_cond: str, receptor_cond: str) -> int:
     return 1 if receptor_cond in RECEPTORES_DE_FACTURA_A else 6
 
 
+def _en(conn) -> dict:
+    """`{"conn": conn}` sólo si hay una transacción de quien llama (ADR-025).
+
+    Sin ella no se pasa nada, y las funciones de la base se llaman exactamente
+    como antes: un reemplazo de `get_factura` o `update_factura_cae` con la firma
+    vieja —los tests de la familia los tienen— sigue andando.
+    """
+    return {"conn": conn} if conn is not None else {}
+
+
 #: Los dos ambientes de ARCA. Cualquier otra cosa no es un ambiente.
 AMBIENTES = ("homologacion", "produccion")
 
@@ -94,7 +104,7 @@ MOTIVO_SIN_TICKET = (
 )
 
 
-async def get_next_numero_with_arca(punto_venta: int, tipo: int, emisor_id=None):
+async def get_next_numero_with_arca(punto_venta: int, tipo: int, emisor_id=None, *, conn=None):
     """
     Devuelve (numero, ta, arca).
     En dev: usa contador local y marca ta/arca como mock.
@@ -103,12 +113,15 @@ async def get_next_numero_with_arca(punto_venta: int, tipo: int, emisor_id=None)
     `emisor_id` elige la configuración de ARCA (`arca_config.config_del_emisor`);
     sin él, la del emisor único de la instancia. La numeración local también es
     la de ese emisor.
+
+    Con `conn`, la numeración local se lee en la transacción de quien llama: ve
+    los comprobantes que esa transacción ya escribió y todavía no confirmó.
     """
     if _es_dev():
         # Sin ARCA la secuencia es la de la propia instancia, que es la real:
         # `ambiente_de("_dev_mock_")` da `produccion` por lo mismo.
         numero = db_facturas.get_next_factura_numero(
-            punto_venta, tipo, ambiente_de("_dev_mock_"), emisor_id)
+            punto_venta, tipo, ambiente_de("_dev_mock_"), emisor_id, **_en(conn))
         return numero, "_dev_mock_", "_dev_mock_"
 
     arca     = db_arca_config.config_del_emisor(emisor_id)
@@ -140,30 +153,35 @@ async def get_next_numero_with_arca(punto_venta: int, tipo: int, emisor_id=None)
             # decir cuál desalinea la secuencia contra la de ARCA, y el próximo
             # comprobante choca con el "último autorizado" real.
             numero = db_facturas.get_next_factura_numero(
-                punto_venta, tipo, ambiente_de(arca), emisor_id)
+                punto_venta, tipo, ambiente_de(arca), emisor_id, **_en(conn))
     else:
         numero = db_facturas.get_next_factura_numero(
-            punto_venta, tipo, ambiente_de(arca), emisor_id)
+            punto_venta, tipo, ambiente_de(arca), emisor_id, **_en(conn))
 
     return numero, ta, arca
 
 
-async def solicitar_cae(factura_id: int, factura: dict, ta, arca) -> dict:
+async def solicitar_cae(factura_id: int, factura: dict, ta, arca, *, conn=None) -> dict:
     """
     Solicita el CAE real (prod) o genera uno simulado (dev).
     Devuelve la factura actualizada.
+
+    Con `conn`, el CAE (o el motivo del rechazo) se escribe en la transacción de
+    quien llama: si después el producto revierte, se revierte también. Es lo que
+    pide un producto que autoriza dentro de la misma transacción que cierra su
+    operación (LibraCargo, su ADR-024; ADR-025 de este motor): si algo falla, no queda nada.
     """
     if ta == "_dev_mock_":
         mock = _mock_cae()
-        db_facturas.update_factura_cae(factura_id, mock["cae"], mock["cae_vto"])
-        return db_facturas.get_factura(factura_id)
+        db_facturas.update_factura_cae(factura_id, mock["cae"], mock["cae_vto"], **_en(conn))
+        return db_facturas.get_factura(factura_id, **_en(conn))
 
     if arca and not ta:
         # ARCA está configurada y no hubo ticket: falló la autenticación o el
         # pedido del número (`get_next_numero_with_arca` lo registró en el log y
         # cayó a numeración local). Sin esto el comprobante queda sin CAE y mudo.
-        db_facturas.update_factura_cae_error(factura_id, MOTIVO_SIN_TICKET)
-        return db_facturas.get_factura(factura_id)
+        db_facturas.update_factura_cae_error(factura_id, MOTIVO_SIN_TICKET, **_en(conn))
+        return db_facturas.get_factura(factura_id, **_en(conn))
     if not (ta and arca):
         return factura   # una instancia sin ARCA: no hay CAE que pedir
 
@@ -171,13 +189,13 @@ async def solicitar_cae(factura_id: int, factura: dict, ta, arca) -> dict:
         cae_data = await arca_wsfe.solicitar_cae(
             factura, arca["cuit"], ta["token"], ta["sign"], arca["ambiente"]
         )
-        db_facturas.update_factura_cae(factura_id, cae_data["cae"], cae_data["cae_vto"])
-        return db_facturas.get_factura(factura_id)
+        db_facturas.update_factura_cae(factura_id, cae_data["cae"], cae_data["cae_vto"], **_en(conn))
+        return db_facturas.get_factura(factura_id, **_en(conn))
     except Exception as e:
         logger.error("Error al solicitar CAE para factura %s: %s", factura_id, e)
         # 🔴 **No se relanza**: el comprobante ya existe y quien llama sigue con el
         # cobro o con el vínculo a la venta; levantar acá dejaría un cobro sin
         # factura o una factura huérfana. Se guarda el motivo en la factura, que
         # es lo que ven la pantalla y el reintento (`/autorizar`).
-        db_facturas.update_factura_cae_error(factura_id, str(e))
-        return db_facturas.get_factura(factura_id)
+        db_facturas.update_factura_cae_error(factura_id, str(e), **_en(conn))
+        return db_facturas.get_factura(factura_id, **_en(conn))
