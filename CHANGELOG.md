@@ -7,6 +7,10 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Una FCE no admite la nota de crédito total (propuesta: v1.131.0)
+
+Sin migración ni cambio de esquema. **Arreglo:** `validar_nota_de_credito` sin `importe` (la nota **total**) sobre una **FCE** (201, 206, 211) ahora levanta `NotaNoPermitida.IMPORTE` (422 en `POST /api/facturas/{id}/nota-credito`), antes de pedirle el número a ARCA. Hasta v1.130.0 sólo se frenaba la nota **con** importe; la total pasaba la validación y la rechazaba ARCA (`10184`: supera el saldo; anularla por completo exige que el comprador la rechace, `10154`). La nota de una FCE va siempre por un importe menor que el saldo.
+
 ## [Unreleased] — La nota de crédito PARCIAL y el tope acumulado (propuesta: v1.130.0)
 
 Sin migración ni cambio de esquema. Detalle en ADR-018. **Una factura se puede acreditar en varias notas, y la suma nunca supera su total.**

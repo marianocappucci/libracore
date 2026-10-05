@@ -382,6 +382,15 @@ def test_la_nota_de_una_fce_tiene_que_ser_por_menos_que_el_saldo():
     assert _codigo("810.00", [_con_total(400.0)], original=fce) == NotaNoPermitida.IMPORTE
 
 
+def test_una_fce_no_admite_la_nota_total():
+    """Sin `importe` la nota copia la factura entera: en una FCE eso lo rechaza ARCA (10184; anular pide 10154)."""
+    for tipo in (201, 206, 211):
+        with pytest.raises(NotaNoPermitida) as e:
+            nc.validar_nota_de_credito(_factura(tipo=tipo, fch_vto_pago="2026-10-20"), [])
+        assert e.value.codigo == NotaNoPermitida.IMPORTE
+        assert "menor que el saldo (1210.00)" in str(e.value)
+
+
 def test_la_nota_parcial_lleva_su_importe_su_iva_y_un_solo_item():
     nota = nc.armar_nota(_factura_a(), 3, hoy=HOY, importe="100.00", motivo="Diferencia de kilos")
     assert (nota["subtotal"], nota["iva_amount"], nota["total"]) == (82.64, 17.36, 100.0)

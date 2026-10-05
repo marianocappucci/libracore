@@ -1098,7 +1098,11 @@ def test_la_nota_de_credito_de_una_fce_es_una_nota_de_fce_con_la_fecha_del_asoci
     config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
     _habilitar_fce()
     original = _emitir(client, **_fce())
-    nota = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN).json()
+    # Sin importe sería la nota total, y una FCE no la admite (10184): se frena antes de pedir el número.
+    total = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+    assert total.status_code == 422 and "menor que el saldo" in total.json()["detail"]
+    # Y no dejó nada a medias: si hubiera quedado una nota sin CAE, la parcial de abajo saldría con 409.
+    nota = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN, json={"importe": 100}).json()
     guardada = db_facturas.get_factura(nota["id"])
     assert guardada["tipo"] == 203
     assert guardada["cbte_asoc_tipo"] == 201

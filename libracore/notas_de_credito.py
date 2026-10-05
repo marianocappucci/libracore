@@ -191,6 +191,8 @@ def validar_nota_de_credito(original: dict, previas: Sequence[dict], importe: An
       cada nota registra un abono: una factura a cuenta corriente quedaba con el saldo en −total.
     - **Con `importe`: nota parcial.** Es el monto a acreditar, con IVA. Se admite mientras **lo ya acreditado más este
       importe no supere el total de la factura** (el tope acumulado). Una factura se acredita en una o en varias notas.
+    - **Una FCE** sólo admite notas **con `importe`, y por menos que su saldo**: ARCA no deja anularla por completo si el
+      comprador no la rechazó (`10154` y `10184`, medidos el 2026-10-03).
 
     En los dos casos, cualquier nota previa **sin CAE** frena: ya tiene número, y lo que corresponde es autorizarla o
     borrarla, no pedir otra encima.
@@ -216,6 +218,15 @@ def validar_nota_de_credito(original: dict, previas: Sequence[dict], importe: An
             )
     saldo = saldo_acreditable(original, previas)
     if importe is None:
+        if int(original["tipo"]) in tipos.FCE_FACTURA:
+            # La nota total copia la factura entera, y una FCE sólo admite notas por MENOS que su saldo (10184);
+            # anularla por completo exige que el comprador la rechace (10154). Sin esto la frenaba ARCA, después de
+            # tomar el número.
+            raise NotaNoPermitida(
+                f"La nota de una factura de crédito electrónica va por un importe menor que el saldo ({saldo}): "
+                "ARCA sólo deja anularla por completo si el comprador la rechazó.",
+                NotaNoPermitida.IMPORTE,
+            )
         if previas:
             nota = previas[0]
             if saldo > 0:

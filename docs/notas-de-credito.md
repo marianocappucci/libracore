@@ -61,7 +61,7 @@ rechazó), el motor no atrapa nada: el producto decide qué queda (en una transa
 
 - `acreditado(original, previas)` y `saldo_acreditable(original, previas)`: lo que ya acreditan las notas con CAE y lo que queda. Cada `previa` informa `cae` y `total`; una que no informa `total` cuenta como la factura entera (compatibilidad con la fase 1).
 - `repartir_importe(original, importe)`: `(neto, iva)` con la alícuota de la factura; el IVA es la resta, así que `neto + iva == importe`. Una C no discrimina IVA.
-- La nota parcial lleva un solo ítem; la **FCE** sólo admite una nota por **menos que su saldo**.
+- La nota parcial lleva un solo ítem; la **FCE** sólo admite una nota **con `importe` y por menos que su saldo**: sin `importe` (la nota total) también da `IMPORTE` (422), antes de pedir el número. Hasta v1.130.0 la nota total de una FCE pasaba la validación y la frenaba ARCA.
 - **Cuenta corriente:** el abono de una factura a crédito es el de cada nota, con la marca `nc:factura:<id>:<nota_id>`; `cc_acreditado_por_notas(conn, factura_id)` suma lo abonado.
 - Medido en homologación (2026-10-04): ARCA autoriza la nota parcial con el IVA hasta a 15 centavos del exacto.
 
