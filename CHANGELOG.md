@@ -7,6 +7,10 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — `libracore.arca_wsfecred`: las consultas al registro de FCE (propuesta: v1.132.0)
+
+Sin migración ni cambio de esquema. **Nuevo módulo, nadie lo usa todavía** (ADR-019, paso 1). Consultas de sólo lectura a WSFECRED, el registro de FCE de ARCA: `monto_obligado(cuit_empresa, cuit_receptor, fecha, token, sign, ambiente)` → `MontoObligado(obligado, monto_desde)` con `corresponde(total)`; `estado_de_fce(cuit_empresa, tipo, pto_vta, numero, …)` → `EstadoFce` (cuenta corriente, estado de la FCE y de la cuenta, importe inicial, notas, **saldo**, `rechazada`); `historial(...)`; `dummy(ambiente)`. Autentica con `arca_wsaa.autenticar(..., servicio=arca_wsfecred.SERVICIO)`: **el certificado tiene que tener `wsfecred` autorizado**. Errores: `ErrorWsfecred` y `FceNoRegistrada` (`1102`/`1105`). Tests contra respuestas **reales** de homologación, anonimizadas (`tests/fixtures_wsfecred/`), y probado contra ARCA de homologación el 2026-10-05.
+
 ## [Unreleased] — Diseño de la FCE completa (WSFECRED), sin código
 
 Sólo documentación: `docs/fce.md` y ADR-019 (propuesta). Lo medido en ARCA de homologación sobre el registro de FCE y el diseño de `libracore.arca_wsfecred`. Nada cambia para los consumidores.
