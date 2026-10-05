@@ -7,6 +7,14 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Registrar un comprobante con el número tipeado (propuesta: v1.134.0, junto con las dos de abajo)
+
+Sin migración ni cambio de esquema. ADR-023. **Nuevo:** `db.facturas.registrar_comprobante(tipo, punto_venta, numero, ..., emisor_id=None, cae="", cae_vto="", **opcionales)`, para un comprobante **cuyo número viene de afuera**: el operador lo tipea porque se emitió en otro lado. Puede traer el CAE.
+- **Nunca cambia el número.** Si ya existe para ese emisor, tipo y punto de venta, levanta `NumeroYaRegistrado`. `create_factura`, en cambio, reintenta con el siguiente.
+- Va siempre como `produccion`, al libro IVA.
+- Un campo opcional desconocido es `TypeError`. Un número que no es un entero positivo es `ValueError`.
+- `create_factura` no cambia: comparte el `INSERT` (`_insertar`).
+
 ## [Unreleased] — La anulación con rastro de un comprobante sin CAE (propuesta: v1.134.0, junto con la entrada de abajo)
 
 **Migración `0017_anulacion_con_rastro`**. ADR-022. **Opcional**: el `DELETE` de un comprobante sin CAE sigue como estaba, y nada se anula si nadie llama a anular.

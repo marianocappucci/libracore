@@ -176,30 +176,106 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
     MAX_INTENTOS = 5
     for intento in range(MAX_INTENTOS):
         try:
-            with get_connection() as conn:
-                cur = conn.execute(
-                    """INSERT INTO facturas
-                       (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
-                        cliente_iva_cond, items, subtotal, iva_amount, total, concepto,
-                        cae, cae_vto, observaciones, pdf_path, cliente_domicilio,
-                        fch_serv_desde, fch_serv_hasta, fch_vto_pago,
-                        cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
-                        ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha,
-                        emisor_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
-                     cliente_iva_cond, json.dumps(items, ensure_ascii=False), subtotal,
-                     iva_amount, total, concepto, cae, cae_vto, observaciones, pdf_path,
-                     cliente_domicilio, fch_serv_desde, fch_serv_hasta, fch_vto_pago,
-                     cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
-                     ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha,
-                     emisor_id),
-                )
-                return cur.lastrowid
+            return _insertar(
+                tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
+                cliente_iva_cond, items, subtotal, iva_amount, total, concepto, cae, cae_vto,
+                observaciones, pdf_path, cliente_domicilio, fch_serv_desde, fch_serv_hasta,
+                fch_vto_pago, cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta,
+                usuario_id, ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha,
+                emisor_id,
+            )
         except sqlite3.IntegrityError:
             if intento == MAX_INTENTOS - 1:
                 raise
             numero = get_next_factura_numero(punto_venta, tipo, ambiente, emisor_id)
+
+
+def _insertar(*valores) -> int:
+    """El `INSERT` de un comprobante, con las columnas en el orden de `create_factura`. Devuelve el id."""
+    valores = list(valores)
+    valores[7] = json.dumps(valores[7], ensure_ascii=False)  # items
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO facturas
+               (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
+                cliente_iva_cond, items, subtotal, iva_amount, total, concepto,
+                cae, cae_vto, observaciones, pdf_path, cliente_domicilio,
+                fch_serv_desde, fch_serv_hasta, fch_vto_pago,
+                cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, usuario_id,
+                ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha,
+                emisor_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            tuple(valores),
+        )
+        return cur.lastrowid
+
+
+class NumeroYaRegistrado(Exception):
+    """El número de un comprobante registrado a mano ya existe para ese emisor, tipo y punto de venta."""
+
+
+def _ya_existe(tipo, punto_venta, numero, emisor_id) -> bool:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT 1 FROM facturas WHERE tipo=? AND punto_venta=? AND numero=? "
+            f"AND ambiente='produccion' AND {SQL_DEL_EMISOR}",
+            (tipo, punto_venta, numero, emisor_id or 0),
+        ).fetchone() is not None
+
+
+def registrar_comprobante(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
+                          cliente_iva_cond, items, subtotal, iva_amount, total, *,
+                          emisor_id=None, cae="", cae_vto="", **opcionales) -> int:
+    """Registra un comprobante **cuyo número viene de afuera** y devuelve su id.
+
+    Es el caso de un producto que no emite por ARCA para esa razón social y el
+    operador tipea el número del comprobante que emitió en otro lado (LibraCargo,
+    su ADR-024). Puede traer el CAE, si lo tiene.
+
+    🔴 **No reintenta con otro número**, a diferencia de `create_factura`. Ahí el
+    número lo calcula el motor y, si otro lo ganó, el siguiente es igual de bueno.
+    Acá el número **es el dato**: cambiarlo en silencio registraría un comprobante
+    que no existe. Si ya está, levanta `NumeroYaRegistrado`.
+
+    🔑 **Siempre `produccion`.** Un comprobante registrado a mano no salió de
+    homologación: es del cliente y va al libro IVA. Los demás campos
+    (`concepto`, `observaciones`, `condicion_venta`, `usuario_id`, las fechas del
+    servicio, el asociado de una nota...) van por nombre, como en `create_factura`.
+    """
+    if not (isinstance(numero, int) and not isinstance(numero, bool) and numero > 0):
+        raise ValueError(f"El número de un comprobante es un entero mayor que cero, no {numero!r}.")
+    if _ya_existe(tipo, punto_venta, numero, emisor_id):
+        raise NumeroYaRegistrado(
+            f"El comprobante {punto_venta:04d}-{numero:08d} (tipo {tipo}) ya está registrado.")
+    campos = {
+        "concepto": 1, "observaciones": "", "pdf_path": "", "cliente_domicilio": "",
+        "fch_serv_desde": "", "fch_serv_hasta": "", "fch_vto_pago": "", "cbte_asoc_tipo": 0,
+        "cbte_asoc_pv": 0, "cbte_asoc_nro": 0, "condicion_venta": "", "usuario_id": None,
+        "fce_cbu": "", "fce_transmision": "", "fce_anulacion": "", "cbte_asoc_fecha": "",
+    }
+    desconocidos = set(opcionales) - set(campos)
+    if desconocidos:
+        raise TypeError(f"registrar_comprobante: campos desconocidos {sorted(desconocidos)}")
+    campos.update(opcionales)
+    try:
+        return _insertar(
+            tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, cliente_iva_cond,
+            items, subtotal, iva_amount, total, campos["concepto"], cae, cae_vto,
+            campos["observaciones"], campos["pdf_path"], campos["cliente_domicilio"],
+            campos["fch_serv_desde"], campos["fch_serv_hasta"], campos["fch_vto_pago"],
+            campos["cbte_asoc_tipo"], campos["cbte_asoc_pv"], campos["cbte_asoc_nro"],
+            campos["condicion_venta"], campos["usuario_id"], "produccion", campos["fce_cbu"],
+            campos["fce_transmision"], campos["fce_anulacion"], campos["cbte_asoc_fecha"],
+            emisor_id,
+        )
+    except sqlite3.IntegrityError:
+        # Lo ganó otro entre la consulta y el INSERT. Cualquier otra violación
+        # (una FK que no existe) sale tal cual: no es un número repetido.
+        if _ya_existe(tipo, punto_venta, numero, emisor_id):
+            raise NumeroYaRegistrado(
+                f"El comprobante {punto_venta:04d}-{numero:08d} (tipo {tipo}) ya está registrado."
+            ) from None
+        raise
 
 
 _TIPOS_FACTURA = tipos.FACTURAS
