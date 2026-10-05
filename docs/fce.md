@@ -1,6 +1,6 @@
 # La FCE completa: el registro de ARCA (WSFECRED)
 
-> **Estado: diseño propuesto (ADR-019). Paso 1 hecho: `libracore.arca_wsfecred` (consultas), sin uso todavía.** Lo que sigue sale de lo **medido en ARCA de homologación** el
+> **Estado: diseño propuesto (ADR-019). Hechos: paso 1 (`libracore.arca_wsfecred`, consultas) y paso 2 (el aviso: `corresponde_fce` y `GET /api/facturas/fce/corresponde`).** Lo que sigue sale de lo **medido en ARCA de homologación** el
 > 2026-10-02/05 y del WSDL del servicio. Lo que todavía no se pudo medir está marcado 🔸.
 
 Hoy el motor **emite** la FCE por WSFE (tipos `201/206/211`, ver `facturacion-arca.md`) y su nota de crédito **parcial**
@@ -74,5 +74,5 @@ comprador** (reciben su cuenta corriente o el comprobante que le emitieron): qui
 `informarCancelacionTotalFECred` (🔸 falta verificar si la informa el emisor o el comprador) y `obtenerRemitos`.
 
 **Orden propuesto:** (1) ✅ `arca_wsfecred` con las consultas y sus tests contra respuestas grabadas de homologación
-(v1.132.0 propuesta; probado también contra ARCA de homologación) →
-(2) el aviso de obligación en la emisión → (3) medir el rechazo con un segundo certificado → (4) la nota total con `S`.
+(v1.132.0 propuesta; probado también contra ARCA de homologación) → (2) ✅ el aviso de obligación: `corresponde_fce` y
+`GET /api/facturas/fce/corresponde`, para que el formulario pregunte antes de emitir → (3) medir el rechazo con un segundo certificado → (4) la nota total con `S`.

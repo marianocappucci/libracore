@@ -56,7 +56,7 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from libracore import (
@@ -64,6 +64,7 @@ from libracore import (
     arca_facturacion,
     arca_wsaa,
     arca_wsfe,
+    arca_wsfecred,
     config_manager,
     email_sender,
     notas_de_credito,
@@ -667,6 +668,28 @@ def build_comprobantes_router(
                 len(tipos_emisor) == 1 and tipos_emisor[0]["value"] == 11
             ),
         }
+
+    @router.get("/fce/corresponde")
+    def fce_corresponde(
+        cuit: str = Query(..., description="CUIT del receptor"),
+        total: Decimal = Query(..., gt=0, description="total de la factura, con IVA"),
+        fecha: datetime.date | None = Query(None, description="fecha de emisión; hoy si no viene"),
+    ):
+        """¿A esta factura le corresponde ser FCE? Lo pregunta el formulario **antes de emitir** (ADR-019).
+
+        ARCA no lo frena al emitir, y una factura emitida no se cambia: el aviso tiene que llegar antes. Es un aviso,
+        no un bloqueo, y nunca falla por ARCA: si el registro de FCE no contesta, `disponible` viene en `false` con el
+        motivo, y se emite como siempre. `fce_habilitada` dice si este emisor ya puede emitir FCE (cargó su CBU y su
+        modalidad); si corresponde y no la tiene, hay que decirle qué cargar.
+        """
+        digitos = "".join(c for c in cuit if c.isdigit())
+        if len(digitos) != 11:
+            raise HTTPException(422, "El CUIT del receptor tiene que tener 11 dígitos.")
+        configs = db_arca.obtener_todas_arca_configs()
+        arca = configs[0] if configs else None
+        resultado = asyncio.run(arca_wsfecred.corresponde_fce(
+            arca, digitos, total, fecha or datetime.date.today()))
+        return resultado | {"fce_habilitada": bool(_tipos_fce_del_emisor())}
 
     @router.get("")
     def listar(

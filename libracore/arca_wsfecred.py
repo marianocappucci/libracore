@@ -28,6 +28,8 @@ from xml.sax.saxutils import escape
 
 import httpx
 
+from libracore import arca_credenciales, arca_wsaa
+
 #: El servicio a pedirle a WSAA. Un ticket de `wsfe` no sirve para este.
 SERVICIO = "wsfecred"
 
@@ -253,3 +255,37 @@ async def historial(
         {"idComprobante": _id_comprobante(cuit_empresa, tipo, punto_venta, numero)}), ambiente)
     return [(_texto(e, "estado"), _texto(e, "fechaHoraEstado"))
             for e in _hijos(retorno, "arrayHistorialEstados")]
+
+
+# ── El aviso al emitir (ADR-019, decisión 2) ───────────────────────────────
+
+async def corresponde_fce(cfg: dict | None, cuit_receptor: str, total, fecha: datetime.date) -> dict:
+    """¿A una factura de `total` (con IVA) a `cuit_receptor`, en `fecha`, le corresponde ser FCE?
+
+    Es lo que el formulario pregunta **antes de emitir**: ARCA no lo frena (WSFE autoriza una FCE a un receptor no
+    obligado, y viceversa no se midió), así que la regla la aplica quien emite, y una factura emitida ya no se cambia.
+
+    Devuelve siempre un dict, **nunca levanta** (decisión 5: el registro de FCE caído o sin autorizar no frena nada):
+
+    - `{"disponible": True, "corresponde": bool, "obligado": bool, "monto_desde": "3958316" | None}`;
+    - `{"disponible": False, "motivo": "..."}` si no se pudo preguntar: sin ARCA configurado, el certificado sin
+      `wsfecred` autorizado, ARCA caído. El motivo dice qué hacer.
+    """
+    cert_path, clave_path = arca_credenciales.paths_en_disco(cfg) if cfg else ("", "")
+    if not cfg or not cert_path or not clave_path:
+        return {"disponible": False, "motivo": "ARCA no está configurado: no se puede consultar el registro de FCE."}
+    try:
+        ta = await arca_wsaa.autenticar(cert_path, clave_path, cfg["ambiente"], servicio=SERVICIO)
+        m = await monto_obligado(cfg["cuit"], cuit_receptor, fecha, ta["token"], ta["sign"], cfg["ambiente"])
+    except Exception as e:  # noqa: BLE001 - la consulta es un aviso: si falla, se emite como siempre
+        motivo = str(e)
+        if "notAuthorized" in motivo or "no autorizado" in motivo.lower():
+            motivo = ("El certificado de ARCA no tiene autorizado el servicio wsfecred (registro de FCE): "
+                      "autorizalo con clave fiscal para que el sistema pueda avisar cuándo corresponde FCE.")
+        return {"disponible": False, "motivo": motivo}
+    return {
+        "disponible": True,
+        "corresponde": m.corresponde(total),
+        "obligado": m.obligado,
+        "monto_desde": str(m.monto_desde) if m.monto_desde is not None else None,
+    }

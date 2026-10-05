@@ -1302,3 +1302,59 @@ def test_una_nota_parcial_por_el_router_que_solo_ofrece_la_nota_tambien_funciona
     r = _solo_la_nota().post(f"{API}/{original['id']}/nota-credito", headers=ADMIN, json={"importe": 2500})
     assert r.status_code == 200, r.text
     assert r.json()["total"] == 2500.0
+
+
+# ── ¿Corresponde FCE? El aviso antes de emitir (ADR-019) ────────────────────
+
+def _registro_contesta(monkeypatch, respuesta):
+    """El registro de FCE de mentira: `arca_wsfecred.corresponde_fce` devuelve `respuesta` y anota lo que le pasaron."""
+    from libracore import arca_wsfecred
+    pedidos = []
+
+    async def corresponde(cfg, cuit, total, fecha):
+        pedidos.append((cfg and cfg["cuit"], cuit, total, fecha))
+        return dict(respuesta)
+
+    monkeypatch.setattr(arca_wsfecred, "corresponde_fce", corresponde)
+    return pedidos
+
+
+def test_el_formulario_pregunta_si_corresponde_fce_antes_de_emitir(client, monkeypatch):
+    from decimal import Decimal
+    _habilitar_fce()
+    pedidos = _registro_contesta(monkeypatch, {
+        "disponible": True, "corresponde": True, "obligado": True, "monto_desde": "3958316"})
+    r = client.get(f"{API}/fce/corresponde", params={"cuit": "30-70933285-2", "total": "4000000.50",
+                                                     "fecha": "2026-10-05"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"disponible": True, "corresponde": True, "obligado": True, "monto_desde": "3958316",
+                        "fce_habilitada": True}
+    import datetime
+    assert pedidos == [("20123456789", "30709332852", Decimal("4000000.50"), datetime.date(2026, 10, 5))]
+
+
+def test_si_corresponde_pero_el_emisor_no_cargo_su_cbu_lo_dice(client, monkeypatch):
+    _registro_contesta(monkeypatch, {"disponible": True, "corresponde": True, "obligado": True,
+                                     "monto_desde": "3958316"})
+    r = client.get(f"{API}/fce/corresponde", params={"cuit": "30709332852", "total": "5000000"})
+    assert r.status_code == 200 and r.json()["fce_habilitada"] is False
+
+
+def test_si_el_registro_no_contesta_el_aviso_no_falla(client, monkeypatch):
+    _registro_contesta(monkeypatch, {"disponible": False, "motivo": "ARCA caído"})
+    r = client.get(f"{API}/fce/corresponde", params={"cuit": "30709332852", "total": "10"})
+    assert r.status_code == 200
+    assert r.json() == {"disponible": False, "motivo": "ARCA caído", "fce_habilitada": False}
+
+
+@pytest.mark.parametrize("params", [
+    {"cuit": "3070933285", "total": "10"},      # 10 dígitos
+    {"cuit": "30709332852", "total": "0"},      # sin importe
+    {"cuit": "30709332852", "total": "true"},   # un booleano no es un importe
+    {"cuit": "30709332852"},                    # falta el total
+])
+def test_el_aviso_valida_lo_que_le_preguntan(client, monkeypatch, params):
+    pedidos = _registro_contesta(monkeypatch, {"disponible": True})
+    assert client.get(f"{API}/fce/corresponde", params=params).status_code == 422
+    assert pedidos == [], "no se le pregunta nada a ARCA"
+

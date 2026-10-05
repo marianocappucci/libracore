@@ -173,3 +173,59 @@ def test_un_error_que_no_es_de_registro_es_error_wsfecred_pero_no_fce_no_registr
     with pytest.raises(w.ErrorWsfecred) as e:
         asyncio.run(w.estado_de_fce("20111111112", 201, 1, 1, "T", "S", "homologacion"))
     assert not isinstance(e.value, w.FceNoRegistrada)
+
+
+# ── El aviso al emitir: `corresponde_fce` (ADR-019, decisión 2) ────────────
+
+CFG = {"cuit": "20111111112", "ambiente": "homologacion"}
+
+
+@pytest.fixture
+def con_credenciales(monkeypatch):
+    """Un certificado en disco y un WSAA que da ticket para `wsfecred` (y anota para qué servicio se lo pidieron)."""
+    servicios = []
+
+    async def autenticar(cert, clave, ambiente, servicio="wsfe"):
+        servicios.append(servicio)
+        return {"token": "T", "sign": "S"}
+
+    monkeypatch.setattr(w.arca_credenciales, "paths_en_disco", lambda cfg: ("/c.crt", "/c.key"))
+    monkeypatch.setattr(w.arca_wsaa, "autenticar", autenticar)
+    return servicios
+
+
+def test_corresponde_fce_desde_el_monto_del_registro(arca, con_credenciales):
+    arca("monto_obligado_si")
+    assert asyncio.run(w.corresponde_fce(CFG, "30333333334", "4000000.00", HOY)) == {
+        "disponible": True, "corresponde": True, "obligado": True, "monto_desde": "3958316"}
+    assert con_credenciales == ["wsfecred"], "el ticket es el del registro de FCE, no el de WSFE"
+    assert asyncio.run(w.corresponde_fce(CFG, "30333333334", "100000.00", HOY))["corresponde"] is False
+
+
+def test_a_un_receptor_no_obligado_no_le_corresponde(arca, con_credenciales):
+    arca("monto_obligado_no")
+    r = asyncio.run(w.corresponde_fce(CFG, "30222222223", "99999999", HOY))
+    assert (r["disponible"], r["corresponde"], r["obligado"], r["monto_desde"]) == (True, False, False, None)
+
+
+def test_sin_arca_configurado_no_se_puede_preguntar_y_no_falla():
+    r = asyncio.run(w.corresponde_fce(None, "30222222223", 1, HOY))
+    assert r["disponible"] is False and "ARCA no está configurado" in r["motivo"]
+
+
+def test_un_certificado_sin_wsfecred_lo_dice_y_no_frena(monkeypatch):
+    """Medido el 2026-10-05: WSAA contesta `coe.notAuthorized` si el certificado no tiene el servicio."""
+    async def autenticar(*a, **kw):
+        raise RuntimeError("WSAA error [ns1:coe.notAuthorized]: Computador no autorizado a acceder al servicio")
+
+    monkeypatch.setattr(w.arca_credenciales, "paths_en_disco", lambda cfg: ("/c.crt", "/c.key"))
+    monkeypatch.setattr(w.arca_wsaa, "autenticar", autenticar)
+    r = asyncio.run(w.corresponde_fce(CFG, "30222222223", 1, HOY))
+    assert r["disponible"] is False
+    assert "no tiene autorizado el servicio wsfecred" in r["motivo"]
+
+
+def test_arca_caido_no_frena(arca, con_credenciales):
+    arca(texto="BL9939339626552 2026-10-05 08:35:49 500", status=500)
+    r = asyncio.run(w.corresponde_fce(CFG, "30222222223", 1, HOY))
+    assert r["disponible"] is False and "no es SOAP" in r["motivo"]
