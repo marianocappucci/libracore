@@ -56,6 +56,7 @@ from libracore.db.caja import (
     sql_no_es_cuenta_corriente,
 )
 from libracore.db.core import get_connection
+from libracore.db.facturas import sql_vigente
 
 from .core import Conexion
 
@@ -263,6 +264,7 @@ def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
               AND f.tipo IN ({tipos.en_sql(tipos.FACTURAS)})
               AND f.condicion_venta = 'Cuenta Corriente'
               AND COALESCE(f.cae, '') NOT IN ('', 'PENDIENTE')
+              AND {sql_vigente('f')}
               AND NOT EXISTS (
                   SELECT 1 FROM facturas n
                   WHERE n.tipo IN ({tipos.en_sql(tipos.NC)}) AND n.cbte_asoc_tipo = f.tipo
@@ -270,6 +272,8 @@ def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
                     -- Del mismo emisor: con dos razones sociales, las dos pueden
                     -- tener la Factura A 0001-00000005 (ADR-021).
                     AND COALESCE(n.emisor_id, 0) = COALESCE(f.emisor_id, 0)
+                    -- Una nota anulada (sin CAE) no cancela nada (ADR-022).
+                    AND {sql_vigente('n')}
               )
             ORDER BY f.fecha, f.id
         """, (cuit,)).fetchall()

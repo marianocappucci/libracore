@@ -18,6 +18,7 @@ Ver wiki/analyses/panel-del-dueno-multisucursal.md.
 from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
+from libracore.db.facturas import sql_vigente
 
 #: Los tipos que son factura. Las notas de credito y debito quedan afuera de
 #  "facturado": restan o suman por otro lado y mezclarlas infla el numero.
@@ -32,7 +33,7 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
     with get_connection() as conn:
         facturado, comprobantes = conn.execute(
             f"SELECT COALESCE(SUM(total), 0), COUNT(*) FROM facturas "
-            f"WHERE tipo IN ({ph}) AND fecha BETWEEN ? AND ?",
+            f"WHERE tipo IN ({ph}) AND fecha BETWEEN ? AND ? AND {sql_vigente()}",
             tipos + [desde, hasta],
         ).fetchone()
 
@@ -68,7 +69,7 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
                        ON c.factura_id = f.id
                       AND c.tipo = 'ingreso'
                       AND {sql_no_es_cuenta_corriente('c.medio_pago')}
-                WHERE f.tipo IN ({ph}) AND c.id IS NULL""",
+                WHERE f.tipo IN ({ph}) AND c.id IS NULL AND {sql_vigente('f')}""",
             tipos,
         ).fetchone()
 

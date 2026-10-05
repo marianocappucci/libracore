@@ -454,3 +454,21 @@ Detalle en `docs/fce.md`.
 
 **Consecuencias.** Los productos de un solo emisor no cambian de comportamiento ni de datos. La migración no toca filas, sólo agrega la columna y cambia el índice por uno más laxo, que no puede fallar donde el viejo existía. La condición de IVA del emisor sigue saliendo de `config_manager`, que es una sola por instancia; si dos razones sociales tienen distinta condición, hará falta llevarla a `arca_config`; se verifica en Suitrans antes de la etapa de LibraCargo. Siguen, en etapas aparte del mismo diseño: la anulación con rastro y el registro manual con número tipeado (M3 y M6), emitir dentro de la transacción del producto (M2) y el dinero en `NUMERIC` (M4).
 
+## ADR-022 — Un comprobante sin CAE se puede anular con rastro, además de borrarse
+
+**Contexto.** Hasta acá, un comprobante sin CAE sólo se podía borrar (`DELETE`): su número desaparecía y no quedaba constancia de que existió. LibraCargo registra comprobantes a mano (su ADR-024) y los **anula** dejando el rastro y la contrapartida en la cuenta corriente. Para que use la tabla del motor necesita lo mismo (diseño `libracargo-modelo-normalizado-diseno`, M3). El humano decidió el 2026-10-05 que la anulación con rastro esté **en el motor, para todos, y sea opcional**.
+
+**Decisión.**
+- `facturas.anulada_en` (`NULL` quiere decir vigente), `anulada_por` y `anulacion_motivo`.
+- `db.facturas.anular_factura` y `POST /api/facturas/{id}/anular`.
+- **Sólo sin CAE**: con CAE corresponde una nota de crédito.
+- **Sólo sin cobros**: esa plata entró, y primero se anulan los cobros.
+- El débito de cuenta corriente que generó el comprobante se anula en la misma transacción.
+- Un anulado sale de todo lo que suma o cuenta (`sql_vigente`, y dentro de `SOLO_FISCALES`), pero sigue en los listados.
+- Un anulado no se autoriza, no se cobra y no admite notas. Su número no se reusa.
+
+**Consecuencias.**
+- El `DELETE` sigue igual: cada producto elige.
+- Una consulta nueva que sume comprobantes tiene que usar `sql_vigente` o `sql_solo_fiscales`. Es la misma disciplina que `sql_no_anulado` en la caja.
+- La cuenta corriente propia de un producto (LibraCargo) no la toca el motor: ese producto asienta su contrapartida, como hoy.
+

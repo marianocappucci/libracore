@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (384)
+## tablas (387)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -164,6 +164,9 @@ facturacion_alias|id|bigint|NN|nextval('facturacion_alias_id_seq'::regclass)
 facturacion_alias|tipo|text|NN|
 facturacion_alias|valor|text|NN|
 facturas|ambiente|text|NN|'produccion'::text
+facturas|anulacion_motivo|text|NN|''::text
+facturas|anulada_en|text||
+facturas|anulada_por|integer||
 facturas|cae_error|text|NN|''::text
 facturas|cae_vto|text||
 facturas|cae|text||
@@ -421,7 +424,7 @@ usuarios|PRIMARY KEY (id)
 ventas_pagos|PRIMARY KEY (id)
 ventas|PRIMARY KEY (id)
 
-## claves foráneas (43)
+## claves foráneas (44)
 caja_movimientos|caja_movimientos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
 caja_movimientos|caja_movimientos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 caja_movimientos|fk_caja_movimientos_turno|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
@@ -439,6 +442,7 @@ egresos_pagos|egresos_pagos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES 
 egresos|egresos_proveedor_id_fkey|FOREIGN KEY (proveedor_id) REFERENCES proveedores(id) ON DELETE SET NULL
 egresos|egresos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 facturacion_alias|facturacion_alias_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
+facturas|facturas_anulada_por_fkey|FOREIGN KEY (anulada_por) REFERENCES usuarios(id) ON DELETE SET NULL
 facturas|facturas_emisor_id_fkey|FOREIGN KEY (emisor_id) REFERENCES arca_config(id) ON DELETE RESTRICT
 facturas|facturas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 lista_precio_items|lista_precio_items_lista_id_fkey|FOREIGN KEY (lista_id) REFERENCES listas_precio(id) ON DELETE CASCADE

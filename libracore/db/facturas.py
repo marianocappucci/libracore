@@ -9,7 +9,7 @@ import json
 import sqlite3
 
 from libracore import tipos_comprobante as tipos
-from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
+from libracore.db.caja import sql_es_cuenta_corriente, sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection, sql_busqueda
 
 #: Los comprobantes que cuentan para los libros y los totales.
@@ -21,7 +21,10 @@ from libracore.db.core import get_connection, sql_busqueda
 #:
 #: Es un fragmento y no ocho literales sueltos a propósito: repetir
 #: `ambiente = 'produccion'` en cada consulta es de donde sale la que se olvida.
-SOLO_FISCALES = "ambiente = 'produccion'"
+#:
+#: Tampoco cuenta un comprobante **anulado** (`anulada_en`, ADR-022): no existe
+#: ante ARCA y quedó en la base sólo como rastro.
+SOLO_FISCALES = "ambiente = 'produccion' AND anulada_en IS NULL"
 
 
 #: Filtra por emisor. `NULL` y `0` son lo mismo, «el único de la instancia»: es la
@@ -31,7 +34,78 @@ SQL_DEL_EMISOR = "COALESCE(emisor_id, 0) = ?"
 
 def sql_solo_fiscales(alias: str = "") -> str:
     """El filtro, con el alias de la tabla si la consulta usa uno."""
-    return f"{alias}.{SOLO_FISCALES}" if alias else SOLO_FISCALES
+    p = f"{alias}." if alias else ""
+    return f"{p}ambiente = 'produccion' AND {sql_vigente(alias)}"
+
+
+def sql_vigente(alias: str = "") -> str:
+    """Fragmento SQL: el comprobante **no está anulado** (ADR-022).
+
+    Va en toda consulta que suma o cuenta comprobantes —totales, tablero, libros,
+    pendientes de cobro— y en la búsqueda de notas previas. No va en los
+    listados: un anulado se sigue viendo, con su marca, que es el rastro.
+    """
+    return f"{alias + '.' if alias else ''}anulada_en IS NULL"
+
+
+class ComprobanteNoAnulable(Exception):
+    """Por qué no se puede anular un comprobante. `codigo` es uno de los de abajo."""
+
+    NO_EXISTE = "no_existe"
+    CON_CAE = "con_cae"
+    YA_ANULADO = "ya_anulado"
+    CON_COBROS = "con_cobros"
+
+    def __init__(self, codigo: str, mensaje: str):
+        super().__init__(mensaje)
+        self.codigo = codigo
+
+
+def anular_factura(factura_id, usuario_id=None, motivo="") -> dict:
+    """Anula un comprobante **sin CAE** y deja el rastro: cuándo, quién y por qué. Devuelve el comprobante.
+
+    Es la alternativa a `delete_factura` para quien no quiere que un número
+    desaparezca (ADR-022). El comprobante queda en la base con su número —que no
+    se reusa— y fuera de los libros, los totales y la cuenta corriente.
+
+    🔴 **Con CAE no se anula**: ese número existe ante ARCA y lo que corresponde es
+    una nota de crédito. **Con cobros tampoco**: esa plata entró, y anular el
+    comprobante la dejaría sin respaldo; primero se anulan los cobros.
+
+    🔑 El débito de cuenta corriente que generó (el movimiento de caja «a cuenta»)
+    se anula en la misma transacción. Sin eso la deuda del cliente seguiría en pie
+    por un comprobante que ya no existe.
+    """
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM facturas WHERE id=?", (factura_id,)).fetchone()
+        if not row:
+            raise ComprobanteNoAnulable(ComprobanteNoAnulable.NO_EXISTE, "El comprobante no existe.")
+        if row["anulada_en"]:
+            raise ComprobanteNoAnulable(ComprobanteNoAnulable.YA_ANULADO, "El comprobante ya está anulado.")
+        if (row["cae"] or "") not in ("", "PENDIENTE"):
+            raise ComprobanteNoAnulable(
+                ComprobanteNoAnulable.CON_CAE,
+                "El comprobante tiene CAE de ARCA: no se anula, se emite una nota de crédito.")
+        cobros = conn.execute(
+            "SELECT COUNT(*) FROM caja_movimientos WHERE factura_id=? AND tipo='ingreso'"
+            f" AND {sql_no_es_cuenta_corriente()} AND {sql_no_anulado()}",
+            (factura_id,),
+        ).fetchone()[0]
+        if cobros:
+            raise ComprobanteNoAnulable(
+                ComprobanteNoAnulable.CON_COBROS,
+                "El comprobante tiene cobros registrados: anulá los cobros antes de anularlo.")
+        conn.execute(
+            "UPDATE facturas SET anulada_en=datetime('now','-3 hours'), anulada_por=?, "
+            "anulacion_motivo=? WHERE id=?",
+            (usuario_id, (motivo or "").strip()[:500], factura_id),
+        )
+        conn.execute(
+            "UPDATE caja_movimientos SET anulado=1 WHERE factura_id=? AND tipo='ingreso'"
+            f" AND {sql_es_cuenta_corriente()} AND {sql_no_anulado()}",
+            (factura_id,),
+        )
+    return get_factura(factura_id)
 
 
 def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion", emisor_id=None):
@@ -287,7 +361,7 @@ def get_notas_de_factura(tipo, punto_venta, numero, tipos_nota, emisor_id=None, 
             f"""SELECT * FROM facturas
                WHERE tipo IN ({placeholders})
                  AND cbte_asoc_tipo=? AND cbte_asoc_pv=? AND cbte_asoc_nro=?
-                 AND {SQL_DEL_EMISOR}{filtro_amb}
+                 AND {SQL_DEL_EMISOR}{filtro_amb} AND {sql_vigente()}
                ORDER BY id DESC""",
             (*tipos_nota, tipo, punto_venta, numero, emisor_id or 0, *param_amb),
         ).fetchall()
