@@ -484,3 +484,34 @@ Detalle en `docs/fce.md`.
 
 **Consecuencias.** No cambia el esquema ni `create_factura`. Un producto que quiera exponer el registro manual en su pantalla lo hace con su propio router.
 
+## ADR-024 — El dinero del motor se guarda exacto en PostgreSQL; se lee como siempre
+
+**Contexto.** Las columnas de dinero del motor eran `REAL`, que en PostgreSQL es `DOUBLE PRECISION`: una suma en la base arrastra el error de punto flotante (`0.1 + 0.2 = 0.30000000000000004`). LibraCargo guarda su dinero en `NUMERIC` y `Decimal`, y para usar la tabla `facturas` del motor no puede perder eso. El humano decidió el 2026-10-05 «NUMERIC para todos», con el alcance **guardar exacto** y no Decimal de punta a punta (diseño `libracargo-modelo-normalizado-diseno`, M4).
+
+**Decisión.**
+- En PostgreSQL, las 33 columnas de `COLUMNAS_DE_DINERO` pasan a `NUMERIC` sin escala fija (`_dinero_exacto_en_postgres`, en `init_core_schema` y la migración `0018`). No se redondea nada de lo que había.
+- Quedan afuera las que no son plata: alícuotas y cantidades.
+- Sólo se convierte una columna que es `double precision` o `real`: una instancia con otro tipo se respeta.
+- **La lectura no cambia**: `_postgres._como_en_sqlite` sigue devolviendo `float`.
+- En SQLite no cambia nada.
+
+**Consecuencias.**
+- Las sumas y comparaciones en la base son exactas.
+- Lo que se escribe desde `float` guarda la expansión decimal de ese `float`, igual que antes. Lo que se escribe desde `Decimal` (LibraCargo) se guarda exacto.
+- Pasar la aritmética de la familia a `Decimal` sigue siendo una decisión aparte, de los dos motores, como dice el docstring del adaptador.
+
+## ADR-025 — Un producto puede emitir el comprobante dentro de su propia transacción
+
+**Contexto.** Cada función del comprobante abría y confirmaba su propia conexión. LibraCargo emite el comprobante, pide el CAE, cierra sus órdenes de carga y asienta su cuenta corriente **en una sola transacción**, todo o nada (su ADR-024). Para usar la tabla del motor necesita que el motor escriba dentro de esa transacción. El diseño `libracargo-modelo-normalizado-diseno` (M2, salida A: una sola base) lo pide.
+
+**Decisión.**
+- Se usa el idioma que ya tiene `libracore.db` (`ventas`, `caja`, `stock`, `turnos`...): las funciones del comprobante aceptan `conn=`. Con `conn` trabajan en la transacción de quien llama y no confirman; sin `conn`, cada una confirma la suya, como siempre.
+- Lo cubre el camino entero: numerar, crear o registrar, pedir el CAE, anular y buscar las notas.
+- No es un mecanismo nuevo, como una transacción ambiente por `ContextVar`: sería implícito, y alcanzaría código que no fue escrito para eso.
+- 🔴 El reintento ante un número repetido va en un `SAVEPOINT`, porque en PostgreSQL un error aborta la transacción entera.
+- En SQLite se abre la transacción antes del savepoint: un `SAVEPOINT` fuera de una transacción abre una propia y su `RELEASE` la confirmaría.
+
+**Consecuencias.**
+- La transacción queda abierta mientras dura la llamada a ARCA. Es lo que LibraCargo ya hace hoy, y es el precio de que un rechazo no deje nada escrito.
+- El router de comprobantes del motor no cambia.
+

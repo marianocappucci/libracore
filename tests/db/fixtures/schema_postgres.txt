@@ -31,7 +31,7 @@ caja_movimientos|factura_id|integer||
 caja_movimientos|fecha|text|NN|
 caja_movimientos|id|bigint|NN|nextval('caja_movimientos_id_seq'::regclass)
 caja_movimientos|medio_pago|text||''::text
-caja_movimientos|monto|double precision|NN|
+caja_movimientos|monto|numeric|NN|
 caja_movimientos|referencia|text||''::text
 caja_movimientos|tipo|text|NN|
 caja_movimientos|turno_id|integer||
@@ -55,7 +55,7 @@ cc_debitos|concepto|text||''::text
 cc_debitos|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
 cc_debitos|fecha|text|NN|
 cc_debitos|id|bigint|NN|nextval('cc_debitos_id_seq'::regclass)
-cc_debitos|monto|double precision|NN|
+cc_debitos|monto|numeric|NN|
 cc_debitos|referencia|text||''::text
 cc_debitos|usuario_id|integer||
 cc_pagos|caja_id|integer||
@@ -65,7 +65,7 @@ cc_pagos|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) 
 cc_pagos|fecha|text|NN|
 cc_pagos|id|bigint|NN|nextval('cc_pagos_id_seq'::regclass)
 cc_pagos|medio_pago|text||'efectivo'::text
-cc_pagos|monto|double precision|NN|
+cc_pagos|monto|numeric|NN|
 cc_pagos|referencia|text||''::text
 cc_pagos|usuario_id|integer||
 cc_resumenes_enviados|automatico|integer|NN|1
@@ -78,7 +78,7 @@ cc_resumenes_enviados|fecha|text|NN|
 cc_resumenes_enviados|id|bigint|NN|nextval('cc_resumenes_enviados_id_seq'::regclass)
 cc_resumenes_enviados|periodo_desde|text|NN|
 cc_resumenes_enviados|periodo_hasta|text|NN|
-cc_resumenes_enviados|saldo|double precision|NN|0
+cc_resumenes_enviados|saldo|numeric|NN|0
 clients|activo|integer||1
 clients|address|text||
 clients|auto_facturar|integer|NN|0
@@ -115,7 +115,7 @@ comprobantes_pendientes|periodo_desde|text||''::text
 comprobantes_pendientes|periodo_hasta|text||''::text
 comprobantes_pendientes|resuelto_at|text||''::text
 comprobantes_pendientes|resuelto_por|text||''::text
-comprobantes_pendientes|total|double precision|NN|0
+comprobantes_pendientes|total|numeric|NN|0
 cuentas_tesoreria|activa|integer|NN|1
 cuentas_tesoreria|banco|text||''::text
 cuentas_tesoreria|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
@@ -124,7 +124,7 @@ cuentas_tesoreria|id|bigint|NN|nextval('cuentas_tesoreria_id_seq'::regclass)
 cuentas_tesoreria|nombre|text|NN|
 cuentas_tesoreria|numero|text||''::text
 cuentas_tesoreria|orden|integer|NN|0
-cuentas_tesoreria|saldo_inicial|double precision|NN|0
+cuentas_tesoreria|saldo_inicial|numeric|NN|0
 cuentas_tesoreria|tipo|text|NN|'banco'::text
 depositos|activo|integer|NN|1
 depositos|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
@@ -138,7 +138,7 @@ egresos_pagos|egreso_id|integer|NN|
 egresos_pagos|fecha|text|NN|
 egresos_pagos|id|bigint|NN|nextval('egresos_pagos_id_seq'::regclass)
 egresos_pagos|medio_pago|text||''::text
-egresos_pagos|monto|double precision|NN|
+egresos_pagos|monto|numeric|NN|
 egresos_pagos|referencia|text||''::text
 egresos_pagos|usuario_id|integer||
 egresos|categoria|text||''::text
@@ -147,15 +147,15 @@ egresos|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) +
 egresos|estado|text|NN|'pendiente'::text
 egresos|fecha|text|NN|
 egresos|id|bigint|NN|nextval('egresos_id_seq'::regclass)
-egresos|iva_monto|double precision|NN|0
+egresos|iva_monto|numeric|NN|0
 egresos|iva_pct|double precision|NN|0
-egresos|monto_neto|double precision|NN|0
+egresos|monto_neto|numeric|NN|0
 egresos|numero|text||''::text
 egresos|observaciones|text||''::text
 egresos|proveedor_id|integer||
 egresos|proveedor_nombre|text|NN|''::text
 egresos|tipo_comprobante|text|NN|'otro'::text
-egresos|total|double precision|NN|
+egresos|total|numeric|NN|
 egresos|usuario_id|integer||
 facturacion_alias|activo|integer|NN|1
 facturacion_alias|cliente_id|integer|NN|
@@ -191,17 +191,17 @@ facturas|fch_vto_pago|text||''::text
 facturas|fecha|text|NN|
 facturas|id|bigint|NN|nextval('facturas_id_seq'::regclass)
 facturas|items|text|NN|
-facturas|iva_amount|double precision|NN|
+facturas|iva_amount|numeric|NN|
 facturas|numero|integer|NN|
 facturas|observaciones|text||
 facturas|pdf_path|text||
 facturas|punto_venta|integer|NN|
-facturas|subtotal|double precision|NN|
+facturas|subtotal|numeric|NN|
 facturas|tipo|integer|NN|
-facturas|total|double precision|NN|
+facturas|total|numeric|NN|
 facturas|usuario_id|integer||
 lista_precio_items|lista_id|integer|NN|
-lista_precio_items|precio|double precision|NN|0
+lista_precio_items|precio|numeric|NN|0
 lista_precio_items|producto_id|integer|NN|
 listas_precio|activa|integer|NN|1
 listas_precio|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
@@ -229,7 +229,7 @@ movimientos_tesoreria|cuenta_destino_id|integer||
 movimientos_tesoreria|cuenta_id|integer|NN|
 movimientos_tesoreria|fecha|text|NN|
 movimientos_tesoreria|id|bigint|NN|nextval('movimientos_tesoreria_id_seq'::regclass)
-movimientos_tesoreria|monto|double precision|NN|
+movimientos_tesoreria|monto|numeric|NN|
 movimientos_tesoreria|referencia|text||''::text
 movimientos_tesoreria|tipo|text|NN|
 movimientos_tesoreria|transferencia_id|integer||
@@ -240,7 +240,7 @@ mp_movimientos|estado_factura|text||'pendiente'::text
 mp_movimientos|factura_id|integer||
 mp_movimientos|fecha|text||
 mp_movimientos|id|bigint|NN|nextval('mp_movimientos_id_seq'::regclass)
-mp_movimientos|monto|double precision||
+mp_movimientos|monto|numeric||
 mp_movimientos|mp_movement_id|text|NN|
 mp_movimientos|origen_banco|text||
 mp_movimientos|origen_cbu|text||
@@ -255,7 +255,7 @@ mp_pagos|descripcion_mp|text||
 mp_pagos|estado_factura|text||
 mp_pagos|factura_id|integer||
 mp_pagos|id|bigint|NN|nextval('mp_pagos_id_seq'::regclass)
-mp_pagos|monto|double precision||
+mp_pagos|monto|numeric||
 mp_pagos|mp_payment_id|text|NN|
 mp_pagos|payer_email|text||
 mp_pagos|payer_id_number|text||
@@ -279,10 +279,10 @@ presupuestos|observations|text||
 presupuestos|pdf_path|text||
 presupuestos|remito_id|integer||
 presupuestos|status|text|NN|'pendiente'::text
-presupuestos|subtotal|double precision|NN|
-presupuestos|tax_amount|double precision|NN|
+presupuestos|subtotal|numeric|NN|
+presupuestos|tax_amount|numeric|NN|
 presupuestos|tax_rate|double precision|NN|0.21
-presupuestos|total|double precision|NN|
+presupuestos|total|numeric|NN|
 presupuestos|usuario_id|integer||
 presupuestos|valid_until|text|NN|
 productos|activo|integer|NN|1
@@ -293,8 +293,8 @@ productos|descripcion|text||''::text
 productos|estacion|text||''::text
 productos|id|bigint|NN|nextval('productos_id_seq'::regclass)
 productos|nombre|text|NN|
-productos|precio_costo|double precision|NN|0
-productos|precio_venta|double precision|NN|0
+productos|precio_costo|numeric|NN|0
+productos|precio_venta|numeric|NN|0
 productos|stock_minimo|double precision|NN|0
 productos|tipo|text|NN|'producto'::text
 productos|unidad|text|NN|'u'::text
@@ -324,7 +324,7 @@ recibos|origen_id|integer||
 recibos|origen_tipo|text|NN|
 recibos|pagos|text|NN|'[]'::text
 recibos|punto_venta|integer|NN|1
-recibos|total|double precision|NN|
+recibos|total|numeric|NN|
 recibos|usuario_id|integer||
 remitos|client_address|text||
 remitos|client_cuit|text||
@@ -339,10 +339,10 @@ remitos|items|text|NN|
 remitos|number|text|NN|
 remitos|observations|text||
 remitos|pdf_path|text||
-remitos|subtotal|double precision|NN|
-remitos|tax_amount|double precision|NN|
+remitos|subtotal|numeric|NN|
+remitos|tax_amount|numeric|NN|
 remitos|tax_rate|double precision|NN|0.21
-remitos|total|double precision|NN|
+remitos|total|numeric|NN|
 remitos|usuario_id|integer||
 turnos_caja|apertura|text|NN|
 turnos_caja|caja_id|integer||
@@ -350,9 +350,9 @@ turnos_caja|cierre|text||
 turnos_caja|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
 turnos_caja|estado|text|NN|'abierto'::text
 turnos_caja|id|bigint|NN|nextval('turnos_caja_id_seq'::regclass)
-turnos_caja|monto_declarado_cierre|double precision||
-turnos_caja|monto_esperado_cierre|double precision||
-turnos_caja|monto_inicial|double precision|NN|0
+turnos_caja|monto_declarado_cierre|numeric||
+turnos_caja|monto_esperado_cierre|numeric||
+turnos_caja|monto_inicial|numeric|NN|0
 turnos_caja|notas|text||''::text
 turnos_caja|usuario_id|integer|NN|
 usuarios|activo|boolean|NN|true
@@ -367,13 +367,13 @@ ventas_pagos|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::te
 ventas_pagos|estado|text|NN|'aprobado'::text
 ventas_pagos|id|bigint|NN|nextval('ventas_pagos_id_seq'::regclass)
 ventas_pagos|medio|text|NN|
-ventas_pagos|monto|double precision|NN|
+ventas_pagos|monto|numeric|NN|
 ventas_pagos|referencia|text||''::text
 ventas_pagos|venta_id|integer|NN|
 ventas|cliente_id|integer||
 ventas|cliente_nombre|text||''::text
 ventas|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
-ventas|descuento|double precision|NN|0
+ventas|descuento|numeric|NN|0
 ventas|estado|text|NN|'cobrada'::text
 ventas|factura_id|integer||
 ventas|fecha|text|NN|
@@ -384,8 +384,8 @@ ventas|mp_payment_id|text||''::text
 ventas|numero|text|NN|
 ventas|observaciones|text||''::text
 ventas|remito_id|integer||
-ventas|subtotal|double precision|NN|0
-ventas|total|double precision|NN|0
+ventas|subtotal|numeric|NN|0
+ventas|total|numeric|NN|0
 ventas|turno_id|integer||
 ventas|usuario_id|integer||
 

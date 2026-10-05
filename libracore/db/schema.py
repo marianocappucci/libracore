@@ -1177,3 +1177,78 @@ def init_core_schema(conn: Conexion):
     ]
     for cat in _CATEGORIAS_EGRESO_DEFAULT:
         conn.execute("INSERT OR IGNORE INTO categorias_egreso (nombre) VALUES (?)", (cat,))
+
+    _dinero_exacto_en_postgres(conn)
+
+
+#: Las columnas de **dinero** del motor: en PostgreSQL van como `NUMERIC` (ADR-024).
+#:
+#: Quedan afuera a propósito las que no son plata aunque sean `REAL`: alícuotas
+#: (`egresos.iva_pct`, `presupuestos.tax_rate`, `remitos.tax_rate`) y cantidades
+#: (`movimientos_stock.cantidad`, `productos.stock_minimo`).
+COLUMNAS_DE_DINERO = (
+    ("caja_movimientos", "monto"),
+    ("cc_debitos", "monto"),
+    ("cc_pagos", "monto"),
+    ("cc_resumenes_enviados", "saldo"),
+    ("comprobantes_pendientes", "total"),
+    ("cuentas_tesoreria", "saldo_inicial"),
+    ("egresos_pagos", "monto"),
+    ("egresos", "iva_monto"),
+    ("egresos", "monto_neto"),
+    ("egresos", "total"),
+    ("facturas", "subtotal"),
+    ("facturas", "iva_amount"),
+    ("facturas", "total"),
+    ("lista_precio_items", "precio"),
+    ("movimientos_tesoreria", "monto"),
+    ("mp_movimientos", "monto"),
+    ("mp_pagos", "monto"),
+    ("presupuestos", "subtotal"),
+    ("presupuestos", "tax_amount"),
+    ("presupuestos", "total"),
+    ("productos", "precio_costo"),
+    ("productos", "precio_venta"),
+    ("recibos", "total"),
+    ("remitos", "subtotal"),
+    ("remitos", "tax_amount"),
+    ("remitos", "total"),
+    ("turnos_caja", "monto_declarado_cierre"),
+    ("turnos_caja", "monto_esperado_cierre"),
+    ("turnos_caja", "monto_inicial"),
+    ("ventas_pagos", "monto"),
+    ("ventas", "descuento"),
+    ("ventas", "subtotal"),
+    ("ventas", "total"),
+)
+
+
+def _dinero_exacto_en_postgres(conn) -> None:
+    """En PostgreSQL, las columnas de dinero pasan de `DOUBLE PRECISION` a `NUMERIC` (ADR-024).
+
+    🔑 **Se guarda exacto; se lee igual que siempre.** `NUMERIC` sin escala fija:
+    no redondea nada de lo que ya está, y una suma en la base deja de arrastrar el
+    error de punto flotante. La lectura no cambia: el adaptador
+    (`_postgres._como_en_sqlite`) sigue devolviendo `float`, así que ningún
+    producto tiene que tocar su aritmética. Pasar la aritmética a `Decimal` es
+    otra decisión, de los dos motores (ver ese docstring).
+
+    Sólo toca una columna que hoy sea `double precision` o `real`: una instancia
+    que llegó con otro tipo (LibraDesk trajo columnas de sus propios modelos) se
+    respeta, y una que ya se convirtió no se vuelve a reescribir. En SQLite no
+    hace nada: ahí `REAL` y `NUMERIC` guardan lo mismo.
+    """
+    if not _es_postgres(conn):
+        return
+    tipos = {
+        (r[0], r[1]): r[2]
+        for r in conn.execute(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = current_schema()"
+        ).fetchall()
+    }
+    for tabla, columna in COLUMNAS_DE_DINERO:
+        if tipos.get((tabla, columna)) in ("double precision", "real"):
+            conn.execute(
+                f'ALTER TABLE "{tabla}" ALTER COLUMN "{columna}" TYPE NUMERIC USING "{columna}"::numeric'
+            )

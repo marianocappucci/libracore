@@ -7,6 +7,18 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Emitir en la transacción del producto, y el dinero exacto en PostgreSQL (propuesta: v1.135.0)
+
+**Migración `0018_dinero_exacto`**. ADR-024 y ADR-025.
+
+- **El dinero se guarda exacto (ADR-024).** En PostgreSQL, las 33 columnas de dinero del motor (`COLUMNAS_DE_DINERO`) pasan de `DOUBLE PRECISION` a `NUMERIC` sin escala fija: no se redondea nada. Las alícuotas y las cantidades quedan como estaban.
+  - **La lectura no cambia**: el adaptador sigue devolviendo `float`, así que ningún producto toca su aritmética.
+  - Sólo se convierte una columna que hoy es `double precision` o `real`; una que llegó con otro tipo se respeta.
+  - En SQLite no cambia nada.
+- **Emitir dentro de la transacción del producto (ADR-025).** Las funciones del comprobante aceptan `conn=` con el idioma de todo `libracore.db`: con `conn` trabajan en la transacción de quien llama y no confirman nada. Son `create_factura`, `registrar_comprobante`, `get_factura`, `update_factura_cae`, `update_factura_cae_error`, `update_factura_pdf_path`, `anular_factura`, `get_next_factura_numero`, las búsquedas de notas y del original, `arca_facturacion.get_next_numero_with_arca` y `solicitar_cae`.
+  - El reintento de `create_factura` ante un número repetido, y la carrera de `registrar_comprobante`, van en un `SAVEPOINT`. En PostgreSQL un error aborta la transacción entera, y sin el savepoint el producto no podría seguir.
+  - Sin `conn`, nada cambia.
+
 ## [Unreleased] — Registrar un comprobante con el número tipeado (propuesta: v1.134.0, junto con las dos de abajo)
 
 Sin migración ni cambio de esquema. ADR-023. **Nuevo:** `db.facturas.registrar_comprobante(tipo, punto_venta, numero, ..., emisor_id=None, cae="", cae_vto="", **opcionales)`, para un comprobante **cuyo número viene de afuera**: el operador lo tipea porque se emitió en otro lado. Puede traer el CAE.
