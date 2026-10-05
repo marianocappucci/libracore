@@ -412,3 +412,23 @@ en el wiki del ecosistema (entidad `libracore` y sus bitácoras).
 - Compatibilidad: una nota previa que no informa `total` cuenta como la factura entera (el lado seguro, igual que la fase 1).
 - Lo que **no** resuelve: los totales y conciliaciones de cada producto con notas parciales (LibraCargo: ver el diseño en el wiki), la pantalla para elegir el importe y `anular_venta` con varias notas (libracommerce).
 
+## ADR-019 — La FCE completa: el motor consulta el registro de ARCA (WSFECRED)
+
+**Estado:** propuesta (2026-10-05), sin código. **Contexto:** el motor emite la FCE y su nota parcial por WSFE, pero no
+habla con el registro de FCE (WSFECRED). Medido en homologación (2026-10-05): ARCA lleva una cuenta corriente con el
+**saldo** de cada FCE (igual al `saldo_acreditable` del motor tras una nota parcial); **WSFE autoriza una FCE a un
+receptor no obligado**; y la anulación total (`S`) exige que el **comprador** la rechace, cosa que sólo se ve en WSFECRED.
+Detalle en `docs/fce.md`.
+
+- Decisión 1 — **`libracore.arca_wsfecred`, sólo consultas** (`monto_obligado`, `estado_de_fce`, `historial`), con el
+  mismo WSAA (servicio `wsfecred`) y la misma configuración de ARCA. Aceptar y rechazar son del comprador: no se
+  implementan.
+- Decisión 2 — **al emitir, sugerir FCE** cuando `consultarMontoObligadoRecepcion` diga que el receptor está obligado y
+  el total llegue a `montoDesde`. Sugerencia y no bloqueo, salvo que se mida que WSFE rechaza la factura común.
+- Decisión 3 — **la nota total de una FCE sólo con `Rechazado`** en ARCA: entonces sale con anulación `S`. Si no, sigue
+  la regla de v1.131.0. Pendiente de medir con un segundo certificado que haga de comprador.
+- Decisión 4 — **el saldo de ARCA controla y no manda**: el tope sigue siendo el del motor; una diferencia se avisa.
+- Decisión 5 — **WSFECRED caído o sin autorizar no frena la emisión**; la nota total de FCE queda frenada (lado seguro).
+- Decisión 6 — **para toda la familia** por el pin; emitir FCE desde la venta (VentaLibra, `libracommerce`) es aparte.
+- Fuera de alcance: recibir FCE como comprador, el agente de depósito colectivo, `informarCancelacionTotalFECred` y
+  `obtenerRemitos`.
