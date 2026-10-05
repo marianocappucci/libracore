@@ -259,6 +259,9 @@ Lo que ARCA exige, **medido en homologación** (2026-10-02):
 La condición del receptor es válida **por clase** (`CondicionIVAReceptorId`): una
 FCE B a un inscripto da 10243.
 
+**El registro de FCE (WSFECRED)** —obligación de recepción, aceptación y rechazo del comprador, saldo— es otro web
+service; lo medido y el diseño propuesto están en `fce.md` (ADR-019).
+
 ---
 
 ## Los dos filtros de MercadoPago que NO hay que agregar
