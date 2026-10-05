@@ -432,3 +432,14 @@ Detalle en `docs/fce.md`.
 - Decisión 6 — **para toda la familia** por el pin; emitir FCE desde la venta (VentaLibra, `libracommerce`) es aparte.
 - Fuera de alcance: recibir FCE como comprador, el agente de depósito colectivo, `informarCancelacionTotalFECred` y
   `obtenerRemitos`.
+
+## ADR-020 — La SPA es del motor, y una ruta de la API que no existe da 404
+
+**Contexto.** Seis productos (VentaLibra, Contalibra, Restolibra, Libradesk, GestioLibra y MedLibra) tenían el mismo `app/spa.py`, **byte a byte** (md5 igual, 2026-10-05): el catch-all que sirve el frontend, sus cabeceras de caché (`index.html` revalida siempre, los assets con hash se cachean para siempre) y `archivo_publico` (que el manifest y el service worker no contesten HTML). Ese catch-all contestaba **`index.html` con 200 a cualquier ruta, también a `/api/loquesea`**: un endpoint mal escrito o que todavía no existe en esa versión devolvía HTML con 200. En el wiki del ecosistema, los deploys de VentaLibra del 2026-10-04/05 reportaron «`/api/health` 200» durante dos días y era el `index.html`; el chequeo real es `/health`.
+
+**Decisión.** `libracore.spa`: el mismo módulo (con sus tests), más una guarda: si el primer tramo de la ruta es un prefijo de la API (`PREFIJOS_API = ("api",)`, ampliable con `montar_spa(app, dist, prefijos_api=...)`), el catch-all contesta **404 `{"detail": "Not Found"}` en JSON**, la misma forma que el 404 de FastAPI. Las rutas de la API que existen no cambian: se montan antes que el catch-all y se resuelven antes. `/apis`, `/api-docs` o `/configuracion/api` siguen siendo de la SPA (sólo cuenta el primer tramo exacto).
+
+**Adopción.** Cada producto reemplaza su `app/spa.py` por un re-export de `libracore.spa` cuando sube el pin; el test que verifica que su `app/asgi.py` llama a `montar_spa` queda en el producto. VentaLibra primero (pedido del humano: «arreglá que las rutas /api devuelvan 404»); los otros cinco, cuando el humano lo pida.
+
+**Límites.** Las rutas propias de un producto fuera de `/api` (`/auth/...`, `/settings/...`, `/logs` en algunos) siguen cayendo en la SPA si no existen, salvo que el producto sume su prefijo. Sin migración.
+

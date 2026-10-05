@@ -7,6 +7,10 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La SPA es del motor; `/api` desconocido da 404 (propuesta: v1.133.0)
+
+Sin migración. ADR-020. **Nuevo:** `libracore.spa` (`montar_spa`, `archivo_publico`, `AssetsInmutables`, `SIN_CACHE`, `PARA_SIEMPRE`, `TIPOS_PROPIOS`, `PREFIJOS_API`, `es_de_la_api`), el `app/spa.py` que seis productos tenían copiado igual. **Cambia el comportamiento** para quien lo adopte: una ruta `/api/...` que no existe contesta **404 JSON** en vez del `index.html` con 200. Adopción: reemplazar `app/spa.py` por `from libracore.spa import *` (o importar de ahí).
+
 ## [Unreleased] — ¿Corresponde FCE? El aviso antes de emitir (propuesta: v1.132.0, junto con la entrada de abajo)
 
 Sin migración. ADR-019, decisión 2. **Nuevo:** `arca_wsfecred.corresponde_fce(cfg, cuit_receptor, total, fecha)` → `{disponible, corresponde, obligado, monto_desde}`; **nunca levanta** (sin ARCA, certificado sin `wsfecred` o ARCA caído → `disponible: false` con un motivo que dice qué hacer). Y en el router de comprobantes **`GET /api/facturas/fce/corresponde?cuit=&total=&fecha=`** (fecha opcional, hoy), que suma `fce_habilitada` (si el emisor ya cargó CBU y modalidad). Es un **aviso para el formulario, antes de emitir**: ARCA no lo frena y una factura emitida no se cambia. La emisión no cambia. Probado contra ARCA de homologación: gran empresa por 4.000.000 → corresponde (`montoDesde` 3.958.316); por 100.000 → no; receptor no obligado → no.
