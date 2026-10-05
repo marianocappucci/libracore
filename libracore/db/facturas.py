@@ -5,12 +5,55 @@ resolución de comprobantes asociados. Migrado a libracore.db (Fase 3 de
 LibraCore, migración real, Tier 2 — código ya idéntico entre productos —
 ver wiki/entities/libracore.md).
 """
+import contextlib
 import json
 import sqlite3
 
 from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_es_cuenta_corriente, sql_no_anulado, sql_no_es_cuenta_corriente
-from libracore.db.core import get_connection, sql_busqueda
+from libracore.db.core import Conexion, get_connection, sql_busqueda
+
+
+def _con(conn: Conexion | None):
+    """La conexión de quien llama si la pasó, o una propia.
+
+    🔑 **Con `conn`, la función trabaja dentro de la transacción de quien llama y
+    no confirma nada**: el `nullcontext` no hace commit ni cierra. Es el idioma
+    de todo `libracore.db` (`ventas`, `caja`, `stock`...) y es lo que deja a un
+    producto emitir el comprobante y escribir lo suyo —las órdenes que cierra, el
+    movimiento de su cuenta corriente— en **una sola transacción** (ADR-024 de LibraCargo; ADR-025 de este motor).
+    Sin `conn`, cada función confirma la suya, como siempre.
+    """
+    return contextlib.nullcontext(conn) if conn is not None else get_connection()
+
+
+@contextlib.contextmanager
+def _savepoint(conn: Conexion | None, nombre: str):
+    """Un `SAVEPOINT` si se trabaja en la transacción de quien llama; nada si no.
+
+    🔴 **En PostgreSQL un error aborta la transacción entera**, así que el
+    reintento de `create_factura` ante un número repetido es imposible sin esto:
+    el segundo `INSERT` fallaría con «current transaction is aborted». Volver al
+    savepoint deshace sólo el `INSERT` fallido y deja viva la transacción del
+    producto. Sin `conn` cada intento ya es su propia transacción.
+    """
+    if conn is None:
+        yield
+        return
+    # 🔴 En SQLite, un `SAVEPOINT` fuera de una transacción **abre una propia**, y
+    # su `RELEASE` la confirma: el comprobante quedaría escrito aunque el producto
+    # después revierta. Se abre la transacción antes, como haría el primer `INSERT`.
+    # (psycopg ya abre una antes de la primera sentencia.)
+    if isinstance(conn, sqlite3.Connection) and not conn.in_transaction:
+        conn.execute("BEGIN")
+    conn.execute(f"SAVEPOINT {nombre}")
+    try:
+        yield
+    except BaseException:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {nombre}")
+        conn.execute(f"RELEASE SAVEPOINT {nombre}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {nombre}")
 
 #: Los comprobantes que cuentan para los libros y los totales.
 #:
@@ -61,7 +104,7 @@ class ComprobanteNoAnulable(Exception):
         self.codigo = codigo
 
 
-def anular_factura(factura_id, usuario_id=None, motivo="") -> dict:
+def anular_factura(factura_id, usuario_id=None, motivo="", *, conn: Conexion | None = None) -> dict:
     """Anula un comprobante **sin CAE** y deja el rastro: cuándo, quién y por qué. Devuelve el comprobante.
 
     Es la alternativa a `delete_factura` para quien no quiere que un número
@@ -75,9 +118,11 @@ def anular_factura(factura_id, usuario_id=None, motivo="") -> dict:
     🔑 El débito de cuenta corriente que generó (el movimiento de caja «a cuenta»)
     se anula en la misma transacción. Sin eso la deuda del cliente seguiría en pie
     por un comprobante que ya no existe.
+
+    Con `conn`, dentro de la transacción de quien llama (ver `_con`).
     """
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM facturas WHERE id=?", (factura_id,)).fetchone()
+    with _con(conn) as c:
+        row = c.execute("SELECT * FROM facturas WHERE id=?", (factura_id,)).fetchone()
         if not row:
             raise ComprobanteNoAnulable(ComprobanteNoAnulable.NO_EXISTE, "El comprobante no existe.")
         if row["anulada_en"]:
@@ -86,7 +131,7 @@ def anular_factura(factura_id, usuario_id=None, motivo="") -> dict:
             raise ComprobanteNoAnulable(
                 ComprobanteNoAnulable.CON_CAE,
                 "El comprobante tiene CAE de ARCA: no se anula, se emite una nota de crédito.")
-        cobros = conn.execute(
+        cobros = c.execute(
             "SELECT COUNT(*) FROM caja_movimientos WHERE factura_id=? AND tipo='ingreso'"
             f" AND {sql_no_es_cuenta_corriente()} AND {sql_no_anulado()}",
             (factura_id,),
@@ -95,20 +140,21 @@ def anular_factura(factura_id, usuario_id=None, motivo="") -> dict:
             raise ComprobanteNoAnulable(
                 ComprobanteNoAnulable.CON_COBROS,
                 "El comprobante tiene cobros registrados: anulá los cobros antes de anularlo.")
-        conn.execute(
+        c.execute(
             "UPDATE facturas SET anulada_en=datetime('now','-3 hours'), anulada_por=?, "
             "anulacion_motivo=? WHERE id=?",
             (usuario_id, (motivo or "").strip()[:500], factura_id),
         )
-        conn.execute(
+        c.execute(
             "UPDATE caja_movimientos SET anulado=1 WHERE factura_id=? AND tipo='ingreso'"
             f" AND {sql_es_cuenta_corriente()} AND {sql_no_anulado()}",
             (factura_id,),
         )
-    return get_factura(factura_id)
+        return get_factura(factura_id, conn=c)
 
 
-def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion", emisor_id=None):
+def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion", emisor_id=None,
+                            *, conn: Conexion | None = None):
     """El próximo número correlativo para tipo+punto_venta **en ese ambiente**.
 
     🔴 **El ambiente parte la secuencia, y es lo más peligroso de todo esto.**
@@ -128,8 +174,8 @@ def get_next_factura_numero(punto_venta, tipo, ambiente: str = "produccion", emi
     El emisor también parte la secuencia: dos razones sociales con el mismo punto
     de venta numeran cada una la suya. `None` es el emisor único de la instancia.
     """
-    with get_connection() as conn:
-        row = conn.execute(
+    with _con(conn) as c:
+        row = c.execute(
             "SELECT MAX(numero) FROM facturas "
             f"WHERE punto_venta=? AND tipo=? AND ambiente=? AND {SQL_DEL_EMISOR}",
             (punto_venta, tipo, ambiente, emisor_id or 0),
@@ -144,7 +190,7 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
                    fch_vto_pago="", cbte_asoc_tipo=0, cbte_asoc_pv=0, cbte_asoc_nro=0,
                    condicion_venta="", usuario_id=None,
                    fce_cbu="", fce_transmision="", fce_anulacion="", cbte_asoc_fecha="",
-                   *, ambiente: str, emisor_id=None):
+                   *, ambiente: str, emisor_id=None, conn: Conexion | None = None):
     """Crea una nueva factura electrónica. `numero` es el número calculado por el
     caller (local o vía ARCA) pero puede haber quedado obsoleto si otra factura
     concurrente para el mismo tipo+punto_venta se creó en el medio (no había
@@ -166,6 +212,9 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
 
     `emisor_id` (`arca_config.id`) sólo lo pasa un producto con varias razones
     sociales. Sin él el comprobante es del emisor único de la instancia.
+
+    Con `conn`, el comprobante se escribe en la transacción de quien llama y no se
+    confirma acá (ver `_con`); cada intento va en un `SAVEPOINT` (`_savepoint`).
     """
     ambiente = (ambiente or "").strip().lower()
     if ambiente not in ("homologacion", "produccion"):
@@ -176,26 +225,28 @@ def create_factura(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon
     MAX_INTENTOS = 5
     for intento in range(MAX_INTENTOS):
         try:
-            return _insertar(
-                tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
-                cliente_iva_cond, items, subtotal, iva_amount, total, concepto, cae, cae_vto,
-                observaciones, pdf_path, cliente_domicilio, fch_serv_desde, fch_serv_hasta,
-                fch_vto_pago, cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta,
-                usuario_id, ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha,
-                emisor_id,
-            )
+            with _savepoint(conn, "libracore_factura"):
+                return _insertar(
+                    tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
+                    cliente_iva_cond, items, subtotal, iva_amount, total, concepto, cae, cae_vto,
+                    observaciones, pdf_path, cliente_domicilio, fch_serv_desde, fch_serv_hasta,
+                    fch_vto_pago, cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta,
+                    usuario_id, ambiente, fce_cbu, fce_transmision, fce_anulacion, cbte_asoc_fecha,
+                    emisor_id, conn=conn,
+                )
         except sqlite3.IntegrityError:
             if intento == MAX_INTENTOS - 1:
                 raise
-            numero = get_next_factura_numero(punto_venta, tipo, ambiente, emisor_id)
+            numero = get_next_factura_numero(
+                punto_venta, tipo, ambiente, emisor_id, **({"conn": conn} if conn is not None else {}))
 
 
-def _insertar(*valores) -> int:
+def _insertar(*valores, conn: Conexion | None = None) -> int:
     """El `INSERT` de un comprobante, con las columnas en el orden de `create_factura`. Devuelve el id."""
     valores = list(valores)
     valores[7] = json.dumps(valores[7], ensure_ascii=False)  # items
-    with get_connection() as conn:
-        cur = conn.execute(
+    with _con(conn) as c:
+        cur = c.execute(
             """INSERT INTO facturas
                (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
                 cliente_iva_cond, items, subtotal, iva_amount, total, concepto,
@@ -214,9 +265,9 @@ class NumeroYaRegistrado(Exception):
     """El número de un comprobante registrado a mano ya existe para ese emisor, tipo y punto de venta."""
 
 
-def _ya_existe(tipo, punto_venta, numero, emisor_id) -> bool:
-    with get_connection() as conn:
-        return conn.execute(
+def _ya_existe(tipo, punto_venta, numero, emisor_id, conn: Conexion | None = None) -> bool:
+    with _con(conn) as c:
+        return c.execute(
             "SELECT 1 FROM facturas WHERE tipo=? AND punto_venta=? AND numero=? "
             f"AND ambiente='produccion' AND {SQL_DEL_EMISOR}",
             (tipo, punto_venta, numero, emisor_id or 0),
@@ -225,7 +276,8 @@ def _ya_existe(tipo, punto_venta, numero, emisor_id) -> bool:
 
 def registrar_comprobante(tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon,
                           cliente_iva_cond, items, subtotal, iva_amount, total, *,
-                          emisor_id=None, cae="", cae_vto="", **opcionales) -> int:
+                          emisor_id=None, cae="", cae_vto="", conn: Conexion | None = None,
+                          **opcionales) -> int:
     """Registra un comprobante **cuyo número viene de afuera** y devuelve su id.
 
     Es el caso de un producto que no emite por ARCA para esa razón social y el
@@ -241,10 +293,11 @@ def registrar_comprobante(tipo, punto_venta, numero, fecha, cliente_cuit, client
     homologación: es del cliente y va al libro IVA. Los demás campos
     (`concepto`, `observaciones`, `condicion_venta`, `usuario_id`, las fechas del
     servicio, el asociado de una nota...) van por nombre, como en `create_factura`.
+    Con `conn`, en la transacción de quien llama (ver `_con`).
     """
     if not (isinstance(numero, int) and not isinstance(numero, bool) and numero > 0):
         raise ValueError(f"El número de un comprobante es un entero mayor que cero, no {numero!r}.")
-    if _ya_existe(tipo, punto_venta, numero, emisor_id):
+    if _ya_existe(tipo, punto_venta, numero, emisor_id, conn):
         raise NumeroYaRegistrado(
             f"El comprobante {punto_venta:04d}-{numero:08d} (tipo {tipo}) ya está registrado.")
     campos = {
@@ -258,20 +311,21 @@ def registrar_comprobante(tipo, punto_venta, numero, fecha, cliente_cuit, client
         raise TypeError(f"registrar_comprobante: campos desconocidos {sorted(desconocidos)}")
     campos.update(opcionales)
     try:
-        return _insertar(
-            tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, cliente_iva_cond,
-            items, subtotal, iva_amount, total, campos["concepto"], cae, cae_vto,
-            campos["observaciones"], campos["pdf_path"], campos["cliente_domicilio"],
-            campos["fch_serv_desde"], campos["fch_serv_hasta"], campos["fch_vto_pago"],
-            campos["cbte_asoc_tipo"], campos["cbte_asoc_pv"], campos["cbte_asoc_nro"],
-            campos["condicion_venta"], campos["usuario_id"], "produccion", campos["fce_cbu"],
-            campos["fce_transmision"], campos["fce_anulacion"], campos["cbte_asoc_fecha"],
-            emisor_id,
-        )
+        with _savepoint(conn, "libracore_registro"):
+            return _insertar(
+                tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, cliente_iva_cond,
+                items, subtotal, iva_amount, total, campos["concepto"], cae, cae_vto,
+                campos["observaciones"], campos["pdf_path"], campos["cliente_domicilio"],
+                campos["fch_serv_desde"], campos["fch_serv_hasta"], campos["fch_vto_pago"],
+                campos["cbte_asoc_tipo"], campos["cbte_asoc_pv"], campos["cbte_asoc_nro"],
+                campos["condicion_venta"], campos["usuario_id"], "produccion", campos["fce_cbu"],
+                campos["fce_transmision"], campos["fce_anulacion"], campos["cbte_asoc_fecha"],
+                emisor_id, conn=conn,
+            )
     except sqlite3.IntegrityError:
         # Lo ganó otro entre la consulta y el INSERT. Cualquier otra violación
         # (una FK que no existe) sale tal cual: no es un número repetido.
-        if _ya_existe(tipo, punto_venta, numero, emisor_id):
+        if _ya_existe(tipo, punto_venta, numero, emisor_id, conn):
             raise NumeroYaRegistrado(
                 f"El comprobante {punto_venta:04d}-{numero:08d} (tipo {tipo}) ya está registrado."
             ) from None
@@ -352,10 +406,10 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
     return {"items": result, "total": total}
 
 
-def get_factura(factura_id):
-    """Obtiene una factura por ID."""
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM facturas WHERE id=?", (factura_id,)).fetchone()
+def get_factura(factura_id, *, conn: Conexion | None = None):
+    """Obtiene una factura por ID. Con `conn`, la ve como la ve esa transacción."""
+    with _con(conn) as c:
+        row = c.execute("SELECT * FROM facturas WHERE id=?", (factura_id,)).fetchone()
         if not row:
             return None
         d = dict(row)
@@ -363,31 +417,31 @@ def get_factura(factura_id):
         return d
 
 
-def update_factura_cae(factura_id, cae, cae_vto):
+def update_factura_cae(factura_id, cae, cae_vto, *, conn: Conexion | None = None):
     """Actualiza CAE de una factura después de obtenerlo de ARCA.
 
     Borra `cae_error`: un comprobante autorizado ya no tiene un rechazo que mostrar.
     """
-    with get_connection() as conn:
-        conn.execute(
+    with _con(conn) as c:
+        c.execute(
             "UPDATE facturas SET cae=?, cae_vto=?, cae_error='' WHERE id=?",
             (cae, cae_vto, factura_id)
         )
 
 
-def update_factura_cae_error(factura_id, motivo):
+def update_factura_cae_error(factura_id, motivo, *, conn: Conexion | None = None):
     """Deja anotado por qué ARCA no autorizó el comprobante (`''` lo borra)."""
-    with get_connection() as conn:
-        conn.execute(
+    with _con(conn) as c:
+        c.execute(
             "UPDATE facturas SET cae_error=? WHERE id=?",
             ((motivo or "")[:1000], factura_id)
         )
 
 
-def update_factura_pdf_path(factura_id, pdf_path):
+def update_factura_pdf_path(factura_id, pdf_path, *, conn: Conexion | None = None):
     """Actualiza el path del PDF de la factura."""
-    with get_connection() as conn:
-        conn.execute(
+    with _con(conn) as c:
+        c.execute(
             "UPDATE facturas SET pdf_path=? WHERE id=?",
             (pdf_path, factura_id)
         )
@@ -419,7 +473,8 @@ def _y_ambiente(ambiente) -> tuple[str, tuple]:
     return (" AND ambiente=?", (ambiente,)) if ambiente else ("", ())
 
 
-def get_notas_de_factura(tipo, punto_venta, numero, tipos_nota, emisor_id=None, ambiente=None):
+def get_notas_de_factura(tipo, punto_venta, numero, tipos_nota, emisor_id=None, ambiente=None,
+                         *, conn: Conexion | None = None):
     """Devuelve notas (NC o ND) que referencian un comprobante.
 
     🔑 **`(tipo, pv, número)` no alcanza para identificar al original**, por dos
@@ -432,8 +487,8 @@ def get_notas_de_factura(tipo, punto_venta, numero, tipos_nota, emisor_id=None, 
     """
     placeholders = ",".join("?" * len(tipos_nota))
     filtro_amb, param_amb = _y_ambiente(ambiente)
-    with get_connection() as conn:
-        rows = conn.execute(
+    with _con(conn) as c:
+        rows = c.execute(
             f"""SELECT * FROM facturas
                WHERE tipo IN ({placeholders})
                  AND cbte_asoc_tipo=? AND cbte_asoc_pv=? AND cbte_asoc_nro=?
@@ -449,21 +504,24 @@ def get_notas_de_factura(tipo, punto_venta, numero, tipos_nota, emisor_id=None, 
         return result
 
 
-def get_nc_de_factura(tipo, punto_venta, numero, emisor_id=None, ambiente=None):
+def get_nc_de_factura(tipo, punto_venta, numero, emisor_id=None, ambiente=None,
+                      *, conn: Conexion | None = None):
     """Devuelve las notas de crédito que anulan un comprobante."""
-    return get_notas_de_factura(tipo, punto_venta, numero, _TIPOS_NC, emisor_id, ambiente)
+    return get_notas_de_factura(tipo, punto_venta, numero, _TIPOS_NC, emisor_id, ambiente, conn=conn)
 
 
-def get_nd_de_factura(tipo, punto_venta, numero, emisor_id=None, ambiente=None):
+def get_nd_de_factura(tipo, punto_venta, numero, emisor_id=None, ambiente=None,
+                      *, conn: Conexion | None = None):
     """Devuelve las notas de débito asociadas a un comprobante."""
-    return get_notas_de_factura(tipo, punto_venta, numero, _TIPOS_ND, emisor_id, ambiente)
+    return get_notas_de_factura(tipo, punto_venta, numero, _TIPOS_ND, emisor_id, ambiente, conn=conn)
 
 
-def get_factura_por_tipo_pv_nro(tipo, punto_venta, numero, emisor_id=None, ambiente=None):
+def get_factura_por_tipo_pv_nro(tipo, punto_venta, numero, emisor_id=None, ambiente=None,
+                                *, conn: Conexion | None = None):
     """Busca un comprobante por emisor + tipo + punto de venta + número (y ambiente, si viene)."""
     filtro_amb, param_amb = _y_ambiente(ambiente)
-    with get_connection() as conn:
-        row = conn.execute(
+    with _con(conn) as c:
+        row = c.execute(
             "SELECT * FROM facturas WHERE tipo=? AND punto_venta=? AND numero=? "
             f"AND {SQL_DEL_EMISOR}{filtro_amb}",
             (tipo, punto_venta, numero, emisor_id or 0, *param_amb),
