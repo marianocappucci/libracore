@@ -344,12 +344,37 @@ except ImportError:
     _HAS_PIL = False
 
 
-def _logo_fit_dims(path: str, max_w: float, max_h: float):
-    """Devuelve (w, h) para encajar el logo en max_w×max_h manteniendo proporción."""
+def _abrible(logo):
+    """Lo que `PIL` y `fpdf2` pueden abrir: la ruta tal cual, o los bytes en un buffer nuevo.
+
+    Un buffer por lectura: abrirlo dos veces con el mismo dejaría el cursor al final.
+    """
+    return _io.BytesIO(logo) if isinstance(logo, (bytes, bytearray)) else logo
+
+
+def _logo_de(empresa: dict):
+    """El logo del membrete: el **contenido** (`logo_bytes`) o un **archivo** (`logo_path`).
+
+    🔑 Un producto que guarda el logo en su base y no en el disco del contenedor
+    (LibraCargo) pasa los bytes: el disco de un contenedor se pierde en cada
+    despliegue, la base no. Sin ninguno de los dos, `None` y el membrete lleva las
+    iniciales.
+    """
+    contenido = empresa.get("logo_bytes")
+    if contenido:
+        return bytes(contenido)
+    ruta = empresa.get("logo_path", "")
+    return ruta if ruta and os.path.exists(ruta) else None
+
+
+def _logo_fit_dims(path, max_w: float, max_h: float):
+    """Devuelve (w, h) para encajar el logo en max_w×max_h manteniendo proporción.
+
+    `path` es una ruta o los bytes de la imagen."""
     if not _HAS_PIL:
         return 0, max_h   # fpdf2 escala el ancho automáticamente con h fija
     try:
-        img = _PILImage.open(path)
+        img = _PILImage.open(_abrible(path))
         iw, ih = img.size
         img.close()
         scale = min(max_w / iw, max_h / ih)
@@ -358,13 +383,14 @@ def _logo_fit_dims(path: str, max_w: float, max_h: float):
         return 0, max_h
 
 
-def _prepare_logo(path: str):
+def _prepare_logo(path):
+    """`path` es una ruta o los bytes de la imagen; devuelve algo que `fpdf2` dibuja."""
     if not _HAS_PIL:
-        return path
+        return _abrible(path)
     try:
-        img = _PILImage.open(path)
+        img = _PILImage.open(_abrible(path))
         if img.mode != "RGBA":
-            return path
+            return _abrible(path)
         _, _, _, alpha = img.split()
         opaque = [(img.getpixel((x, y))[:3])
                   for x in range(0, img.size[0], 15)
@@ -382,7 +408,7 @@ def _prepare_logo(path: str):
         buf.seek(0)
         return buf
     except Exception:
-        return path
+        return _abrible(path)
 
 
 def _empresa():
@@ -483,8 +509,8 @@ def _draw_header_block(pdf, letra, titulo, codigo, info_fields, empresa):
     vh     = letter_rh + meta_h
 
     # ── Izquierda: logo + título ──────────────────────────────────────────
-    logo_path = empresa.get("logo_path", "")
-    has_logo  = bool(logo_path and os.path.exists(logo_path))
+    logo_path = _logo_de(empresa)
+    has_logo  = logo_path is not None
     logo_sz   = 14   # fallback para cuadrado de iniciales
 
     if has_logo:
