@@ -248,3 +248,47 @@ def test_el_modo_offline_falla_en_vez_de_mentir(tmp_path):
     resultado = _alembic(str(tmp_path / "offline.db"), "upgrade", "head", "--sql")
     assert resultado.returncode != 0
     assert "offline" in (resultado.stderr + resultado.stdout).lower()
+
+
+def test_la_cadena_deja_toda_columna_con_reloj_en_hora_de_argentina_postgres():
+    """🔴 La guarda de Contalibra y Restolibra, en el motor: con TODAS las columnas con
+    reloj vueltas al DEFAULT viejo en UTC y la tabla de versiones vacía, correr la
+    cadena las tiene que dejar en hora de Argentina. Una tabla nueva que ninguna
+    revisión nombra queda en UTC y aparece acá con su nombre (pasó con `cc_asientos`
+    de la `0019`, el 2026-10-06: lo encontró el CI de los dos productos).
+    """
+    url = _url_postgres()
+    _limpiar_postgres(url)
+    assert _alembic(url, "upgrade", "head").returncode == 0
+    utc = "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
+    con_reloj = (
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND data_type = 'text' "
+        "AND (column_default LIKE '%interval%' OR column_default LIKE '%AT TIME ZONE ''UTC''%')")
+    core.configure(url)
+    conn = core.get_connection()
+    try:
+        columnas = conn.execute(con_reloj).fetchall()
+        assert ("cc_asientos", "created_at") in {(c[0], c[1]) for c in columnas}
+        for tabla, columna in columnas:
+            conn.execute(f'ALTER TABLE "{tabla}" ALTER COLUMN "{columna}" SET DEFAULT {utc}')
+        conn.execute("DELETE FROM alembic_version")
+        conn.commit()
+    finally:
+        conn.close()
+        _liberar()
+    r = _alembic(url, "upgrade", "head")
+    assert r.returncode == 0, r.stderr[-2000:]
+    core.configure(url)
+    conn = core.get_connection()
+    try:
+        en_utc = conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND column_default LIKE '%AT TIME ZONE ''UTC''%'"
+            # La hora de Argentina también pasa por UTC, y le suma el `interval`.
+            " AND column_default NOT LIKE '%interval%'"
+        ).fetchall()
+    finally:
+        conn.close()
+        _liberar()
+    assert [tuple(f) for f in en_utc] == []

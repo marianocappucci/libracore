@@ -7,7 +7,11 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Unreleased] — El libro de cuenta corriente de terceros (propuesta: v1.136.0)
+## [Unreleased] — La `0019` deja los relojes en hora de Argentina (propuesta: v1.136.1)
+
+- **La `0019_libro_de_terceros` pasa `cc_asientos.created_at` y `cierres_diarios.created_at` a hora de Argentina** con `alters_para_hora_ar`, como la `0003` con las demás. El DDL ya nacía así, pero ninguna revisión las nombraba: la guarda de Contalibra y Restolibra (que vuelve todas las columnas con reloj a UTC y corre la cadena) las encontraba en UTC. Ahora el motor tiene su propia versión de esa guarda (`test_la_cadena_deja_toda_columna_con_reloj_en_hora_de_argentina_postgres`).
+
+## [v1.136.0] — El libro de cuenta corriente de terceros
 
 **Migración `0019_libro_de_terceros`**. ADR-026. Crea una tabla vacía: ningún producto la usa todavía.
 
