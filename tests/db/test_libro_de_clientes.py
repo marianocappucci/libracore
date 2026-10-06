@@ -258,3 +258,16 @@ def test_con_conn_el_asiento_sale_con_la_transaccion_de_quien_llama(base):
 
 def _asientos_en(c):
     return c.execute("SELECT id FROM cc_asientos WHERE origen IS NOT NULL").fetchall()
+
+
+def test_sin_la_tabla_del_libro_los_escritores_siguen_andando(base):
+    """LibraDesk arma a mano las tablas del motor que usa: su base puede no tener el libro."""
+    cid = clients.create_client("Acopio Sur", cuit_dni="20111111112")
+    with core.get_connection() as c:
+        c.execute("DROP TABLE cc_asientos")
+    pago = cuenta_corriente.create_cc_pago(cid, 300, "2026-10-05", "Pago", "", "efectivo", None, None)
+    cuenta_corriente.create_cc_debito(cid, 500, "2026-10-04", "Reserva")
+    cuenta_corriente.delete_cc_pago(pago)
+    assert cuenta_corriente.get_cc_saldo(cid) == 500
+    assert lc.reconstruir() == 0
+    assert lc.saldos_del_libro() == {}

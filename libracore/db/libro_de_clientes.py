@@ -167,9 +167,16 @@ def _importe(asiento: dict) -> float:
 
 def sincronizar(origen: str, *, ventas: OrigenVentas | None = None,
                 conn: Conexion | None = None) -> None:
-    """Deja el libro de acuerdo con el hecho `origen` (`cc_pago:12`). Idempotente."""
+    """Deja el libro de acuerdo con el hecho `origen` (`cc_pago:12`). Idempotente.
+
+    En una base sin `cc_asientos` no hace nada: un producto que arma a mano las tablas
+    del motor que usa (LibraDesk) no tiene por qué tener el libro, y su pago o su
+    débito no pueden fallar por eso.
+    """
     ventas = ventas or _origen_de_ventas
     with _con(conn) as c:
+        if not _existe_tabla(c, "cc_asientos"):
+            return
         esperado = _esperado(c, origen, ventas)
         vigente = _vigente(c, origen)
         if vigente is not None:
@@ -251,6 +258,8 @@ def reconstruir(ventas: OrigenVentas | None = None, *, conn: Conexion | None = N
     la segunda vez no escribe nada."""
     ventas = ventas or _origen_de_ventas
     with _con(conn) as c:
+        if not _existe_tabla(c, "cc_asientos"):
+            return 0
         antes = c.execute("SELECT COUNT(*) FROM cc_asientos").fetchone()[0]
         for origen in _todos_los_origenes(c, ventas):
             sincronizar(origen, ventas=ventas, conn=c)
@@ -261,6 +270,8 @@ def saldos_del_libro() -> dict[int, float]:
     """El saldo de cada cliente en el libro. Sólo los asientos de este módulo (con
     origen): LibraCargo lleva en la misma tabla su propia cuenta de clientes."""
     with get_connection() as c:
+        if not _existe_tabla(c, "cc_asientos"):
+            return {}
         filas = c.execute(
             "SELECT tercero_id, COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) FROM cc_asientos "
             "WHERE rol = ? AND origen IS NOT NULL GROUP BY tercero_id",

@@ -7,7 +7,11 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Unreleased] — La cuenta de clientes también como libro (propuesta: v1.137.0)
+## [Unreleased] — El libro de clientes no rompe una base sin `cc_asientos` (propuesta: v1.137.1)
+
+- **`libro_de_clientes.sincronizar`, `reconstruir` y `saldos_del_libro` no hacen nada en una base sin `cc_asientos`.** LibraDesk arma a mano las tablas del motor que usa, sin el libro, y con v1.137.0 su pago, su débito y su venta fiada fallaban con `relation "cc_asientos" does not exist` (lo encontró el CI de libradesk#482).
+
+## [v1.137.0] — La cuenta de clientes también como libro
 
 **Migración `0020_origen_del_asiento`**. ADR-027. Agrega una columna vacía y su índice: no toca filas. **La lectura del saldo no cambia**: sigue calculada.
 
