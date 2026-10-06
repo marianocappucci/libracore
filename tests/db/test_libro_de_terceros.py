@@ -82,8 +82,13 @@ def test_corregir_cambia_en_el_lugar_y_no_lo_que_es_otro_asiento(base):
     corregido = libro.corregir(a, debe=1800, concepto="Gasto 1 (corregido)")
     assert (corregido["debe"], corregido["concepto"]) == (1800, "Gasto 1 (corregido)")
     assert libro.saldo(7, "proveedor") == 1800
+    # Editar el documento puede mover el asiento a otra cuenta.
+    assert libro.corregir(a, rol="fletero", tercero_id=9)["rol"] == "fletero"
+    assert libro.saldo(9, "fletero") == 1800 and libro.saldo(7, "proveedor") == 0
     with pytest.raises(libro.AsientoInvalido, match="otro asiento"):
-        libro.corregir(a, rol="fletero")
+        libro.corregir(a, origen_legado="x")
+    with pytest.raises(libro.AsientoInvalido, match="rol"):
+        libro.corregir(a, rol=" ")
     with pytest.raises(libro.AsientoInvalido):
         libro.corregir(a, haber=100)  # quedaría con las dos columnas
 
@@ -103,6 +108,16 @@ def test_contraasentar_invierte_con_la_fecha_del_original_y_una_sola_vez(base):
     # Un hecho nuevo se revierte con su fecha.
     b = libro.asentar(3, "cliente", "2026-09-20", "Cobro", haber=500)
     assert libro.get_asiento(libro.contraasentar(b, fecha="2026-10-06"))["fecha"] == "2026-10-06"
+
+
+def test_borrar_saca_un_asiento_pero_no_uno_con_contrapartida(base):
+    a = libro.asentar(9, "fletero", "2026-10-01", "Flete orden 1", debe=300)
+    libro.borrar(a)
+    assert libro.get_asiento(a) is None
+    b = libro.asentar(9, "fletero", "2026-10-01", "Flete orden 2", debe=300)
+    libro.contraasentar(b)
+    with pytest.raises(libro.AsientoInvalido, match="tiene contrapartida"):
+        libro.borrar(b)
 
 
 def test_el_extracto_trae_el_saldo_anterior_y_el_corrido(base):

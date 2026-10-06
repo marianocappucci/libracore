@@ -524,7 +524,8 @@ Detalle en `docs/fce.md`.
 - **El tercero y el rol son del producto**: `tercero_id` no tiene FK y `rol` es texto. El motor no sabe qué es un fletero. Un producto con su tabla de terceros pone la FK en su propia tabla de vínculo.
 - La base sostiene que no haya signos negativos y que un asiento mueva una sola columna, salvo lo del legado.
 - **Corregir no es anular.**
-  - `corregir` cambia un asiento en el lugar. Es lo que hace un producto al editar el documento, y no deja cambiar el rol, el origen ni la contrapartida, porque eso es otro asiento.
+  - `corregir` cambia un asiento en el lugar, también de cuenta (tercero o rol). Es lo que hace un producto al editar el documento. No deja cambiar el origen en el legado ni de qué asiento es contrapartida, porque eso es otro asiento.
+  - `borrar` saca un asiento cuando el documento editado deja de mover la cuenta (un cobro sin tercero, una comisión en cero), pero no uno que tenga contrapartida.
   - `contraasentar` agrega el asiento inverso. Por defecto lleva la fecha del original, y un asiento se revierte una sola vez.
 - `saldo`, `extracto` (con saldo anterior y corrido) y `saldos`. Todas las funciones aceptan `conn=` (ADR-025).
 - El dinero entra en `COLUMNAS_DE_DINERO` (ADR-024).

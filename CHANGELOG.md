@@ -13,7 +13,7 @@ del ecosistema.
 
 - **Libro de cuenta corriente de terceros (ADR-026)**, opcional y aparte de la cuenta corriente de clientes, que sigue calculada como siempre.
   - Tabla `cc_asientos`: asientos de debe y haber por `(tercero_id, rol)`. El tercero y el rol son del producto, y no hay FK al tercero. El dinero va en `NUMERIC` en PostgreSQL.
-  - Funciones de `libracore.db.libro_de_terceros`: `asentar`, `corregir` (en el lugar, sólo los campos de `CORREGIBLES`), `contraasentar` (columnas invertidas, con la fecha del original por defecto y una sola vez), `saldo`, `extracto` (con saldo anterior y corrido) y `saldos`.
+  - Funciones de `libracore.db.libro_de_terceros`: `asentar`, `corregir` (en el lugar, sólo los campos de `CORREGIBLES`), `borrar` (no uno con contrapartida), `contraasentar` (columnas invertidas, con la fecha del original por defecto y una sola vez), `saldo`, `extracto` (con saldo anterior y corrido) y `saldos`.
   - Todas aceptan `conn=` para asentar dentro de la transacción del producto (ADR-025).
   - El primero en usarlo va a ser LibraCargo (etapa 5 del diseño).
 

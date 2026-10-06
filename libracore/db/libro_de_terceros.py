@@ -23,10 +23,12 @@ de quien llama y no confirman nada, así el producto asienta junto con su docume
 from libracore.db.core import Conexion
 from libracore.db.facturas import _con
 
-#: Lo que `corregir` deja cambiar. El rol, el origen en el legado y de qué asiento
-#: es contrapartida no se corrigen: cambiarlos es otro asiento.
-CORREGIBLES = frozenset({"fecha", "tercero_id", "concepto", "descripcion", "debe", "haber",
-                         "factura_id"})
+#: Lo que `corregir` deja cambiar: todo lo que cambia cuando se edita el documento
+#: que originó el asiento (también la cuenta: un cobro que pasa a ser de otro
+#: tercero, o de otro rol). El origen en el legado y de qué asiento es contrapartida
+#: no se corrigen: cambiarlos es otro asiento.
+CORREGIBLES = frozenset({"fecha", "tercero_id", "rol", "concepto", "descripcion", "debe",
+                         "haber", "factura_id"})
 
 
 class AsientoInvalido(ValueError):
@@ -82,12 +84,29 @@ def corregir(asiento_id: int, *, conn: Conexion | None = None, **campos) -> dict
         if actual is None:
             raise AsientoInvalido(f"No existe el asiento {asiento_id}.")
         nuevo = actual | campos
+        if not str(nuevo["rol"] or "").strip():
+            raise AsientoInvalido("El asiento necesita el rol de la cuenta (cliente, proveedor...).")
         _validar_importes(nuevo["debe"], nuevo["haber"], nuevo["origen_legado"])
         if campos:
             asignaciones = ", ".join(f"{k} = ?" for k in campos)
             c.execute(f"UPDATE cc_asientos SET {asignaciones} WHERE id = ?",
                       (*campos.values(), asiento_id))
         return get_asiento(asiento_id, conn=c)
+
+
+def borrar(asiento_id: int, *, conn: Conexion | None = None) -> None:
+    """Saca un asiento. Es lo que corresponde cuando el documento que lo originó **deja de
+    mover la cuenta** al editarlo (un cobro que se queda sin tercero, una comisión que
+    pasa a cero): un asiento de $0 no significa nada, y la base no lo admite.
+
+    🔴 **No es la forma de anular.** Algo que ya pasó se revierte con `contraasentar`.
+    Un asiento que tiene contrapartida no se borra: dejaría la reversión sin original.
+    """
+    with _con(conn) as c:
+        if c.execute("SELECT 1 FROM cc_asientos WHERE contrapartida_de = ?",
+                     (asiento_id,)).fetchone():
+            raise AsientoInvalido(f"El asiento {asiento_id} tiene contrapartida: no se borra.")
+        c.execute("DELETE FROM cc_asientos WHERE id = ?", (asiento_id,))
 
 
 def contraasentar(asiento_id: int, *, fecha: str | None = None, concepto: str | None = None,
