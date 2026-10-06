@@ -7,6 +7,10 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El membrete del PDF acepta el logo como contenido (propuesta: v1.140.1)
+
+- **`pdf_generator`: el `empresa` de un PDF acepta `logo_bytes`** (el contenido de la imagen) además de `logo_path`. Si vienen los dos, gana el contenido. Lo necesita un producto que guarda el logo en su base y no en el disco del contenedor: LibraCargo, cuyos PDF salían con el cuadrito de iniciales aunque la instancia tenía el logo cargado (reportado por el humano en Suitrans, 2026-10-06). Sin cambios para quien pasa `logo_path` o usa el de `config_manager`.
+
 ## [Unreleased] — La pre factura: un comprobante por facturar que el cliente ve antes (propuesta: v1.140.0)
 
 **Migración `0021_pre_factura`**. ADR-030. Agrega ocho columnas vacías a `comprobantes_pendientes` y un índice único parcial: no toca filas. Sin cambio de comportamiento para quien no use la pre factura.
