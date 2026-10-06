@@ -572,3 +572,24 @@ Detalle en `docs/fce.md`.
 - Quien escriba las tablas de la cuenta con SQL propio sin llamar a `sincronizar` deja de verse con el interruptor encendido hasta que corra `reconstruir()`: es lo que la sombra ya mostraba en `comparar()`.
 - Lo que el cálculo ve y el libro no (un hecho de importe cero, un CUIT de dos clientes, un CUIT que cambió después de asentar la deuda: ADR-027) es la semántica nueva, y `comparar()` lo mostraba.
 - La etapa B4 retira el cálculo (`*_calculado`) y este interruptor: el libro pasa a ser la única lectura.
+
+
+## ADR-029 — El libro es la única lectura de la cuenta de clientes
+
+**Contexto.** La etapa B3 (ADR-028) dejó las cuatro lecturas de la cuenta de clientes detrás de `LIBRACORE_CC_DESDE_EL_LIBRO`, con el cálculo como respaldo. En todas las instancias el libro da cero diferencias contra el cálculo y el interruptor se enciende en producción. Es la etapa B4 de la opción B: ya no hay contra qué comparar ni a qué volver.
+
+**Decisión.**
+- `get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` y `get_clientes_con_saldo_cc` leen **siempre** del libro `cc_asientos` (`libro_de_clientes.saldo_de`, `movimientos_de` y `clientes_con_saldo`).
+- Se retiran el interruptor (`lee_del_libro`, `VARIABLE_LECTURA` y la variable `LIBRACORE_CC_DESDE_EL_LIBRO`, que pasa a no hacer nada), el cálculo (`get_cc_saldo_calculado`, `get_cc_movimientos_calculados`, `get_clientes_con_saldo_calculado` y las consultas de las cuatro patas) y `libro_de_clientes.comparar` (ya no hay contra qué).
+- Quedan `sincronizar`, `sincronizar_cliente`, `reconstruir`, `saldos_del_libro`, `registrar_origen_de_ventas` y las lecturas. `get_facturas_pendientes_cc` no cambia: sigue por factura (ADR-018).
+- Las funciones públicas siguen aceptando `origen: OrigenVentas = VENTAS_LIBRACORE`, porque los productos lo pasan. **Ya no decide el saldo**: el libro lo usa para completar el número de cada venta fiada en los movimientos (`Venta #POS-7`; si la tabla de ventas del origen no está, sale con el concepto del asiento, `Venta POS-7`). `OrigenVentas` y sus constantes se quedan: el libro las usa para asentar las ventas fiadas.
+- **Una base sin `cc_asientos` no tiene de dónde leer**: las cuatro lecturas tiran `RuntimeError`, con un mensaje que dice que falta la tabla del libro y que corra la migración `0020` (o `init_core_schema`). Leer de un libro que no existe daría saldos en cero, en silencio. `sincronizar` y `reconstruir` siguen sin hacer nada sin la tabla: un pago o un débito no pueden fallar por eso (ADR-027, v1.137.1).
+- **El tipo y el signo de un movimiento salen de la fila del hecho, no de la columna del asiento.** `cc_debito:*`, `venta_pago:*` y `caja_mov:*` son débitos con el monto de su fila, y `cc_pago:*` es un crédito con el monto de su fila, con su signo. Es lo que mostraba el cálculo: LibraDesk registra la anulación de un remito como un `cc_debito` de −18150, que `_hecho` asienta al haber, y la lista (y `total_debitos`/`total_creditos` del período) lo seguía mostrando como un débito de −18150, no como un crédito de 18150. El saldo da igual de las dos formas. **No cambia cómo se asienta**, sólo la lectura. Si la fila del hecho ya no existe, el movimiento sale como lo dice el asiento.
+- **Los borrados físicos de pagos y débitos no se convierten en anulaciones.** Era una opción para dejar rastro, pero el libro ya lo guarda: `delete_cc_pago` y `delete_cc_debito` llaman a `sincronizar`, que revierte el asiento con la fecha del original. Decisión tomada el 2026-10-06.
+
+**Consecuencias.**
+- **Lo cargado por fuera de los escritores del motor no se ve hasta `reconstruir`.** Un `INSERT` propio en `cc_pagos`, `cc_debitos`, `ventas_pagos` o `caja_movimientos` no asienta nada; el saldo no lo suma y el movimiento no aparece. Es lo que hace un deploy (`libro_de_clientes.reconstruir(origen)`), y lo que tiene que hacer un test de un producto que carga con SQL crudo antes de leer el saldo. Un borrado propio, igual: el asiento sigue hasta que `reconstruir` lo revierta.
+- El `origen` con que se asienta una venta fiada es el del producto y es uno por base: `reconstruir(origen)` con otro origen asienta (o revierte) otras ventas. Un cliente ya asentado no se mueve (ADR-027).
+- Un producto que arma a mano las tablas del motor sin `cc_asientos` (LibraDesk) tiene que agregarla antes de subir a esta versión, o sus lecturas de la cuenta de clientes fallan.
+- Lo que el cálculo veía y el libro no (un hecho de importe cero, un CUIT de dos clientes, un CUIT que cambió después de asentar la deuda) es la semántica del libro desde ADR-027.
+- Se pierde la forma de volver al cálculo con una variable. Para volver hay que desplegar la versión anterior.

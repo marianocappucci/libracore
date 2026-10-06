@@ -1,10 +1,12 @@
-"""La cuenta corriente de clientes, llevada también como libro (opción B, etapa B1).
+"""La cuenta corriente de clientes, llevada como libro (opción B, etapas B1 a B4).
 
-El saldo de un cliente se **lee calculado** (`cuenta_corriente.get_cc_saldo`, desde
-ventas fiadas, facturas cobradas a cuenta, débitos y pagos) salvo que la instancia
-encienda `LIBRACORE_CC_DESDE_EL_LIBRO` (etapa B3, ADR-028). Este módulo lo lleva
-además en el libro de terceros (`cc_asientos`, ADR-026), con rol `cliente` y
-`tercero_id = clients.id`, para poder comparar los dos y pasar las lecturas al libro
+El saldo de un cliente se **lee siempre de este libro** (ADR-029): `cuenta_corriente.get_cc_saldo`,
+`get_cc_movimientos`, `get_cc_movimientos_periodo` y `get_clientes_con_saldo_cc` responden
+con `saldo_de`, `movimientos_de` y `clientes_con_saldo`. Hasta v1.138.0 se calculaban desde
+los documentos (ventas fiadas, facturas cobradas a cuenta, débitos y pagos) y una variable
+de entorno decidía; el cálculo, el interruptor y `comparar()` se retiraron cuando el libro
+dio cero diferencias en todas las instancias. Este módulo lleva la cuenta en el libro de
+terceros (`cc_asientos`, ADR-026), con rol `cliente` y `tercero_id = clients.id`
 (`wiki/analyses/libro-de-terceros-para-la-familia-diseno.md`).
 
 **Un hecho, un origen.** Cada asiento dice de qué hecho viene, como `tabla:id`:
@@ -16,41 +18,46 @@ además en el libro de terceros (`cc_asientos`, ADR-026), con rol `cliente` y
 | `caja_mov:<id>` | es un ingreso a cuenta corriente, con factura, no anulado, y el CUIT de la factura es de un cliente | debe |
 | `venta_pago:<id>` | es un pago con medio `cuenta_corriente` de una venta de un cliente (según el `OrigenVentas` del producto) | debe |
 
-Es el mismo criterio que `get_cc_saldo`, hecho por hecho.
+Es el criterio de siempre de la cuenta de clientes (ventas fiadas + facturas a cuenta
++ débitos − pagos), aplicado hecho por hecho.
 
 **`sincronizar(origen)` es lo único que escribe.** Mira si el hecho cuenta hoy y
 qué asiento vigente tiene, y deja el libro de acuerdo:
 - si cuenta y no tiene asiento, lo asienta;
 - si dejó de contar (se borró, se anuló), lo revierte con `contraasentar`, con la
-  fecha del original: el cálculo lo saca entero, y el libro tiene que dar lo mismo
-  en cualquier período;
+  fecha del original: el libro lo saca entero y da lo mismo en cualquier período;
 - si cambió el importe, revierte y vuelve a asentar.
 
 Es idempotente: los escritores del motor la llaman después de cada cambio, en su
 misma transacción (`conn=`), y `reconstruir()` la corre sobre todos los hechos.
 
+🔑 **Lo cargado por fuera de los escritores no se ve** hasta que se corre
+`reconstruir(origen)`: un `INSERT` propio en `cc_pagos`, `cc_debitos`, `ventas_pagos` o
+`caja_movimientos` no asienta nada. Es lo que hace un deploy, y lo que tiene que
+hacer un test que carga con SQL crudo antes de leer el saldo. Los borrados físicos de
+pagos y débitos no se convirtieron en anulaciones (ADR-029): el libro ya guarda la
+reversión.
+
 🔑 **El cliente de un hecho se fija la primera vez que se asienta** (decisión del
-humano, 2026-10-06). Si después le cambian el CUIT a un cliente, el cálculo le pasa
-hacia atrás la deuda de las facturas de ese CUIT; el libro no la mueve. Para
+humano, 2026-10-06). Si después le cambian el CUIT a un cliente, el libro no le mueve la
+deuda de las facturas de ese CUIT (el cálculo de antes la pasaba hacia atrás). Para
 corregir un CUIT mal cargado se hace un asiento de traspaso explícito.
-`comparar()` muestra esas diferencias.
 
-Un CUIT de factura que es de dos clientes a la vez no se asienta a ninguno: el
-cálculo le suma la deuda a los dos, y elegir uno sería inventar.
+Un CUIT de factura que es de dos clientes a la vez no se asienta a ninguno: elegir uno
+sería inventar.
 
-## Las lecturas desde el libro (etapa B3, ADR-028)
+## Las lecturas (etapas B3 y B4, ADR-028 y ADR-029)
 
-`lee_del_libro()` es el interruptor, por instancia: la variable de entorno
-`LIBRACORE_CC_DESDE_EL_LIBRO` en `1`, `true`, `si` o `sí`. Apagada (lo normal), todo
-se lee calculado, como siempre. Encendida, `saldo_de`, `movimientos_de` y
-`clientes_con_saldo` responden `get_cc_saldo`, `get_cc_movimientos` (y con él
-`get_cc_movimientos_periodo`) y `get_clientes_con_saldo_cc`, con la misma forma. Una
-base sin `cc_asientos` lee calculado aunque esté encendida. `get_facturas_pendientes_cc`
-no cambia: sigue por factura (ADR-018).
+`saldo_de`, `movimientos_de` y `clientes_con_saldo` son las únicas lecturas de la cuenta de
+clientes. Sin la tabla `cc_asientos` tiran `RuntimeError` (falta correr la migración `0020`
+o `init_core_schema`): leer de un libro que no existe daría saldos en cero, en silencio.
+`sincronizar` y `reconstruir`, en cambio, siguen sin hacer nada sin la tabla: un producto
+que arma a mano las tablas del motor que usa no puede fallar al escribir por eso.
+`get_facturas_pendientes_cc` no cambia: sigue por factura (ADR-018).
 
 🔑 **Un hecho revertido no se muestra**: ni el asiento original ni su contrapartida
-entran en la lista de movimientos. Es lo que ve el cálculo, que no encuentra lo
-borrado ni lo anulado. El saldo no necesita esa regla: el original y su reversión se
+entran en la lista de movimientos: lo borrado o anulado no es un movimiento de la
+cuenta. El saldo no necesita esa regla: el original y su reversión se
 cancelan. La reversión de un asiento sigue estando en el libro para quien quiera
 reconstruir la cuenta como estaba.
 
@@ -58,8 +65,6 @@ Cada movimiento sale de su asiento vigente: la fecha, el signo y el monto son lo
 asiento, y el `origen` (`cc_pago:12`) dice qué fila leer para completar lo demás (el
 concepto, la referencia, el usuario, los ids que usa la pantalla).
 """
-import os
-
 from libracore.db import libro_de_terceros as libro
 from libracore.db.caja import MEDIOS_CUENTA_CORRIENTE, sql_es_cuenta_corriente, sql_no_anulado
 from libracore.db.core import Conexion, get_connection
@@ -67,15 +72,10 @@ from libracore.db.cuenta_corriente import (
     _TIPO_LABEL,
     VENTAS_LIBRACORE,
     OrigenVentas,
-    get_cc_saldo_calculado,
 )
 from libracore.db.facturas import _con
 
 ROL = "cliente"
-
-#: La variable de entorno que pasa las lecturas de la cuenta de clientes al libro.
-VARIABLE_LECTURA = "LIBRACORE_CC_DESDE_EL_LIBRO"
-_VERDADEROS = frozenset({"1", "true", "si", "sí"})
 
 _origen_de_ventas: OrigenVentas = VENTAS_LIBRACORE
 
@@ -85,7 +85,7 @@ def registrar_origen_de_ventas(origen: OrigenVentas) -> None:
 
     `build_cuenta_corriente_router` lo registra con el `origen` que recibe. Un
     producto que no monta ese router y fía ventas desde `ventas_pagos` lo llama al
-    arrancar. Sin registro, `VENTAS_LIBRACORE`, el mismo default que el cálculo.
+    arrancar. Sin registro, `VENTAS_LIBRACORE`.
     """
     global _origen_de_ventas
     _origen_de_ventas = origen
@@ -239,7 +239,7 @@ def sincronizar_cliente(cliente_id: int, *, ventas: OrigenVentas | None = None,
 
     Lo llaman el alta y la edición de un cliente: una factura emitida antes de que
     su CUIT tuviera cliente, o una venta de un party que recién ahora se enlaza
-    (VentaLibra), empiezan a contar en el cálculo. Lo ya asentado a otro cliente no
+    (VentaLibra), empiezan a contar. Lo ya asentado a otro cliente no
     se mueve (ver el docstring del módulo).
     """
     ventas = ventas or _origen_de_ventas
@@ -310,37 +310,17 @@ def saldos_del_libro() -> dict[int, float]:
     return {f[0]: round(float(f[1] or 0), 2) for f in filas}
 
 
-def comparar(ventas: OrigenVentas | None = None) -> list[dict]:
-    """Los clientes cuyo saldo en el libro no es el calculado:
-    `[{cliente_id, libro, calculado, diferencia}]`. Vacío es lo que se busca."""
-    ventas = ventas or _origen_de_ventas
-    del_libro = saldos_del_libro()
-    with get_connection() as c:
-        ids = {f[0] for f in c.execute("SELECT id FROM clients").fetchall()}
-    diferencias = []
-    for cliente_id in sorted(ids | set(del_libro)):
-        calculado = round(get_cc_saldo_calculado(cliente_id, ventas), 2) if cliente_id in ids else 0.0
-        en_libro = del_libro.get(cliente_id, 0.0)
-        if abs(en_libro - calculado) >= 0.005:
-            diferencias.append({"cliente_id": cliente_id, "libro": en_libro, "calculado": calculado,
-                                "diferencia": round(en_libro - calculado, 2)})
-    return diferencias
+# --- Las lecturas (etapas B3 y B4, ADR-028 y ADR-029) ---
 
 
-# --- Las lecturas desde el libro (etapa B3, ADR-028) ---
-
-
-def lee_del_libro() -> bool:
-    """Si esta instancia lee la cuenta de clientes del libro y no del cálculo.
-
-    Hace falta la variable `LIBRACORE_CC_DESDE_EL_LIBRO` encendida **y** que la base tenga
-    `cc_asientos`: LibraDesk arma a mano las tablas del motor que usa, sin el libro, y
-    ahí se lee calculado aunque la variable diga otra cosa.
-    """
-    if os.environ.get(VARIABLE_LECTURA, "").strip().lower() not in _VERDADEROS:
-        return False
-    with get_connection() as c:
-        return _existe_tabla(c, "cc_asientos")
+def _exigir_libro(c) -> None:
+    """Las lecturas no tienen otra fuente: sin `cc_asientos` no hay cuenta que leer."""
+    if not _existe_tabla(c, "cc_asientos"):
+        raise RuntimeError(
+            "Falta la tabla del libro de la cuenta de clientes (cc_asientos): la cuenta "
+            "corriente se lee del libro (ADR-029). Corré la migración 0020 o "
+            "init_core_schema, y después libro_de_clientes.reconstruir()."
+        )
 
 
 #: El asiento que cuenta: un original que nadie revirtió. Ni la contrapartida ni el
@@ -356,6 +336,7 @@ def saldo_de(cliente_id: int) -> float:
     cero, pero con flotantes no siempre al bit.
     """
     with get_connection() as c:
+        _exigir_libro(c)
         fila = c.execute(
             "SELECT COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) FROM cc_asientos "
             "WHERE rol = ? AND tercero_id = ? AND origen IS NOT NULL", (ROL, cliente_id)).fetchone()
@@ -378,16 +359,21 @@ def movimientos_de(cliente_id: int, ventas: OrigenVentas | None = None) -> list[
     """Los movimientos del cliente desde el libro, con la forma de `get_cc_movimientos`.
 
     Un movimiento por asiento vigente (un hecho revertido no se muestra, ver el
-    docstring del módulo). El orden es el del cálculo: por fecha, y a igual fecha
-    primero las ventas, después las facturas, los débitos y los pagos, cada uno por id.
+    docstring del módulo). El orden: por fecha, y a igual fecha primero las ventas,
+    después las facturas, los débitos y los pagos, cada uno por id. `ventas` dice dónde
+    están las ventas de este producto, para completar el número de cada venta fiada.
 
     Lo que el asiento no dice (concepto, referencia, usuario, los ids de la pantalla) se
-    lee de la fila del hecho, la que nombra el `origen`. Si esa fila ya no existe (se
-    borró con SQL propio y nadie sincronizó), el movimiento sigue: el libro dice que la
-    plata cuenta. Sale con el concepto del asiento y sin los ids.
+    lee de la fila del hecho, la que nombra el `origen`. También el **tipo y el monto con
+    su signo**: un `cc_debito` de monto negativo (la anulación de un remito en LibraDesk)
+    es un débito de −18150, aunque el asiento lo haya llevado al haber; un `cc_pago` es
+    siempre un crédito. Si esa fila ya no existe (se borró con SQL propio y nadie
+    sincronizó), el movimiento sigue: el libro dice que la plata cuenta. Sale con el
+    concepto, el tipo y el monto del asiento, y sin los ids.
     """
     ventas = ventas or _origen_de_ventas
     with get_connection() as c:
+        _exigir_libro(c)
         asientos = c.execute(
             "SELECT a.fecha, a.concepto, a.debe, a.haber, a.origen FROM cc_asientos a "
             f"WHERE a.rol = ? AND a.tercero_id = ? AND a.origen IS NOT NULL AND {_SQL_VIGENTE}",
@@ -399,23 +385,23 @@ def movimientos_de(cliente_id: int, ventas: OrigenVentas | None = None) -> list[
 
         hay_ventas = _existe_tabla(c, _tabla_de_ventas(ventas))
         ventas_pagos = _filas_por_id(
-            c, f"SELECT vp.id AS id, v.{ventas.columna_numero} AS numero, v.id AS venta_id "
+            c, f"SELECT vp.id AS id, vp.monto, v.{ventas.columna_numero} AS numero, v.id AS venta_id "
                f"FROM ventas_pagos vp JOIN {ventas.tabla} v ON vp.venta_id = v.id "
                "WHERE vp.id IN (__IDS__)",
             por_tipo.get("venta_pago", {})) if hay_ventas else {}
         # Un movimiento anulado con SQL propio y sin sincronizar sale con el concepto de su
         # asiento y sin los ids: la fila del hecho no se lee anulada (`sql_no_anulado`).
         cajas = _filas_por_id(
-            c, "SELECT cm.id AS id, f.tipo AS ftipo, f.punto_venta, f.numero, f.id AS factura_id, "
+            c, "SELECT cm.id AS id, cm.monto, f.tipo AS ftipo, f.punto_venta, f.numero, f.id AS factura_id, "
                "cm.referencia, u.nombre AS usuario_nombre FROM caja_movimientos cm "
                "JOIN facturas f ON cm.factura_id = f.id LEFT JOIN usuarios u ON u.id = cm.usuario_id "
                f"WHERE cm.id IN (__IDS__) AND {sql_no_anulado('cm')}", por_tipo.get("caja_mov", {}))
         debitos = _filas_por_id(
-            c, "SELECT d.id AS id, d.concepto, d.referencia, u.nombre AS usuario_nombre "
+            c, "SELECT d.id AS id, d.monto, d.concepto, d.referencia, u.nombre AS usuario_nombre "
                "FROM cc_debitos d LEFT JOIN usuarios u ON u.id = d.usuario_id WHERE d.id IN (__IDS__)",
             por_tipo.get("cc_debito", {}))
         pagos = _filas_por_id(
-            c, "SELECT p.id AS id, p.concepto, p.referencia, p.medio_pago, u.nombre AS usuario_nombre "
+            c, "SELECT p.id AS id, p.monto, p.concepto, p.referencia, p.medio_pago, u.nombre AS usuario_nombre "
                "FROM cc_pagos p LEFT JOIN usuarios u ON u.id = p.usuario_id WHERE p.id IN (__IDS__)",
             por_tipo.get("cc_pago", {}))
 
@@ -433,6 +419,12 @@ def movimientos_de(cliente_id: int, ventas: OrigenVentas | None = None) -> list[
             r = {"venta_pago": ventas_pagos, "caja_mov": cajas, "cc_debito": debitos,
                  "cc_pago": pagos}[tipo_origen].get(id_)
             if r is not None:
+                # El tipo y el signo son los de la fila del hecho, no los de la columna del
+                # asiento: un débito de −18150 (la anulación de un remito en LibraDesk) se
+                # asienta al haber, pero es un débito de monto negativo, como lo mostraba el
+                # cálculo. Los pagos son créditos; lo demás, débitos.
+                mov |= {"tipo": "credito" if tipo_origen == "cc_pago" else "debito",
+                        "monto": float(r["monto"])}
                 if tipo_origen == "venta_pago":
                     mov |= {"concepto": f"Venta #{r['numero']}", "venta_id": r["venta_id"]}
                 elif tipo_origen == "caja_mov":
@@ -459,10 +451,11 @@ def clientes_con_saldo() -> list[dict]:
     `get_clientes_con_saldo_cc`: `id`, `name`, `cuit_dni`, `external_ref` y `saldo`.
 
     Aparece quien tiene al menos un asiento vigente, aunque su saldo sea cero: es el
-    criterio del cálculo (quien tiene alguna venta, factura, débito o pago). Orden: saldo
+    criterio de siempre (quien tiene alguna venta, factura, débito o pago). Orden: saldo
     de mayor a menor y, a igual saldo, por nombre.
     """
     with get_connection() as c:
+        _exigir_libro(c)
         filas = c.execute(
             "WITH sal AS ("
             " SELECT tercero_id AS cid, COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) AS saldo "

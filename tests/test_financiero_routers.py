@@ -18,6 +18,7 @@ from libracore.cuenta_corriente_router import (
 )
 from libracore.dashboard_router import build_dashboard_router
 from libracore.db import core
+from libracore.db.cuenta_corriente import create_cc_debito
 from libracore.db.schema import init_core_schema
 from libracore.egresos_router import build_egresos_router, build_proveedores_router
 from libracore.tesoreria_router import build_tesoreria_router
@@ -218,9 +219,8 @@ def test_tesoreria_los_saldos(client):
 
 def _cliente_con_deuda(client, monto=1000.0):
     cid = client.post("/api/clientes", json={"name": "Deudor"}).json()["id"]
-    with core.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO cc_debitos (cliente_id, monto, fecha, concepto) VALUES (?, ?, ?, 'Fiado')", (cid, monto, HOY))
+    # Por el escritor del motor, que lo lleva al libro: la cuenta se lee de ahí (ADR-029).
+    create_cc_debito(cid, monto, HOY, "Fiado")
     return cid
 
 

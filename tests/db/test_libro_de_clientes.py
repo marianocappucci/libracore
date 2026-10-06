@@ -1,13 +1,15 @@
-"""La cuenta de clientes también como libro (`libracore.db.libro_de_clientes`, opción B, etapa B1).
+"""La cuenta de clientes como libro (`libracore.db.libro_de_clientes`, opción B, etapas B1 a B4).
 
 Lo que se fija acá, contra los dos motores:
 - cada escritor del motor deja su asiento, en su transacción, y lo revierte con la
   fecha del original cuando el hecho deja de contar (borrar, anular);
-- el saldo del libro da lo mismo que el calculado (`comparar` vacío);
-- `reconstruir` llena el libro desde los hechos, y repetirlo no escribe nada;
+- el saldo que se lee (`get_cc_saldo`) es el del libro, y suma las cuatro fuentes;
+- `reconstruir` llena el libro desde los hechos, y repetirlo no escribe nada: lo cargado
+  con SQL propio no se ve hasta que se corre (ADR-029);
 - el cliente de un hecho se fija la primera vez: cambiar el CUIT no mueve la deuda;
 - un CUIT de dos clientes no se asienta a ninguno;
-- la cuenta de clientes de LibraCargo, que vive en la misma tabla sin origen, no entra.
+- la cuenta de clientes de LibraCargo, que vive en la misma tabla sin origen, no entra;
+- sin la tabla del libro, los escritores siguen andando y las lecturas tiran un error claro.
 """
 import os
 
@@ -69,7 +71,7 @@ def _venta_fiada(cliente_id, monto, fecha="2026-10-02", numero="V-1"):
     return venta_id
 
 
-def test_las_cuatro_fuentes_dan_el_mismo_saldo_que_el_calculo(base):
+def test_las_cuatro_fuentes_suman_al_saldo_del_libro(base):
     cid = clients.create_client("Acopio Sur", cuit_dni="20-11111111-2")
     _venta_fiada(cid, 1000)
     fid = _factura("20111111112", 500)
@@ -80,7 +82,6 @@ def test_las_cuatro_fuentes_dan_el_mismo_saldo_que_el_calculo(base):
 
     assert cuenta_corriente.get_cc_saldo(cid) == 1450
     assert lc.saldos_del_libro() == {cid: 1450}
-    assert lc.comparar() == []
     assert [a["origen"].split(":")[0] for a in _asientos()] == ["venta_pago", "caja_mov",
                                                                  "cc_debito", "cc_pago"]
     pago = _asientos()[-1]
@@ -106,7 +107,7 @@ def test_borrar_y_anular_revierten_con_la_fecha_del_original(base):
         assert reversion["fecha"] == fecha
     assert cuenta_corriente.get_cc_saldo(cid) == 0
     assert lc.saldos_del_libro() == {cid: 0}
-    assert lc.comparar() == []
+    assert cuenta_corriente.get_cc_movimientos(cid) == []
     # Volver a sincronizar no hace nada: ya está revertido.
     assert lc.reconstruir() == 0
 
@@ -157,19 +158,25 @@ def test_reconstruir_llena_el_libro_desde_los_hechos_y_repetirlo_no_escribe(base
                   "VALUES (50, 'V-50', '2026-08-04 10:30', ?, '[]', 40)", (cid,))
         c.execute("INSERT INTO ventas_pagos (venta_id, medio, monto) VALUES (50, 'cuenta_corriente', 40)")
     assert _asientos() == []
+    # Sin pasar por los escritores no hay asientos: la cuenta no los ve (ADR-029).
+    assert cuenta_corriente.get_cc_saldo(cid) == 0
+    assert cuenta_corriente.get_cc_movimientos(cid) == []
 
     assert lc.reconstruir() == 4
     assert lc.reconstruir() == 0
-    assert lc.comparar() == []
     assert lc.saldos_del_libro() == {cid: 500}
+    assert cuenta_corriente.get_cc_saldo(cid) == 500
+    assert [m["concepto"] for m in cuenta_corriente.get_cc_movimientos(cid)] == [
+        "p", "d", "FACTURA C 0001-00000001", "Venta #V-50"]
     assert _asientos("venta_pago:1")[0]["fecha"] == "2026-08-04"
 
-    # Un pago borrado con SQL propio: `reconstruir` lo revierte.
+    # Un pago borrado con SQL propio: el libro lo sigue mostrando hasta que `reconstruir`
+    # lo revierte.
     with core.get_connection() as c:
         c.execute("DELETE FROM cc_pagos")
-    assert lc.comparar() == [{"cliente_id": cid, "libro": 500, "calculado": 620, "diferencia": -120}]
+    assert cuenta_corriente.get_cc_saldo(cid) == 500
     assert lc.reconstruir() == 1
-    assert lc.comparar() == []
+    assert cuenta_corriente.get_cc_saldo(cid) == 620
 
 
 def test_el_cliente_de_una_deuda_se_fija_la_primera_vez(base):
@@ -181,10 +188,12 @@ def test_el_cliente_de_una_deuda_se_fija_la_primera_vez(base):
 
     clients.update_client(a, cuit_dni="20999999990")
 
-    # El cálculo se la saca; el libro la deja donde se asentó.
-    assert cuenta_corriente.get_cc_saldo(a) == 0
+    # El libro la deja donde se asentó (el cálculo de antes se la sacaba), y reconstruir
+    # tampoco la mueve.
+    assert cuenta_corriente.get_cc_saldo(a) == 500
     assert lc.saldos_del_libro() == {a: 500}
-    assert lc.comparar() == [{"cliente_id": a, "libro": 500, "calculado": 0, "diferencia": 500}]
+    assert lc.reconstruir() == 0
+    assert cuenta_corriente.get_cc_saldo(a) == 500
 
 
 def test_una_factura_sin_cliente_se_asienta_cuando_su_cuit_tiene_cliente(base):
@@ -196,7 +205,7 @@ def test_una_factura_sin_cliente_se_asienta_cuando_su_cuit_tiene_cliente(base):
     cid = clients.create_client("Llegó después", cuit_dni="20111111112")
 
     assert [a["origen"] for a in _asientos()] == [f"caja_mov:{mov}"]
-    assert lc.comparar() == []
+    assert cuenta_corriente.get_cc_saldo(cid) == 500
     otro = clients.create_client("Otro")
     clients.update_client(otro, cuit_dni="20222222223")
     assert lc.saldos_del_libro() == {cid: 500}
@@ -210,8 +219,10 @@ def test_un_cuit_de_dos_clientes_no_se_asienta_a_ninguno(base):
     caja.create_caja_movimiento("2026-10-03", "ingreso", "F1", 500, factura_id=fid,
                                 medio_pago="cuenta_corriente")
     assert _asientos() == []
-    # El cálculo le suma la deuda a los dos: `comparar` lo muestra.
-    assert [d["calculado"] for d in lc.comparar()] == [500, 500]
+    # Elegir uno sería inventar: la deuda no está en la cuenta de ninguno, ni siquiera al reconstruir.
+    assert lc.reconstruir() == 0
+    assert lc.saldos_del_libro() == {}
+    assert cuenta_corriente.get_clientes_con_saldo_cc() == []
 
 
 def test_las_ventas_fiadas_salen_del_origen_registrado(base):
@@ -232,7 +243,10 @@ def test_las_ventas_fiadas_salen_del_origen_registrado(base):
 
         assert [(a["fecha"], a["concepto"], a["debe"]) for a in _asientos()] == [
             ("2026-10-02", "Venta POS-7", 640)]
-        assert lc.comparar() == []
+        # El `origen` que se lee es el que dice dónde están las ventas: completa el número.
+        assert cuenta_corriente.get_cc_saldo(cid, VENTAS_LIBRACOMMERCE) == 640
+        assert [(m["concepto"], m["venta_id"]) for m in
+                cuenta_corriente.get_cc_movimientos(cid, VENTAS_LIBRACOMMERCE)] == [("Venta #POS-7", 7)]
     finally:
         lc.registrar_origen_de_ventas(VENTAS_LIBRACORE)
 
@@ -241,7 +255,7 @@ def test_la_cuenta_de_libracargo_en_la_misma_tabla_no_entra(base):
     """LibraCargo asienta con rol `cliente` y sin origen, sobre sus propios terceros."""
     libro.asentar(1, "cliente", "2026-10-01", "Factura de flete", debe=9000)
     assert lc.saldos_del_libro() == {}
-    assert lc.comparar() == []
+    assert cuenta_corriente.get_cc_saldo(1) == 0
     assert lc.reconstruir() == 0
 
 
@@ -268,6 +282,21 @@ def test_sin_la_tabla_del_libro_los_escritores_siguen_andando(base):
     pago = cuenta_corriente.create_cc_pago(cid, 300, "2026-10-05", "Pago", "", "efectivo", None, None)
     cuenta_corriente.create_cc_debito(cid, 500, "2026-10-04", "Reserva")
     cuenta_corriente.delete_cc_pago(pago)
-    assert cuenta_corriente.get_cc_saldo(cid) == 500
     assert lc.reconstruir() == 0
     assert lc.saldos_del_libro() == {}
+
+
+def test_sin_la_tabla_del_libro_las_lecturas_dicen_que_falta(base):
+    """Leer de un libro que no existe daría saldos en cero, en silencio: mejor un error claro."""
+    cid = clients.create_client("Acopio Sur", cuit_dni="20111111112")
+    with core.get_connection() as c:
+        c.execute("DROP TABLE cc_asientos")
+    lecturas = (
+        lambda: cuenta_corriente.get_cc_saldo(cid),
+        lambda: cuenta_corriente.get_cc_movimientos(cid),
+        lambda: cuenta_corriente.get_cc_movimientos_periodo(cid, "2026-10-01", "2026-10-31"),
+        lambda: cuenta_corriente.get_clientes_con_saldo_cc(),
+    )
+    for leer in lecturas:
+        with pytest.raises(RuntimeError, match=r"cc_asientos.*0020.*init_core_schema"):
+            leer()

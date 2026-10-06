@@ -10,6 +10,11 @@ pasarlo— seguiría con esa suite en verde. Este archivo cierra ese hueco:
 ejecuta el mismo escenario de VentaLibra de
 `tests/db/test_cuenta_corriente_external_ref.py` (parties cuyo id no coincide
 con el `clients.id`, enlazados por `external_ref`) a través de `cc_resumen`.
+
+Desde ADR-029 el saldo sale del libro, así que las ventas que se cargan acá con
+SQL propio se ven después de `reconstruir(origen)` (lo que hace un deploy), y el
+`origen` que se pasa a la lectura ya no decide el saldo: sólo completa el número
+de cada venta (`Venta #V-ANA`, y sin él, `Venta V-ANA`, el concepto del asiento).
 """
 import datetime
 
@@ -17,6 +22,7 @@ import pytest
 
 from libracore import cc_resumen, config_manager
 from libracore.db import clients, core
+from libracore.db import libro_de_clientes as lc
 from libracore.db.cuenta_corriente import VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF
 
 HOY = datetime.date(2026, 8, 3)
@@ -69,6 +75,11 @@ def _venta_a_party(conn, party_id, monto, numero="S-1", fecha="2026-07-20"):
     )
     conn.commit()
     return venta_id
+
+
+def _al_libro():
+    """Lo que hace un deploy con las ventas de VentaLibra: asentarlas con su origen."""
+    lc.reconstruir(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
 
 
 @pytest.fixture
@@ -139,6 +150,7 @@ def test_calcular_periodo_trae_la_venta_del_cliente_correcto_por_external_ref(co
     ana, beto = _escenario(conn)
     _venta_a_party(conn, party_id=3, monto=1000.0, numero="V-ANA")
     _venta_a_party(conn, party_id=1, monto=500.0, numero="V-BETO")
+    _al_libro()
 
     periodo_ana = cc_resumen.calcular_periodo(
         clients.get_client(ana), HOY, origen=VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF
@@ -153,17 +165,18 @@ def test_calcular_periodo_trae_la_venta_del_cliente_correcto_por_external_ref(co
     assert [m["concepto"] for m in periodo_beto["movimientos"]] == ["Venta #V-BETO"]
 
 
-def test_calcular_periodo_sin_pasar_origen_no_ve_la_venta_de_libracommerce(conn):
+def test_calcular_periodo_sin_pasar_origen_ve_el_mismo_saldo_pero_sin_el_numero_de_venta(conn):
     """El caso contrario, documentado: con el default (`VENTAS_LIBRACORE`)
-    `calcular_periodo` sigue leyendo `ventas` -- vacía en este escenario, así
-    que la venta de LibraCommerce queda invisible y el saldo da otra cosa
-    (cero en vez de 1000)."""
+    `calcular_periodo` busca el número en `ventas` -- vacía en este escenario--,
+    así que la venta sale con el concepto del asiento. El saldo es el del libro:
+    el `origen` ya no lo decide."""
     ana, _ = _escenario(conn)
     _venta_a_party(conn, party_id=3, monto=1000.0, numero="V-ANA")
+    _al_libro()
 
     periodo = cc_resumen.calcular_periodo(clients.get_client(ana), HOY)
-    assert periodo["saldo_final"] == 0.0
-    assert periodo["movimientos"] == []
+    assert periodo["saldo_final"] == 1000.0
+    assert [m["concepto"] for m in periodo["movimientos"]] == ["Venta V-ANA"]
 
 
 # ── enviar_resumenes_pendientes ──────────────────────────────────────────────
@@ -180,6 +193,7 @@ def test_envio_masivo_dry_run_trae_el_saldo_correcto_por_external_ref(conn, envi
     clients.update_client(beto, cc_resumen_auto=1)
     _venta_a_party(conn, party_id=3, monto=1000.0, numero="V-ANA")
     _venta_a_party(conn, party_id=1, monto=500.0, numero="V-BETO")
+    _al_libro()
 
     r = cc_resumen.enviar_resumenes_pendientes(
         hoy=HOY, dry_run=True, forzar=True, origen=VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF
@@ -190,20 +204,21 @@ def test_envio_masivo_dry_run_trae_el_saldo_correcto_por_external_ref(conn, envi
     assert enviados == []  # dry_run: ningún mail ni PDF se generó de verdad
 
 
-def test_envio_masivo_sin_pasar_origen_no_encuentra_saldo_y_omite(conn, enviados):
-    """Mismo escenario que arriba, pero llamando SIN `origen`: con el default
-    ninguno de los dos clientes tiene saldo (la venta vive en `sales`, no en
-    `ventas`), así que `solo_con_saldo` los omite a los dos en vez de
-    enviarles el resumen."""
+def test_envio_masivo_sin_pasar_origen_ve_el_mismo_saldo(conn, enviados):
+    """Mismo escenario que arriba, pero llamando SIN `origen`: el saldo es el del
+    libro, así que los dos clientes tienen el mismo saldo que con el origen
+    correcto (antes, con el default, la venta quedaba invisible y `solo_con_saldo`
+    los omitía)."""
     _cfg()
     ana, beto = _escenario(conn)
     clients.update_client(ana, cc_resumen_auto=1)
     clients.update_client(beto, cc_resumen_auto=1)
     _venta_a_party(conn, party_id=3, monto=1000.0, numero="V-ANA")
     _venta_a_party(conn, party_id=1, monto=500.0, numero="V-BETO")
+    _al_libro()
 
     r = cc_resumen.enviar_resumenes_pendientes(hoy=HOY, dry_run=True, forzar=True)
 
-    assert r["enviados"] == []
-    assert {o["motivo"] for o in r["omitidos"]} == {"sin_saldo"}
+    assert {e["cliente"]: e["saldo"] for e in r["enviados"]} == {"Ana": 1000.0, "Beto": 500.0}
+    assert r["omitidos"] == []
     assert enviados == []

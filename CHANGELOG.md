@@ -7,6 +7,24 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El libro es la única lectura de la cuenta de clientes (propuesta: v1.139.0)
+
+ADR-029, etapa B4. **Sin migración.** Se retira el cálculo: la cuenta de clientes se lee siempre de `cc_asientos`.
+
+- **`get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` y `get_clientes_con_saldo_cc` leen siempre del libro**, con la forma de siempre (las mismas claves y el mismo orden). `get_facturas_pendientes_cc` no cambia.
+- **Se retiran**: el interruptor `LIBRACORE_CC_DESDE_EL_LIBRO` (la variable queda sin efecto; se puede sacar del entorno), `libro_de_clientes.lee_del_libro` y `VARIABLE_LECTURA`, las funciones `get_cc_saldo_calculado`, `get_cc_movimientos_calculados` y `get_clientes_con_saldo_calculado` (nuevas en v1.138.0; ningún producto las importa), `libro_de_clientes.comparar`, y las consultas de las cuatro patas del cálculo.
+- **`origen: OrigenVentas`** se sigue aceptando en las cuatro lecturas, con el mismo default, pero **ya no decide el saldo**: sólo le dice al libro dónde buscar el número de cada venta fiada para completar el concepto (`Venta #POS-7`). `OrigenVentas` y las constantes `VENTAS_*` no cambian: el libro las usa para asentar las ventas fiadas.
+- **Una base sin `cc_asientos` tira `RuntimeError`** en las cuatro lecturas (falta la tabla del libro: migración `0020` o `init_core_schema`). `sincronizar` y `reconstruir` siguen sin hacer nada sin la tabla.
+- **El tipo y el signo de cada movimiento salen de la fila del hecho**, no de la columna del asiento: un `cc_debito` de monto negativo (LibraDesk registra así la anulación de un remito) se lee como `debito` con monto negativo, y un `cc_pago` negativo como `credito` con monto negativo, igual que el cálculo. El saldo no cambia; sí la lista y los totales del período. No cambia cómo se asienta.
+- Los borrados de pagos y débitos siguen siendo físicos: el libro ya guarda la reversión.
+
+### Para los productos
+
+- **Si cargan la cuenta con los escritores del motor** (`create_cc_pago`, `create_cc_debito`, `delete_cc_*`, `add_venta_pago`, `create_caja_movimiento`, el router de cuenta corriente): nada. Suben el pin y no cambia nada.
+- **Sus tests que cargan con SQL crudo** (`INSERT` en `cc_pagos`, `cc_debitos`, `ventas_pagos` o `caja_movimientos`, o `DELETE` de esas tablas) y después leen el saldo o los movimientos: tienen que llamar `libro_de_clientes.reconstruir(origen)` después de cargar (es lo que hace un deploy), o usar los escritores. Si no, el saldo da cero y la lista viene vacía.
+- **Si su base no tiene `cc_asientos`** (LibraDesk arma a mano las tablas del motor): tienen que agregarla antes de subir el pin, y correr `reconstruir(origen)` una vez. Sin la tabla, las lecturas fallan.
+- Si importaban `get_cc_saldo_calculado` y hermanas, o `libro_de_clientes.comparar` o `lee_del_libro`: ya no existen.
+
 ## [Unreleased] — La cuenta de clientes se lee del libro, si la instancia lo enciende (propuesta: v1.138.0)
 
 ADR-028, etapa B3. **Sin migración y sin cambio por defecto**: apagado, todo se lee calculado como en v1.137.
