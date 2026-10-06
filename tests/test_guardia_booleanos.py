@@ -127,6 +127,7 @@ def _routers_del_motor(carpeta: pathlib.Path):
         egresos_router.build_proveedores_router(),
         egresos_router.build_egresos_router(usuario_actual=_usuario),
         facturas_router.build_comprobantes_router(usuario_actual=_usuario, solo_admin=_sin_gate),
+        facturas_router.build_comprobantes_pdf_router(usuario_actual=_usuario),
         libros_iva_router.build_libros_iva_router(),
         libros_iva_router.build_libros_iva_export_router(solo_admin=_sin_gate),
         logs_router.build_logs_router(usuarios=lambda: []),

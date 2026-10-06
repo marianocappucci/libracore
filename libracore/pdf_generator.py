@@ -8,7 +8,7 @@ from fpdf import FPDF  # fpdf2 >= 2.8
 from fpdf.enums import Corner as _Cor
 from fpdf.enums import RenderStyle as _RS
 
-from . import config_manager, medios_pago
+from . import config_manager, emisor_del_pdf, medios_pago
 from . import tipos_comprobante as tipos
 
 
@@ -1145,12 +1145,12 @@ class PresupuestoPDF(_TextoSeguroPDF):
 
 # ── Funciones públicas de generación ─────────────────────────────────────────
 
-def generate_pdf(remito, output_dir=None, *, show_prices=False):
+def generate_pdf(remito, output_dir=None, *, show_prices=False, resolvedor=None):
     os.makedirs(output_dir or PDF_DIR, exist_ok=True)
     safe = remito["number"].replace("/", "-")
     filepath = os.path.join(output_dir or PDF_DIR,
                             f"remito_{safe}_{remito['date']}.pdf")
-    emp = _empresa()
+    emp = emisor_del_pdf.emisor_para(remito, resolvedor=resolvedor)
     pdf = RemitoPDF(remito)
     pdf._emp = emp
     pdf.add_page()
@@ -1221,7 +1221,7 @@ def generate_pdf(remito, output_dir=None, *, show_prices=False):
     return os.path.abspath(filepath)
 
 
-def generate_pdf_presupuesto(presupuesto, output_dir=None, discriminar=True):
+def generate_pdf_presupuesto(presupuesto, output_dir=None, discriminar=True, *, resolvedor=None):
     """`discriminar=False` saca el desglose de IVA y muestra los precios ya
     con el impuesto adentro.
 
@@ -1234,7 +1234,7 @@ def generate_pdf_presupuesto(presupuesto, output_dir=None, discriminar=True):
     safe = presupuesto["number"].replace("/", "-")
     filepath = os.path.join(output_dir or PRESUPUESTOS_PDF_DIR,
                             f"presupuesto_{safe}_{presupuesto['date']}.pdf")
-    emp = _empresa()
+    emp = emisor_del_pdf.emisor_para(presupuesto, resolvedor=resolvedor)
     pdf = PresupuestoPDF(presupuesto)
     pdf._emp = emp
     pdf.add_page()
@@ -1289,14 +1289,29 @@ def generate_pdf_presupuesto(presupuesto, output_dir=None, discriminar=True):
     return os.path.abspath(filepath)
 
 
-def generate_pdf_factura(factura, output_dir=None):
+def generate_pdf_factura(factura, output_dir=None, *, resolvedor=None):
+    """El PDF de un comprobante (factura, nota de crédito o de débito, FCE) y su ruta en disco.
+
+    El emisor sale de `emisor_del_pdf.emisor_para(factura)` (ADR-031): la configuración de la
+    instancia, `nombre` y `cuit` de `factura["emisor_id"]` si lo tiene, y el resolvedor del producto.
+    `resolvedor` reemplaza para esta llamada al registrado con `emisor_del_pdf.registrar_resolvedor`.
+
+    Escribe siempre el archivo, como siempre. Quien lo guarda en `facturas.pdf_path` (al emitir y al
+    autorizar) fija así el PDF **de lo que salió**: los endpoints que lo leen no lo regeneran si está
+    en disco, aunque después cambie el logo o el domicilio del emisor.
+    """
     os.makedirs(output_dir or FACTURAS_PDF_DIR, exist_ok=True)
     pv  = str(factura["punto_venta"]).zfill(4)
     num = str(factura["numero"]).zfill(8)
+    # 🔑 El `id` del comprobante en el nombre: `(punto de venta, número)` solo no lo identifica. Una nota de
+    # crédito 0001-00000001 y la factura 0001-00000001 compartían archivo (la nota pisaba a la factura), y lo
+    # mismo dos razones sociales (ADR-021) o un comprobante de homologación y uno real. Sin `id` (el borrador),
+    # el nombre de siempre.
+    prefijo = f"{factura['id']}_" if factura.get("id") else ""
     filepath = os.path.join(output_dir or FACTURAS_PDF_DIR,
-                            f"factura_{pv}_{num}.pdf")
+                            f"factura_{prefijo}{pv}_{num}.pdf")
 
-    emp = _empresa()
+    emp = emisor_del_pdf.emisor_para(factura, resolvedor=resolvedor)
     pdf = FacturaPDF(factura)
     pdf._emp = emp
     pdf.add_page()
@@ -1451,22 +1466,25 @@ class PreFacturaPDF(_TextoSeguroPDF):
         self.set_text_color(*_INK)
 
 
-def generate_pdf_pre_factura(pre_factura: dict, empresa: dict | None = None) -> bytes:
+def generate_pdf_pre_factura(pre_factura: dict, empresa: dict | None = None, *,
+                             resolvedor=None, conn=None) -> bytes:
     """El PDF de una pre factura (`libracore.pre_facturas`), en memoria.
 
     `pre_factura` es la fila de `comprobantes_pendientes` como la devuelve
-    `db.comprobantes_pendientes.get_comprobante`. `empresa` pisa, clave por clave,
-    los datos del emisor que salen de la configuración de la instancia (`nombre`,
-    `cuit`, `direccion`, `iva_condition`, `iibb`, `inicio_actividades`,
-    `logo_path`): un producto con varias razones sociales pasa los de la que
-    factura.
+    `db.comprobantes_pendientes.get_comprobante`. El emisor sale de
+    `emisor_del_pdf.emisor_para(pre_factura)` (ADR-031): la configuración de la
+    instancia, `nombre` y `cuit` de `emisor_id` si lo tiene, y el resolvedor del
+    producto. `empresa` pisa al final, clave por clave (`nombre`, `cuit`,
+    `direccion`, `iva_condition`, `iibb`, `inicio_actividades`, `logo_path`,
+    `logo_bytes`): un producto que ya lo armaba por su cuenta sigue andando igual.
+    `conn` es la transacción de quien llama, para leer `arca_config` desde ahí.
 
     El total es el de la fila (que sale de los ítems); el desglose es de los
     ítems. La fecha del PDF es la del documento (`fijar_fecha_documento`), así
     que reimprimir devuelve los mismos bytes.
     """
     pf = pre_factura
-    emp = {**_empresa(), **(empresa or {})}
+    emp = emisor_del_pdf.emisor_para(pf, resolvedor=resolvedor, empresa=empresa, conn=conn)
     pdf = PreFacturaPDF(pf)
     pdf._emp = emp
     pdf.add_page()
@@ -1544,7 +1562,7 @@ def generate_pdf_pre_factura(pre_factura: dict, empresa: dict | None = None) -> 
 # registrar. Ahora sí: los dos están en `medios_pago.ELEGIBLES`.
 
 
-def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
+def generate_pdf_recibo(factura: dict, cobros: list[dict], *, resolvedor=None) -> bytes:
     """
     Genera un recibo de pago A4 en memoria y devuelve los bytes del PDF.
 
@@ -1574,7 +1592,7 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
     concepto      = "Pago parcial de" if parcial else "Cancelación de"
     concepto     += f" {ref_line} del {_fmt_fecha(fecha_fac)}"
 
-    return _render_recibo({
+    return _render_recibo(factura, resolvedor, {
         "numero_label":      "",
         "ref_line":          ref_line,
         "fecha":             fecha_fac,
@@ -1589,7 +1607,7 @@ def generate_pdf_recibo(factura: dict, cobros: list[dict]) -> bytes:
     })
 
 
-def generate_pdf_recibo_doc(recibo: dict) -> bytes:
+def generate_pdf_recibo_doc(recibo: dict, *, resolvedor=None) -> bytes:
     """Renderiza un recibo **ya emitido** — una fila de la tabla `recibos`, tal
     como la devuelve `libracore.db.recibos.get_recibo()`.
 
@@ -1600,7 +1618,7 @@ def generate_pdf_recibo_doc(recibo: dict) -> bytes:
     """
     pv  = str(recibo.get("punto_venta") or 1).zfill(4)
     num = str(recibo.get("numero") or 0).zfill(8)
-    return _render_recibo({
+    return _render_recibo(recibo, resolvedor, {
         "numero_label":      f"{pv}-{num}",
         "ref_line":          recibo.get("concepto") or "",
         "fecha":             (recibo.get("fecha") or "")[:10],
@@ -1615,11 +1633,14 @@ def generate_pdf_recibo_doc(recibo: dict) -> bytes:
     })
 
 
-def _render_recibo(d: dict) -> bytes:
+def _render_recibo(documento: dict, resolvedor, d: dict) -> bytes:
     """Maqueta única de los dos recibos. La diferencia entre el viejo y el
     documento son los datos, no el papel: así el cliente que ya vio uno
-    reconoce el otro."""
-    emp = _empresa()
+    reconoce el otro.
+
+    `documento` es lo que recibe el resolvedor del emisor: la factura (recibo
+    viejo) o el recibo emitido. La tabla `recibos` no tiene `emisor_id`."""
+    emp = emisor_del_pdf.emisor_para(documento, resolvedor=resolvedor)
     # `_TextoSeguroPDF` y no `FPDF` pelado: hasta acá el recibo era el último
     # comprobante del módulo que instanciaba FPDF directamente, así que se
     # quedó afuera del arreglo de cp1252 de v1.7.0 y un carácter fuera de esa
@@ -1919,7 +1940,7 @@ def _draw_movimientos_cc(pdf, periodo):
     pdf.ln(4)
 
 
-def generate_pdf_resumen_cc(cliente: dict, periodo: dict, output_dir=None) -> str:
+def generate_pdf_resumen_cc(cliente: dict, periodo: dict, output_dir=None, *, resolvedor=None) -> str:
     """Resumen de cuenta corriente de un cliente para un período.
 
     `periodo` es lo que devuelve `libracore.db.cuenta_corriente
@@ -1933,7 +1954,7 @@ def generate_pdf_resumen_cc(cliente: dict, periodo: dict, output_dir=None) -> st
     filepath = os.path.join(
         out_dir, f"resumen_cc_{cliente['id']}_{periodo['desde']}_{periodo['hasta']}.pdf")
 
-    emp = _empresa()
+    emp = emisor_del_pdf.emisor_para(cliente, resolvedor=resolvedor)
     pdf = ResumenCCPDF(cliente, periodo)
     pdf._emp = emp
     pdf.add_page()
