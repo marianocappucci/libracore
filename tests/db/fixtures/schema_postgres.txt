@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (387)
+## tablas (400)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -50,6 +50,19 @@ categorias_egreso|id|bigint|NN|nextval('categorias_egreso_id_seq'::regclass)
 categorias_egreso|nombre|text|NN|
 categorias_producto|id|bigint|NN|nextval('categorias_producto_id_seq'::regclass)
 categorias_producto|nombre|text|NN|
+cc_asientos|concepto|text|NN|
+cc_asientos|contrapartida_de|integer||
+cc_asientos|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+cc_asientos|debe|numeric|NN|0
+cc_asientos|descripcion|text||
+cc_asientos|factura_id|integer||
+cc_asientos|fecha|text|NN|
+cc_asientos|haber|numeric|NN|0
+cc_asientos|id|bigint|NN|nextval('cc_asientos_id_seq'::regclass)
+cc_asientos|origen_legado|text||
+cc_asientos|rol|text|NN|
+cc_asientos|tercero_id|integer|NN|
+cc_asientos|usuario_id|integer||
 cc_debitos|cliente_id|integer|NN|
 cc_debitos|concepto|text||''::text
 cc_debitos|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
@@ -389,13 +402,14 @@ ventas|total|numeric|NN|0
 ventas|turno_id|integer||
 ventas|usuario_id|integer||
 
-## claves primarias (33)
+## claves primarias (34)
 arca_config|PRIMARY KEY (id)
 auth_log|PRIMARY KEY (id)
 caja_movimientos|PRIMARY KEY (id)
 cajas|PRIMARY KEY (id)
 categorias_egreso|PRIMARY KEY (id)
 categorias_producto|PRIMARY KEY (id)
+cc_asientos|PRIMARY KEY (id)
 cc_debitos|PRIMARY KEY (id)
 cc_pagos|PRIMARY KEY (id)
 cc_resumenes_enviados|PRIMARY KEY (id)
@@ -424,10 +438,13 @@ usuarios|PRIMARY KEY (id)
 ventas_pagos|PRIMARY KEY (id)
 ventas|PRIMARY KEY (id)
 
-## claves foráneas (44)
+## claves foráneas (47)
 caja_movimientos|caja_movimientos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
 caja_movimientos|caja_movimientos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 caja_movimientos|fk_caja_movimientos_turno|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
+cc_asientos|cc_asientos_contrapartida_de_fkey|FOREIGN KEY (contrapartida_de) REFERENCES cc_asientos(id) ON DELETE RESTRICT
+cc_asientos|cc_asientos_factura_id_fkey|FOREIGN KEY (factura_id) REFERENCES facturas(id) ON DELETE RESTRICT
+cc_asientos|cc_asientos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 cc_debitos|cc_debitos_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
 cc_debitos|cc_debitos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 cc_pagos|cc_pagos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
@@ -470,7 +487,7 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (62)
+## índices (66)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 auth_log|auth_log_pkey|CREATE UNIQUE INDEX auth_log_pkey ON public.auth_log USING btree (id)
@@ -481,6 +498,10 @@ categorias_egreso|categorias_egreso_nombre_key|CREATE UNIQUE INDEX categorias_eg
 categorias_egreso|categorias_egreso_pkey|CREATE UNIQUE INDEX categorias_egreso_pkey ON public.categorias_egreso USING btree (id)
 categorias_producto|categorias_producto_nombre_key|CREATE UNIQUE INDEX categorias_producto_nombre_key ON public.categorias_producto USING btree (nombre)
 categorias_producto|categorias_producto_pkey|CREATE UNIQUE INDEX categorias_producto_pkey ON public.categorias_producto USING btree (id)
+cc_asientos|cc_asientos_pkey|CREATE UNIQUE INDEX cc_asientos_pkey ON public.cc_asientos USING btree (id)
+cc_asientos|idx_cc_asientos_cuenta|CREATE INDEX idx_cc_asientos_cuenta ON public.cc_asientos USING btree (tercero_id, rol, fecha)
+cc_asientos|idx_cc_asientos_factura|CREATE INDEX idx_cc_asientos_factura ON public.cc_asientos USING btree (factura_id)
+cc_asientos|idx_cc_asientos_origen_legado|CREATE UNIQUE INDEX idx_cc_asientos_origen_legado ON public.cc_asientos USING btree (origen_legado) WHERE (origen_legado IS NOT NULL)
 cc_debitos|cc_debitos_pkey|CREATE UNIQUE INDEX cc_debitos_pkey ON public.cc_debitos USING btree (id)
 cc_debitos|idx_cc_debitos_cliente|CREATE INDEX idx_cc_debitos_cliente ON public.cc_debitos USING btree (cliente_id)
 cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referencia ON public.cc_debitos USING btree (referencia) WHERE (referencia <> ''::text)
@@ -534,7 +555,10 @@ ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON public.ventas USING btr
 ventas|ventas_numero_key|CREATE UNIQUE INDEX ventas_numero_key ON public.ventas USING btree (numero)
 ventas|ventas_pkey|CREATE UNIQUE INDEX ventas_pkey ON public.ventas USING btree (id)
 
-## checks (5)
+## checks (8)
+cc_asientos|cc_asientos_check1|CHECK (((((debe)::double precision > (0)::double precision) AND ((haber)::double precision = (0)::double precision)) OR (((haber)::double precision > (0)::double precision) AND ((debe)::double precision = (0)::double precision)) OR (origen_legado IS NOT NULL)))
+cc_asientos|cc_asientos_check|CHECK ((((debe)::double precision >= (0)::double precision) AND ((haber)::double precision >= (0)::double precision)))
+cc_asientos|cc_asientos_rol_check|CHECK ((rol <> ''::text))
 clients|clients_cc_resumen_frecuencia_check|CHECK ((cc_resumen_frecuencia = ANY (ARRAY['semanal'::text, 'quincenal'::text, 'mensual'::text])))
 facturacion_alias|facturacion_alias_tipo_check|CHECK ((tipo = ANY (ARRAY['cuit'::text, 'email'::text])))
 facturas|facturas_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))

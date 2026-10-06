@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (387)
+## tablas (400)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -50,6 +50,19 @@ categorias_egreso|id|INTEGER||
 categorias_egreso|nombre|TEXT|NN|
 categorias_producto|id|INTEGER||
 categorias_producto|nombre|TEXT|NN|
+cc_asientos|concepto|TEXT|NN|
+cc_asientos|contrapartida_de|INTEGER||
+cc_asientos|created_at|TEXT||datetime('now','-3 hours')
+cc_asientos|debe|REAL|NN|0
+cc_asientos|descripcion|TEXT||
+cc_asientos|factura_id|INTEGER||
+cc_asientos|fecha|TEXT|NN|
+cc_asientos|haber|REAL|NN|0
+cc_asientos|id|INTEGER||
+cc_asientos|origen_legado|TEXT||
+cc_asientos|rol|TEXT|NN|
+cc_asientos|tercero_id|INTEGER|NN|
+cc_asientos|usuario_id|INTEGER||
 cc_debitos|cliente_id|INTEGER|NN|
 cc_debitos|concepto|TEXT||''
 cc_debitos|created_at|TEXT||datetime('now','-3 hours')
@@ -389,13 +402,14 @@ ventas|total|REAL|NN|0
 ventas|turno_id|INTEGER||
 ventas|usuario_id|INTEGER||
 
-## claves primarias (33)
+## claves primarias (34)
 arca_config|id
 auth_log|id
 caja_movimientos|id
 cajas|id
 categorias_egreso|id
 categorias_producto|id
+cc_asientos|id
 cc_debitos|id
 cc_pagos|id
 cc_resumenes_enviados|id
@@ -424,10 +438,13 @@ usuarios|id
 ventas_pagos|id
 ventas|id
 
-## claves foráneas (44)
+## claves foráneas (47)
 caja_movimientos|caja_id|cajas|id|SET NULL|NO ACTION
 caja_movimientos|turno_id|turnos_caja|id|SET NULL|NO ACTION
 caja_movimientos|usuario_id|usuarios|id|SET NULL|NO ACTION
+cc_asientos|contrapartida_de|cc_asientos|id|RESTRICT|NO ACTION
+cc_asientos|factura_id|facturas|id|RESTRICT|NO ACTION
+cc_asientos|usuario_id|usuarios|id|SET NULL|NO ACTION
 cc_debitos|cliente_id|clients|id|CASCADE|NO ACTION
 cc_debitos|usuario_id|usuarios|id|SET NULL|NO ACTION
 cc_pagos|caja_id|cajas|id|SET NULL|NO ACTION
@@ -470,11 +487,14 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (30)
+## índices (33)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
 categorias_egreso|sqlite_autoindex_categorias_egreso_1|UNIQUE implícito (nombre)
 categorias_producto|sqlite_autoindex_categorias_producto_1|UNIQUE implícito (nombre)
+cc_asientos|idx_cc_asientos_cuenta|CREATE INDEX idx_cc_asientos_cuenta ON cc_asientos(tercero_id, rol, fecha)
+cc_asientos|idx_cc_asientos_factura|CREATE INDEX idx_cc_asientos_factura ON cc_asientos(factura_id)
+cc_asientos|idx_cc_asientos_origen_legado|CREATE UNIQUE INDEX idx_cc_asientos_origen_legado ON cc_asientos(origen_legado) WHERE origen_legado IS NOT NULL
 cc_debitos|idx_cc_debitos_cliente|CREATE INDEX idx_cc_debitos_cliente ON cc_debitos(cliente_id)
 cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referencia ON cc_debitos(referencia) WHERE referencia != ''
 cc_pagos|idx_cc_pagos_cliente|CREATE INDEX idx_cc_pagos_cliente ON cc_pagos(cliente_id)
