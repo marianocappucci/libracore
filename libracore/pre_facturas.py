@@ -55,7 +55,7 @@ confirma**; sin él, confirma la suya. Es lo que deja a LibraCargo reservar las
 import json
 import sqlite3
 
-from libracore import config_manager, email_sender, pdf_generator
+from libracore import email_sender, emisor_del_pdf, pdf_generator
 from libracore import tipos_comprobante as tipos
 from libracore.db import comprobantes_pendientes as bandeja
 from libracore.db.arca_config import EmisorDesconocido
@@ -435,28 +435,17 @@ def marcar_facturada(pre_factura_id: int, factura_id: int, usuario: str = "", *,
 # ── PDF y correo ───────────────────────────────────────────────────────────────
 
 
-def _emisor_para_el_pdf(c, pf: dict, emisor: dict | None) -> dict | None:
-    """Los datos del emisor para el PDF: lo que pasó quien llama, o —si la pre factura
-    tiene `emisor_id`— el nombre y el CUIT de esa configuración de ARCA. El domicilio y la
-    condición de IVA no están en `arca_config`: salen de la configuración de la instancia
-    (`config_manager`), y un producto con varias razones sociales los pasa en `emisor`."""
-    if emisor is not None:
-        return emisor
-    if pf.get("emisor_id") is None:
-        return None
-    fila = c.execute("SELECT empresa, cuit FROM arca_config WHERE id=?", (pf["emisor_id"],)).fetchone()
-    return {"nombre": fila[0], "cuit": fila[1]} if fila else None
-
-
 def pdf(pre_factura_id: int, *, emisor: dict | None = None, conn: Conexion | None = None) -> bytes:
     """El PDF de la pre factura: el aspecto de la factura, con el sello **PRE FACTURA —
     NO VÁLIDA COMO COMPROBANTE FISCAL**, el número interno y sin punto de venta, CAE ni
-    QR. `emisor` pisa los datos del emisor (`nombre`, `cuit`, `direccion`,
-    `iva_condition`, `iibb`, `inicio_actividades`, `logo_path`); ver `_emisor_para_el_pdf`.
+    QR. El emisor se resuelve como en todos los PDF del motor (`emisor_del_pdf.emisor_para`,
+    ADR-031): la instancia, `nombre` y `cuit` del `emisor_id` de la pre factura y el resolvedor
+    registrado por el producto. `emisor` pisa al final (`nombre`, `cuit`, `direccion`,
+    `iva_condition`, `iibb`, `inicio_actividades`, `logo_path`, `logo_bytes`).
     Se puede pedir de cualquier estado."""
     with _con(conn) as c:
         pf = _cargar(pre_factura_id, c)
-        return pdf_generator.generate_pdf_pre_factura(pf, _emisor_para_el_pdf(c, pf, emisor))
+        return pdf_generator.generate_pdf_pre_factura(pf, emisor, conn=c)
 
 
 def enviar_por_correo(pre_factura_id: int, destinatario: str, *, smtp_resolver=None,
@@ -480,9 +469,8 @@ def enviar_por_correo(pre_factura_id: int, destinatario: str, *, smtp_resolver=N
         smtp = smtp_efectivo(smtp_resolver)
         if not (smtp["host"] and smtp["user"]):
             raise SmtpNoConfigurado("No hay un servidor SMTP configurado para mandar correos.")
-        datos_emisor = _emisor_para_el_pdf(c, pf, emisor)
-        documento = pdf_generator.generate_pdf_pre_factura(pf, datos_emisor)
-        empresa = (datos_emisor or {}).get("nombre") or config_manager.load().get("empresa_nombre", "")
+        documento = pdf_generator.generate_pdf_pre_factura(pf, emisor, conn=c)
+        empresa = emisor_del_pdf.emisor_para(pf, empresa=emisor, conn=c).get("nombre") or ""
         numero = pf["numero_interno"]
         email_sender.enviar_documento(
             to_email=destinatario, to_name=pf["cliente_razon"], pdf_path="",

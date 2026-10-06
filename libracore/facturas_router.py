@@ -78,6 +78,7 @@ from libracore.db import caja as db_caja
 from libracore.db import clients as db_clients
 from libracore.db import cuenta_corriente as db_cc
 from libracore.db import facturas as db_facturas
+from libracore.emisor_del_pdf import emisor_para
 from libracore.facturas_borrador import armar_borrador
 from libracore.validacion import rechazar_booleanos, sin_booleanos
 
@@ -298,13 +299,19 @@ def smtp_configurado(resolver=None) -> bool:
 
 def enviar_comprobante_por_mail(
     *, to_email: str, to_name: str, pdf_path: str, factura_label: str, total: float,
-    resolver=None,
+    resolver=None, empresa_nombre: str | None = None,
 ) -> None:
-    """Manda el PDF con la config SMTP resuelta. Ver `smtp_efectivo`."""
+    """Manda el PDF con la config SMTP resuelta. Ver `smtp_efectivo`.
+
+    `empresa_nombre` es quien firma el asunto y el cuerpo: el emisor del comprobante
+    (`emisor_del_pdf.emisor_para`). Sin él, el de la configuración de la instancia, como siempre.
+    """
     smtp = smtp_efectivo(resolver)
     email_sender.enviar_comprobante(
         to_email=to_email, to_name=to_name, pdf_path=pdf_path,
-        empresa_nombre=config_manager.load().get("empresa_nombre", ""),
+        empresa_nombre=(
+            empresa_nombre if empresa_nombre is not None
+            else config_manager.load().get("empresa_nombre", "")),
         factura_label=factura_label, total=total,
         smtp_host=smtp["host"],
         smtp_port=smtp["port"],
@@ -450,6 +457,59 @@ def _numero(factura: dict) -> str:
     return f"{str(factura['punto_venta']).zfill(4)}-{str(factura['numero']).zfill(8)}"
 
 
+def _pdf_del_comprobante(factura: dict, resolvedor: Callable[[dict], dict | None] | None) -> str:
+    """La ruta del PDF **guardado** del comprobante; si el archivo no está, se arma de nuevo desde su fila.
+
+    El guardado es el que se generó al emitir o autorizar, con el emisor de ese momento (ADR-031): no se
+    regenera aunque después cambie el logo o el domicilio, porque es lo que se le mandó al cliente. Se
+    regenera sólo si se perdió (un redeploy que borra el disco del contenedor), y entonces sale con el
+    emisor de hoy. **No se vuelve a guardar en `pdf_path`**: es lo que hacía el endpoint de mail.
+    """
+    pdf_path = factura.get("pdf_path")
+    if not pdf_path or not os.path.exists(pdf_path):
+        pdf_path = pdf_gen.generate_pdf_factura(factura, resolvedor=resolvedor)
+    return pdf_path
+
+
+def _registrar_enviar_email(
+    router: APIRouter, *, exigir: Callable[[int], dict],
+    emisor_del_pdf: Callable[[dict], dict | None] | None, smtp_config: Callable[[], Any] | None,
+    donde_configurar_smtp: str,
+) -> None:
+    """Registra `POST /{factura_id}/enviar-email` en `router`. **Una sola implementación**, la usan los dos factories.
+
+    `exigir(factura_id)` devuelve el comprobante o levanta el 404: es lo único que cambia entre el router de
+    comprobantes y el de sólo-PDF (que además filtra qué comprobantes se ven).
+    """
+    @router.post("/{factura_id}/enviar-email")
+    def enviar_email(factura_id: int, payload: EmailPayload):
+        factura = exigir(factura_id)
+        if not smtp_configurado(smtp_config):
+            raise HTTPException(
+                400, f"Configurá el servidor SMTP en {donde_configurar_smtp}."
+            )
+        if not payload.email.strip():
+            raise HTTPException(422, "Ingresá una dirección de email.")
+
+        pdf_path = _pdf_del_comprobante(factura, emisor_del_pdf)
+
+        etiqueta = (
+            f"{pdf_gen._TIPO_LABELS.get(factura['tipo'], 'Comprobante')} "
+            f"{_numero(factura)}"
+        )
+        try:
+            enviar_comprobante_por_mail(
+                to_email=payload.email.strip(), to_name=factura["cliente_razon"],
+                pdf_path=pdf_path, factura_label=etiqueta, total=factura["total"],
+                resolver=smtp_config,
+                # Firma el emisor del comprobante, no el de la instancia.
+                empresa_nombre=emisor_para(factura, resolvedor=emisor_del_pdf).get("nombre") or "",
+            )
+        except Exception as e:
+            raise HTTPException(502, f"Error al enviar: {e}") from e
+        return {"ok": True}
+
+
 def _detalle(factura: dict) -> dict:
     """El comprobante con todo lo que le cuelga: sus notas, su original y sus cobros."""
     es_factura = factura["tipo"] in TIPOS_FACTURA
@@ -528,6 +588,7 @@ def _registrar_nota(nota: dict, ambiente: str, usuario_id: int, emisor_id: int |
 
 async def _crear_nota(
     orig: dict, nuevo_tipo: int, obs_prefijo: str, usuario_id: int,
+    emisor_del_pdf: Callable[[dict], dict | None] | None = None,
 ) -> int:
     """Emite una nota **de débito** que referencia al comprobante original.
 
@@ -543,11 +604,14 @@ async def _crear_nota(
     nota_id = _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id, emisor_id)
     nota_db = db_facturas.get_factura(nota_id)
     nota_db = await solicitar_cae(nota_id, nota_db, ta, arca)
-    db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db))
+    db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db, resolvedor=emisor_del_pdf))
     return nota_id
 
 
-async def _emitir_nota_de_credito(orig: dict, usuario_id: int, importe: Decimal | None = None) -> int:
+async def _emitir_nota_de_credito(
+    orig: dict, usuario_id: int, importe: Decimal | None = None,
+    emisor_del_pdf: Callable[[dict], dict | None] | None = None,
+) -> int:
     """La nota de crédito de este router: el núcleo del motor con las costuras de la tabla `facturas`."""
     emisor_id = orig.get("emisor_id")
 
@@ -562,7 +626,7 @@ async def _emitir_nota_de_credito(orig: dict, usuario_id: int, importe: Decimal 
     async def pedir_cae(nota_id: int, _nota: dict, contexto) -> int:
         ta, arca = contexto
         nota_db = await solicitar_cae(nota_id, db_facturas.get_factura(nota_id), ta, arca)
-        db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db))
+        db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db, resolvedor=emisor_del_pdf))
         return nota_id
 
     emitida = await notas_de_credito.emitir_nota_de_credito(
@@ -590,7 +654,8 @@ class NotaCreditoIn(BaseModel):
 
 
 def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..., Any],
-                               solo_admin: Callable[..., Any]) -> None:
+                               solo_admin: Callable[..., Any],
+                               emisor_del_pdf: Callable[[dict], dict | None] | None = None) -> None:
     """Registra `POST /{factura_id}/nota-credito` en `router`. **Una sola implementación**, la usan los dos factories.
 
     Existe para que un producto que no tiene pantallas de facturas (VentaLibra) pueda ofrecer la nota de crédito
@@ -605,7 +670,7 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
         _exigir_vigente(orig)
         importe = payload.importe if payload else None
         try:
-            nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"], importe))
+            nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"], importe, emisor_del_pdf))
         except notas_de_credito.NotaNoPermitida as e:
             raise HTTPException(_STATUS_DE_NOTA[e.codigo], str(e)) from None
 
@@ -638,15 +703,75 @@ def build_nota_de_credito_router(
     usuario_actual: Callable[..., Any],
     solo_admin: Callable[..., Any],
     prefix: str = "/api/facturas",
+    emisor_del_pdf: Callable[[dict], dict | None] | None = None,
 ) -> APIRouter:
     """Sólo `POST {prefix}/{factura_id}/nota-credito`: la nota de crédito total de una factura, autorizada por ARCA.
 
     Para los productos que facturan desde otra pantalla (la venta) y no necesitan el router completo de
     comprobantes. Mismas guardas, mismos códigos HTTP y mismo abono a la cuenta corriente que
-    `build_comprobantes_router`: es el mismo código. `solo_admin` gatea la ruta.
+    `build_comprobantes_router`: es el mismo código. `solo_admin` gatea la ruta. `emisor_del_pdf`: ver
+    `build_comprobantes_router`.
     """
     router = APIRouter(prefix=prefix, tags=["facturas"])
-    _registrar_nota_de_credito(router, usuario_actual=usuario_actual, solo_admin=solo_admin)
+    _registrar_nota_de_credito(
+        router, usuario_actual=usuario_actual, solo_admin=solo_admin, emisor_del_pdf=emisor_del_pdf)
+    return router
+
+
+def build_comprobantes_pdf_router(
+    *,
+    usuario_actual: Callable[..., Any],
+    prefix: str = "/api/facturas",
+    emisor_del_pdf: Callable[[dict], dict | None] | None = None,
+    puede_ver: Callable[[dict], bool] | None = None,
+    smtp_config: Callable[[], Any] | None = None,
+    donde_configurar_smtp: str = "Configuración → Email",
+) -> APIRouter:
+    """**Sólo** el PDF del comprobante y su envío por mail, para un producto que emite por su cuenta (ADR-031).
+
+    - `GET {prefix}/{factura_id}/pdf`: el PDF (`application/pdf`, en línea).
+    - `POST {prefix}/{factura_id}/enviar-email`, `{"email": ...}`: el mismo PDF por correo.
+
+    Es lo que necesita LibraCargo, cuyo comprobante vive en `facturas` del motor pero cuya emisión, anulación y
+    notas de crédito son suyas: `build_comprobantes_router` trae además el alta, el borrador, el cobro, el
+    borrado y la anulación, que ese producto no debe exponer. **Mismo código que el router grande**
+    (`_pdf_del_comprobante`, `_registrar_enviar_email`): lo que se manda por mail es el archivo que se ve.
+
+    - `usuario_actual` gatea todas las rutas (una sesión, no un rol).
+    - `emisor_del_pdf`: `(comprobante: dict) -> dict | None`, el resolvedor del emisor de esta factory. Ver
+      `build_comprobantes_router` y `libracore.emisor_del_pdf`.
+    - `puede_ver`: `(comprobante: dict) -> bool`. Un comprobante que no pasa **no existe** para este router:
+      404 en las dos rutas, el mismo de un id inexistente, sin delatar que está. Un producto lo usa para no
+      mostrar, por ejemplo, los de otro ambiente o los de una razón social que no le corresponde al usuario.
+    - `smtp_config` y `donde_configurar_smtp`: como en `build_comprobantes_router`.
+    """
+    router = APIRouter(
+        prefix=prefix, tags=["facturas"], dependencies=[Depends(usuario_actual)])
+
+    def _exigir(factura_id: int) -> dict:
+        factura = db_facturas.get_factura(factura_id)
+        if not factura or (puede_ver is not None and not puede_ver(factura)):
+            raise HTTPException(404, "Factura no encontrada")
+        return factura
+
+    @router.get("/{factura_id}/pdf")
+    def pdf(factura_id: int):
+        factura = _exigir(factura_id)
+        try:
+            with open(_pdf_del_comprobante(factura, emisor_del_pdf), "rb") as archivo:
+                contenido = archivo.read()
+        except Exception as e:
+            raise HTTPException(500, f"Error generando el PDF: {e}") from e
+        nombre = f"comprobante-{_numero(factura)}.pdf"
+        return Response(
+            contenido, media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{nombre}"'},
+        )
+
+    _registrar_enviar_email(
+        router, exigir=_exigir, emisor_del_pdf=emisor_del_pdf, smtp_config=smtp_config,
+        donde_configurar_smtp=donde_configurar_smtp,
+    )
     return router
 
 
@@ -659,6 +784,7 @@ def build_comprobantes_router(
     registrar_cobro: Callable[..., None] | None = None,
     donde_configurar_smtp: str = "Configuración → Email",
     smtp_config: Callable[[], Any] | None = None,
+    emisor_del_pdf: Callable[[dict], dict | None] | None = None,
 ) -> APIRouter:
     """Los doce endpoints de comprobantes, con lo del producto inyectado.
 
@@ -672,6 +798,12 @@ def build_comprobantes_router(
     levante sale tal cual: un producto puede devolver un 409 si no hay caja
     abierta. Por omisión se usa `libracore.cobros.registrar_cobro_factura`, que
     es lo que hacen Contalibra y Restolibra.
+
+    `emisor_del_pdf` es `(comprobante: dict) -> dict | None`: los datos del emisor para el PDF y para quien
+    firma el mail (`direccion`, `iva_condition`, `iibb`, `inicio_actividades`, `logo_bytes`...). Pisa lo que
+    sale de la configuración de la instancia y del `emisor_id` del comprobante (ADR-031, ver
+    `libracore.emisor_del_pdf`) y **reemplaza**, para este router, al resolvedor registrado con
+    `emisor_del_pdf.registrar_resolvedor`. Sin él, se usa ese, y sin ése, nada cambia.
 
     🔑 **Existe por LibraClub, y el motivo no es cosmético.** Ese producto lleva
     la caja **por turno** (`turnos_caja`, con su arqueo al cerrar) y el default
@@ -785,6 +917,7 @@ def build_comprobantes_router(
         import tempfile
 
         cliente = _resolve_cliente(payload)
+        _config_del_emisor(payload.emisor_id)   # un emisor que no existe es un 422, no un 500 al dibujar
         items = [
             {
                 "description": i.description.strip(), "qty": i.qty,
@@ -818,13 +951,15 @@ def build_comprobantes_router(
             "fch_serv_desde": payload.fch_serv_desde,
             "fch_serv_hasta": payload.fch_serv_hasta,
             "fch_vto_pago": payload.fch_vto_pago, "cae": "", "cae_vto": "",
+            # El borrador lleva el emisor que se eligió: lo que se mira es lo que va a salir.
+            "emisor_id": payload.emisor_id,
         }
 
         # Carpeta temporal que se borra sola: un borrador no tiene por qué
         # sobrevivir a la request que lo pidió.
         with tempfile.TemporaryDirectory() as carpeta:
             try:
-                ruta = pdf_gen.generate_pdf_factura(borrador, output_dir=carpeta)
+                ruta = pdf_gen.generate_pdf_factura(borrador, output_dir=carpeta, resolvedor=emisor_del_pdf)
                 with open(ruta, "rb") as archivo:
                     contenido = archivo.read()
             except Exception as e:
@@ -896,7 +1031,7 @@ def build_comprobantes_router(
         factura = db_facturas.get_factura(factura_id)
         factura = asyncio.run(solicitar_cae(factura_id, factura, ta, arca))
 
-        pdf_path = pdf_gen.generate_pdf_factura(factura)
+        pdf_path = pdf_gen.generate_pdf_factura(factura, resolvedor=emisor_del_pdf)
         db_facturas.update_factura_pdf_path(factura_id, pdf_path)
 
         # A crédito, el comprobante entra como débito a la cuenta del cliente:
@@ -997,7 +1132,7 @@ def build_comprobantes_router(
                 factura_id, cae_data["cae"], cae_data["cae_vto"]
             )
             factura = db_facturas.get_factura(factura_id)
-            pdf_path = pdf_gen.generate_pdf_factura(factura)
+            pdf_path = pdf_gen.generate_pdf_factura(factura, resolvedor=emisor_del_pdf)
             db_facturas.update_factura_pdf_path(factura_id, pdf_path)
             return _detalle(factura)
         except HTTPException:
@@ -1038,36 +1173,10 @@ def build_comprobantes_router(
             raise HTTPException(400, str(exc)) from exc
         return _detalle(db_facturas.get_factura(factura_id))
 
-    @router.post("/{factura_id}/enviar-email")
-    def enviar_email(factura_id: int, payload: EmailPayload):
-        factura = _exigir(factura_id)
-        if not smtp_configurado(smtp_config):
-            raise HTTPException(
-                400, f"Configurá el servidor SMTP en {donde_configurar_smtp}."
-            )
-        if not payload.email.strip():
-            raise HTTPException(422, "Ingresá una dirección de email.")
-
-        # Se regenera si el archivo no está: el PDF guardado puede haberse
-        # perdido en un redeploy, y el comprobante se reconstruye entero desde
-        # su fila.
-        pdf_path = factura.get("pdf_path")
-        if not pdf_path or not os.path.exists(pdf_path):
-            pdf_path = pdf_gen.generate_pdf_factura(factura)
-
-        etiqueta = (
-            f"{pdf_gen._TIPO_LABELS.get(factura['tipo'], 'Comprobante')} "
-            f"{_numero(factura)}"
-        )
-        try:
-            enviar_comprobante_por_mail(
-                to_email=payload.email.strip(), to_name=factura["cliente_razon"],
-                pdf_path=pdf_path, factura_label=etiqueta, total=factura["total"],
-                resolver=smtp_config,
-            )
-        except Exception as e:
-            raise HTTPException(502, f"Error al enviar: {e}") from e
-        return {"ok": True}
+    _registrar_enviar_email(
+        router, exigir=_exigir, emisor_del_pdf=emisor_del_pdf, smtp_config=smtp_config,
+        donde_configurar_smtp=donde_configurar_smtp,
+    )
 
     @router.delete("/{factura_id}", dependencies=admin)
     def eliminar(factura_id: int):
@@ -1105,7 +1214,8 @@ def build_comprobantes_router(
 
     # ── Notas ─────────────────────────────────────────────────────────────
 
-    _registrar_nota_de_credito(router, usuario_actual=usuario_actual, solo_admin=solo_admin)
+    _registrar_nota_de_credito(
+        router, usuario_actual=usuario_actual, solo_admin=solo_admin, emisor_del_pdf=emisor_del_pdf)
 
     @router.post("/{factura_id}/nota-debito", dependencies=admin)
     def nota_debito(factura_id: int, usuario: dict = Depends(usuario_actual)):
@@ -1114,7 +1224,7 @@ def build_comprobantes_router(
         nd_tipo = TIPO_ND.get(orig["tipo"])
         if not nd_tipo:
             raise HTTPException(400, "Tipo de comprobante no admite nota de débito")
-        nota_id = asyncio.run(_crear_nota(orig, nd_tipo, "Referencia", usuario["id"]))
+        nota_id = asyncio.run(_crear_nota(orig, nd_tipo, "Referencia", usuario["id"], emisor_del_pdf))
         return db_facturas.get_factura(nota_id)
 
     return router

@@ -7,9 +7,27 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Unreleased] — El membrete del PDF acepta el logo como contenido (propuesta: v1.140.1)
+## [Unreleased] — El emisor del PDF se resuelve por documento (propuesta: v1.141.0)
 
-- **`pdf_generator`: el `empresa` de un PDF acepta `logo_bytes`** (el contenido de la imagen) además de `logo_path`. Si vienen los dos, gana el contenido. Lo necesita un producto que guarda el logo en su base y no en el disco del contenedor: LibraCargo, cuyos PDF salían con el cuadrito de iniciales aunque la instancia tenía el logo cargado (reportado por el humano en Suitrans, 2026-10-06). Sin cambios para quien pasa `logo_path` o usa el de `config_manager`.
+ADR-031. **Sin migración y sin cambio para quien no use un resolvedor ni `emisor_id`**: los bytes de cada PDF son los mismos que en v1.140.0.
+
+- **`libracore.emisor_del_pdf`** (nuevo): `emisor_para(documento, *, resolvedor=None, empresa=None, conn=None)` arma el `empresa` de un PDF por capas: la configuración de la instancia, `nombre` y `cuit` del `arca_config` del `emisor_id` del documento (también si está inactiva; un id que no existe levanta `EmisorDesconocido`), el resolvedor del producto y `empresa=`. `registrar_resolvedor(fn)` registra el resolvedor `(documento) -> dict | None` para todos los PDF del proceso; una clave en `None` no pisa. Lo que el resolvedor levante, sube.
+- **`pdf_generator`**: `generate_pdf_factura` (factura, notas, FCE), `generate_pdf_recibo`, `generate_pdf_recibo_doc`, `generate_pdf_presupuesto`, `generate_pdf` (remito), `generate_pdf_pre_factura` y `generate_pdf_resumen_cc` toman el emisor de ahí y aceptan `resolvedor=` (sólo por nombre). `generate_pdf_factura` ya no ignora `facturas.emisor_id`. `generate_pdf_pre_factura` conserva `empresa=` y suma `conn=`.
+- **`pdf_generator`: el `empresa` de un PDF acepta `logo_bytes`** (el contenido de la imagen) además de `logo_path`; si vienen los dos, gana el contenido (libracore#361). Lo necesita un producto que guarda el logo en su base y no en el disco del contenedor: LibraCargo, cuyos PDF salían con el cuadrito de iniciales aunque la instancia tenía el logo cargado (reportado por el humano en Suitrans, 2026-10-06). Sin cambios para quien pasa `logo_path` o usa el de `config_manager`.
+- **`build_comprobantes_pdf_router`** (nuevo, `facturas_router`): sólo `GET {prefix}/{id}/pdf` y `POST {prefix}/{id}/enviar-email`, para un producto con su propia emisión (LibraCargo). Parámetros: `usuario_actual`, `prefix`, `emisor_del_pdf`, `puede_ver(comprobante) -> bool` (lo que no pasa da 404), `smtp_config`, `donde_configurar_smtp`.
+- **`build_comprobantes_router` y `build_nota_de_credito_router` aceptan `emisor_del_pdf=`**: el PDF que guardan al emitir, autorizar o hacer una nota, el borrador y el mail salen con ese emisor. El borrador lleva el `emisor_id` elegido; uno que no existe es 422. El mail lo firma el emisor del comprobante (`enviar_comprobante_por_mail(..., empresa_nombre=None)`).
+- **Pre factura**: el `emisor_id` ahora lo resuelve el mismo punto. Un `emisor` inyectado ya no lo reemplaza: lo pisa clave por clave.
+- **El PDF de una factura lleva el `id` en el nombre de archivo** (`factura_{id}_{pv}_{numero}.pdf`). Antes `factura_{pv}_{numero}.pdf` hacía que una nota de crédito pisara a la factura del mismo número, y dos razones sociales con la misma numeración, entre sí. Los `pdf_path` ya guardados no cambian; sin `id` (el borrador) el nombre es el de siempre.
+- El PDF guardado en `pdf_path` no se regenera aunque cambie el emisor: sólo se rearma si el archivo se perdió.
+
+### Para los productos
+
+- **Contalibra, Restolibra, LibraClub y el resto**: nada. Suben el pin y sus PDF salen igual.
+- **Un producto con varias razones sociales** (LibraCargo), para que sus PDF lleven la razón social y el logo correctos:
+  1. Al arrancar: `emisor_del_pdf.registrar_resolvedor(fn)`, con `fn(documento) -> {"direccion": ..., "iva_condition": ..., "iibb": ..., "inicio_actividades": ..., "logo_bytes": ...}` armado desde su base a partir del `emisor_id` del documento (`documento.get("emisor_id")`; leé con `.get`: el documento también puede ser un recibo o un remito). `nombre` y `cuit` ya los pone el motor desde `arca_config`: sólo pasalos si la razón social del producto se llama distinto.
+  2. Para ver y mandar el PDF de sus comprobantes emitidos: `app.include_router(build_comprobantes_pdf_router(usuario_actual=..., puede_ver=<filtro por ambiente o razón social>, smtp_config=..., emisor_del_pdf=<el mismo resolvedor, opcional si lo registró>))`. Sus rutas de emisión, anulación y notas de crédito siguen siendo suyas: al autorizar, que guarde `pdf_path` con `generate_pdf_factura(factura)`.
+  3. La pre factura no cambia: su `emisor_del_pdf` sigue andando y ahora, además, recibe de base el nombre y el CUIT del `emisor_id`.
+- Quien guarde la ruta del PDF y la reconstruya con `factura_{pv}_{numero}.pdf` en vez de leer `facturas.pdf_path` deja de encontrarla en los PDF nuevos.
 
 ## [Unreleased] — La pre factura: un comprobante por facturar que el cliente ve antes (propuesta: v1.140.0)
 

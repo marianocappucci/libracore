@@ -622,3 +622,33 @@ Detalle en `docs/fce.md`.
 - La bandeja de siempre (`/api/comprobantes-pendientes`) sigue listando `pendiente`, `facturado` y `descartado`; una pre factura `enviado` o `aceptado` se ve en el router de pre facturas, no ahí.
 - La migración no se baja: restaurar el backup.
 - Dos cosas quedan del producto: qué órdenes forman cada pre factura (la tabla de vínculo, la reserva y la liberación) y el camino de emisión por ARCA.
+
+## ADR-031 — El emisor de un PDF se resuelve por documento, en un solo lugar
+
+**Contexto.** Todos los PDF del motor salen de `pdf_generator`, pero el emisor (nombre, CUIT, domicilio, condición de IVA, IIBB, inicio de actividades, logo) salía siempre de `_empresa()`, o sea de la configuración global de la instancia: un solo emisor. `generate_pdf_factura` ignoraba `facturas.emisor_id` (ADR-021), así que una instancia con varias razones sociales (LibraCargo) imprimía el CUIT de una y el membrete de otra. Sólo la pre factura (ADR-030) aceptaba el emisor inyectado, con un camino propio. El humano preguntó (2026-10-06) si la familia tenía normalizado cómo crea los comprobantes con PDF; no lo tenía.
+
+**Decisión.** `libracore.emisor_del_pdf.emisor_para(documento, *, resolvedor=None, empresa=None, conn=None)` arma el `dict` `empresa` por capas, cada una pisa a la anterior:
+1. la configuración de la instancia (`pdf_generator._empresa()`): lo de siempre;
+2. `documento["emisor_id"]`, si lo tiene: `nombre` y `cuit` de esa fila de `arca_config` (`empresa` y `cuit`), **también si está inactiva** (dar de baja una razón social no cambia con quién se emitió lo que ya salió); un id que no existe levanta `EmisorDesconocido`, nunca cae a otro emisor;
+3. el **resolvedor** del producto, `(documento: dict) -> dict | None`: domicilio, condición de IVA, IIBB, inicio de actividades, logo (`logo_bytes` o `logo_path`) y lo que quiera pisar. Una clave en `None` no pisa; un texto vacío sí. **Lo que levante, sube**: caer al membrete de la instancia sería imprimir los datos de otra razón social;
+4. `empresa=`, lo que pasa quien llama a un generador puntual (la pre factura lo tenía desde ADR-030): gana sobre todo.
+
+**El resolvedor se da de dos maneras.** Registrado una vez al arrancar, `emisor_del_pdf.registrar_resolvedor(fn)` (como `libro_de_clientes.registrar_origen_de_ventas`): vale para **todos** los PDF del proceso, también los que el motor genera por su cuenta (al autorizar, `venta_facturacion`, la bandeja de MercadoPago), que un parámetro de router no alcanza. Por parámetro (`resolvedor=` de cada generador, `emisor_del_pdf=` de los routers): reemplaza al registrado para esa llamada.
+
+**Todos los generadores pasan por ahí**: `generate_pdf_factura` (factura, notas y FCE), `generate_pdf_recibo` y `generate_pdf_recibo_doc`, `generate_pdf_presupuesto`, `generate_pdf` (remito), `generate_pdf_pre_factura` y `generate_pdf_resumen_cc`, todos con `resolvedor=` (kw-only). La pre factura conserva `empresa=` y gana `conn=` para leer `arca_config` desde la transacción de quien llama. La tabla `recibos` no tiene `emisor_id`: un recibo emitido usa la instancia y el resolvedor.
+
+**Routers.**
+- `build_comprobantes_router(..., emisor_del_pdf=None)` y `build_nota_de_credito_router(..., emisor_del_pdf=None)`: el PDF que guardan al emitir, autorizar o hacer una nota, el borrador y el mail salen con ese emisor. El borrador lleva el `emisor_id` elegido (un emisor que no existe es 422).
+- **`build_comprobantes_pdf_router(*, usuario_actual, prefix="/api/facturas", emisor_del_pdf=None, puede_ver=None, smtp_config=None, donde_configurar_smtp=...)`**: sólo `GET /{id}/pdf` y `POST /{id}/enviar-email`, para un producto cuyo comprobante vive en `facturas` pero que emite, anula y hace notas por su cuenta (LibraCargo). Comparte el código del router grande (`_pdf_del_comprobante`, `_registrar_enviar_email`). `puede_ver(comprobante) -> bool` deja al producto esconder comprobantes (de otro ambiente, de otra razón social): lo que no pasa da 404 en las dos rutas, igual que un id inexistente. **El router grande no gana `GET /{id}/pdf`**: Contalibra, Restolibra y LibraClub ya tienen el suyo y dos rutas con el mismo path se resuelven por orden de registro.
+- El mail lo firma el emisor del comprobante (asunto y cuerpo), no el de la instancia: `enviar_comprobante_por_mail(..., empresa_nombre=None)`.
+
+**El PDF guardado no se regenera.** `facturas.pdf_path` apunta al PDF de lo que salió, con el emisor de ese momento. Los endpoints de PDF y de mail lo sirven si el archivo está; sólo si se perdió (un redeploy que borra el disco del contenedor) lo rearman desde la fila, con el emisor de hoy, y sin volver a guardar la ruta. `generate_pdf_factura` sigue escribiendo siempre el archivo.
+
+**Un defecto que salió al medir.** El archivo se llamaba `factura_{pv}_{numero}.pdf`: sin el tipo, el emisor ni el ambiente. Una nota de crédito 0001-00000001 y la factura 0001-00000001 compartían archivo (la nota pisaba a la factura), y dos razones sociales con la misma numeración, también. Con `pdf_path` sirviéndose desde el disco, el PDF de una razón social habría salido con el membrete de la otra. Ahora el nombre lleva el `id` del comprobante (`factura_{id}_{pv}_{numero}.pdf`); sin `id` (el borrador) es el de siempre. Los `pdf_path` ya guardados no se tocan.
+
+**Consecuencias.**
+- Quien no hace nada no cambia: sin resolvedor ni `emisor_id` los bytes de cada PDF son los mismos que en v1.140 (verificado contra el árbol de v1.140.0 con factura, remito, presupuesto, recibo, pre factura y resumen).
+- Contalibra, Restolibra y LibraClub no tienen que hacer nada. Los comprobantes que tengan `emisor_id` (sólo los de un producto con varias razones sociales) salen con el nombre y el CUIT de su `arca_config`.
+- Pre factura: antes, un `emisor` inyectado reemplazaba al `emisor_id`; ahora el `emisor_id` va debajo y el inyectado lo pisa clave por clave. Si un producto pasa `nombre` y `cuit`, es lo mismo; si no los pasa, salen los del `arca_config` y no los de la instancia.
+- `arca_config` sigue sin guardar domicilio, condición de IVA ni logo (ADR-021): los pone el producto con el resolvedor. Llevarlos a la tabla es una decisión aparte.
+- Fuera de alcance: el ticket del POS (`ticket_generator`) arma su membrete de `config_manager` directo; no es un comprobante con emisor.
