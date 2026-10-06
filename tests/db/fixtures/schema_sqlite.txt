@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (400)
+## tablas (401)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -60,6 +60,7 @@ cc_asientos|fecha|TEXT|NN|
 cc_asientos|haber|REAL|NN|0
 cc_asientos|id|INTEGER||
 cc_asientos|origen_legado|TEXT||
+cc_asientos|origen|TEXT||
 cc_asientos|rol|TEXT|NN|
 cc_asientos|tercero_id|INTEGER|NN|
 cc_asientos|usuario_id|INTEGER||
@@ -487,7 +488,7 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (33)
+## índices (34)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
 categorias_egreso|sqlite_autoindex_categorias_egreso_1|UNIQUE implícito (nombre)
@@ -495,6 +496,7 @@ categorias_producto|sqlite_autoindex_categorias_producto_1|UNIQUE implícito (no
 cc_asientos|idx_cc_asientos_cuenta|CREATE INDEX idx_cc_asientos_cuenta ON cc_asientos(tercero_id, rol, fecha)
 cc_asientos|idx_cc_asientos_factura|CREATE INDEX idx_cc_asientos_factura ON cc_asientos(factura_id)
 cc_asientos|idx_cc_asientos_origen_legado|CREATE UNIQUE INDEX idx_cc_asientos_origen_legado ON cc_asientos(origen_legado) WHERE origen_legado IS NOT NULL
+cc_asientos|idx_cc_asientos_origen|CREATE INDEX idx_cc_asientos_origen ON cc_asientos(origen) WHERE origen IS NOT NULL
 cc_debitos|idx_cc_debitos_cliente|CREATE INDEX idx_cc_debitos_cliente ON cc_debitos(cliente_id)
 cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referencia ON cc_debitos(referencia) WHERE referencia != ''
 cc_pagos|idx_cc_pagos_cliente|CREATE INDEX idx_cc_pagos_cliente ON cc_pagos(cliente_id)

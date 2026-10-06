@@ -425,6 +425,7 @@ def create_cc_pago(cliente_id: int, monto: float, fecha: str, concepto: str,
                VALUES (?,?,?,?,?,?,?,?)""",
             (cliente_id, float(monto), fecha, concepto, referencia, medio_pago, caja_id, usuario_id),
         )
+        _al_libro(c, f"cc_pago:{cur.lastrowid}")
         return cur.lastrowid
 
 
@@ -447,6 +448,7 @@ def get_cc_pago(pago_id: int) -> dict | None:
 def delete_cc_pago(pago_id: int):
     with get_connection() as conn:
         conn.execute("DELETE FROM cc_pagos WHERE id=?", (pago_id,))
+        _al_libro(conn, f"cc_pago:{pago_id}")
 
 
 def create_cc_debito(cliente_id: int, monto: float, fecha: str, concepto: str = "",
@@ -473,9 +475,21 @@ def create_cc_debito(cliente_id: int, monto: float, fecha: str, concepto: str = 
                VALUES (?,?,?,?,?,?)""",
             (cliente_id, float(monto), fecha, concepto, referencia, usuario_id),
         )
+        _al_libro(c, f"cc_debito:{cur.lastrowid}")
         return cur.lastrowid
 
 
 def delete_cc_debito(debito_id: int):
     with get_connection() as conn:
         conn.execute("DELETE FROM cc_debitos WHERE id=?", (debito_id,))
+        _al_libro(conn, f"cc_debito:{debito_id}")
+
+
+def _al_libro(conn, origen: str) -> None:
+    """Lleva el hecho al libro de clientes, en la misma transacción (opción B, etapa B1).
+
+    Import tardío: `libro_de_clientes` importa este módulo.
+    """
+    from libracore.db import libro_de_clientes
+
+    libro_de_clientes.sincronizar(origen, conn=conn)

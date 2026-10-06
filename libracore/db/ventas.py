@@ -64,10 +64,13 @@ def add_venta_pago(venta_id: int, medio: str, monto: float, referencia: str = ""
                    conn: Conexion | None = None):
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
-        c.execute(
+        cur = c.execute(
             "INSERT INTO ventas_pagos (venta_id, medio, monto, referencia) VALUES (?,?,?,?)",
             (venta_id, medio, monto, referencia),
         )
+        from libracore.db import libro_de_clientes
+
+        libro_de_clientes.al_libro_venta_pago(c, cur.lastrowid, medio)
 
 
 def crear_venta_directa(fecha: str, items: list, subtotal: float, descuento: float,

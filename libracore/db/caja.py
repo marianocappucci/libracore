@@ -355,6 +355,8 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
             (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id,
              medio_pago, turno_id, cc_pago_id),
         )
+        if factura_id is not None and tipo == "ingreso":
+            al_libro_de_clientes(c, [cur.lastrowid])
         return cur.lastrowid
 
 
@@ -455,9 +457,13 @@ def anular_movimientos_de_cc_pago(pago_id) -> int:
     tiene movimientos ligados y devuelve 0.
     """
     with get_connection() as conn:
+        ids = [f[0] for f in conn.execute(
+            "SELECT id FROM caja_movimientos WHERE cc_pago_id=? AND anulado=0", (pago_id,)
+        ).fetchall()]
         cur = conn.execute(
             "UPDATE caja_movimientos SET anulado=1 WHERE cc_pago_id=? AND anulado=0", (pago_id,)
         )
+        al_libro_de_clientes(conn, ids)
         return cur.rowcount
 
 
@@ -471,6 +477,7 @@ def delete_caja_movimiento(mov_id):
     """
     with get_connection() as conn:
         conn.execute("DELETE FROM caja_movimientos WHERE id=?", (mov_id,))
+        al_libro_de_clientes(conn, [mov_id])
 
 
 def anular_caja_movimiento(mov_id):
@@ -496,3 +503,19 @@ def anular_caja_movimiento(mov_id):
     """
     with get_connection() as conn:
         conn.execute("UPDATE caja_movimientos SET anulado=1 WHERE id=?", (mov_id,))
+        al_libro_de_clientes(conn, [mov_id])
+
+
+def al_libro_de_clientes(conn, movimientos) -> None:
+    """Lleva al libro de clientes lo que cambió en estos movimientos de caja, en la
+    misma transacción (opción B, etapa B1). Sólo cuentan los ingresos a cuenta
+    corriente con factura; `sincronizar` decide, y revierte lo que dejó de contar.
+
+    La llama también quien cambia un movimiento con SQL propio (vincular un cobro a
+    su factura después de emitirla). Import tardío: `libro_de_clientes` importa
+    este módulo.
+    """
+    from libracore.db import libro_de_clientes
+
+    for mov_id in movimientos:
+        libro_de_clientes.sincronizar(f"caja_mov:{mov_id}", conn=conn)

@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (400)
+## tablas (401)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -60,6 +60,7 @@ cc_asientos|fecha|text|NN|
 cc_asientos|haber|numeric|NN|0
 cc_asientos|id|bigint|NN|nextval('cc_asientos_id_seq'::regclass)
 cc_asientos|origen_legado|text||
+cc_asientos|origen|text||
 cc_asientos|rol|text|NN|
 cc_asientos|tercero_id|integer|NN|
 cc_asientos|usuario_id|integer||
@@ -487,7 +488,7 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (66)
+## índices (67)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 auth_log|auth_log_pkey|CREATE UNIQUE INDEX auth_log_pkey ON public.auth_log USING btree (id)
@@ -502,6 +503,7 @@ cc_asientos|cc_asientos_pkey|CREATE UNIQUE INDEX cc_asientos_pkey ON public.cc_a
 cc_asientos|idx_cc_asientos_cuenta|CREATE INDEX idx_cc_asientos_cuenta ON public.cc_asientos USING btree (tercero_id, rol, fecha)
 cc_asientos|idx_cc_asientos_factura|CREATE INDEX idx_cc_asientos_factura ON public.cc_asientos USING btree (factura_id)
 cc_asientos|idx_cc_asientos_origen_legado|CREATE UNIQUE INDEX idx_cc_asientos_origen_legado ON public.cc_asientos USING btree (origen_legado) WHERE (origen_legado IS NOT NULL)
+cc_asientos|idx_cc_asientos_origen|CREATE INDEX idx_cc_asientos_origen ON public.cc_asientos USING btree (origen) WHERE (origen IS NOT NULL)
 cc_debitos|cc_debitos_pkey|CREATE UNIQUE INDEX cc_debitos_pkey ON public.cc_debitos USING btree (id)
 cc_debitos|idx_cc_debitos_cliente|CREATE INDEX idx_cc_debitos_cliente ON public.cc_debitos USING btree (cliente_id)
 cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referencia ON public.cc_debitos USING btree (referencia) WHERE (referencia <> ''::text)

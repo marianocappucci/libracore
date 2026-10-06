@@ -160,6 +160,7 @@ def create_client(name, address="", cuit_dni="", email="", phone="", iva_conditi
         # En la MISMA transacción que el alta: un cliente sin su party es
         # un cliente al que no se le puede vender.
         _espejar_party(conn, client_id, name, cuit_dni, email, phone)
+        _al_libro(conn, client_id)
         return client_id
 
 
@@ -197,7 +198,18 @@ def resolver_cliente_externo(external_ref: str, name: str, cuit_dni: str = "",
                VALUES (?,?,?,?,?)""",
             (name, cuit_dni or "", email or "", phone or "", external_ref),
         )
+        _al_libro(conn, cur.lastrowid)
         return cur.lastrowid
+
+
+def _al_libro(conn, client_id: int) -> None:
+    """Un cliente nuevo, o con CUIT nuevo, puede hacer contar ventas y facturas que
+    antes no eran de nadie: se asientan (`libro_de_clientes.sincronizar_cliente`). Lo
+    ya asentado a otro cliente no se mueve. Import tardío: ese módulo importa caja,
+    facturas y cuenta corriente."""
+    from libracore.db import libro_de_clientes
+
+    libro_de_clientes.sincronizar_cliente(client_id, conn=conn)
 
 
 def get_all_clients():
@@ -334,6 +346,8 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
                 (nuevo_name, nuevo_cuit or None, nuevo_email or None,
                  nuevo_phone or None, client_id),
             )
+        if (nuevo_cuit or "") != (client["cuit_dni"] or ""):
+            _al_libro(conn, client_id)
 
 
 def toggle_auto_facturar(client_id: int) -> bool:

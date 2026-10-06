@@ -48,6 +48,7 @@ from pydantic import BaseModel
 from libracore.db import caja as db_caja
 from libracore.db import clients as db_clients
 from libracore.db import cuenta_corriente as db_cc
+from libracore.db import libro_de_clientes
 from libracore.db import recibos as db_recibos
 from libracore.db.cuenta_corriente import VENTAS_LIBRACORE, OrigenVentas
 from libracore.validacion import sin_booleanos
@@ -131,6 +132,9 @@ def build_cuenta_corriente_router(
 ) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["cuenta_corriente"])
     opciones = opciones or OpcionesCuentaCorriente()
+    # El libro de clientes asienta las ventas fiadas desde el mismo origen que lee
+    # el cálculo (opción B, etapa B1).
+    libro_de_clientes.registrar_origen_de_ventas(origen)
 
     @router.get("")
     def listar():
