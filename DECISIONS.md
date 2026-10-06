@@ -551,3 +551,24 @@ Detalle en `docs/fce.md`.
 **Consecuencias.**
 - Mientras dure la sombra, `comparar()` debería dar vacío. Lo que muestre es un escritor que no avisa (se arregla) o un cambio de CUIT (es la semántica nueva, y se explica).
 - Cuando dé vacío en todas las instancias, las lecturas pasan al libro (etapa B3) y el cálculo se retira (B4).
+
+
+## ADR-028 — Las lecturas de la cuenta de clientes pasan al libro, detrás de un interruptor
+
+**Contexto.** El libro de clientes (ADR-027) lleva en sombra la cuenta de los siete productos y en dev, demo y clientes da cero diferencias contra el cálculo (`comparar()` vacío). Es la etapa B3 de la opción B: las lecturas pasan al libro. Se hace por instancia y reversible, para poder volver al cálculo sin desplegar.
+
+**Decisión.**
+- **Interruptor por instancia**: la variable de entorno `LIBRACORE_CC_DESDE_EL_LIBRO` (valores verdaderos `1`, `true`, `si`, `sí`, sin distinguir mayúsculas). `libro_de_clientes.lee_del_libro()` la lee. Apagada, que es el default, todo se lee calculado, como hasta v1.137.
+- Una base sin `cc_asientos` lee calculado aunque esté encendida (LibraDesk arma a mano las tablas del motor que usa).
+- Encendida, salen del libro `get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` (que se resuelve sobre los movimientos, como siempre) y `get_clientes_con_saldo_cc`, con **la misma forma**: las mismas claves, los mismos tipos, el mismo criterio de qué clientes aparecen y el mismo orden (por fecha, y a igual fecha ventas, facturas, débitos y pagos; los clientes por saldo descendente y nombre).
+- Un movimiento sale de su **asiento vigente**: la fecha, el signo y el monto son los del asiento. El `origen` (`cc_pago:12`) dice qué fila leer para completar el concepto, la referencia, el medio, el usuario y los ids que usa la pantalla (`cc_pago_id`, `cc_debito_id`, `venta_id`, `factura_id`).
+- **Un hecho revertido no se muestra**: ni el asiento original ni su contrapartida entran en la lista de movimientos. Así la lista coincide con la del cálculo, que no ve lo borrado ni lo anulado. El saldo no necesita la regla: el original y su reversión suman cero. La reversión sigue en el libro para reconstruir la cuenta como estaba.
+- El saldo del libro se redondea al centavo; el cálculo lo devolvía con el error del flotante.
+- **`get_facturas_pendientes_cc` no cambia**: sigue por factura (ADR-018), no es un saldo.
+- `libro_de_clientes.comparar()` sigue midiendo contra el cálculo (`get_cc_saldo_calculado`), con el interruptor en el valor que tenga.
+
+**Consecuencias.**
+- Mientras el cálculo exista, encender o apagar una instancia no pide migración ni despliegue de código: se cambia la variable y se reinicia.
+- Quien escriba las tablas de la cuenta con SQL propio sin llamar a `sincronizar` deja de verse con el interruptor encendido hasta que corra `reconstruir()`: es lo que la sombra ya mostraba en `comparar()`.
+- Lo que el cálculo ve y el libro no (un hecho de importe cero, un CUIT de dos clientes, un CUIT que cambió después de asentar la deuda: ADR-027) es la semántica nueva, y `comparar()` lo mostraba.
+- La etapa B4 retira el cálculo (`*_calculado`) y este interruptor: el libro pasa a ser la única lectura.
