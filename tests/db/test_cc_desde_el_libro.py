@@ -1,14 +1,14 @@
-"""Las lecturas de la cuenta de clientes desde el libro (etapa B3, ADR-028).
+"""Las lecturas de la cuenta de clientes salen del libro (etapas B3 y B4, ADR-028 y ADR-029).
 
-Lo que se fija acá, contra los dos motores y los tres orígenes de ventas:
-- con `LIBRACORE_CC_DESDE_EL_LIBRO` apagada y encendida las cuatro lecturas
-  (`get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` y
-  `get_clientes_con_saldo_cc`) devuelven **exactamente** lo mismo, en un escenario con
-  las cuatro fuentes, pagos y débitos borrados, un movimiento y una factura anulados, un
-  pago cuyo importe cambió y ventas fiadas;
-- encendida, no pasa por el cálculo (se prueba rompiéndolo);
-- encendida en una base sin `cc_asientos`, lee calculado;
-- el interruptor entiende los valores que dice el ADR, y apagado es el default.
+Lo que se fija acá, contra los dos motores y los tres orígenes de ventas, en un escenario con
+las cuatro fuentes, pagos y débitos borrados, un movimiento y una factura anulados, un pago
+cuyo importe cambió y ventas fiadas:
+- las cuatro lecturas (`get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` y
+  `get_clientes_con_saldo_cc`) dan lo esperado, con importes y órdenes escritos a mano (ya no
+  hay un cálculo contra el cual compararlas);
+- un hecho revertido no se muestra, y cada movimiento trae los ids y textos que usa la pantalla;
+- lo cargado con SQL propio no se ve hasta `reconstruir` (ADR-029);
+- `origen` ya no decide el saldo: sólo completa el número de las ventas.
 """
 import os
 
@@ -23,12 +23,9 @@ from libracore.db.cuenta_corriente import (
 )
 from libracore.db.schema import init_core_schema
 
-VARIABLE = "LIBRACORE_CC_DESDE_EL_LIBRO"
-
 
 @pytest.fixture(params=["sqlite", "postgres"])
-def base(request, tmp_path, monkeypatch):
-    monkeypatch.delenv(VARIABLE, raising=False)
+def base(request, tmp_path):
     if request.param == "postgres":
         url = os.environ.get("LIBRACORE_POSTGRES_URL")
         if not url:
@@ -167,7 +164,8 @@ def _escenario(origen):
     cuenta_corriente.delete_cc_pago(sin_rastro)
     cuenta_corriente.create_cc_pago(e, 70, "2026-10-01", "Adelanto", "", "efectivo", None, None)
 
-    assert lc.comparar(origen) == []
+    # Los escritores dejaron todo en el libro: no hay nada que reconstruir.
+    assert lc.reconstruir(origen) == 0
     return {"a": a, "b": b, "c": c_, "d": d, "e": e, "cambiado": cambiado}
 
 
@@ -191,43 +189,48 @@ def origen(request):
             "external_ref": VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF}[request.param]
 
 
-def test_apagado_y_encendido_las_cuatro_lecturas_dan_lo_mismo(base, origen, monkeypatch):
+def test_las_cuatro_lecturas_dan_lo_esperado(base, origen):
     ids = _escenario(origen)
+    a, b, c_, d, e = (ids[k] for k in "abcde")
+    lecturas = _lecturas(ids, origen)
 
-    monkeypatch.delenv(VARIABLE, raising=False)
-    assert not lc.lee_del_libro()
-    calculado = _lecturas(ids, origen)
+    assert lecturas["saldos"] == {a: 1000.5 + 200.25 + 500 + 90.5 + 250 + 33 - 300 - 100.75,
+                                  b: 100 - 45.5, c_: 0, d: 0, e: -70}
+    assert all(isinstance(s, float) for s in lecturas["saldos"].values())
+    assert [(m["fecha"], m["concepto"], m["tipo"], m["monto"]) for m in lecturas["movimientos"][a]] == [
+        ("2026-09-10", "Venta #V-1", "debito", 1000.5),
+        ("2026-09-15", "FACTURA C 0001-00000001", "debito", 500),
+        ("2026-09-15", "Reserva", "debito", 250),
+        ("2026-09-15", "Pago", "credito", 300),
+        ("2026-09-16", "Venta a cuenta corriente", "debito", 33),
+        ("2026-09-20", "Venta #V-2", "debito", 200.25),
+        ("2026-09-25", "FACTURA C 0001-00000002", "debito", 90.5),
+        ("2026-10-02", "Pago a cuenta", "credito", 100.75)]
+    assert [(m["concepto"], m["monto"]) for m in lecturas["movimientos"][b]] == [
+        ("Venta #V-3", 100), ("Pago de B", 45.5)]
+    assert lecturas["movimientos"][c_] == lecturas["movimientos"][d] == []
+    assert [m["concepto"] for m in lecturas["movimientos"][e]] == ["Adelanto"]
+    assert [(c["id"], c["name"], c["saldo"]) for c in lecturas["clientes"]] == [
+        (a, "Acopio Sur", 1673.5), (b, "Barraca Norte", 54.5), (e, "Acopio a favor", -70)]
 
-    monkeypatch.setenv(VARIABLE, "1")
-    assert lc.lee_del_libro()
-    # Encendida no pasa por el cálculo: si lo tocara, esto lo rompe.
-    def _no_calcular(*_a, **_k):
-        raise AssertionError("leyó calculado con el interruptor encendido")
-    for nombre in ("get_cc_saldo_calculado", "get_cc_movimientos_calculados",
-                   "get_clientes_con_saldo_calculado"):
-        monkeypatch.setattr(cuenta_corriente, nombre, _no_calcular)
-    del_libro = _lecturas(ids, origen)
+    def _periodo(cliente, desde, hasta):
+        p = lecturas["periodos"][(cliente, desde, hasta)]
+        return (p["saldo_anterior"], len(p["movimientos"]), p["total_debitos"], p["total_creditos"],
+                p["saldo_final"])
 
-    # Que el escenario no sea vacío: de lo contrario la igualdad no prueba nada.
-    a, b = ids["a"], ids["b"]
-    assert calculado["saldos"] == {a: 1000.5 + 200.25 + 500 + 90.5 + 250 + 33 - 300 - 100.75,
-                                   b: 100 - 45.5, ids["c"]: 0, ids["d"]: 0, ids["e"]: -70}
-    assert [m["concepto"] for m in calculado["movimientos"][a]] == [
-        "Venta #V-1", "FACTURA C 0001-00000001", "Reserva", "Pago", "Venta a cuenta corriente",
-        "Venta #V-2", "FACTURA C 0001-00000002", "Pago a cuenta"]
-    assert [(c["id"], c["saldo"]) for c in calculado["clientes"]] == [(a, 1673.5), (b, 54.5), (ids["e"], -70)]
-
-    assert del_libro["saldos"] == calculado["saldos"]
-    assert del_libro["movimientos"] == calculado["movimientos"]
-    assert del_libro["periodos"] == calculado["periodos"]
-    assert del_libro["clientes"] == calculado["clientes"]
-    assert all(isinstance(s, float) for s in del_libro["saldos"].values())
+    assert _periodo(a, "2026-09-01", "2026-12-31") == (0, 8, 2074.25, 400.75, 1673.5)
+    assert _periodo(a, "2026-09-16", "2026-09-30") == (1450.5, 3, 323.75, 0, 1774.25)
+    assert _periodo(a, "2026-10-01", "2026-10-31") == (1774.25, 1, 0, 100.75, 1673.5)
+    assert _periodo(a, "2027-01-01", "2027-01-31") == (1673.5, 0, 0, 0, 1673.5)
+    assert _periodo(b, "2026-10-01", "2026-10-31") == (0, 2, 100, 45.5, 54.5)
+    assert _periodo(c_, "2026-09-01", "2026-12-31") == (0, 0, 0, 0, 0)
+    # Un cliente sin movimientos en el período, pero con saldo, entra con ese saldo.
+    assert _periodo(e, "2027-01-01", "2027-01-31") == (-70, 0, 0, 0, -70)
 
 
-def test_la_lista_no_muestra_lo_revertido_y_sale_del_libro(base, monkeypatch):
+def test_la_lista_no_muestra_lo_revertido(base):
     """Un hecho revertido no se muestra: ni el original ni su contrapartida (ADR-028)."""
     ids = _escenario(VENTAS_LIBRACORE)
-    monkeypatch.setenv(VARIABLE, "1")
 
     movs = cuenta_corriente.get_cc_movimientos(ids["a"])
     assert [(m["fecha"], m["tipo"], m["monto"]) for m in movs] == [
@@ -244,69 +247,99 @@ def test_la_lista_no_muestra_lo_revertido_y_sale_del_libro(base, monkeypatch):
     assert all(m["monto"] not in (999, 800, 700, 60) for m in movs)
 
 
-def test_la_forma_de_cada_movimiento_es_la_del_calculo(base, monkeypatch):
+def test_la_forma_de_cada_movimiento(base):
     """Los ids y los textos que usa la pantalla (borrar un pago, enlazar la factura)."""
     ids = _escenario(VENTAS_LIBRACORE)
-    calculados = cuenta_corriente.get_cc_movimientos(ids["a"])
-    monkeypatch.setenv(VARIABLE, "true")
-    del_libro = cuenta_corriente.get_cc_movimientos(ids["a"])
+    movs = cuenta_corriente.get_cc_movimientos(ids["a"])
 
-    assert del_libro == calculados
-    por_concepto = {m["concepto"]: m for m in del_libro}
+    por_concepto = {m["concepto"]: m for m in movs}
     assert por_concepto["Pago"]["cc_pago_id"] is not None
     assert por_concepto["Pago"]["usuario_nombre"] == "Ana"
     assert por_concepto["Pago"]["medio"] == "transferencia"
     assert por_concepto["Pago a cuenta"]["medio"] == "efectivo"
     assert por_concepto["Reserva"]["cc_debito_id"] is not None
+    assert por_concepto["Reserva"]["referencia"] == "res-1"
     assert por_concepto["FACTURA C 0001-00000001"]["factura_id"] is not None
     assert por_concepto["FACTURA C 0001-00000001"]["referencia"] == "ref-f1"
+    assert por_concepto["FACTURA C 0001-00000001"]["usuario_nombre"] == "Ana"
     assert por_concepto["Venta #V-1"]["venta_id"] == 1
     assert "cc_debito_id" not in por_concepto["Pago"]
+    claves = {"fecha", "tipo", "concepto", "monto", "referencia", "medio", "venta_id", "factura_id",
+              "cc_pago_id", "usuario_nombre"}
+    assert all(claves <= set(m) for m in movs)
 
 
-def test_encendido_lee_lo_que_dice_el_libro(base, monkeypatch):
-    """Un pago cargado con SQL propio, sin pasar por el motor, no está en el libro:
-    el interruptor decide si se ve. `reconstruir` lo pone y los dos vuelven a coincidir."""
+def test_lo_cargado_con_sql_propio_no_se_ve_hasta_reconstruir(base):
+    """ADR-029: el libro es la única lectura, y se llena por los escritores del motor.
+    Un pago cargado con SQL propio no está en el libro; `reconstruir` (lo que hace un
+    deploy) lo pone."""
     cid = clients.create_client("Acopio Sur", cuit_dni="20111111112")
     cuenta_corriente.create_cc_debito(cid, 500, "2026-10-01", "Reserva")
     with core.get_connection() as c:
         c.execute("INSERT INTO cc_pagos (cliente_id, monto, fecha, concepto) VALUES (?, 120, '2026-10-02', 'p')",
                   (cid,))
 
-    assert cuenta_corriente.get_cc_saldo(cid) == 380
-    monkeypatch.setenv(VARIABLE, "si")
     assert cuenta_corriente.get_cc_saldo(cid) == 500
     assert [m["concepto"] for m in cuenta_corriente.get_cc_movimientos(cid)] == ["Reserva"]
 
     assert lc.reconstruir() == 1
     assert cuenta_corriente.get_cc_saldo(cid) == 380
     assert [m["concepto"] for m in cuenta_corriente.get_cc_movimientos(cid)] == ["Reserva", "p"]
-
-
-def test_sin_cc_asientos_lee_calculado_aunque_este_encendido(base, monkeypatch):
-    cid = clients.create_client("Acopio Sur", cuit_dni="20111111112")
-    cuenta_corriente.create_cc_debito(cid, 500, "2026-10-01", "Reserva")
-    cuenta_corriente.create_cc_pago(cid, 120, "2026-10-02", "Pago", "", "efectivo", None, None)
-    with core.get_connection() as c:
-        c.execute("DROP TABLE cc_asientos")
-    monkeypatch.setenv(VARIABLE, "1")
-
-    assert not lc.lee_del_libro()
-    assert cuenta_corriente.get_cc_saldo(cid) == 380
-    assert [m["concepto"] for m in cuenta_corriente.get_cc_movimientos(cid)] == ["Reserva", "Pago"]
     assert cuenta_corriente.get_cc_movimientos_periodo(cid, "2026-10-02", "2026-10-31")["saldo_final"] == 380
     assert [(c["id"], c["saldo"]) for c in cuenta_corriente.get_clientes_con_saldo_cc()] == [(cid, 380)]
 
 
-@pytest.mark.parametrize("valor", ["1", "true", "TRUE", "True", "si", "SI", "sí", "Sí", " 1 "])
-def test_los_valores_que_encienden(base, monkeypatch, valor):
-    monkeypatch.setenv(VARIABLE, valor)
-    assert lc.lee_del_libro()
+def test_el_origen_no_decide_el_saldo(base):
+    """`origen` se acepta para no cambiarle la firma a los productos, pero el saldo es el del
+    libro: con cualquier origen, incluso uno cuya tabla de ventas no existe, da lo mismo."""
+    ids = _escenario(VENTAS_LIBRACORE)
+    a = ids["a"]
+    saldo = cuenta_corriente.get_cc_saldo(a)
+
+    for otro in (VENTAS_LIBRACOMMERCE, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF):
+        assert cuenta_corriente.get_cc_saldo(a, otro) == saldo == 1673.5
+        assert cuenta_corriente.get_clientes_con_saldo_cc(otro) == cuenta_corriente.get_clientes_con_saldo_cc()
+        movs = cuenta_corriente.get_cc_movimientos(a, otro)
+        assert [m["monto"] for m in movs] == [m["monto"] for m in cuenta_corriente.get_cc_movimientos(a)]
+        # Sin la tabla de ventas del origen, la venta sale con el concepto del asiento y sin su id.
+        venta = next(m for m in movs if m["monto"] == 1000.5)
+        assert (venta["concepto"], venta["venta_id"]) == ("Venta V-1", None)
 
 
-@pytest.mark.parametrize("valor", ["", "0", "no", "false", "off", "yes", "2"])
-def test_los_demas_valores_y_la_variable_ausente_apagan(base, monkeypatch, valor):
-    monkeypatch.setenv(VARIABLE, valor)
-    assert not lc.lee_del_libro()
-    monkeypatch.delenv(VARIABLE)
-    assert not lc.lee_del_libro()
+def test_un_debito_o_un_pago_negativo_conserva_su_tipo_y_su_signo(base):
+    """LibraDesk registra la anulación de un remito como un `cc_debito` de −18150 (La Grace,
+    producción). El libro lo asienta al haber, pero el movimiento sigue siendo lo que mostraba
+    el cálculo: un débito de monto negativo, no un crédito de 18150. Igual un pago negativo:
+    un crédito de monto negativo. El saldo da lo mismo de las dos formas; la lista y los
+    totales del período no."""
+    cid = clients.create_client("Cliente de remitos")
+    cuenta_corriente.create_cc_debito(cid, 1000, "2026-10-01", "Remito 1", "rem-1")
+    cuenta_corriente.create_cc_debito(cid, -18150, "2026-10-02", "Anulación remito 1", "rem-1-anul")
+    cuenta_corriente.create_cc_pago(cid, 200, "2026-10-03", "Pago", "", "efectivo", None, None)
+    cuenta_corriente.create_cc_pago(cid, -50, "2026-10-04", "Pago devuelto", "", "efectivo", None, None)
+
+    movs = cuenta_corriente.get_cc_movimientos(cid)
+    assert [(m["fecha"], m["tipo"], m["concepto"], m["monto"]) for m in movs] == [
+        ("2026-10-01", "debito", "Remito 1", 1000.0),
+        ("2026-10-02", "debito", "Anulación remito 1", -18150.0),
+        ("2026-10-03", "credito", "Pago", 200.0),
+        ("2026-10-04", "credito", "Pago devuelto", -50.0)]
+    assert movs[1]["cc_debito_id"] is not None and movs[3]["cc_pago_id"] is not None
+
+    assert cuenta_corriente.get_cc_saldo(cid) == 1000 - 18150 - 200 + 50 == -17300
+    assert [(c["id"], c["saldo"]) for c in cuenta_corriente.get_clientes_con_saldo_cc()] == [(cid, -17300)]
+
+    entero = cuenta_corriente.get_cc_movimientos_periodo(cid, "2026-10-01", "2026-10-31")
+    assert (entero["saldo_anterior"], len(entero["movimientos"]), entero["total_debitos"],
+            entero["total_creditos"], entero["saldo_final"]) == (0, 4, -17150, 150, -17300)
+    # El saldo de apertura de un período posterior arrastra los dos con su signo.
+    tarde = cuenta_corriente.get_cc_movimientos_periodo(cid, "2026-10-03", "2026-10-31")
+    assert (tarde["saldo_anterior"], tarde["total_debitos"], tarde["total_creditos"],
+            tarde["saldo_final"]) == (-17150, 0, 150, -17300)
+
+    # Si la fila del hecho ya no está (borrada con SQL propio y sin sincronizar), el movimiento
+    # sigue con lo que dice el asiento: el débito negativo, que se asentó al haber, sale crédito.
+    with core.get_connection() as c:
+        c.execute("DELETE FROM cc_debitos WHERE referencia = 'rem-1-anul'")
+    huerfano = next(m for m in cuenta_corriente.get_cc_movimientos(cid) if m["fecha"] == "2026-10-02")
+    assert (huerfano["tipo"], huerfano["monto"], huerfano["cc_debito_id"]) == ("credito", 18150.0, None)

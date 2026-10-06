@@ -11,7 +11,7 @@ import datetime
 import pytest
 
 from libracore import cc_resumen, config_manager
-from libracore.db import clients, core, cuenta_corriente
+from libracore.db import clients, core, cuenta_corriente, ventas
 
 HOY = datetime.date(2026, 8, 3)  # lunes
 
@@ -77,8 +77,9 @@ def _cliente_con_deuda(monto=1000.0, fecha="2026-07-20", nombre="Cliente CC", **
             "INSERT INTO ventas (numero, fecha, cliente_id, items, total) VALUES (?,?,?,?,?)",
             (numero, fecha, cid, "[]", monto),
         )
-        c.execute("INSERT INTO ventas_pagos (venta_id, medio, monto) VALUES (?,?,?)",
-                  (cur.lastrowid, "cuenta_corriente", monto))
+        venta_id = cur.lastrowid
+    # Por el escritor del motor, que lleva la deuda al libro: la cuenta se lee de ahí (ADR-029).
+    ventas.add_venta_pago(venta_id, "cuenta_corriente", monto)
     return cid
 
 

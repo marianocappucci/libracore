@@ -9,12 +9,17 @@ VentaLibra el cliente se enlaza después por `clients.external_ref =
 0 de 3 coinciden en nombre). Estos tests fijan que
 `VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF` resuelve el cliente correcto por esa
 referencia, y documentan qué pasaría si se usara el origen equivocado.
+
+Desde ADR-029 el saldo sale del libro: el cliente de cada venta lo resuelve el
+`origen` cuando se asienta (`libro_de_clientes.reconstruir(origen)`, lo que hace
+un deploy), y las ventas que se cargan acá con SQL propio no se ven antes.
 """
 import os
 
 import pytest
 
 from libracore.db import clients, core, cuenta_corriente
+from libracore.db import libro_de_clientes as lc
 from libracore.db.cuenta_corriente import (
     VENTAS_LIBRACOMMERCE,
     VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF,
@@ -110,25 +115,30 @@ def test_cada_cliente_ve_su_propia_deuda_cruzando_por_external_ref(conn):
     _venta_a_party(conn, party_id=3, monto=1000.0, numero="V-ANA")
     _venta_a_party(conn, party_id=1, monto=500.0, numero="V-BETO")
     _venta_a_party(conn, party_id=4, monto=300.0, numero="V-CARLA")
+    lc.reconstruir(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
 
     assert cuenta_corriente.get_cc_saldo(ana, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF) == 1000.0
     assert cuenta_corriente.get_cc_saldo(beto, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF) == 500.0
     assert cuenta_corriente.get_cc_saldo(carla, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF) == 300.0
 
 
-def test_con_el_origen_viejo_la_deuda_le_queda_a_otro_cliente(conn):
+@pytest.mark.parametrize("origen,dueno", [(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF, "ana"),
+                                          (VENTAS_LIBRACOMMERCE, "carla")])
+def test_con_el_origen_viejo_la_deuda_le_queda_a_otro_cliente(conn, origen, dueno):
     """Documenta el problema: cruzar por `customer_party_id == clients.id`
     (lo que hace `VENTAS_LIBRACOMMERCE`) le pone la venta de Ana (party 3) en
-    la cuenta del cliente cuyo ID es 3 -- que es Carla, no Ana."""
+    la cuenta del cliente cuyo ID es 3 -- que es Carla, no Ana. El libro la asienta
+    con el origen con el que se reconstruye, así que el origen del producto tiene
+    que ser el correcto antes de la primera vez: después el cliente se fija."""
     ana, beto, carla = _escenario_ventalibra(conn)
     _venta_a_party(conn, party_id=3, monto=1000.0, numero="V-ANA")
+    lc.reconstruir(origen)
 
-    # Con el origen correcto, la deuda es de Ana.
-    assert cuenta_corriente.get_cc_saldo(ana, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF) == 1000.0
-    # Con el origen viejo, la misma venta aparece en la cuenta de Carla (id=3)
-    # -- que no tiene nada que ver -- y Ana queda en cero.
-    assert cuenta_corriente.get_cc_saldo(carla, VENTAS_LIBRACOMMERCE) == 1000.0
-    assert cuenta_corriente.get_cc_saldo(ana, VENTAS_LIBRACOMMERCE) == 0.0
+    saldos = {"ana": cuenta_corriente.get_cc_saldo(ana), "carla": cuenta_corriente.get_cc_saldo(carla)}
+    # Con el origen correcto, la deuda es de Ana. Con el viejo, la misma venta aparece en
+    # la cuenta de Carla (id=3) -- que no tiene nada que ver -- y Ana queda en cero.
+    assert saldos == {"ana": 1000.0 if dueno == "ana" else 0.0,
+                      "carla": 1000.0 if dueno == "carla" else 0.0}
 
 
 def test_una_venta_de_party_sin_cliente_enlazado_no_suma_a_nadie(conn):
@@ -136,6 +146,7 @@ def test_una_venta_de_party_sin_cliente_enlazado_no_suma_a_nadie(conn):
     nombre. La venta no debe sumarle a nadie, y la consulta no debe romper."""
     ana, beto, carla = _escenario_ventalibra(conn)
     _venta_a_party(conn, party_id=2, monto=999.0, numero="V-PROVEEDOR")
+    lc.reconstruir(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
 
     assert cuenta_corriente.get_cc_saldo(ana, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF) == 0.0
     assert cuenta_corriente.get_cc_saldo(beto, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF) == 0.0
@@ -148,6 +159,7 @@ def test_get_cc_movimientos_trae_el_numero_de_venta_del_cliente_correcto(conn):
     ana, beto, carla = _escenario_ventalibra(conn)
     _venta_a_party(conn, party_id=3, monto=1000.0, fecha="2026-09-05", numero="V-ANA")
     _venta_a_party(conn, party_id=1, monto=500.0, numero="V-BETO")
+    lc.reconstruir(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
 
     movs = cuenta_corriente.get_cc_movimientos(ana, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
     assert len(movs) == 1
@@ -163,6 +175,7 @@ def test_el_saldo_combina_venta_debito_directo_y_pago_por_external_ref(conn):
     _venta_a_party(conn, party_id=3, monto=1000.0, numero="V-ANA")
     cuenta_corriente.create_cc_debito(ana, 250.0, "2026-09-02", "Venta POS-9", "sale-9")
     cuenta_corriente.create_cc_pago(ana, 300.0, "2026-09-03", "Pago", "", "efectivo", None, None)
+    lc.reconstruir(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
 
     # 1000 (venta) + 250 (débito directo) − 300 (pago)
     assert cuenta_corriente.get_cc_saldo(ana, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF) == 950.0
@@ -181,6 +194,7 @@ def test_el_listado_de_deudores_agrupa_por_cliente_no_por_party(conn):
     ana, beto, carla = _escenario_ventalibra(conn)
     _venta_a_party(conn, party_id=3, monto=1000.0, numero="V-ANA")
     _venta_a_party(conn, party_id=1, monto=500.0, numero="V-BETO")
+    lc.reconstruir(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
 
     deudores = cuenta_corriente.get_clientes_con_saldo_cc(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
     por_id = {d["id"]: d["saldo"] for d in deudores}
@@ -217,6 +231,7 @@ def _correr_escenario(db_path, limpiar_schema=False):
     _venta_a_party(conn, party_id=1, monto=500.0, numero="V-BETO")
     # party 2: sin cliente enlazado, no debe sumarle a nadie.
     _venta_a_party(conn, party_id=2, monto=999.0, numero="V-PROVEEDOR")
+    lc.reconstruir(VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF)
 
     resultado = {
         "ana": cuenta_corriente.get_cc_saldo(ana, VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF),

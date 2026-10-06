@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from libracore.cuenta_corriente_router import build_cuenta_corriente_router
-from libracore.db import core, cuenta_corriente
+from libracore.db import caja, core, cuenta_corriente
 from libracore.db.schema import init_core_schema
 
 HOY = datetime.date.today().isoformat()
@@ -51,8 +51,10 @@ def client(entorno):
     return TestClient(app)
 
 
-def _factura(numero, total, fecha="2026-08-28", cae="123", cond="Cuenta Corriente", tipo=11, asoc=None):
-    """Emite una factura y, si es a crédito, su débito en cuenta corriente."""
+def _factura(numero, total, fecha="2026-08-28", cae="123", cond="Cuenta Corriente", tipo=11, asoc=None,
+             con_debito=True):
+    """Emite una factura y, si es a crédito, su débito en cuenta corriente (por el escritor del
+    motor, que lo lleva al libro: la cuenta se lee de ahí, ADR-029)."""
     with core.get_connection() as conn:
         cur = conn.execute(
             "INSERT INTO facturas (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, items,"
@@ -62,10 +64,9 @@ def _factura(numero, total, fecha="2026-08-28", cae="123", cond="Cuenta Corrient
              *(asoc or (0, 0, 0))),
         )
         fid = cur.lastrowid
-        if cond == "Cuenta Corriente" and tipo == 11:
-            conn.execute(
-                "INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, factura_id, medio_pago)"
-                " VALUES (?, 'ingreso', 'Factura', ?, ?, 'Cuenta Corriente')", (fecha, total, fid))
+        if cond == "Cuenta Corriente" and tipo == 11 and con_debito:
+            caja.create_caja_movimiento(fecha, "ingreso", "Factura", total, factura_id=fid,
+                                        medio_pago="Cuenta Corriente", conn=conn)
     return fid
 
 
@@ -175,11 +176,8 @@ def test_venta_fiada_de_ventalibra_y_facturada_no_duplica_la_deuda_y_se_puede_co
     """VentaLibra fía por `cc_debitos` y NO escribe movimiento de caja (lo fiado no es plata que entró).
     Al facturar la venta la factura sale 'Cuenta Corriente' pero sin ningún movimiento de cuenta
     corriente: la deuda es la de `cc_debitos`, una sola vez, y la factura aparece pendiente."""
-    fid = _factura(9, 9000, cond="Cuenta Corriente")
-    with core.get_connection() as conn:
-        conn.execute("DELETE FROM caja_movimientos WHERE factura_id=?", (fid,))
-        conn.execute("INSERT INTO cc_debitos (cliente_id, monto, fecha, concepto, referencia)"
-                     " VALUES (1, 9000, ?, 'Venta POS-000009', 'sale-9')", (HOY,))
+    fid = _factura(9, 9000, cond="Cuenta Corriente", con_debito=False)
+    cuenta_corriente.create_cc_debito(1, 9000, HOY, "Venta POS-000009", "sale-9")
     detalle = client.get("/api/cuenta-corriente/1").json()
     assert detalle["saldo"] == 9000                        # no se cuenta dos veces
     assert [p["id"] for p in detalle["facturas_pendientes"]] == [fid]

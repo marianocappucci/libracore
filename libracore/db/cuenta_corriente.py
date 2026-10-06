@@ -1,18 +1,38 @@
 """
-Cuenta corriente por cliente: saldo y movimientos combinando ventas a
-cuenta corriente, facturas cobradas a cuenta corriente, débitos directos
-(`cc_debitos`) y pagos manuales (`cc_pagos`). Extraído de database.py de
-Contalibra/Restolibra (idéntico en ambos) como parte de la migración real
-a libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
+Cuenta corriente por cliente: saldo y movimientos, leídos del libro `cc_asientos`
+(`libro_de_clientes`, ADR-026/028/029), que lleva ventas a cuenta corriente, facturas
+cobradas a cuenta corriente, débitos directos (`cc_debitos`) y pagos manuales
+(`cc_pagos`). Extraído de database.py de Contalibra/Restolibra (idéntico en ambos)
+como parte de la migración real a libracore.db (Fase 3 de LibraCore, ver
+wiki/entities/libracore.md).
+
+## El libro es la única lectura
+
+`get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` y
+`get_clientes_con_saldo_cc` leen SIEMPRE del libro (ADR-029). Hasta v1.138.0 se
+calculaban desde los documentos y la instancia podía encender
+`LIBRACORE_CC_DESDE_EL_LIBRO`; el interruptor, el cálculo y `libro_de_clientes.comparar`
+se retiraron cuando el libro dio cero diferencias en todas las instancias.
+
+El criterio de qué cuenta sigue siendo el de siempre — **débitos por venta + débitos
+por factura + débitos directos − abonos** — pero ahora lo aplica `sincronizar`, hecho
+por hecho, cuando los escritores del motor (`create_cc_pago`, `create_cc_debito`,
+`add_venta_pago`, los movimientos de caja con factura) cambian algo. Lo que se carga
+por fuera de los escritores (SQL propio) no se ve hasta que se corre
+`libro_de_clientes.reconstruir()`, que es lo que hace un deploy.
+
+Una base sin la tabla `cc_asientos` no tiene de dónde leer: las cuatro lecturas tiran
+`RuntimeError` y dicen qué hacer (migración `0020` / `init_core_schema`).
+`get_facturas_pendientes_cc` no cambia: sigue por factura (ADR-018).
 
 ## De dónde salen las ventas
 
-El criterio de cálculo es siempre el mismo — **débitos por venta + débitos
-por factura + débitos directos − abonos** — pero la tabla donde viven las
-ventas no: los productos migrados a LibraCommerce las tienen en `sales`
-(con `customer_party_id`/`occurred_on`/`number`) y los que todavía no, en
-`ventas` (con `cliente_id`/`fecha`/`numero`). Eso se declara con un
-`OrigenVentas` en vez de duplicar las funciones.
+Los productos migrados a LibraCommerce tienen las ventas en `sales` (con
+`customer_party_id`/`occurred_on`/`number`) y los que todavía no, en `ventas` (con
+`cliente_id`/`fecha`/`numero`). Eso se declara con un `OrigenVentas` en vez de duplicar
+las funciones. Ya no decide el saldo —el saldo es el del libro—: el libro lo usa para
+asentar las ventas fiadas y para completar el número de venta de cada movimiento. Las
+lecturas siguen aceptando `origen` para no cambiarle la firma a ningún producto.
 
 Hasta el 2026-07-28 esa duplicación era literal: Contalibra y Restolibra
 tenían cada uno una copia byte-a-byte de este módulo (`db_cuenta_corriente.py`)
@@ -45,25 +65,12 @@ Para ese caso está `VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF`: en vez de una
 tabla real, `tabla` es una subconsulta que resuelve el cliente por
 `external_ref` antes de que el resto del módulo la trate como si fuera
 `sales`. Decisión del humano, 2026-09-14.
-
-## Calculado o del libro
-
-Las cuatro lecturas (`get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo`
-y `get_clientes_con_saldo_cc`) se calculan desde los documentos, como se explica
-arriba, salvo que la instancia encienda `LIBRACORE_CC_DESDE_EL_LIBRO`: entonces salen
-del libro `cc_asientos` (`libro_de_clientes`, ADR-028) con la misma forma. Las
-funciones `*_calculado(s)` son el cálculo de siempre, sin mirar el interruptor.
-`get_facturas_pendientes_cc` no cambia: sigue por factura (ADR-018).
 """
 import contextlib
 from dataclasses import dataclass
 
 from libracore import tipos_comprobante as tipos
-from libracore.db.caja import (
-    sql_es_cuenta_corriente,
-    sql_no_anulado,
-    sql_no_es_cuenta_corriente,
-)
+from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 from libracore.db.facturas import sql_vigente
 
@@ -99,9 +106,9 @@ VENTAS_LIBRACOMMERCE = OrigenVentas("sales", "customer_party_id", "occurred_on",
 #: NO coincide con `clients.id` (VentaLibra — ver la sección "Cuando el id del
 #: party no es el id del cliente" arriba). `tabla` es una subconsulta: resuelve
 #: el `clients.id` de cada venta por `external_ref` y expone las columnas con
-#: los mismos nombres que usan `get_cc_saldo`/`get_cc_movimientos`/
-#: `get_clientes_con_saldo_cc`, así que ninguna de las tres necesita saber que
-#: no está leyendo `sales` directamente. Una venta cuyo party no tiene cliente
+#: los mismos nombres que usa el libro (`libro_de_clientes`) para asentar las
+#: ventas fiadas y completar sus movimientos, así que no necesita saber que no
+#: está leyendo `sales` directamente. Una venta cuyo party no tiene cliente
 #: enlazado queda afuera del INNER JOIN — no rompe, y no le suma a nadie.
 VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF = OrigenVentas(
     "(SELECT s.id, s.occurred_on, s.number, c.id AS cliente_id "
@@ -129,147 +136,27 @@ def _cuit_de(conn, cliente_id: int) -> str:
     return cuit.replace("-", "").strip()
 
 
-def _del_libro() -> bool:
-    """Si las lecturas salen del libro (`LIBRACORE_CC_DESDE_EL_LIBRO`, ADR-028).
+def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> float:
+    """El saldo del cliente, del libro `cc_asientos` (ADR-029).
 
-    Import tardío: `libro_de_clientes` importa este módulo.
+    `origen` ya no decide el saldo: se acepta para no cambiarle la firma a los productos.
+    Sin la tabla del libro tira `RuntimeError`.
     """
     from libracore.db import libro_de_clientes
 
-    return libro_de_clientes.lee_del_libro()
-
-
-def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> float:
-    """El saldo del cliente: calculado, o del libro si la instancia lo enciende (ADR-028)."""
-    if _del_libro():
-        from libracore.db import libro_de_clientes
-
-        return libro_de_clientes.saldo_de(cliente_id)
-    return get_cc_saldo_calculado(cliente_id, origen)
-
-
-def get_cc_saldo_calculado(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> float:
-    """El saldo calculado desde ventas, facturas, débitos y pagos. Es contra lo que
-    `libro_de_clientes.comparar` mide el libro, así que no mira el interruptor."""
-    with get_connection() as conn:
-        cuit = _cuit_de(conn, cliente_id)
-        debitos_venta = conn.execute(f"""
-            SELECT COALESCE(SUM(vp.monto), 0)
-            FROM ventas_pagos vp
-            JOIN {origen.tabla} v ON vp.venta_id = v.id
-            WHERE v.{origen.columna_cliente} = ? AND vp.medio = 'cuenta_corriente'
-        """, (cliente_id,)).fetchone()[0]
-        debitos_factura = 0.0
-        if cuit:
-            debitos_factura = conn.execute(f"""
-                SELECT COALESCE(SUM(cm.monto), 0)
-                FROM caja_movimientos cm
-                JOIN facturas f ON cm.factura_id = f.id
-                WHERE REPLACE(f.cliente_cuit, '-', '') = ? AND cm.tipo = 'ingreso'
-                  AND {sql_es_cuenta_corriente('cm.medio_pago')}
-                  AND {sql_no_anulado('cm')}
-            """, (cuit,)).fetchone()[0]
-        debitos_directos = conn.execute(
-            "SELECT COALESCE(SUM(monto), 0) FROM cc_debitos WHERE cliente_id = ?",
-            (cliente_id,),
-        ).fetchone()[0]
-        abonos = conn.execute(
-            "SELECT COALESCE(SUM(monto), 0) FROM cc_pagos WHERE cliente_id = ?",
-            (cliente_id,),
-        ).fetchone()[0]
-    return (
-        float(debitos_venta) + float(debitos_factura) + float(debitos_directos) - float(abonos)
-    )
+    return libro_de_clientes.saldo_de(cliente_id)
 
 
 def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
-    """Los movimientos del cliente, por fecha: calculados, o del libro si la instancia
-    lo enciende (ADR-028). La forma de cada movimiento es la misma."""
-    if _del_libro():
-        from libracore.db import libro_de_clientes
+    """Los movimientos del cliente, por fecha, del libro `cc_asientos` (ADR-029).
 
-        return libro_de_clientes.movimientos_de(cliente_id, origen)
-    return get_cc_movimientos_calculados(cliente_id, origen)
+    `origen` no decide qué movimientos hay (eso lo dice el libro): sólo dónde buscar
+    el número de cada venta para completar el concepto. Sin la tabla del libro tira
+    `RuntimeError`.
+    """
+    from libracore.db import libro_de_clientes
 
-
-def get_cc_movimientos_calculados(cliente_id: int,
-                                  origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
-    with get_connection() as conn:
-        cuit = _cuit_de(conn, cliente_id)
-        movs = []
-
-        rows = conn.execute(f"""
-            SELECT v.{origen.columna_fecha} AS fecha, v.{origen.columna_numero} AS numero,
-                   vp.monto, v.id AS venta_id
-            FROM ventas_pagos vp
-            JOIN {origen.tabla} v ON vp.venta_id = v.id
-            WHERE v.{origen.columna_cliente} = ? AND vp.medio = 'cuenta_corriente'
-        """, (cliente_id,)).fetchall()
-        for r in rows:
-            movs.append({
-                "fecha": (r["fecha"] or "")[:10], "tipo": "debito",
-                "concepto": f"Venta #{r['numero']}",
-                "monto": r["monto"], "referencia": "", "medio": "",
-                "venta_id": r["venta_id"], "factura_id": None, "cc_pago_id": None,
-                "usuario_nombre": None,
-            })
-
-        if cuit:
-            rows = conn.execute(f"""
-                SELECT cm.fecha, f.tipo AS ftipo, f.punto_venta, f.numero,
-                       cm.monto, f.id AS factura_id, cm.referencia, u.nombre AS usuario_nombre
-                FROM caja_movimientos cm
-                JOIN facturas f ON cm.factura_id = f.id
-                LEFT JOIN usuarios u ON u.id = cm.usuario_id
-                WHERE REPLACE(f.cliente_cuit, '-', '') = ? AND cm.tipo = 'ingreso'
-                  AND {sql_es_cuenta_corriente('cm.medio_pago')}
-                  AND {sql_no_anulado('cm')}
-            """, (cuit,)).fetchall()
-            for r in rows:
-                lbl = _TIPO_LABEL.get(r["ftipo"], "COMP")
-                pv  = str(r["punto_venta"]).zfill(4)
-                num = str(r["numero"]).zfill(8)
-                movs.append({
-                    "fecha": (r["fecha"] or "")[:10], "tipo": "debito",
-                    "concepto": f"{lbl} {pv}-{num}",
-                    "monto": r["monto"], "referencia": r["referencia"] or "",
-                    "medio": "", "venta_id": None,
-                    "factura_id": r["factura_id"], "cc_pago_id": None,
-                    "usuario_nombre": r["usuario_nombre"],
-                })
-
-        rows = conn.execute("""
-            SELECT cc_debitos.id, fecha, concepto, monto, referencia, u.nombre AS usuario_nombre
-            FROM cc_debitos
-            LEFT JOIN usuarios u ON u.id = cc_debitos.usuario_id
-            WHERE cc_debitos.cliente_id = ? ORDER BY fecha, cc_debitos.id
-        """, (cliente_id,)).fetchall()
-        for r in rows:
-            movs.append({
-                "fecha": (r["fecha"] or "")[:10], "tipo": "debito",
-                "concepto": r["concepto"] or "Venta a cuenta corriente",
-                "monto": r["monto"], "referencia": r["referencia"] or "",
-                "medio": "", "venta_id": None, "factura_id": None, "cc_pago_id": None,
-                "cc_debito_id": r["id"], "usuario_nombre": r["usuario_nombre"],
-            })
-
-        rows = conn.execute("""
-            SELECT cc_pagos.id, fecha, concepto, monto, referencia, medio_pago, u.nombre AS usuario_nombre
-            FROM cc_pagos
-            LEFT JOIN usuarios u ON u.id = cc_pagos.usuario_id
-            WHERE cc_pagos.cliente_id = ? ORDER BY fecha, cc_pagos.id
-        """, (cliente_id,)).fetchall()
-        for r in rows:
-            movs.append({
-                "fecha": (r["fecha"] or "")[:10], "tipo": "credito",
-                "concepto": r["concepto"] or "Pago a cuenta",
-                "monto": r["monto"], "referencia": r["referencia"] or "",
-                "medio": r["medio_pago"] or "",
-                "venta_id": None, "factura_id": None, "cc_pago_id": r["id"],
-                "usuario_nombre": r["usuario_nombre"],
-            })
-
-    return sorted(movs, key=lambda x: x["fecha"])
+    return libro_de_clientes.movimientos_de(cliente_id, origen)
 
 
 def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
@@ -342,7 +229,7 @@ def get_cc_movimientos_periodo(
     `get_cc_movimientos()` en vez de repetir las tres consultas: la cuenta
     corriente es chica por cliente y así no hay riesgo de que el resumen que se
     manda por mail se calcule distinto que la pantalla. Por eso también sale del
-    libro cuando la instancia lo enciende (ADR-028): no tiene lectura propia.
+    libro (ADR-029): no tiene lectura propia.
     """
     movs = get_cc_movimientos(cliente_id, origen)
 
@@ -415,55 +302,14 @@ def get_resumenes_enviados(cliente_id: int | None = None, limit: int = 50) -> li
 
 
 def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
-    """Los clientes con movimientos y su saldo: calculados, o del libro si la instancia
-    lo enciende (ADR-028). Las filas y el orden son los mismos."""
-    if _del_libro():
-        from libracore.db import libro_de_clientes
+    """Los clientes con movimientos y su saldo, del libro `cc_asientos` (ADR-029).
 
-        return libro_de_clientes.clientes_con_saldo()
-    return get_clientes_con_saldo_calculado(origen)
+    `origen` ya no decide nada: se acepta para no cambiarle la firma a los productos.
+    Sin la tabla del libro tira `RuntimeError`.
+    """
+    from libracore.db import libro_de_clientes
 
-
-def get_clientes_con_saldo_calculado(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
-    with get_connection() as conn:
-        rows = conn.execute(f"""
-            WITH dv AS (
-                SELECT v.{origen.columna_cliente} AS cid, SUM(vp.monto) AS total
-                FROM ventas_pagos vp JOIN {origen.tabla} v ON vp.venta_id = v.id
-                WHERE vp.medio = 'cuenta_corriente' AND v.{origen.columna_cliente} IS NOT NULL
-                GROUP BY v.{origen.columna_cliente}
-            ),
-            df AS (
-                SELECT c.id AS cid, SUM(cm.monto) AS total
-                FROM caja_movimientos cm
-                JOIN facturas f ON cm.factura_id = f.id
-                JOIN clients c ON REPLACE(c.cuit_dni, '-', '') = REPLACE(f.cliente_cuit, '-', '')
-                WHERE cm.tipo = 'ingreso'
-                  AND {sql_es_cuenta_corriente('cm.medio_pago')}
-                  AND {sql_no_anulado('cm')}
-                GROUP BY c.id
-            ),
-            dd AS (
-                SELECT cliente_id AS cid, SUM(monto) AS total
-                FROM cc_debitos GROUP BY cliente_id
-            ),
-            cr AS (
-                SELECT cliente_id AS cid, SUM(monto) AS total
-                FROM cc_pagos GROUP BY cliente_id
-            )
-            SELECT c.id, c.name, c.cuit_dni, c.external_ref,
-                   COALESCE(dv.total,0) + COALESCE(df.total,0) + COALESCE(dd.total,0)
-                   - COALESCE(cr.total,0) AS saldo
-            FROM clients c
-            LEFT JOIN dv ON dv.cid = c.id
-            LEFT JOIN df ON df.cid = c.id
-            LEFT JOIN dd ON dd.cid = c.id
-            LEFT JOIN cr ON cr.cid = c.id
-            WHERE dv.cid IS NOT NULL OR df.cid IS NOT NULL
-               OR dd.cid IS NOT NULL OR cr.cid IS NOT NULL
-            ORDER BY saldo DESC, c.name
-        """).fetchall()
-    return [dict(r) for r in rows]
+    return libro_de_clientes.clientes_con_saldo()
 
 
 def create_cc_pago(cliente_id: int, monto: float, fecha: str, concepto: str,

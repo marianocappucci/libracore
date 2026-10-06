@@ -1,15 +1,21 @@
 """La cuenta corriente, con las ventas viniendo de donde vengan.
 
-El criterio de cálculo es uno solo — débitos por venta + débitos por
-factura + débitos directos − abonos — pero la tabla de ventas cambia según
-el producto, y hasta el 2026-07-28 eso se resolvía con una copia entera del
-módulo en Contalibra y otra en Restolibra. Estos tests fijan que la versión
-parametrizada da lo mismo por los dos caminos, y que `cc_debitos` (el caso
-de las ventas que ni siquiera están en esta base) suma igual.
+El criterio es uno solo — débitos por venta + débitos por factura + débitos
+directos − abonos — pero la tabla de ventas cambia según el producto, y hasta
+el 2026-07-28 eso se resolvía con una copia entera del módulo en Contalibra y
+otra en Restolibra. Estos tests fijan que la versión parametrizada da lo mismo
+por los dos caminos, y que `cc_debitos` (el caso de las ventas que ni siquiera
+están en esta base) suma igual.
+
+Desde ADR-029 el saldo sale del libro, así que lo que se carga con SQL propio
+(las ventas, las facturas y los movimientos de caja de acá) no se ve hasta que
+se corre `libro_de_clientes.reconstruir(origen)`: es lo que hace un deploy. El
+`origen` es el que dice dónde están las ventas del producto, y es uno por base.
 """
 import pytest
 
 from libracore.db import clients, core, cuenta_corriente
+from libracore.db import libro_de_clientes as lc
 from libracore.db.cuenta_corriente import VENTAS_LIBRACOMMERCE, VENTAS_LIBRACORE
 
 
@@ -90,19 +96,22 @@ def _venta_fiada(conn, cliente_id, monto, fecha="2026-07-20", numero="V-1",
     conn.commit()
 
 
-def test_el_saldo_es_el_mismo_por_los_dos_origenes(conn):
+#: Las dos formas de tener las ventas: la tabla donde se cargan y el origen que la declara.
+_ORIGENES = [("ventas", VENTAS_LIBRACORE), ("sales", VENTAS_LIBRACOMMERCE)]
+
+
+@pytest.mark.parametrize("tabla,origen", _ORIGENES)
+def test_el_saldo_es_el_mismo_por_los_dos_origenes(conn, tabla, origen):
     """La misma deuda, cargada en `ventas` o en `sales`, tiene que dar igual.
 
     Es la prueba de que reemplazar las copias de Contalibra/Restolibra por
     esta versión no mueve un peso.
     """
-    viejo = clients.create_client("Cliente Legacy")
-    nuevo = clients.create_client("Cliente Migrado")
-    _venta_fiada(conn, viejo, 1500.0, tabla="ventas")
-    _venta_fiada(conn, nuevo, 1500.0, tabla="sales")
+    cid = clients.create_client("Cliente")
+    _venta_fiada(conn, cid, 1500.0, tabla=tabla)
+    lc.reconstruir(origen)
 
-    assert cuenta_corriente.get_cc_saldo(viejo, VENTAS_LIBRACORE) == 1500.0
-    assert cuenta_corriente.get_cc_saldo(nuevo, VENTAS_LIBRACOMMERCE) == 1500.0
+    assert cuenta_corriente.get_cc_saldo(cid, origen) == 1500.0
 
 
 def test_el_default_sigue_siendo_el_origen_de_libracore(conn):
@@ -110,22 +119,26 @@ def test_el_default_sigue_siendo_el_origen_de_libracore(conn):
     leyendo `ventas`, o Contalibra rompe en silencio."""
     cid = clients.create_client("Cliente")
     _venta_fiada(conn, cid, 800.0, tabla="ventas")
+    lc.reconstruir()
 
     assert cuenta_corriente.get_cc_saldo(cid) == 800.0
 
 
-def test_cada_origen_ignora_las_ventas_del_otro(conn):
+@pytest.mark.parametrize("origen,esperado", [(VENTAS_LIBRACORE, 800.0), (VENTAS_LIBRACOMMERCE, 300.0)])
+def test_cada_origen_ignora_las_ventas_del_otro(conn, origen, esperado):
+    """El libro asienta las ventas fiadas de la tabla que dice el origen, y sólo de esa."""
     cid = clients.create_client("Cliente")
     _venta_fiada(conn, cid, 800.0, tabla="ventas", numero="V-1")
     _venta_fiada(conn, cid, 300.0, tabla="sales", numero="S-1")
+    lc.reconstruir(origen)
 
-    assert cuenta_corriente.get_cc_saldo(cid, VENTAS_LIBRACORE) == 800.0
-    assert cuenta_corriente.get_cc_saldo(cid, VENTAS_LIBRACOMMERCE) == 300.0
+    assert cuenta_corriente.get_cc_saldo(cid, origen) == esperado
 
 
 def test_los_movimientos_traen_el_numero_de_venta_de_cada_origen(conn):
     cid = clients.create_client("Cliente")
     _venta_fiada(conn, cid, 500.0, fecha="2026-07-10", numero="POS-42", tabla="sales")
+    lc.reconstruir(VENTAS_LIBRACOMMERCE)
 
     movs = cuenta_corriente.get_cc_movimientos(cid, VENTAS_LIBRACOMMERCE)
     assert len(movs) == 1
@@ -157,6 +170,7 @@ def test_el_saldo_combina_las_cuatro_fuentes(conn):
     conn.commit()
     cuenta_corriente.create_cc_debito(cid, 250.0, "2026-07-22", "Venta POS-9", "sale-9")
     cuenta_corriente.create_cc_pago(cid, 300.0, "2026-07-23", "Pago", "", "efectivo", None, None)
+    lc.reconstruir(VENTAS_LIBRACOMMERCE)
 
     # 1000 + 500 + 250 − 300
     assert cuenta_corriente.get_cc_saldo(cid, VENTAS_LIBRACOMMERCE) == 1450.0
@@ -197,6 +211,7 @@ def test_el_cuit_con_guiones_del_cliente_matchea_la_factura_sin_guiones(conn):
                    'Cuenta Corriente', 1)"""
     )
     conn.commit()
+    lc.reconstruir()
 
     assert cuenta_corriente.get_cc_saldo(cid) == 920000.0
 
@@ -269,6 +284,7 @@ def test_un_producto_sin_debitos_directos_no_cambia_su_saldo(conn):
     Contalibra y Restolibra no se enteren de que la tabla existe."""
     cid = clients.create_client("Cliente")
     _venta_fiada(conn, cid, 900.0, tabla="ventas")
+    lc.reconstruir()
 
     assert cuenta_corriente.get_cc_saldo(cid) == 900.0
     assert [d["saldo"] for d in cuenta_corriente.get_clientes_con_saldo_cc()] == [900.0]
