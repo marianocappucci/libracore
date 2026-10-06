@@ -1091,12 +1091,12 @@ def test_el_alta_le_carga_la_identidad_fiscal_a_la_instancia(cfg):
     """`config.json` es de donde el `identidad()` de cada producto saca lo que
     le contesta al panel — `config_manager.load()`, sin intermediarios."""
     nc.crear_cliente(nombre="Compulibra", slug="cliente-uno",
-                     empresa_cuit="20-28993360-4",
-                     empresa_nombre="CAPPUCCI MARIANO", setup_npm=False)
+                     empresa_cuit="20-12345678-6",
+                     empresa_nombre="PÉREZ JUAN", setup_npm=False)
 
     conf = _config(cfg)
-    assert conf["empresa_cuit"] == "20-28993360-4"
-    assert conf["empresa_nombre"] == "CAPPUCCI MARIANO"
+    assert conf["empresa_cuit"] == "20-12345678-6"
+    assert conf["empresa_nombre"] == "PÉREZ JUAN"
 
 
 def test_la_razon_social_cae_al_nombre_comercial_si_no_se_pasa(cfg):
@@ -1111,8 +1111,8 @@ def test_el_cuit_se_guarda_como_lo_escribieron(cfg):
     en `normalizar_cuit`—, asi que normalizar aca no le ahorraria el paso a
     ninguno y le cambiaria a Configuracion lo que el humano tipeo."""
     nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
-                     empresa_cuit="  20-28993360-4  ", setup_npm=False)
-    assert _config(cfg)["empresa_cuit"] == "20-28993360-4"
+                     empresa_cuit="  20-12345678-6  ", setup_npm=False)
+    assert _config(cfg)["empresa_cuit"] == "20-12345678-6"
 
 
 def test_sin_cuit_el_alta_NO_crea_nada(cfg):
@@ -1141,11 +1141,11 @@ def test_el_cuit_pasa_con_guiones_y_sin_guiones(cfg):
     """Control positivo del anterior: si el validador rechazara todo, aquel
     pasaria igual y no estaria probando nada."""
     a = nc.crear_cliente(nombre="Cliente Uno", slug="cliente-uno",
-                         empresa_cuit="20-28993360-4", setup_npm=False)
+                         empresa_cuit="20-12345678-6", setup_npm=False)
     b = nc.crear_cliente(nombre="Cliente Dos", slug="cliente-dos",
-                         empresa_cuit="20289933604", setup_npm=False)
-    assert a["empresa_cuit"] == "20-28993360-4"
-    assert b["empresa_cuit"] == "20289933604"
+                         empresa_cuit="20123456786", setup_npm=False)
+    assert a["empresa_cuit"] == "20-12345678-6"
+    assert b["empresa_cuit"] == "20123456786"
 
 
 def test_una_demo_se_puede_dar_de_alta_sin_cuit_pero_pidiendolo(cfg):
