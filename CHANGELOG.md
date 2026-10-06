@@ -7,6 +7,29 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La pre factura: un comprobante por facturar que el cliente ve antes (propuesta: v1.140.0)
+
+**Migración `0021_pre_factura`**. ADR-030. Agrega ocho columnas vacías a `comprobantes_pendientes` y un índice único parcial: no toca filas. Sin cambio de comportamiento para quien no use la pre factura.
+
+- **`libracore.pre_facturas`**: la bandeja de comprobantes por facturar, con número interno (`PF-0001`, correlativo por `origen_producto` + `origen_instancia`, no se reusa), emisor (`emisor_id`, ADR-021), tipo de comprobante (1/6/11, 201/206/211), vencimiento de pago (FCE) y el ciclo `pendiente → enviado → aceptado → facturado`, con `descartado` como anulación. Todo con `conn=` (ADR-025).
+  - `crear`, `editar`, `marcar_enviada`, `marcar_aceptada`, `anular`, `marcar_facturada`, `get`, `listar`, `contar_por_estado`, `pdf` y `enviar_por_correo`.
+  - **Editar una enviada o aceptada la devuelve a `pendiente`** (y borra el rastro de envío y aceptación) si cambió algo. `facturado` y `descartado` son finales.
+  - Una fila de la bandeja que no tiene número (la de Contalibra y LibraDesk) no es una pre factura: el módulo no la toca.
+- **`pdf_generator.generate_pdf_pre_factura`**: el aspecto de la factura con el sello «PRE FACTURA — NO VÁLIDA COMO COMPROBANTE FISCAL» (en el cuerpo y en el pie de cada página), el número interno y **sin** punto de venta, CAE ni QR. La fecha es la del documento, así que reimprimir da los mismos bytes.
+- **`libracore.pre_facturas_router.build_pre_facturas_router`** (prefijo `/api/pre-facturas`): listar, detalle, crear, editar (`PUT`, parcial), `GET .../{id}/pdf`, `POST .../{id}/enviar-email`, `.../aceptar` y `.../anular`. `origen_producto` y `origen_instancia` los fija el producto al armar el router; el gate de auth y el `usuario_actual` también. Ganchos `al_crear`, `al_editar` y `al_anular`, que reciben `(conn, pre_factura, datos)` en la misma transacción que el cambio.
+- **`email_sender.enviar_documento` acepta `pdf_bytes`**: manda un PDF que está en memoria, sin pasarlo por un archivo. Lo anterior no cambia.
+- **`db.comprobantes_pendientes`**: nuevos estados `enviado` y `aceptado` (`ESTADOS_ABIERTOS` y `ESTADOS_FINALES`) y origen `pre_factura`. `marcar_facturado` y `descartar` mueven cualquier estado abierto (antes sólo `pendiente`) y aceptan `conn=`; `get_comprobante`, `get_comprobantes` y `list_por_estado` también. `upsert_comprobante` sigue sin pisar nada que no sea `pendiente`.
+
+### Para los productos
+
+- **Contalibra, LibraDesk y el resto**: nada. Suben el pin, la migración agrega columnas vacías y su bandeja sigue igual.
+- **Quien quiera la pre factura** (LibraCargo es el primero):
+  1. Monta `build_pre_facturas_router(origen_producto="...", origen_instancia=..., usuario_actual=..., dependencies=[Depends(<su gate>)], smtp_resolver=..., emisor_del_pdf=..., al_crear=..., al_editar=..., al_anular=...)`.
+  2. En `al_crear`, `al_editar` y `al_anular` reserva o libera sus órdenes con la `conn` que recibe: lo que escriba ahí se confirma o se deshace junto con la pre factura. Las claves propias del cuerpo (`orden_ids`...) llegan en `datos`.
+  3. Para facturar, emite con su camino de siempre y en la misma transacción llama a `pre_facturas.marcar_facturada(id, factura_id, usuario, conn=conn)`.
+- Un producto que numera con otra instancia por base debe pasar `origen_instancia` distinto por instancia: la numeración `PF-` es por producto e instancia.
+- Un comprobante clase C (11, 211) va con `iva_rate` 0 en todos los ítems; se rechaza si no.
+
 ## [Unreleased] — El libro es la única lectura de la cuenta de clientes (propuesta: v1.139.0)
 
 ADR-029, etapa B4. **Sin migración.** Se retira el cálculo: la cuenta de clientes se lee siempre de `cc_asientos`.

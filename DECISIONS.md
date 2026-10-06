@@ -593,3 +593,32 @@ Detalle en `docs/fce.md`.
 - Un producto que arma a mano las tablas del motor sin `cc_asientos` (LibraDesk) tiene que agregarla antes de subir a esta versión, o sus lecturas de la cuenta de clientes fallan.
 - Lo que el cálculo veía y el libro no (un hecho de importe cero, un CUIT de dos clientes, un CUIT que cambió después de asentar la deuda) es la semántica del libro desde ADR-027.
 - Se pierde la forma de volver al cálculo con una variable. Para volver hay que desplegar la versión anterior.
+
+## ADR-030 — La pre factura es la bandeja de comprobantes pendientes con número interno, y se manda al cliente antes de facturar
+
+**Contexto.** LibraCargo necesita que, antes de facturar por ARCA, el cliente pueda ver y confirmar lo que se le va a facturar: un documento **no fiscal**, con número propio, que se genera desde las órdenes, se manda en PDF, se puede editar mientras no esté facturado, se acepta y se anula (diseño `libracargo-pre-factura-diseno` del wiki del ecosistema, aprobado el 2026-10-06). Con el registro a mano fuera de la app, el número y el punto de venta del comprobante los pone sólo ARCA. El humano pidió que el fondo vaya en el motor, para cualquier producto: `comprobantes_pendientes` ya es «un comprobante por facturar» con el cliente como foto (sin depender de `clients`), los ítems, un total que sale de los ítems y el vínculo a la factura, y los presupuestos (que sí tienen ciclo, PDF y correo) cuelgan de `clients`, que LibraCargo no usa.
+
+**Decisión.** La pre factura **es** una fila de `comprobantes_pendientes` con ocho columnas más (migración `0021_pre_factura`; todas nacen vacías):
+- `numero_interno` (`PF-0001`): correlativo **por `(origen_producto, origen_instancia)`**, asignado por el motor al crear, único por un índice parcial (`WHERE numero_interno IS NOT NULL`). Un anulado conserva su número: no se reusa. Dos altas simultáneas que calculan el mismo reintentan en un `SAVEPOINT` (como `create_factura`).
+- `emisor_id` (FK opcional a `arca_config`, ADR-021: `NULL` es el emisor único de la instancia), `tipo_comprobante` (1/6/11, 201/206/211) y `fecha_vencimiento_pago` (FCE).
+- `enviado_at`, `enviado_a`, `aceptado_at`, `aceptado_por`: TEXT sin default, que escribe el módulo con la hora de Argentina.
+
+**Estados.** Los de siempre (`pendiente`, `facturado`, `descartado`) más `enviado` y `aceptado`: `pendiente → enviado → aceptado → facturado`.
+- **`facturado` y `descartado` son finales**: no se editan, envían, aceptan ni anulan. Es la regla de la bandeja (una resolución la tomó una persona).
+- **Aceptar se puede desde `pendiente`**, no sólo desde `enviado`: el PDF se puede mandar por otro medio, y la conformidad la marca el operador (decisión del 2026-10-06).
+- **Facturar y anular se pueden desde cualquiera de los tres estados abiertos.** Contalibra y LibraDesk siguen yendo de `pendiente` a `facturado`; un producto que exige la aceptación la pide con `exigir_aceptada=True` o mirando el estado.
+- **Editar una `enviado` o `aceptado` la devuelve a `pendiente` y borra `enviado_*` y `aceptado_*`** si cambió algo: el cliente aceptó otros datos, y dejar la marca de aceptada sobre un contenido distinto afirmaría una conformidad que no existe. Un `editar` que no cambia nada no mueve el estado.
+- Reenviar una `aceptado` la deja aceptada (sólo actualiza a quién y cuándo), y aceptar dos veces no pisa quién la aceptó.
+- `db.comprobantes_pendientes.marcar_facturado` y `descartar` pasan a mover cualquier estado abierto (antes sólo `pendiente`) y aceptan `conn=` (ADR-025). `upsert_comprobante` sigue sin pisar nada que no sea `pendiente`. Se agrega el origen `pre_factura` a la lista cerrada de orígenes: sin `origen_id`, se usa el número interno.
+
+**El PDF no es fiscal.** `pdf_generator.generate_pdf_pre_factura` tiene el aspecto de la factura (emisor, cliente, ítems, IVA, total) con el sello **«PRE FACTURA — NO VÁLIDA COMO COMPROBANTE FISCAL»** en el cuerpo de cada página y en el pie, el número interno en lugar del número fiscal y la letra `X`; **sin** punto de venta, CAE ni QR. Un comprobante clase C va con `iva_rate` 0 (se rechaza al crear o editar, como lo haría ARCA). La fecha del PDF es la del documento: reimprimir da los mismos bytes. El emisor sale de la configuración de la instancia, con el nombre y el CUIT de `arca_config` si hay `emisor_id`; un producto con varias razones sociales pasa los datos de la que factura (`emisor=` / `emisor_del_pdf`).
+
+**El correo** usa `email_sender.enviar_documento` (que ahora acepta `pdf_bytes`, sin pasar el PDF por un archivo) y el SMTP que resuelve `facturas_router.smtp_efectivo`, igual que el envío de comprobantes y de presupuestos. Primero se manda y después se marca `enviado`: si el SMTP falla, la pre factura queda como estaba.
+
+**El módulo y el router.** `libracore.pre_facturas` (todo con `conn=`, ADR-025) y `libracore.pre_facturas_router.build_pre_facturas_router`, con `origen_producto` y `origen_instancia` **fijados por el producto** y no por el cuerpo del request (definen la numeración y qué se ve; lo de otro origen da 404) y el gate de auth inyectado (`dependencies`, `usuario_actual`). El producto agrega lo suyo por ganchos —`al_crear`, `al_editar` y `al_anular`, que reciben `(conn, pre_factura, datos)` **en la misma transacción** que el cambio— y por las claves de más que aceptan `CrearPayload` y `EditarPayload` (`extra="allow"`, como `FacturaPayload`: las órdenes de la pre factura). **El «facturar» no está en el motor**: lo hace el producto con su camino de emisión y después llama a `pre_facturas.marcar_facturada(..., conn=...)` en la misma transacción.
+
+**Consecuencias.**
+- Contalibra y LibraDesk no cambian: sus filas no tienen número, no son pre facturas, y el módulo no las toca (`PreFacturaNoEncontrada`). La bandeja que ya tenían tampoco: sólo agregan columnas vacías.
+- La bandeja de siempre (`/api/comprobantes-pendientes`) sigue listando `pendiente`, `facturado` y `descartado`; una pre factura `enviado` o `aceptado` se ve en el router de pre facturas, no ahí.
+- La migración no se baja: restaurar el backup.
+- Dos cosas quedan del producto: qué órdenes forman cada pre factura (la tabla de vínculo, la reserva y la liberación) y el camino de emisión por ARCA.

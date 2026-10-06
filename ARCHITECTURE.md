@@ -153,6 +153,7 @@ empresa/ambiente), `arca_facturacion` (orquestación) y `arca_router`
 cert/clave por ambiente homologación/producción). `facturas_router` monta el
 alta de comprobante, cálculo de totales (`calcular_totales`), cobro y envío por
 mail; `facturas_borrador`, `comprobantes_pendientes`/`comprobantes_router`,
+`pre_facturas`/`pre_facturas_router` (la pre factura: la bandeja con número interno y ciclo enviada/aceptada),
 `cc_resumen`/`resumen_router`, `recibos`, `cobros`, `pagos` completan el flujo
 contable.
 

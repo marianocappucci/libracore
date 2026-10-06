@@ -58,8 +58,13 @@ def enviar_documento(
     from_email: str,
     from_name: str,
     filename: str = "",
+    pdf_bytes: bytes | None = None,
 ):
     """Envía un PDF adjunto sin asumir que sea un comprobante fiscal.
+
+    `pdf_bytes` manda un PDF que está en memoria, sin pasarlo por un archivo (la pre
+    factura se genera al momento, `libracore.pre_facturas`): en ese caso `pdf_path` se
+    ignora (puede ir vacío) y `filename` es el nombre con que llega el adjunto.
 
     `enviar_comprobante` (que arma asunto/cuerpo con semántica de factura +
     total) quedó como caso particular de ésta. Se separó al agregar el resumen
@@ -71,13 +76,13 @@ def enviar_documento(
     msg["To"] = f"{to_name} <{to_email}>" if to_name else to_email
     msg.set_content(cuerpo)
 
-    with open(pdf_path, "rb") as f:
-        msg.add_attachment(
-            f.read(),
-            maintype="application",
-            subtype="pdf",
-            filename=filename or os.path.basename(pdf_path),
-        )
+    if pdf_bytes is not None:
+        contenido, nombre = pdf_bytes, filename or "documento.pdf"
+    else:
+        with open(pdf_path, "rb") as f:
+            contenido = f.read()
+        nombre = filename or os.path.basename(pdf_path)
+    msg.add_attachment(contenido, maintype="application", subtype="pdf", filename=nombre)
 
     with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
         server.ehlo()

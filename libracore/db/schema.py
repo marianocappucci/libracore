@@ -777,6 +777,8 @@ def init_core_schema(conn: Conexion):
             -- Derivado de `items` por `libracore.db.comprobantes_pendientes`,
             -- nunca recibido del productor: un solo escritor, sin deriva.
             total             REAL NOT NULL DEFAULT 0,
+            -- 'pendiente' | 'enviado' | 'aceptado' | 'facturado' | 'descartado'. Los dos
+            -- del medio son de la pre factura (ADR-030), y sus columnas van más abajo, por ALTER.
             estado            TEXT NOT NULL DEFAULT 'pendiente',
             factura_id        INTEGER REFERENCES facturas(id) ON DELETE SET NULL,
             motivo_descarte   TEXT DEFAULT '',
@@ -988,6 +990,29 @@ def init_core_schema(conn: Conexion):
     if "origen" not in cols_asientos:
         conn.execute("ALTER TABLE cc_asientos ADD COLUMN origen TEXT")
 
+    # La pre factura (ADR-030): `comprobantes_pendientes` con número interno, emisor,
+    # tipo y el ciclo enviada / aceptada. Todas nacen vacías (`NULL`): una fila de la
+    # bandeja que no es una pre factura (la de Contalibra y LibraDesk) no las usa y
+    # sigue igual. Los `*_at` son TEXT **sin default**, como `resuelto_at`: los
+    # escribe `libracore.pre_facturas` con la hora de Argentina.
+    cols_cp = [r[1] for r in conn.execute("PRAGMA table_info(comprobantes_pendientes)").fetchall()]
+    if "numero_interno" not in cols_cp:
+        conn.execute("ALTER TABLE comprobantes_pendientes ADD COLUMN numero_interno TEXT")
+    if "emisor_id" not in cols_cp:
+        # Con qué configuración de ARCA se facturaría (ADR-021). `NULL` es «el
+        # emisor único de la instancia», como en `facturas`.
+        conn.execute(
+            "ALTER TABLE comprobantes_pendientes ADD COLUMN emisor_id INTEGER "
+            "REFERENCES arca_config(id) ON DELETE RESTRICT"
+        )
+    if "tipo_comprobante" not in cols_cp:
+        conn.execute("ALTER TABLE comprobantes_pendientes ADD COLUMN tipo_comprobante INTEGER")
+    if "fecha_vencimiento_pago" not in cols_cp:
+        conn.execute("ALTER TABLE comprobantes_pendientes ADD COLUMN fecha_vencimiento_pago TEXT")
+    for columna in ("enviado_at", "enviado_a", "aceptado_at", "aceptado_por"):
+        if columna not in cols_cp:
+            conn.execute(f"ALTER TABLE comprobantes_pendientes ADD COLUMN {columna} TEXT")
+
     fact_cols = [r[1] for r in conn.execute("PRAGMA table_info(facturas)").fetchall()]
     if "cliente_domicilio" not in fact_cols:
         conn.execute("ALTER TABLE facturas ADD COLUMN cliente_domicilio TEXT DEFAULT ''")
@@ -1157,6 +1182,12 @@ def init_core_schema(conn: Conexion):
             ON cc_asientos(origen_legado) WHERE origen_legado IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_cc_asientos_origen
             ON cc_asientos(origen) WHERE origen IS NOT NULL;
+        -- La numeración interna de la pre factura (ADR-030): correlativa por producto
+        -- e instancia. Parcial porque las filas de la bandeja que no son pre facturas
+        -- no tienen número, y dos `NULL` no se pisan.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_comprobantes_pendientes_numero_interno
+            ON comprobantes_pendientes(origen_producto, origen_instancia, numero_interno)
+            WHERE numero_interno IS NOT NULL;
         -- Parcial: la referencia es opcional (un débito cargado a mano no
         -- tiene ninguna), pero cuando existe identifica la venta que lo
         -- originó y no puede repetirse -- es lo que hace que reintentar un
