@@ -164,3 +164,15 @@ def bases():
 def _tickets_de_wsaa_aislados(tmp_path, monkeypatch):
     """Ningún test lee ni escribe los tickets reales de WSAA, ni se pisan entre sí."""
     monkeypatch.setenv("ARCA_TA_DIR", str(tmp_path / "_arca_ta"))
+
+
+@pytest.fixture(autouse=True)
+def _origen_de_ventas_por_defecto():
+    """El origen de ventas del libro de clientes es global del proceso, y montar
+    `build_cuenta_corriente_router` lo registra: cada test arranca con el default."""
+    from libracore.db import libro_de_clientes
+    from libracore.db.cuenta_corriente import VENTAS_LIBRACORE
+
+    libro_de_clientes.registrar_origen_de_ventas(VENTAS_LIBRACORE)
+    yield
+    libro_de_clientes.registrar_origen_de_ventas(VENTAS_LIBRACORE)

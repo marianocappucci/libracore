@@ -534,3 +534,20 @@ Detalle en `docs/fce.md`.
 - Conviven dos modelos de cuenta corriente en el motor: el de clientes calculado, para quien lo usa, y el libro, para quien lo pida. Pasar el de clientes al libro es otra decisión (la opción B del diseño).
 - Una factura referenciada por un asiento no se puede borrar (`ON DELETE RESTRICT`). Sólo pasa en un producto que use el libro, y el comprobante con CAE ya no se borra.
 
+
+## ADR-027 — La cuenta corriente de clientes también como libro, en sombra
+
+**Contexto.** El saldo de clientes se calcula en cada lectura desde ventas fiadas, facturas cobradas a cuenta (por CUIT), débitos y pagos, y eso hace que se mueva hacia atrás: un pago borrado, un movimiento anulado o un CUIT cambiado alteran saldos de meses anteriores sin dejar rastro. El 2026-10-06 el humano eligió la opción B del diseño `cuenta-corriente-de-terceros-diseno` del wiki: pasar la cuenta de clientes de los siete productos al libro `cc_asientos` (ADR-026). Decidió además dos cosas: primero un **modo sombra**, que escribe en el libro y compara pero sigue leyendo el cálculo; y que **el cliente de una deuda se fije la primera vez** que se asienta (diseño `libro-de-terceros-para-la-familia-diseno`).
+
+**Decisión.**
+- `cc_asientos.origen` (`tabla:id`) dice de qué hecho viene cada asiento. No es único: el original y su reversión lo comparten.
+- `libro_de_clientes.sincronizar(origen)` es lo único que escribe. Compara si el hecho cuenta hoy, con el mismo criterio que `get_cc_saldo`, contra su asiento vigente, y asienta, revierte (`contraasentar`, con la fecha del original) o revierte y vuelve a asentar. Es idempotente.
+- Los escritores del motor la llaman en su misma transacción. No hay un gancho por escritor con su propia lógica: hay una sola función que mira el estado. Así, un escritor nuevo o uno con SQL propio sólo tiene que decir qué hecho tocó.
+- El rol es `cliente` y `tercero_id = clients.id`. Las lecturas del libro sólo miran asientos con `origen`, porque LibraCargo lleva su cuenta de clientes en la misma tabla, sin origen y sobre sus propios terceros.
+- Un CUIT de factura que es de dos clientes no se asienta a ninguno (el cálculo se lo suma a los dos).
+- El asiento de una factura no lleva `factura_id`. Su FK es `ON DELETE RESTRICT`, y `delete_factura` dejaría de funcionar en los productos que hoy la usan. El vínculo está en el origen (`caja_mov:<id>`).
+- Las ventas fiadas se resuelven con el `OrigenVentas` que registra el producto. `build_cuenta_corriente_router` lo registra solo.
+
+**Consecuencias.**
+- Mientras dure la sombra, `comparar()` debería dar vacío. Lo que muestre es un escritor que no avisa (se arregla) o un cambio de CUIT (es la semántica nueva, y se explica).
+- Cuando dé vacío en todas las instancias, las lecturas pasan al libro (etapa B3) y el cálculo se retira (B4).

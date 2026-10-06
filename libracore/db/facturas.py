@@ -145,11 +145,19 @@ def anular_factura(factura_id, usuario_id=None, motivo="", *, conn: Conexion | N
             "anulacion_motivo=? WHERE id=?",
             (usuario_id, (motivo or "").strip()[:500], factura_id),
         )
+        anulados = [f[0] for f in c.execute(
+            "SELECT id FROM caja_movimientos WHERE factura_id=? AND tipo='ingreso'"
+            f" AND {sql_es_cuenta_corriente()} AND {sql_no_anulado()}",
+            (factura_id,),
+        ).fetchall()]
         c.execute(
             "UPDATE caja_movimientos SET anulado=1 WHERE factura_id=? AND tipo='ingreso'"
             f" AND {sql_es_cuenta_corriente()} AND {sql_no_anulado()}",
             (factura_id,),
         )
+        from libracore.db.caja import al_libro_de_clientes
+
+        al_libro_de_clientes(c, anulados)
         return get_factura(factura_id, conn=c)
 
 
@@ -536,4 +544,12 @@ def get_factura_por_tipo_pv_nro(tipo, punto_venta, numero, emisor_id=None, ambie
 def delete_factura(factura_id):
     """Elimina una factura."""
     with get_connection() as conn:
+        # Sus movimientos de caja quedan sin factura (`ON DELETE SET NULL`), y un
+        # ingreso a cuenta corriente sin factura ya no es deuda: el libro lo revierte.
+        movimientos = [f[0] for f in conn.execute(
+            "SELECT id FROM caja_movimientos WHERE factura_id=?", (factura_id,)
+        ).fetchall()]
         conn.execute("DELETE FROM facturas WHERE id=?", (factura_id,))
+        from libracore.db.caja import al_libro_de_clientes
+
+        al_libro_de_clientes(conn, movimientos)

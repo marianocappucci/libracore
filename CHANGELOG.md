@@ -7,7 +7,21 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Unreleased] — La `0019` deja los relojes en hora de Argentina (propuesta: v1.136.1)
+## [Unreleased] — La cuenta de clientes también como libro (propuesta: v1.137.0)
+
+**Migración `0020_origen_del_asiento`**. ADR-027. Agrega una columna vacía y su índice: no toca filas. **La lectura del saldo no cambia**: sigue calculada.
+
+- **`cc_asientos.origen`**: el hecho que originó el asiento, `tabla:id` (`cc_pago:12`, `cc_debito:3`, `caja_mov:34`, `venta_pago:5`). `libro_de_terceros.asentar` lo acepta y `contraasentar` lo copia del original.
+- **`libracore.db.libro_de_clientes`** lleva la cuenta corriente de clientes también en el libro de terceros, con rol `cliente` (opción B, etapa B1):
+  - `sincronizar(origen)`: asienta el hecho, lo revierte con la fecha del original si dejó de contar, o lo vuelve a asentar si cambió el importe. Idempotente.
+  - `sincronizar_cliente(id)`: asienta lo que hoy resuelve a ese cliente y no tenía cliente (una factura de su CUIT, una venta de su party). Lo ya asentado no se mueve: el cliente de una deuda se fija la primera vez.
+  - `reconstruir()`: sincroniza todos los hechos. Se corre al desplegar y se puede repetir.
+  - `comparar()`: los clientes cuyo saldo en el libro no es el calculado. Vacío es lo que se busca.
+  - `registrar_origen_de_ventas(origen)`: dónde están las ventas del producto. `build_cuenta_corriente_router` lo registra solo.
+- **Los escritores del motor asientan en su transacción**: `create_cc_pago`, `delete_cc_pago`, `create_cc_debito`, `delete_cc_debito`, `create_caja_movimiento` (ingreso con factura), `anular_caja_movimiento`, `delete_caja_movimiento`, `anular_movimientos_de_cc_pago`, `anular_factura`, `delete_factura`, `ventas.add_venta_pago`, y el alta y el cambio de CUIT de un cliente.
+- Quien escribe esas tablas con SQL propio llama a `caja.al_libro_de_clientes(conn, [ids])` o a `libro_de_clientes.al_libro_venta_pago(conn, id, medio)`. Lo que no, lo encuentra `comparar` y lo arregla `reconstruir`.
+
+## [v1.136.1] — La `0019` deja los relojes en hora de Argentina
 
 - **La `0019_libro_de_terceros` pasa `cc_asientos.created_at` y `cierres_diarios.created_at` a hora de Argentina** con `alters_para_hora_ar`, como la `0003` con las demás. El DDL ya nacía así, pero ninguna revisión las nombraba: la guarda de Contalibra y Restolibra (que vuelve todas las columnas con reloj a UTC y corre la cadena) las encontraba en UTC. Ahora el motor tiene su propia versión de esa guarda (`test_la_cadena_deja_toda_columna_con_reloj_en_hora_de_argentina_postgres`).
 

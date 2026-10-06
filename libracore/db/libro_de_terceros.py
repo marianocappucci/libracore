@@ -47,8 +47,12 @@ def _validar_importes(debe, haber, origen_legado) -> tuple[float, float]:
 def asentar(tercero_id: int, rol: str, fecha: str, concepto: str, *, debe=0, haber=0,
             descripcion: str | None = None, factura_id: int | None = None,
             origen_legado: str | None = None, usuario_id: int | None = None,
-            conn: Conexion | None = None) -> int:
-    """Escribe un asiento y devuelve su id. `fecha` es `AAAA-MM-DD`."""
+            origen: str | None = None, conn: Conexion | None = None) -> int:
+    """Escribe un asiento y devuelve su id. `fecha` es `AAAA-MM-DD`.
+
+    `origen` es el hecho que lo originó (`cc_pago:12`): lo usa la cuenta de clientes
+    del motor (`libro_de_clientes`). Un producto que lleva su propio libro no lo pasa.
+    """
     if not (rol or "").strip():
         raise AsientoInvalido("El asiento necesita el rol de la cuenta (cliente, proveedor...).")
     if not (concepto or "").strip():
@@ -57,9 +61,9 @@ def asentar(tercero_id: int, rol: str, fecha: str, concepto: str, *, debe=0, hab
     with _con(conn) as c:
         cur = c.execute(
             "INSERT INTO cc_asientos (fecha, tercero_id, rol, concepto, descripcion, debe, haber, "
-            "factura_id, origen_legado, usuario_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "factura_id, origen_legado, usuario_id, origen) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (fecha, tercero_id, rol.strip(), concepto.strip(), descripcion, debe, haber,
-             factura_id, origen_legado, usuario_id),
+             factura_id, origen_legado, usuario_id, origen),
         )
         return cur.lastrowid
 
@@ -119,7 +123,8 @@ def contraasentar(asiento_id: int, *, fecha: str | None = None, concepto: str | 
     LibraCargo al anular un comprobante sin CAE o un gasto). Quien revierte un hecho
     nuevo —un cobro que se devuelve hoy— pasa la fecha.
 
-    Un asiento se revierte una vez, y una contrapartida no se revierte.
+    Un asiento se revierte una vez, y una contrapartida no se revierte. La reversión
+    lleva el `origen` del original: los dos son del mismo hecho.
     """
     with _con(conn) as c:
         original = get_asiento(asiento_id, conn=c)
@@ -133,11 +138,12 @@ def contraasentar(asiento_id: int, *, fecha: str | None = None, concepto: str | 
             raise AsientoInvalido(f"El asiento {asiento_id} ya tiene contrapartida.")
         cur = c.execute(
             "INSERT INTO cc_asientos (fecha, tercero_id, rol, concepto, descripcion, debe, haber, "
-            "factura_id, contrapartida_de, origen_legado, usuario_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,NULL,?)",
+            "factura_id, contrapartida_de, origen_legado, usuario_id, origen) "
+            "VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?)",
             (fecha or original["fecha"], original["tercero_id"], original["rol"],
              concepto or f"Reversión: {original['concepto']}", original["descripcion"],
-             original["haber"], original["debe"], original["factura_id"], asiento_id, usuario_id),
+             original["haber"], original["debe"], original["factura_id"], asiento_id, usuario_id,
+             original.get("origen")),
         )
         return cur.lastrowid
 

@@ -667,6 +667,10 @@ def init_core_schema(conn: Conexion):
             origen_legado    TEXT,
             usuario_id       INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
             created_at       TEXT DEFAULT (datetime('now','-3 hours')),
+            -- El hecho que originó el asiento, `tabla:id` (`cc_pago:12`), en la
+            -- cuenta de clientes que lleva el motor (`libro_de_clientes`). No es
+            -- único: el original y su reversión comparten el origen.
+            origen           TEXT,
             CHECK (debe >= 0 AND haber >= 0),
             -- Un asiento mueve el debe o el haber, nunca los dos ni ninguno.
             -- Lo migrado de un sistema viejo puede traer los dos en cero.
@@ -977,6 +981,13 @@ def init_core_schema(conn: Conexion):
         # tabla de clientes.
         conn.execute("ALTER TABLE clients ADD COLUMN external_ref TEXT")
 
+    # El origen de cada asiento de la cuenta de clientes (`libro_de_clientes`,
+    # opción B de la cuenta corriente). Una base que ya tenía `cc_asientos`
+    # desde la `0019` no la tiene.
+    cols_asientos = [r[1] for r in conn.execute("PRAGMA table_info(cc_asientos)").fetchall()]
+    if "origen" not in cols_asientos:
+        conn.execute("ALTER TABLE cc_asientos ADD COLUMN origen TEXT")
+
     fact_cols = [r[1] for r in conn.execute("PRAGMA table_info(facturas)").fetchall()]
     if "cliente_domicilio" not in fact_cols:
         conn.execute("ALTER TABLE facturas ADD COLUMN cliente_domicilio TEXT DEFAULT ''")
@@ -1144,6 +1155,8 @@ def init_core_schema(conn: Conexion):
         CREATE INDEX IF NOT EXISTS idx_cc_asientos_factura ON cc_asientos(factura_id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_asientos_origen_legado
             ON cc_asientos(origen_legado) WHERE origen_legado IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_cc_asientos_origen
+            ON cc_asientos(origen) WHERE origen IS NOT NULL;
         -- Parcial: la referencia es opcional (un débito cargado a mano no
         -- tiene ninguna), pero cuando existe identifica la venta que lo
         -- originó y no puede repetirse -- es lo que hace que reintentar un
