@@ -45,6 +45,15 @@ Para ese caso está `VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF`: en vez de una
 tabla real, `tabla` es una subconsulta que resuelve el cliente por
 `external_ref` antes de que el resto del módulo la trate como si fuera
 `sales`. Decisión del humano, 2026-09-14.
+
+## Calculado o del libro
+
+Las cuatro lecturas (`get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo`
+y `get_clientes_con_saldo_cc`) se calculan desde los documentos, como se explica
+arriba, salvo que la instancia encienda `LIBRACORE_CC_DESDE_EL_LIBRO`: entonces salen
+del libro `cc_asientos` (`libro_de_clientes`, ADR-028) con la misma forma. Las
+funciones `*_calculado(s)` son el cálculo de siempre, sin mirar el interruptor.
+`get_facturas_pendientes_cc` no cambia: sigue por factura (ADR-018).
 """
 import contextlib
 from dataclasses import dataclass
@@ -120,7 +129,28 @@ def _cuit_de(conn, cliente_id: int) -> str:
     return cuit.replace("-", "").strip()
 
 
+def _del_libro() -> bool:
+    """Si las lecturas salen del libro (`LIBRACORE_CC_DESDE_EL_LIBRO`, ADR-028).
+
+    Import tardío: `libro_de_clientes` importa este módulo.
+    """
+    from libracore.db import libro_de_clientes
+
+    return libro_de_clientes.lee_del_libro()
+
+
 def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> float:
+    """El saldo del cliente: calculado, o del libro si la instancia lo enciende (ADR-028)."""
+    if _del_libro():
+        from libracore.db import libro_de_clientes
+
+        return libro_de_clientes.saldo_de(cliente_id)
+    return get_cc_saldo_calculado(cliente_id, origen)
+
+
+def get_cc_saldo_calculado(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> float:
+    """El saldo calculado desde ventas, facturas, débitos y pagos. Es contra lo que
+    `libro_de_clientes.comparar` mide el libro, así que no mira el interruptor."""
     with get_connection() as conn:
         cuit = _cuit_de(conn, cliente_id)
         debitos_venta = conn.execute(f"""
@@ -153,6 +183,17 @@ def get_cc_saldo(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> fl
 
 
 def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
+    """Los movimientos del cliente, por fecha: calculados, o del libro si la instancia
+    lo enciende (ADR-028). La forma de cada movimiento es la misma."""
+    if _del_libro():
+        from libracore.db import libro_de_clientes
+
+        return libro_de_clientes.movimientos_de(cliente_id, origen)
+    return get_cc_movimientos_calculados(cliente_id, origen)
+
+
+def get_cc_movimientos_calculados(cliente_id: int,
+                                  origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
     with get_connection() as conn:
         cuit = _cuit_de(conn, cliente_id)
         movs = []
@@ -300,7 +341,8 @@ def get_cc_movimientos_periodo(
     `desde`/`hasta` son fechas ISO (YYYY-MM-DD) inclusive. Se resuelve sobre
     `get_cc_movimientos()` en vez de repetir las tres consultas: la cuenta
     corriente es chica por cliente y así no hay riesgo de que el resumen que se
-    manda por mail se calcule distinto que la pantalla.
+    manda por mail se calcule distinto que la pantalla. Por eso también sale del
+    libro cuando la instancia lo enciende (ADR-028): no tiene lectura propia.
     """
     movs = get_cc_movimientos(cliente_id, origen)
 
@@ -373,6 +415,16 @@ def get_resumenes_enviados(cliente_id: int | None = None, limit: int = 50) -> li
 
 
 def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
+    """Los clientes con movimientos y su saldo: calculados, o del libro si la instancia
+    lo enciende (ADR-028). Las filas y el orden son los mismos."""
+    if _del_libro():
+        from libracore.db import libro_de_clientes
+
+        return libro_de_clientes.clientes_con_saldo()
+    return get_clientes_con_saldo_calculado(origen)
+
+
+def get_clientes_con_saldo_calculado(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(f"""
             WITH dv AS (

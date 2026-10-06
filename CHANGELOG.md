@@ -7,6 +7,15 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La cuenta de clientes se lee del libro, si la instancia lo enciende (propuesta: v1.138.0)
+
+ADR-028, etapa B3. **Sin migración y sin cambio por defecto**: apagado, todo se lee calculado como en v1.137.
+
+- **`LIBRACORE_CC_DESDE_EL_LIBRO`** (`1`, `true`, `si` o `sí`) pasa las cuatro lecturas al libro `cc_asientos`: `get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` y `get_clientes_con_saldo_cc`, con la misma forma que el cálculo (las mismas claves y el mismo orden). `libro_de_clientes.lee_del_libro()` dice cuál es el caso; una base sin `cc_asientos` lee calculado aunque esté encendida.
+- **Un hecho revertido no se muestra** en los movimientos: ni el asiento original ni su contrapartida, como el cálculo, que no ve lo borrado ni lo anulado.
+- **`get_facturas_pendientes_cc` no cambia**: sigue por factura.
+- Nuevas en `libro_de_clientes`: `lee_del_libro`, `saldo_de`, `movimientos_de` y `clientes_con_saldo`. En `cuenta_corriente` el cálculo queda como `get_cc_saldo_calculado`, `get_cc_movimientos_calculados` y `get_clientes_con_saldo_calculado`; `comparar()` mide contra ese cálculo aunque el interruptor esté encendido.
+
 ## [Unreleased] — El libro de clientes no rompe una base sin `cc_asientos` (propuesta: v1.137.1)
 
 - **`libro_de_clientes.sincronizar`, `reconstruir` y `saldos_del_libro` no hacen nada en una base sin `cc_asientos`.** LibraDesk arma a mano las tablas del motor que usa, sin el libro, y con v1.137.0 su pago, su débito y su venta fiada fallaban con `relation "cc_asientos" does not exist` (lo encontró el CI de libradesk#482).

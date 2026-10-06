@@ -1,10 +1,10 @@
 """La cuenta corriente de clientes, llevada también como libro (opción B, etapa B1).
 
-El saldo de un cliente se sigue **leyendo calculado** (`cuenta_corriente.get_cc_saldo`,
-desde ventas fiadas, facturas cobradas a cuenta, débitos y pagos). Este módulo lo
-lleva además en el libro de terceros (`cc_asientos`, ADR-026), con rol `cliente` y
-`tercero_id = clients.id`, para poder comparar los dos y, cuando den igual en todas
-las instancias, pasar las lecturas al libro
+El saldo de un cliente se **lee calculado** (`cuenta_corriente.get_cc_saldo`, desde
+ventas fiadas, facturas cobradas a cuenta, débitos y pagos) salvo que la instancia
+encienda `LIBRACORE_CC_DESDE_EL_LIBRO` (etapa B3, ADR-028). Este módulo lo lleva
+además en el libro de terceros (`cc_asientos`, ADR-026), con rol `cliente` y
+`tercero_id = clients.id`, para poder comparar los dos y pasar las lecturas al libro
 (`wiki/analyses/libro-de-terceros-para-la-familia-diseno.md`).
 
 **Un hecho, un origen.** Cada asiento dice de qué hecho viene, como `tabla:id`:
@@ -37,14 +37,45 @@ corregir un CUIT mal cargado se hace un asiento de traspaso explícito.
 
 Un CUIT de factura que es de dos clientes a la vez no se asienta a ninguno: el
 cálculo le suma la deuda a los dos, y elegir uno sería inventar.
+
+## Las lecturas desde el libro (etapa B3, ADR-028)
+
+`lee_del_libro()` es el interruptor, por instancia: la variable de entorno
+`LIBRACORE_CC_DESDE_EL_LIBRO` en `1`, `true`, `si` o `sí`. Apagada (lo normal), todo
+se lee calculado, como siempre. Encendida, `saldo_de`, `movimientos_de` y
+`clientes_con_saldo` responden `get_cc_saldo`, `get_cc_movimientos` (y con él
+`get_cc_movimientos_periodo`) y `get_clientes_con_saldo_cc`, con la misma forma. Una
+base sin `cc_asientos` lee calculado aunque esté encendida. `get_facturas_pendientes_cc`
+no cambia: sigue por factura (ADR-018).
+
+🔑 **Un hecho revertido no se muestra**: ni el asiento original ni su contrapartida
+entran en la lista de movimientos. Es lo que ve el cálculo, que no encuentra lo
+borrado ni lo anulado. El saldo no necesita esa regla: el original y su reversión se
+cancelan. La reversión de un asiento sigue estando en el libro para quien quiera
+reconstruir la cuenta como estaba.
+
+Cada movimiento sale de su asiento vigente: la fecha, el signo y el monto son los del
+asiento, y el `origen` (`cc_pago:12`) dice qué fila leer para completar lo demás (el
+concepto, la referencia, el usuario, los ids que usa la pantalla).
 """
+import os
+
 from libracore.db import libro_de_terceros as libro
 from libracore.db.caja import MEDIOS_CUENTA_CORRIENTE, sql_es_cuenta_corriente, sql_no_anulado
 from libracore.db.core import Conexion, get_connection
-from libracore.db.cuenta_corriente import VENTAS_LIBRACORE, OrigenVentas, get_cc_saldo
+from libracore.db.cuenta_corriente import (
+    _TIPO_LABEL,
+    VENTAS_LIBRACORE,
+    OrigenVentas,
+    get_cc_saldo_calculado,
+)
 from libracore.db.facturas import _con
 
 ROL = "cliente"
+
+#: La variable de entorno que pasa las lecturas de la cuenta de clientes al libro.
+VARIABLE_LECTURA = "LIBRACORE_CC_DESDE_EL_LIBRO"
+_VERDADEROS = frozenset({"1", "true", "si", "sí"})
 
 _origen_de_ventas: OrigenVentas = VENTAS_LIBRACORE
 
@@ -288,9 +319,165 @@ def comparar(ventas: OrigenVentas | None = None) -> list[dict]:
         ids = {f[0] for f in c.execute("SELECT id FROM clients").fetchall()}
     diferencias = []
     for cliente_id in sorted(ids | set(del_libro)):
-        calculado = round(get_cc_saldo(cliente_id, ventas), 2) if cliente_id in ids else 0.0
+        calculado = round(get_cc_saldo_calculado(cliente_id, ventas), 2) if cliente_id in ids else 0.0
         en_libro = del_libro.get(cliente_id, 0.0)
         if abs(en_libro - calculado) >= 0.005:
             diferencias.append({"cliente_id": cliente_id, "libro": en_libro, "calculado": calculado,
                                 "diferencia": round(en_libro - calculado, 2)})
     return diferencias
+
+
+# --- Las lecturas desde el libro (etapa B3, ADR-028) ---
+
+
+def lee_del_libro() -> bool:
+    """Si esta instancia lee la cuenta de clientes del libro y no del cálculo.
+
+    Hace falta la variable `LIBRACORE_CC_DESDE_EL_LIBRO` encendida **y** que la base tenga
+    `cc_asientos`: LibraDesk arma a mano las tablas del motor que usa, sin el libro, y
+    ahí se lee calculado aunque la variable diga otra cosa.
+    """
+    if os.environ.get(VARIABLE_LECTURA, "").strip().lower() not in _VERDADEROS:
+        return False
+    with get_connection() as c:
+        return _existe_tabla(c, "cc_asientos")
+
+
+#: El asiento que cuenta: un original que nadie revirtió. Ni la contrapartida ni el
+#: original revertido son un movimiento de la cuenta (un hecho revertido no se muestra).
+_SQL_VIGENTE = ("a.contrapartida_de IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM cc_asientos r WHERE r.contrapartida_de = a.id)")
+
+
+def saldo_de(cliente_id: int) -> float:
+    """El saldo del cliente en el libro: debe menos haber de sus asientos con origen.
+
+    Redondeado al centavo, como `saldos_del_libro`: el original y su reversión suman
+    cero, pero con flotantes no siempre al bit.
+    """
+    with get_connection() as c:
+        fila = c.execute(
+            "SELECT COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) FROM cc_asientos "
+            "WHERE rol = ? AND tercero_id = ? AND origen IS NOT NULL", (ROL, cliente_id)).fetchone()
+    return round(float(fila[0] or 0), 2)
+
+
+def _filas_por_id(c, sql: str, ids) -> dict:
+    """Las filas de `sql` (con `__IDS__` donde va la lista de `?`) para esos ids, por id."""
+    ids = sorted(ids)
+    filas = {}
+    for i in range(0, len(ids), 500):
+        lote = ids[i:i + 500]
+        consulta = sql.replace("__IDS__", ",".join("?" * len(lote)))
+        for fila in c.execute(consulta, lote).fetchall():
+            filas[fila["id"]] = fila
+    return filas
+
+
+def movimientos_de(cliente_id: int, ventas: OrigenVentas | None = None) -> list[dict]:
+    """Los movimientos del cliente desde el libro, con la forma de `get_cc_movimientos`.
+
+    Un movimiento por asiento vigente (un hecho revertido no se muestra, ver el
+    docstring del módulo). El orden es el del cálculo: por fecha, y a igual fecha
+    primero las ventas, después las facturas, los débitos y los pagos, cada uno por id.
+
+    Lo que el asiento no dice (concepto, referencia, usuario, los ids de la pantalla) se
+    lee de la fila del hecho, la que nombra el `origen`. Si esa fila ya no existe (se
+    borró con SQL propio y nadie sincronizó), el movimiento sigue: el libro dice que la
+    plata cuenta. Sale con el concepto del asiento y sin los ids.
+    """
+    ventas = ventas or _origen_de_ventas
+    with get_connection() as c:
+        asientos = c.execute(
+            "SELECT a.fecha, a.concepto, a.debe, a.haber, a.origen FROM cc_asientos a "
+            f"WHERE a.rol = ? AND a.tercero_id = ? AND a.origen IS NOT NULL AND {_SQL_VIGENTE}",
+            (ROL, cliente_id)).fetchall()
+        por_tipo: dict[str, dict[int, object]] = {}
+        for a in asientos:
+            tipo, _, id_texto = a["origen"].partition(":")
+            por_tipo.setdefault(tipo, {})[int(id_texto)] = a
+
+        hay_ventas = _existe_tabla(c, _tabla_de_ventas(ventas))
+        ventas_pagos = _filas_por_id(
+            c, f"SELECT vp.id AS id, v.{ventas.columna_numero} AS numero, v.id AS venta_id "
+               f"FROM ventas_pagos vp JOIN {ventas.tabla} v ON vp.venta_id = v.id "
+               "WHERE vp.id IN (__IDS__)",
+            por_tipo.get("venta_pago", {})) if hay_ventas else {}
+        # Un movimiento anulado con SQL propio y sin sincronizar sale con el concepto de su
+        # asiento y sin los ids: la fila del hecho no se lee anulada (`sql_no_anulado`).
+        cajas = _filas_por_id(
+            c, "SELECT cm.id AS id, f.tipo AS ftipo, f.punto_venta, f.numero, f.id AS factura_id, "
+               "cm.referencia, u.nombre AS usuario_nombre FROM caja_movimientos cm "
+               "JOIN facturas f ON cm.factura_id = f.id LEFT JOIN usuarios u ON u.id = cm.usuario_id "
+               f"WHERE cm.id IN (__IDS__) AND {sql_no_anulado('cm')}", por_tipo.get("caja_mov", {}))
+        debitos = _filas_por_id(
+            c, "SELECT d.id AS id, d.concepto, d.referencia, u.nombre AS usuario_nombre "
+               "FROM cc_debitos d LEFT JOIN usuarios u ON u.id = d.usuario_id WHERE d.id IN (__IDS__)",
+            por_tipo.get("cc_debito", {}))
+        pagos = _filas_por_id(
+            c, "SELECT p.id AS id, p.concepto, p.referencia, p.medio_pago, u.nombre AS usuario_nombre "
+               "FROM cc_pagos p LEFT JOIN usuarios u ON u.id = p.usuario_id WHERE p.id IN (__IDS__)",
+            por_tipo.get("cc_pago", {}))
+
+    movs = []
+    for tipo_origen, orden in (("venta_pago", 0), ("caja_mov", 1), ("cc_debito", 2), ("cc_pago", 3)):
+        for id_, a in por_tipo.get(tipo_origen, {}).items():
+            debito = float(a["debe"] or 0) > 0
+            mov = {
+                "fecha": _fecha(a["fecha"]), "tipo": "debito" if debito else "credito",
+                "concepto": a["concepto"],
+                "monto": float(a["debe"] if debito else a["haber"]),
+                "referencia": "", "medio": "", "venta_id": None, "factura_id": None,
+                "cc_pago_id": None, "usuario_nombre": None,
+            }
+            r = {"venta_pago": ventas_pagos, "caja_mov": cajas, "cc_debito": debitos,
+                 "cc_pago": pagos}[tipo_origen].get(id_)
+            if r is not None:
+                if tipo_origen == "venta_pago":
+                    mov |= {"concepto": f"Venta #{r['numero']}", "venta_id": r["venta_id"]}
+                elif tipo_origen == "caja_mov":
+                    mov |= {"concepto": f"{_TIPO_LABEL.get(r['ftipo'], 'COMP')} "
+                                        f"{str(r['punto_venta']).zfill(4)}-{str(r['numero']).zfill(8)}",
+                            "referencia": r["referencia"] or "", "factura_id": r["factura_id"],
+                            "usuario_nombre": r["usuario_nombre"]}
+                elif tipo_origen == "cc_debito":
+                    mov |= {"concepto": r["concepto"] or "Venta a cuenta corriente",
+                            "referencia": r["referencia"] or "", "cc_debito_id": r["id"],
+                            "usuario_nombre": r["usuario_nombre"]}
+                else:
+                    mov |= {"concepto": r["concepto"] or "Pago a cuenta",
+                            "referencia": r["referencia"] or "", "medio": r["medio_pago"] or "",
+                            "cc_pago_id": r["id"], "usuario_nombre": r["usuario_nombre"]}
+            elif tipo_origen == "cc_debito":
+                mov["cc_debito_id"] = None
+            movs.append((mov["fecha"], orden, id_, mov))
+    return [m[3] for m in sorted(movs, key=lambda m: m[:3])]
+
+
+def clientes_con_saldo() -> list[dict]:
+    """Los clientes con algún hecho vigente en el libro y su saldo, con la forma de
+    `get_clientes_con_saldo_cc`: `id`, `name`, `cuit_dni`, `external_ref` y `saldo`.
+
+    Aparece quien tiene al menos un asiento vigente, aunque su saldo sea cero: es el
+    criterio del cálculo (quien tiene alguna venta, factura, débito o pago). Orden: saldo
+    de mayor a menor y, a igual saldo, por nombre.
+    """
+    with get_connection() as c:
+        filas = c.execute(
+            "WITH sal AS ("
+            " SELECT tercero_id AS cid, COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) AS saldo "
+            " FROM cc_asientos WHERE rol = ? AND origen IS NOT NULL GROUP BY tercero_id), "
+            "vivos AS ("
+            " SELECT DISTINCT a.tercero_id AS cid FROM cc_asientos a "
+            f" WHERE a.rol = ? AND a.origen IS NOT NULL AND {_SQL_VIGENTE}) "
+            "SELECT c.id, c.name, c.cuit_dni, c.external_ref, COALESCE(sal.saldo, 0) AS saldo "
+            "FROM clients c JOIN vivos ON vivos.cid = c.id LEFT JOIN sal ON sal.cid = c.id "
+            "ORDER BY c.name", (ROL, ROL)).fetchall()
+    clientes = []
+    for f in filas:
+        cliente = dict(f)
+        cliente["saldo"] = round(float(cliente["saldo"] or 0), 2)
+        clientes.append(cliente)
+    # El saldo se redondea acá, así que se ordena acá: el orden por nombre de arriba
+    # desempata (el sort es estable).
+    return sorted(clientes, key=lambda cliente: -cliente["saldo"])
