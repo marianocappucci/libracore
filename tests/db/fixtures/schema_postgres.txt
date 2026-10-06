@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (401)
+## tablas (409)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -107,6 +107,8 @@ clients|id|bigint|NN|nextval('clients_id_seq'::regclass)
 clients|iva_condition|text||''::text
 clients|name|text|NN|
 clients|phone|text||
+comprobantes_pendientes|aceptado_at|text||
+comprobantes_pendientes|aceptado_por|text||
 comprobantes_pendientes|cliente_cuit|text||''::text
 comprobantes_pendientes|cliente_domicilio|text||''::text
 comprobantes_pendientes|cliente_id|integer||
@@ -114,12 +116,17 @@ comprobantes_pendientes|cliente_razon|text|NN|
 comprobantes_pendientes|concepto|text||''::text
 comprobantes_pendientes|condicion_venta|text||''::text
 comprobantes_pendientes|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+comprobantes_pendientes|emisor_id|integer||
+comprobantes_pendientes|enviado_at|text||
+comprobantes_pendientes|enviado_a|text||
 comprobantes_pendientes|estado|text|NN|'pendiente'::text
 comprobantes_pendientes|factura_id|integer||
 comprobantes_pendientes|fecha_sugerida|text||''::text
+comprobantes_pendientes|fecha_vencimiento_pago|text||
 comprobantes_pendientes|id|bigint|NN|nextval('comprobantes_pendientes_id_seq'::regclass)
 comprobantes_pendientes|items|text|NN|'[]'::text
 comprobantes_pendientes|motivo_descarte|text||''::text
+comprobantes_pendientes|numero_interno|text||
 comprobantes_pendientes|observaciones|text||''::text
 comprobantes_pendientes|origen_id|text|NN|
 comprobantes_pendientes|origen_instancia|text|NN|''::text
@@ -129,6 +136,7 @@ comprobantes_pendientes|periodo_desde|text||''::text
 comprobantes_pendientes|periodo_hasta|text||''::text
 comprobantes_pendientes|resuelto_at|text||''::text
 comprobantes_pendientes|resuelto_por|text||''::text
+comprobantes_pendientes|tipo_comprobante|integer||
 comprobantes_pendientes|total|numeric|NN|0
 cuentas_tesoreria|activa|integer|NN|1
 cuentas_tesoreria|banco|text||''::text
@@ -439,7 +447,7 @@ usuarios|PRIMARY KEY (id)
 ventas_pagos|PRIMARY KEY (id)
 ventas|PRIMARY KEY (id)
 
-## claves foráneas (47)
+## claves foráneas (48)
 caja_movimientos|caja_movimientos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
 caja_movimientos|caja_movimientos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 caja_movimientos|fk_caja_movimientos_turno|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
@@ -453,6 +461,7 @@ cc_pagos|cc_pagos_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id
 cc_pagos|cc_pagos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 cc_resumenes_enviados|cc_resumenes_enviados_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
 comprobantes_pendientes|comprobantes_pendientes_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE SET NULL
+comprobantes_pendientes|comprobantes_pendientes_emisor_id_fkey|FOREIGN KEY (emisor_id) REFERENCES arca_config(id) ON DELETE RESTRICT
 comprobantes_pendientes|comprobantes_pendientes_factura_id_fkey|FOREIGN KEY (factura_id) REFERENCES facturas(id) ON DELETE SET NULL
 egresos_pagos|egresos_pagos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
 egresos_pagos|egresos_pagos_egreso_id_fkey|FOREIGN KEY (egreso_id) REFERENCES egresos(id) ON DELETE CASCADE
@@ -488,7 +497,7 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (67)
+## índices (68)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 auth_log|auth_log_pkey|CREATE UNIQUE INDEX auth_log_pkey ON public.auth_log USING btree (id)
@@ -516,6 +525,7 @@ clients|idx_clients_cuit_norm|CREATE INDEX idx_clients_cuit_norm ON public.clien
 clients|idx_clients_external_ref|CREATE UNIQUE INDEX idx_clients_external_ref ON public.clients USING btree (external_ref) WHERE (external_ref IS NOT NULL)
 comprobantes_pendientes|comprobantes_pendientes_pkey|CREATE UNIQUE INDEX comprobantes_pendientes_pkey ON public.comprobantes_pendientes USING btree (id)
 comprobantes_pendientes|idx_comprobantes_pendientes_estado|CREATE INDEX idx_comprobantes_pendientes_estado ON public.comprobantes_pendientes USING btree (estado, created_at)
+comprobantes_pendientes|idx_comprobantes_pendientes_numero_interno|CREATE UNIQUE INDEX idx_comprobantes_pendientes_numero_interno ON public.comprobantes_pendientes USING btree (origen_producto, origen_instancia, numero_interno) WHERE (numero_interno IS NOT NULL)
 comprobantes_pendientes|idx_comprobantes_pendientes_origen|CREATE UNIQUE INDEX idx_comprobantes_pendientes_origen ON public.comprobantes_pendientes USING btree (origen_producto, origen_instancia, origen_tipo, origen_id)
 cuentas_tesoreria|cuentas_tesoreria_pkey|CREATE UNIQUE INDEX cuentas_tesoreria_pkey ON public.cuentas_tesoreria USING btree (id)
 depositos|depositos_pkey|CREATE UNIQUE INDEX depositos_pkey ON public.depositos USING btree (id)

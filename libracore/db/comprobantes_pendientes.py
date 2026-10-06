@@ -16,13 +16,27 @@ de uno o varios pendientes —que es la parte con reglas— vive en
 import json
 import sqlite3
 
-from libracore.db.core import get_connection
+from libracore.db.core import Conexion, get_connection
+from libracore.db.facturas import _con
 
 ESTADO_PENDIENTE = "pendiente"
+ESTADO_ENVIADO = "enviado"
+ESTADO_ACEPTADO = "aceptado"
 ESTADO_FACTURADO = "facturado"
 ESTADO_DESCARTADO = "descartado"
 
-ESTADOS = (ESTADO_PENDIENTE, ESTADO_FACTURADO, ESTADO_DESCARTADO)
+ESTADOS = (ESTADO_PENDIENTE, ESTADO_ENVIADO, ESTADO_ACEPTADO, ESTADO_FACTURADO,
+           ESTADO_DESCARTADO)
+
+# `enviado` y `aceptado` son del ciclo de la pre factura (ADR-030,
+# `libracore.pre_facturas`): sólo los alcanza quien la manda y la acepta, así que a
+# los productores de siempre (Contalibra, LibraDesk) no les cambia nada.
+#
+# **Abierto** es lo que todavía se puede facturar o descartar; **final** no se mueve
+# más. `facturado` y `descartado` son finales: sigue valiendo que una resolución la
+# tomó una persona y nadie la revierte.
+ESTADOS_ABIERTOS = (ESTADO_PENDIENTE, ESTADO_ENVIADO, ESTADO_ACEPTADO)
+ESTADOS_FINALES = (ESTADO_FACTURADO, ESTADO_DESCARTADO)
 
 # Lo que un producto puede depositar. La lista es cerrada a propósito: un
 # `origen_tipo` libre convierte la bandeja en un buzón donde nadie sabe qué
@@ -31,21 +45,28 @@ ORIGEN_CUOTA_CONTRATO = "cuota_contrato"
 ORIGEN_INCIDENCIA = "incidencia"
 ORIGEN_REMITO = "remito"
 ORIGEN_PRESUPUESTO = "presupuesto"
+# Una pre factura que arma un producto juntando varias cosas suyas (órdenes de carga,
+# tickets): no es una sola fila de origen. `libracore.pre_facturas` le pone de
+# `origen_id` su número interno si el producto no pasa uno propio.
+ORIGEN_PRE_FACTURA = "pre_factura"
 
 ORIGENES = (
     ORIGEN_CUOTA_CONTRATO,
     ORIGEN_INCIDENCIA,
     ORIGEN_REMITO,
     ORIGEN_PRESUPUESTO,
+    ORIGEN_PRE_FACTURA,
 )
 
 
 class ComprobanteYaResuelto(Exception):
-    """El productor reenvió algo que acá ya se facturó o se descartó.
+    """El productor reenvió algo que acá ya se facturó, se descartó o una persona ya movió.
 
     No es un error del productor: reintentar es lo correcto cuando se corta la
     red. Lo que no puede pasar es que el reintento pise una resolución que ya
-    tomó una persona, así que el alta lo informa en vez de escribir.
+    tomó una persona, así que el alta lo informa en vez de escribir. Vale también
+    para una fila `enviada` o `aceptada` (una pre factura que el cliente ya vio):
+    cambiarle los datos por debajo es lo que `editar` hace, con la persona delante.
     """
 
 
@@ -88,9 +109,9 @@ def upsert_comprobante(origen_producto, origen_tipo, origen_id, cliente_razon,
     - Si el pendiente sigue `pendiente`, **actualiza los datos** y devuelve
       `creado=False`. El origen puede haber corregido el importe o el período
       entre un intento y el siguiente, y lo último que mandó es lo que vale.
-    - Si ya está `facturado` o `descartado`, **no toca nada** y levanta
-      `ComprobanteYaResuelto`. Una resolución la tomó una persona; un reintento
-      automático no la revierte.
+    - Si ya está `facturado` o `descartado` (o `enviado` o `aceptado`: una persona
+      ya la mandó o la aceptó), **no toca nada** y levanta `ComprobanteYaResuelto`.
+      Una resolución la tomó una persona; un reintento automático no la revierte.
     """
     if origen_tipo not in ORIGENES:
         raise ValueError(
@@ -183,15 +204,16 @@ def upsert_comprobante(origen_producto, origen_tipo, origen_id, cliente_razon,
             return dict(fila)["id"], False
 
 
-def get_comprobante(comprobante_id: int) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
+def get_comprobante(comprobante_id: int, *, conn: Conexion | None = None) -> dict | None:
+    """Con `conn`, lee dentro de la transacción de quien llama (ADR-025)."""
+    with _con(conn) as c:
+        row = c.execute(
             "SELECT * FROM comprobantes_pendientes WHERE id=?", (comprobante_id,)
         ).fetchone()
         return _row_a_dict(row) if row else None
 
 
-def get_comprobantes(ids: list) -> list[dict]:
+def get_comprobantes(ids: list, *, conn: Conexion | None = None) -> list[dict]:
     """Varios por id, en el orden en que están en la base.
 
     Es lo que necesita el armado del prefill cuando se facturan juntos varios
@@ -201,8 +223,8 @@ def get_comprobantes(ids: list) -> list[dict]:
     if not ids:
         return []
     marcas = ",".join("?" * len(ids))
-    with get_connection() as conn:
-        rows = conn.execute(
+    with _con(conn) as c:
+        rows = c.execute(
             f"SELECT * FROM comprobantes_pendientes WHERE id IN ({marcas}) "
             "ORDER BY id",
             tuple(ids),
@@ -210,7 +232,8 @@ def get_comprobantes(ids: list) -> list[dict]:
         return [_row_a_dict(r) for r in rows]
 
 
-def list_por_estado(estado: str, limit: int | None = None) -> list[dict]:
+def list_por_estado(estado: str, limit: int | None = None, *,
+                    conn: Conexion | None = None) -> list[dict]:
     if estado not in ESTADOS:
         raise ValueError(f"estado invalido: {estado!r} (esperado uno de {ESTADOS})")
     sql = ("SELECT * FROM comprobantes_pendientes WHERE estado=? "
@@ -219,8 +242,8 @@ def list_por_estado(estado: str, limit: int | None = None) -> list[dict]:
     if limit is not None:
         sql += " LIMIT ?"
         params = (estado, int(limit))
-    with get_connection() as conn:
-        return [_row_a_dict(r) for r in conn.execute(sql, params).fetchall()]
+    with _con(conn) as c:
+        return [_row_a_dict(r) for r in c.execute(sql, params).fetchall()]
 
 
 def contar_pendientes() -> int:
@@ -234,31 +257,41 @@ def contar_pendientes() -> int:
         return row[0] or 0
 
 
-def _resolver(comprobante_id, estado, usuario="", factura_id=None, motivo=""):
-    """El único escritor de `estado`. Sólo mueve pendientes.
+def _resolver(comprobante_id, estado, usuario="", factura_id=None, motivo="",
+              conn: Conexion | None = None):
+    """El único escritor de `estado` hacia un final. Sólo mueve lo que está abierto.
 
-    El `WHERE estado='pendiente'` no es defensivo de más: es lo que hace que
+    El `WHERE estado IN (abiertos)` no es defensivo de más: es lo que hace que
     marcar dos veces no pise el `factura_id` de la primera, que es el dato con
-    el que después se rastrea qué factura cubrió qué.
+    el que después se rastrea qué factura cubrió qué. Abierto es `pendiente`,
+    `enviado` o `aceptado`: una pre factura se factura o se anula en cualquiera de
+    los tres.
+
+    Con `conn`, en la transacción de quien llama y sin confirmar (ADR-025): es lo
+    que deja a un producto marcar la pre factura facturada en la misma transacción
+    en que emite el comprobante.
     """
-    with get_connection() as conn:
-        cur = conn.execute(
+    marcas = ",".join("?" * len(ESTADOS_ABIERTOS))
+    with _con(conn) as c:
+        cur = c.execute(
             "UPDATE comprobantes_pendientes SET estado=?, factura_id=?, "
             "motivo_descarte=?, resuelto_por=?, "
-            "resuelto_at=datetime('now','-3 hours') WHERE id=? AND estado=?",
+            "resuelto_at=datetime('now','-3 hours') "
+            f"WHERE id=? AND estado IN ({marcas})",
             (estado, factura_id, motivo, usuario, comprobante_id,
-             ESTADO_PENDIENTE),
+             *ESTADOS_ABIERTOS),
         )
-        conn.commit()
         return cur.rowcount > 0
 
 
-def marcar_facturado(comprobante_id: int, factura_id: int, usuario: str = "") -> bool:
-    """Devuelve `False` si no estaba pendiente (ya resuelto, o no existe)."""
+def marcar_facturado(comprobante_id: int, factura_id: int, usuario: str = "", *,
+                     conn: Conexion | None = None) -> bool:
+    """Devuelve `False` si ya estaba resuelto (facturado o descartado) o no existe."""
     return _resolver(comprobante_id, ESTADO_FACTURADO, usuario=usuario,
-                     factura_id=factura_id)
+                     factura_id=factura_id, conn=conn)
 
 
-def descartar(comprobante_id: int, motivo: str = "", usuario: str = "") -> bool:
+def descartar(comprobante_id: int, motivo: str = "", usuario: str = "", *,
+              conn: Conexion | None = None) -> bool:
     return _resolver(comprobante_id, ESTADO_DESCARTADO, usuario=usuario,
-                     motivo=motivo)
+                     motivo=motivo, conn=conn)

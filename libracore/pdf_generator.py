@@ -1342,6 +1342,172 @@ def generate_pdf_factura(factura, output_dir=None):
     return os.path.abspath(filepath)
 
 
+# ── Pre factura ───────────────────────────────────────────────────────────────
+
+#: El sello de la pre factura. Va en el cuerpo de **cada página** y es lo único que
+#: la distingue a simple vista de una factura: tiene el mismo aspecto a propósito
+#: (el cliente tiene que ver cómo le saldría), así que lo que impide que alguien la
+#: tome por un comprobante es esta leyenda, grande y repetida.
+LEYENDA_PRE_FACTURA = "PRE FACTURA — NO VÁLIDA COMO COMPROBANTE FISCAL"
+
+
+def _draw_pre_factura_sello(pdf, y):
+    """La franja con la leyenda, bajo el encabezado. Devuelve la `y` siguiente."""
+    h = 9
+    pdf.set_fill_color(*_WARNING_SOFT)
+    pdf.set_draw_color(*_WARNING)
+    pdf.set_line_width(0.6)
+    _rrect(pdf, _LX, y, _CW, h, style="DF")
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(*_WARNING)
+    pdf.set_xy(_LX, y + 2)
+    pdf.cell(_CW, h - 4, LEYENDA_PRE_FACTURA, align="C", ln=False)
+    pdf.set_text_color(*_INK)
+    pdf.set_fill_color(*_WHITE)
+    return y + h + 4
+
+
+class PreFacturaPDF(_TextoSeguroPDF):
+    """Una pre factura: el mismo marco que `FacturaPDF`, **sin** lo fiscal.
+
+    No dibuja punto de venta, número fiscal, CAE ni el código QR de ARCA, y en su
+    lugar lleva el número interno (`PF-0001`) y el sello de `LEYENDA_PRE_FACTURA`.
+    La letra del recuadro es una `X`: la que se usa en un documento que no es
+    factura.
+    """
+
+    def __init__(self, pre_factura):
+        super().__init__(orientation="P", unit="mm", format="A4")
+        self.pre_factura = pre_factura
+        self._emp = None
+        self.fijar_fecha_documento(pre_factura.get("fecha_sugerida"))
+        self.set_margins(_LX, _LX, _LX)
+        self.set_auto_page_break(auto=True, margin=46)
+        self.alias_nb_pages()
+
+    def header(self):
+        pf = self.pre_factura
+        emp = self._emp or _empresa()
+        info_fields = [
+            ("Pre factura N°:", pf.get("numero_interno") or ""),
+            ("Fecha:", _fmt_fecha(pf.get("fecha_sugerida") or "")),
+        ]
+        tipo = pf.get("tipo_comprobante")
+        if tipo in tipos.NOMBRE:
+            info_fields.append(("A emitir:", tipos.NOMBRE[tipo]))
+        y = _draw_header_block(self, "X", "Pre Factura", "", info_fields, emp)
+        self.set_y(_draw_pre_factura_sello(self, y))
+
+    def footer(self):
+        fy = self.h - 44
+        self.set_draw_color(*_LINE)
+        self.set_line_width(0.4)
+        self.line(_LX, fy, _RX, fy)
+        self.set_font("Helvetica", "B", 9)
+        self.set_text_color(*_WARNING)
+        self.set_xy(_LX, fy + 5)
+        self.cell(_CW, 5, LEYENDA_PRE_FACTURA, align="C", ln=False)
+        self.set_font("Helvetica", "", 7.5)
+        self.set_text_color(*_MUTED)
+        self.set_xy(_LX, fy + 12)
+        self.multi_cell(
+            _CW, 4,
+            "Documento para que el cliente confirme los datos antes de facturar. No es una "
+            "factura, no tiene valor fiscal y su número es interno. Los importes y los "
+            "datos pueden cambiar hasta que se emita el comprobante.",
+            align="C",
+        )
+        self.set_xy(_LX, fy + 27)
+        self.cell(_CW, 4, "Moneda: Pesos argentinos", align="C", ln=False)
+        self.set_font("Helvetica", "", 7)
+        self.set_xy(_LX, self.h - 10)
+        self.cell(_CW, 4, f"Pág. {self.page_no()}/{{nb}}", align="R")
+        self.set_text_color(*_INK)
+
+
+def generate_pdf_pre_factura(pre_factura: dict, empresa: dict | None = None) -> bytes:
+    """El PDF de una pre factura (`libracore.pre_facturas`), en memoria.
+
+    `pre_factura` es la fila de `comprobantes_pendientes` como la devuelve
+    `db.comprobantes_pendientes.get_comprobante`. `empresa` pisa, clave por clave,
+    los datos del emisor que salen de la configuración de la instancia (`nombre`,
+    `cuit`, `direccion`, `iva_condition`, `iibb`, `inicio_actividades`,
+    `logo_path`): un producto con varias razones sociales pasa los de la que
+    factura.
+
+    El total es el de la fila (que sale de los ítems); el desglose es de los
+    ítems. La fecha del PDF es la del documento (`fijar_fecha_documento`), así
+    que reimprimir devuelve los mismos bytes.
+    """
+    pf = pre_factura
+    emp = {**_empresa(), **(empresa or {})}
+    pdf = PreFacturaPDF(pf)
+    pdf._emp = emp
+    pdf.add_page()
+
+    _draw_emisor_cliente(pdf, emp, [
+        ("Nombre",          pf.get("cliente_razon", "")),
+        ("CUIT/DNI",        pf.get("cliente_cuit", "")),
+        ("Domicilio",       pf.get("cliente_domicilio", "")),
+        ("Condición venta", pf.get("condicion_venta", "")),
+    ])
+
+    desde = _fmt_fecha(pf.get("periodo_desde") or "")
+    hasta = _fmt_fecha(pf.get("periodo_hasta") or "")
+    vto = _fmt_fecha(pf.get("fecha_vencimiento_pago") or "")
+    partes = []
+    if desde or hasta:
+        partes.append(f"Per. facturado: {desde} al {hasta}")
+    if vto:
+        partes.append(f"Vto. pago: {vto}")
+    if partes:
+        pdf.set_font("Helvetica", "", 8)
+        pdf.set_text_color(*_MUTED)
+        pdf.set_x(_LX)
+        pdf.cell(_CW, 5, "  ·  ".join(partes), ln=True)
+        pdf.set_text_color(*_INK)
+        pdf.ln(2)
+
+    tipo = pf.get("tipo_comprobante")
+    es_c = tipo in _TIPOS_C
+    items, neto = [], 0.0
+    tasas = set()
+    for it in pf.get("items") or []:
+        qty = float(it.get("qty") or 0)
+        precio = float(it.get("unit_price") or 0)
+        tasa = float(it.get("iva_rate") or 0)
+        tasas.add(round(tasa, 4))
+        neto += qty * precio
+        items.append({
+            "description": it.get("description", ""), "detalle": it.get("detalle", ""),
+            "qty": qty, "unit_price": precio, "subtotal": round(qty * precio, 2),
+            "iva_pct": tasa * 100,
+        })
+    _draw_items_table(pdf, items, show_iva_col=not es_c)
+
+    total = float(pf.get("total") or 0)
+    neto = round(neto, 2)
+    if es_c:
+        tax_pct = 0
+    elif len(tasas) == 1:
+        tax_pct = round(next(iter(tasas)) * 100)
+    elif tasas:
+        tax_pct = None  # alícuotas mezcladas: el detalle está en la columna de IVA
+    else:
+        tax_pct = 21
+
+    _TOTALS_SECTION_H = 30
+    target_y = pdf.h - 44 - _TOTALS_SECTION_H
+    if pdf.get_y() > target_y:
+        pdf.add_page()
+        target_y = pdf.h - 44 - _TOTALS_SECTION_H
+    pdf.set_y(target_y)
+    _draw_totals_and_notes(pdf, neto, round(total - neto, 2), 0, total, tax_pct,
+                           pf.get("observaciones", ""),
+                           condicion_venta=pf.get("condicion_venta", ""))
+    return bytes(pdf.output())
+
+
 # ── Recibo de pago ────────────────────────────────────────────────────────────
 
 # 🔴 Acá había un `_MEDIOS_LABEL` propio, y `ticket_generator` tenía otro con el

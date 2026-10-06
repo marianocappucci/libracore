@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from libracore.email_sender import enviar_comprobante
+from libracore.email_sender import enviar_comprobante, enviar_documento
 
 
 @pytest.fixture
@@ -102,3 +102,32 @@ def test_from_and_to_headers_without_display_name(mock_smtp_cls, pdf_path):
     sent_msg = mock_server.send_message.call_args[0][0]
     assert sent_msg["From"] == "facturacion@example.com"
     assert sent_msg["To"] == "cliente@example.com"
+
+
+@patch("libracore.email_sender.smtplib.SMTP")
+def test_enviar_documento_adjunta_un_pdf_que_esta_en_memoria(mock_smtp_cls):
+    """`pdf_bytes` manda el PDF sin pasarlo por un archivo (la pre factura se genera al momento)."""
+    mock_server = MagicMock()
+    mock_smtp_cls.return_value.__enter__.return_value = mock_server
+
+    enviar_documento(
+        to_email="cliente@example.com", to_name="Cliente Ejemplo", pdf_path="",
+        asunto="Pre factura PF-0001", cuerpo="Adjunto.", smtp_host="smtp.example.com", smtp_port=587,
+        smtp_user="user@example.com", smtp_password="secret", from_email="facturacion@example.com",
+        from_name="Mi Empresa", filename="PF-0001.pdf", pdf_bytes=b"%PDF-1.4 en memoria")
+
+    adjunto = next(mock_server.send_message.call_args[0][0].iter_attachments())
+    assert adjunto.get_filename() == "PF-0001.pdf"
+    assert adjunto.get_content() == b"%PDF-1.4 en memoria"
+
+
+@patch("libracore.email_sender.smtplib.SMTP")
+def test_enviar_documento_en_memoria_sin_nombre_usa_uno_por_defecto(mock_smtp_cls):
+    mock_server = MagicMock()
+    mock_smtp_cls.return_value.__enter__.return_value = mock_server
+    enviar_documento(
+        to_email="cliente@example.com", to_name="", pdf_path="", asunto="x", cuerpo="y",
+        smtp_host="smtp.example.com", smtp_port=587, smtp_user="u", smtp_password="p",
+        from_email="f@example.com", from_name="", pdf_bytes=b"%PDF-1.4")
+    adjunto = next(mock_server.send_message.call_args[0][0].iter_attachments())
+    assert adjunto.get_filename() == "documento.pdf"

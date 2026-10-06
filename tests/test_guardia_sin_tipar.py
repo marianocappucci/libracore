@@ -358,6 +358,11 @@ CONOCIDOS_DEL_MOTOR = [
     # `CobroPayload.pagos` es `list[dict]`: el hueco que encontró el barrido de ADR-013. NO es aceptable sin más: lo cubre `rechazar_booleanos` en el modelo y en
     # `cobros.registrar_cobro_factura` (`{"monto": true}` da 422). Queda en la lista porque el tipo sigue siendo libre: lo que valide hay que mantenerlo a mano.
     ("POST /api/facturas/{factura_id}/cobrar", "pagos", "list[dict]"),
+    # `CrearPayload` y `EditarPayload` de la pre factura con `extra="allow"` a propósito (ver sus docstrings), por lo mismo que `FacturaPayload`: el producto le suma sus claves (las órdenes que
+    # forman la pre factura) y las lee desde su gancho `al_crear` / `al_editar`, que las recibe en `datos`. El motor no las lee ni las guarda; lo que sí usa (`cliente_razon`, `items[]`, `emisor_id`,
+    # `tipo_comprobante`...) está tipado y con `sin_booleanos`.
+    ("POST /api/pre-facturas", "payload", 'CrearPayload(extra="allow")'),
+    ("PUT /api/pre-facturas/{pre_factura_id}", "payload", 'EditarPayload(extra="allow")'),
     # El webhook lo llama MercadoPago con el JSON que quiera: lo lee a mano a propósito (la firma se verifica sobre sus cabeceras y el id sale del cuerpo). Tolera cualquier forma (400/200,
     # nunca 500: ADR-015, test_mp_webhook) y no confía en el contenido: el importe y el estado salen de la API de MercadoPago con el id.
     ("POST /webhooks/mercadopago", "request", "request-sin-cuerpo-tipado"),
@@ -373,8 +378,8 @@ def test_los_cuerpos_sin_tipar_del_motor_son_los_conocidos(tmp_path):
 
 
 def test_ignorar_los_conocidos_deja_la_app_del_motor_en_blanco(tmp_path):
-    """La otra forma de usarla: `ignorar` con los conocidos y un `== []`. Las dos mitades: sin `ignorar` hay cinco, con él ninguno."""
+    """La otra forma de usarla: `ignorar` con los conocidos y un `== []`. Las dos mitades: sin `ignorar` hay siete, con él ninguno."""
     app = _app_del_motor(tmp_path)
-    assert len(cuerpos_sin_tipar(app)) == len(CONOCIDOS_DEL_MOTOR) == 5
+    assert len(cuerpos_sin_tipar(app)) == len(CONOCIDOS_DEL_MOTOR) == 7
     assert cuerpos_sin_tipar(app, ignorar={(sitio, campo) for sitio, campo, _ in CONOCIDOS_DEL_MOTOR}) == []
 
