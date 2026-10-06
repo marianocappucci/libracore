@@ -647,6 +647,33 @@ def init_core_schema(conn: Conexion):
             created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
+        -- El libro de cuenta corriente de TERCEROS (ADR-026): asientos de debe y
+        -- haber por (tercero, rol). Es opcional y aparte del saldo de clientes
+        -- de arriba, que sigue calculado desde ventas, facturas, débitos y
+        -- pagos. Lo usa un producto que lleva cuentas de clientes, proveedores
+        -- o fleteros como libro (LibraCargo). `tercero_id` no tiene FK y `rol`
+        -- es texto: el tercero y sus roles son del producto, no del motor.
+        CREATE TABLE IF NOT EXISTS cc_asientos (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha            TEXT NOT NULL,
+            tercero_id       INTEGER NOT NULL,
+            rol              TEXT NOT NULL CHECK (rol <> ''),
+            concepto         TEXT NOT NULL,
+            descripcion      TEXT,
+            debe             REAL NOT NULL DEFAULT 0,
+            haber            REAL NOT NULL DEFAULT 0,
+            factura_id       INTEGER REFERENCES facturas(id) ON DELETE RESTRICT,
+            contrapartida_de INTEGER REFERENCES cc_asientos(id) ON DELETE RESTRICT,
+            origen_legado    TEXT,
+            usuario_id       INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+            created_at       TEXT DEFAULT (datetime('now','-3 hours')),
+            CHECK (debe >= 0 AND haber >= 0),
+            -- Un asiento mueve el debe o el haber, nunca los dos ni ninguno.
+            -- Lo migrado de un sistema viejo puede traer los dos en cero.
+            CHECK ((debe > 0 AND haber = 0) OR (haber > 0 AND debe = 0)
+                   OR origen_legado IS NOT NULL)
+        );
+
         CREATE TABLE IF NOT EXISTS cc_resumenes_enviados (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             cliente_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
@@ -1112,6 +1139,11 @@ def init_core_schema(conn: Conexion):
         CREATE INDEX IF NOT EXISTS idx_caja_movimientos_fecha ON caja_movimientos(fecha);
         CREATE INDEX IF NOT EXISTS idx_cc_pagos_cliente ON cc_pagos(cliente_id);
         CREATE INDEX IF NOT EXISTS idx_cc_debitos_cliente ON cc_debitos(cliente_id);
+        -- El saldo y el extracto de una cuenta del libro de terceros (ADR-026).
+        CREATE INDEX IF NOT EXISTS idx_cc_asientos_cuenta ON cc_asientos(tercero_id, rol, fecha);
+        CREATE INDEX IF NOT EXISTS idx_cc_asientos_factura ON cc_asientos(factura_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_asientos_origen_legado
+            ON cc_asientos(origen_legado) WHERE origen_legado IS NOT NULL;
         -- Parcial: la referencia es opcional (un débito cargado a mano no
         -- tiene ninguna), pero cuando existe identifica la venta que lo
         -- originó y no puede repetirse -- es lo que hace que reintentar un
@@ -1188,6 +1220,8 @@ def init_core_schema(conn: Conexion):
 #: (`movimientos_stock.cantidad`, `productos.stock_minimo`).
 COLUMNAS_DE_DINERO = (
     ("caja_movimientos", "monto"),
+    ("cc_asientos", "debe"),
+    ("cc_asientos", "haber"),
     ("cc_debitos", "monto"),
     ("cc_pagos", "monto"),
     ("cc_resumenes_enviados", "saldo"),

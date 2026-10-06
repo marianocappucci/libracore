@@ -515,3 +515,22 @@ Detalle en `docs/fce.md`.
 - La transacción queda abierta mientras dura la llamada a ARCA. Es lo que LibraCargo ya hace hoy, y es el precio de que un rechazo no deje nada escrito.
 - El router de comprobantes del motor no cambia.
 
+## ADR-026 — Un libro de cuenta corriente de terceros, opcional, aparte del saldo de clientes
+
+**Contexto.** La cuenta corriente del motor es **de clientes** y su saldo **se calcula** desde los documentos: ventas, facturas por CUIT, débitos y pagos (`db/cuenta_corriente.py`). Siete productos la usan así. LibraCargo lleva otra cosa: un **libro de asientos** de debe y haber por (tercero, rol), con clientes, fleteros y proveedores. Tiene gastos de dos patas (el proveedor al debe y el fletero al haber en la misma transacción) y asientos que se corrigen al editar el documento que los originó. Desde el 2026-10-06 el comprobante de LibraCargo es del motor (su ADR-030), y el humano pidió que tampoco su cuenta corriente sea un modelo separado. Eligió la opción A del diseño `cuenta-corriente-de-terceros-diseno` del wiki: el libro va en el motor, opcional, y los otros siete productos no cambian.
+
+**Decisión.**
+- Tabla `cc_asientos`: `fecha`, `tercero_id` y `rol`, `concepto`, `descripcion`, `debe` y `haber`, `factura_id` (FK a `facturas`), `contrapartida_de` (FK a sí misma), `origen_legado` y `usuario_id`.
+- **El tercero y el rol son del producto**: `tercero_id` no tiene FK y `rol` es texto. El motor no sabe qué es un fletero. Un producto con su tabla de terceros pone la FK en su propia tabla de vínculo.
+- La base sostiene que no haya signos negativos y que un asiento mueva una sola columna, salvo lo del legado.
+- **Corregir no es anular.**
+  - `corregir` cambia un asiento en el lugar, también de cuenta (tercero o rol). Es lo que hace un producto al editar el documento. No deja cambiar el origen en el legado ni de qué asiento es contrapartida, porque eso es otro asiento.
+  - `borrar` saca un asiento cuando el documento editado deja de mover la cuenta (un cobro sin tercero, una comisión en cero), pero no uno que tenga contrapartida.
+  - `contraasentar` agrega el asiento inverso. Por defecto lleva la fecha del original, y un asiento se revierte una sola vez.
+- `saldo`, `extracto` (con saldo anterior y corrido) y `saldos`. Todas las funciones aceptan `conn=` (ADR-025).
+- El dinero entra en `COLUMNAS_DE_DINERO` (ADR-024).
+
+**Consecuencias.**
+- Conviven dos modelos de cuenta corriente en el motor: el de clientes calculado, para quien lo usa, y el libro, para quien lo pida. Pasar el de clientes al libro es otra decisión (la opción B del diseño).
+- Una factura referenciada por un asiento no se puede borrar (`ON DELETE RESTRICT`). Sólo pasa en un producto que use el libro, y el comprobante con CAE ya no se borra.
+
