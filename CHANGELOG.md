@@ -7,6 +7,19 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Leer la Carta de Porte Electrónica de ARCA (propuesta: v1.143.0)
+
+ADR-034. **Sin migración y sin cambio de schema.** Ningún producto cambia si no importa el módulo nuevo.
+
+- **`libracore.arca_wscpe`** (nuevo, sólo lectura): `consultar_cpe(cuit_representada, token, sign, *, ctg=…)` (o por `tipo_cpe` + `sucursal` + `nro_orden`) devuelve una `CartaDePorte` con estado, kilos de carga y de descarga, transporte (chofer, dominios, km, tarifa, pagador del flete), origen, destino, intervinientes, el PDF en bytes y la respuesta archivable sin el PDF. `provincias()` prueba una representación; `cuits_habilitados(ticket)` dice por quién deja operar el ticket; `consultar_por_ctg(empresa, ambiente, *, cuit_representada, ctg)` hace todo con el par de `arca_credenciales_servicio`.
+- Errores: `CpeNoEncontrada` (`800`), `CuitNoRelacionado` (falta la delegación de `wscpe` al alias), `ErrorWscpe` y `SinCredenciales`.
+- **El CUIT representado no tiene valor por defecto** en ninguna función.
+
+### Para los productos
+
+- **LibraCargo**: subir el pin para empezar a traer CPE por CTG (fase 3 del plan de CTG del wiki).
+- **El resto**: nada.
+
 ## [Unreleased] — `init_core_schema` no siembra un depósito en la tabla `depositos` de un producto (propuesta: v1.142.1)
 
 ADR-033. **Sin migración y sin cambio de schema** (las fixtures de `test_schema_congelado` no se mueven).
