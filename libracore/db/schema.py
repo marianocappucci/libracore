@@ -196,6 +196,24 @@ def alters_para_hora_ar(conexion, columnas, expresion: str = AHORA_AR) -> list[s
     ]
 
 
+#: Cómo informa `PRAGMA table_info` una columna entera: `INTEGER` en SQLite, `integer` en
+#: PostgreSQL (que lo lee de `information_schema.columns.data_type`).
+_TIPOS_ENTEROS = frozenset({"integer", "int", "bigint", "smallint"})
+
+
+def _tipo_de_columna(conn, tabla: str, columna: str) -> str | None:
+    """El tipo declarado de `tabla.columna`, en minúsculas, o `None` si no existe.
+
+    Pregunta por `PRAGMA table_info`, que el adaptador de PostgreSQL traduce a
+    `information_schema`: es la misma pregunta que ya hace el resto de esta función
+    para decidir un `ALTER`, y no depende del motor.
+    """
+    for fila in conn.execute(f"PRAGMA table_info({tabla})").fetchall():
+        if fila[1] == columna:
+            return str(fila[2]).lower()
+    return None
+
+
 def init_core_schema(conn: Conexion):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS clients (
@@ -1172,8 +1190,27 @@ def init_core_schema(conn: Conexion):
     if ms_cols and "deposito_id" not in ms_cols:
         conn.execute("ALTER TABLE movimientos_stock ADD COLUMN deposito_id INTEGER REFERENCES depositos(id) ON DELETE SET NULL")
 
-    # Depósito principal por defecto
-    if conn.execute("SELECT COUNT(*) FROM depositos").fetchone()[0] == 0:
+    # Depósito principal por defecto.
+    #
+    # 🔴 **Sólo si `depositos` es la tabla del motor.** LibraDesk tiene la suya
+    # (su migración `0005_depositos`, con `activo` y `es_default` BOOLEAN) y esta
+    # función, que la `0001` llama sobre cualquier base, la veía vacía y le
+    # insertaba `es_default = 1`: en PostgreSQL un entero no entra en un booleano
+    # y `libracore-migrar upgrade --prefijo libradesk` moría con `DatatypeMismatch`
+    # sobre toda base **sin depósitos** (alta de un cliente, reset de la demo,
+    # restaurar un backup). Sobre una con depósitos no pasaba, y por eso tardó en
+    # verse.
+    #
+    # Se reconoce la tabla ajena por el tipo de `es_default` (el motor lo declara
+    # entero), que es lo que `PRAGMA table_info` informa igual en los dos motores.
+    # **No se siembra en una tabla ajena** en vez de sembrar "con el tipo
+    # correcto": un depósito que el producto no pidió cambia lo que ve (la base de
+    # LibraDesk nace sin depósitos y su pantalla los crea), y adaptar el INSERT al
+    # tipo no alcanza para una tabla cuyo resto de columnas no conocemos.
+    if (
+        _tipo_de_columna(conn, "depositos", "es_default") in _TIPOS_ENTEROS
+        and conn.execute("SELECT COUNT(*) FROM depositos").fetchone()[0] == 0
+    ):
         cur = conn.execute(
             "INSERT INTO depositos (nombre, descripcion, es_default) VALUES (?,?,1)",
             ("Depósito Principal", "Depósito por defecto del sistema"),

@@ -672,3 +672,18 @@ Detalle en `docs/fce.md`.
 - El CUIT con el que se opera `wscpe` **no sale del certificado ni de esta tabla**: es un dato de cada llamada, elegido de forma explícita (ver el plan de CTG de LibraCargo). Esta pantalla sólo dice de quién es el certificado.
 - El `dummy` de `wscpe` se verificó contra ARCA con el script de la Fase 0 del wiki (2026-10-02), no desde esta suite, que no sale a la red.
 - Fuera de alcance: el módulo `arca_wscpe` (consultar y emitir CPE) y la delegación en sí, que se hace en ARCA.
+
+## ADR-033 — La siembra del depósito por defecto sólo ocurre en la tabla `depositos` del motor
+
+**Contexto.** `init_core_schema()` siembra «Depósito Principal» (`INSERT INTO depositos (nombre, descripcion, es_default) VALUES (?,?,1)`) cuando `depositos` está vacía, y la `0001` la llama sobre cualquier base. LibraDesk tiene su propia `depositos` (su migración `0005_depositos`, con `activo` y `es_default` BOOLEAN): `libracore-migrar upgrade --prefijo libradesk` sobre una base **vacía** (alta de un cliente, reset nocturno de la demo, restaurar un backup) moría con `DatatypeMismatch: column "es_default" is of type boolean but expression is of type integer`, porque PostgreSQL no convierte un entero en booleano. Sobre una base con depósitos no pasaba, que es por lo que tardó en verse (LibraDesk ADR-012). Las otras dos siembras de la función (`cajas`, `categorias_egreso`) corren sin error en LibraDesk, que declara esas tablas con las mismas columnas enteras que el motor; `git grep` en los productos no encuentra otra tabla propia con esos nombres y tipo distinto.
+
+**Decisión.**
+1. **La siembra sólo corre si `depositos.es_default` es una columna entera**, que es como la declara el motor. El tipo se lee con `PRAGMA table_info`, que el adaptador traduce a `information_schema` en PostgreSQL: la misma pregunta, sin ramas por motor. Una tabla ajena con otro tipo (o sin `es_default`) no se siembra.
+2. **No se siembra «con el tipo correcto»** (`TRUE` o `1` según el tipo). Se evaluó y se descartó: (a) el depósito sembrado es un cambio de comportamiento en el producto ajeno, cuya base nueva nace sin depósitos y cuya pantalla los crea; (b) adaptar el valor de una columna no hace conocida a la tabla: las demás columnas (`cliente_id`, `NOT NULL` propios) pueden romper el mismo `INSERT` por otro lado.
+3. **La misma regla vale para quien tenga una `depositos` propia con otro tipo**: el motor no escribe en una tabla que no reconoce. Si un producto quiere un depósito inicial, lo siembra él, en su migración.
+
+**Consecuencias.**
+- La tabla del motor se siembra exactamente como antes (SQLite y PostgreSQL), y una tabla ajena con filas tampoco cambia: lo único que cambia es una `depositos` ajena **vacía**, que antes fallaba y ahora queda vacía.
+- No hay cambio de schema: `test_schema_congelado` no se mueve. Es un cambio de PATCH (v1.142.1).
+- Queda fuera, a propósito: las funciones de `libracore.db.productos` (`set_default_deposito`, que escribe `es_default=0/1`) siguen suponiendo la tabla del motor. LibraDesk no las usa (tiene su propio servicio de depósitos).
+- La siembra de `cajas` tiene el mismo riesgo latente si algún producto declarara su `cajas` con `es_default` BOOLEAN. Hoy ninguno lo hace; si aparece, se aplica la misma guarda.
