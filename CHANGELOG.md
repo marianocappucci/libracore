@@ -7,6 +7,18 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — `init_core_schema` no siembra un depósito en la tabla `depositos` de un producto (propuesta: v1.142.1)
+
+ADR-033. **Sin migración y sin cambio de schema** (las fixtures de `test_schema_congelado` no se mueven).
+
+- **`init_core_schema()` siembra «Depósito Principal» sólo si `depositos.es_default` es entera**, que es como la declara el motor. Si la tabla es de un producto (LibraDesk: `activo` y `es_default` BOOLEAN, su migración `0005_depositos`) no la toca. Antes, sobre una base **vacía**, `libracore-migrar upgrade --prefijo libradesk` moría con `DatatypeMismatch: column "es_default" is of type boolean but expression is of type integer` (alta de un cliente, reset de la demo, restaurar un backup); sobre una base con depósitos no pasaba.
+- Las siembras de `cajas` y `categorias_egreso` no cambian: ningún producto declara esas tablas con otro tipo.
+
+### Para los productos
+
+- **LibraDesk**: subir el pin a v1.142.1 y sacar el `xfail` de la base vacía. Una base nueva de LibraDesk sigue naciendo **sin depósitos**.
+- **El resto**: nada. Todos usan la `depositos` del motor y se siembra como siempre.
+
 ## [Unreleased] — Las credenciales de ARCA por servicio (propuesta: v1.142.0)
 
 **Migración `0022_credenciales_por_servicio`**. ADR-032. Crea una tabla vacía: no toca filas ni `arca_config`. **Sin cambio para quien no pase `servicios=`**: las rutas, las respuestas y las columnas de la facturación son las de v1.141.0.
