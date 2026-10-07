@@ -386,6 +386,25 @@ def init_core_schema(conn: Conexion):
             updated_at      TEXT DEFAULT (datetime('now','-3 hours'))
         );
 
+        -- Las credenciales de ARCA de los servicios que NO son la facturación
+        -- (ADR-032): una fila por (empresa, servicio, ambiente) con dónde está su
+        -- par en disco. La facturación (`wsfe`) sigue en las columnas de
+        -- `arca_config` de arriba, sin tocar: esta tabla es sólo para los demás
+        -- (`wscpe`, el CTG y la Carta de Porte de LibraCargo). `empresa` es el
+        -- nombre de la configuración y no lleva FK: un producto puede cargar el
+        -- certificado de un servicio antes de tener una fila de facturación.
+        CREATE TABLE IF NOT EXISTS arca_credenciales_servicio (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            empresa          TEXT NOT NULL,
+            servicio         TEXT NOT NULL CHECK (servicio <> ''),
+            ambiente         TEXT NOT NULL CHECK (ambiente IN ('homologacion', 'produccion')),
+            certificado_path TEXT NOT NULL DEFAULT '',
+            clave_path       TEXT NOT NULL DEFAULT '',
+            created_at       TEXT DEFAULT (datetime('now','-3 hours')),
+            updated_at       TEXT DEFAULT (datetime('now','-3 hours')),
+            UNIQUE (empresa, servicio, ambiente)
+        );
+
         CREATE TABLE IF NOT EXISTS usuarios (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             username      TEXT NOT NULL UNIQUE,

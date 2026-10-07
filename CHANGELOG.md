@@ -7,6 +7,22 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Las credenciales de ARCA por servicio (propuesta: v1.142.0)
+
+**Migración `0022_credenciales_por_servicio`**. ADR-032. Crea una tabla vacía: no toca filas ni `arca_config`. **Sin cambio para quien no pase `servicios=`**: las rutas, las respuestas y las columnas de la facturación son las de v1.141.0.
+
+- **`libracore.arca_servicios`** (nuevo): el catálogo de servicios de ARCA que el motor sabe configurar (`wsfe`, «Facturación electrónica»; `wscpe`, «CTG y Carta de Porte»), `dummy(servicio, ambiente)` (el estado de los tres servidores de ARCA, sin autenticación; sólo `wscpe`) y `traducir_error_wsaa(texto)` (los errores de WSAA en castellano, con el texto de ARCA al final).
+- **Tabla `arca_credenciales_servicio`** y **`libracore.db.arca_credenciales_servicio`**: un par certificado/clave por `(empresa, servicio, ambiente)` para los servicios que no son la facturación. `paths_de_servicio(empresa, servicio, ambiente)` devuelve `("", "")` si no hay; un ambiente desconocido no tiene credenciales y no cae a producción. **`arca_credenciales.paths_en_disco_de_servicio`** es su equivalente de `paths_en_disco` (rescata una ruta vieja por nombre dentro de `CERTS_DIR`).
+- **`build_arca_router(..., servicios=("wsfe",))`**: con `servicios=("wsfe", "wscpe")` suma, por servicio que no es la facturación, `GET {prefix}/servicios/{servicio}/estado`, `POST .../certificado` y `.../clave`, `DELETE .../credenciales` y `POST .../probar`, todos con `?ambiente=` obligatorio y `?empresa=`. Mismas validaciones, mismo gate y mismo `al_cambiar` que la facturación (el `detalle` lleva `servicio`). `probar` se autentica por WSAA para ese servicio, reusa el ticket de la caché y explica `coe.notAuthorized`, `cms.cert.untrusted`, `cms.cert.expired` y la hora corrida.
+- **`GET {prefix}/servicios`** existe siempre: lista los servicios del producto con `etiqueta`, `ayuda`, `configurado` y `pares` por ambiente (`tiene_certificado`, `tiene_clave`, `completo`, `vence`, `dias_para_vencer`, `vencido`, `sujeto`, `cuit_certificado`, `error_certificado`). Con la facturación sola lista un bloque, con su estado real.
+- **`DatosDelCertificado.cuit`**: el CUIT del titular (`serialNumber=CUIT n` del sujeto), o `""`.
+- Los helpers de validación del upload (`_certificado_valido`, `_clave_valida`, `_exigir_pareja_*`) se compartieron entre la facturación y los servicios nuevos; los mensajes de error de la facturación son los mismos.
+
+### Para los productos
+
+- **Contalibra, Restolibra, LibraClub y el resto**: nada. Suben el pin y no cambia nada visible.
+- **LibraCargo**: `build_arca_router(servicios=("wsfe", "wscpe"), ...)` y subir `libra-ui` a v0.120.0, cuya tarjeta de ARCA pinta un bloque por servicio cuando `GET /servicios` lista más de uno. Aplicar la migración `0022` antes de arrancar. El certificado de `wscpe` se carga por ambiente desde la pantalla; el CUIT representado de cada llamada sigue siendo del producto.
+
 ## [Unreleased] — El emisor del PDF se resuelve por documento (propuesta: v1.141.0)
 
 ADR-031. **Sin migración y sin cambio para quien no use un resolvedor ni `emisor_id`**: los bytes de cada PDF son los mismos que en v1.140.0.

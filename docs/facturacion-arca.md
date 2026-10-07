@@ -83,6 +83,32 @@ distintas —`/api/config/arca`, `/config/arca`, `/api/arca`— y cambiar el pre
 rompe el frontend desplegado. La ruta se normaliza producto por producto, con su
 deploy, no de prepo desde el motor.
 
+### Más de un servicio de ARCA en la misma pantalla (ADR-032)
+
+Por omisión el router sólo conoce la facturación (`wsfe`). Un producto que además
+usa otro servicio —LibraCargo, con el CTG y la Carta de Porte (`wscpe`)— lo declara
+al montar, y la pantalla de Configuración / ARCA pinta un bloque por servicio:
+
+```python
+app.include_router(build_arca_router(servicios=("wsfe", "wscpe")),
+                   dependencies=[Depends(require_admin)])
+```
+
+| Ruta | Qué hace |
+|---|---|
+| `GET {prefix}/servicios` | Los servicios del producto, cada uno con `etiqueta`, `ayuda` y el estado de sus dos pares. Existe siempre; con la facturación sola lista un bloque |
+| `GET {prefix}/servicios/{servicio}/estado` | El estado de ese servicio: por ambiente `tiene_certificado`, `tiene_clave`, `completo`, `vence`, `dias_para_vencer`, `vencido`, `sujeto` y `cuit_certificado` |
+| `POST {prefix}/servicios/{servicio}/certificado` · `/clave` | Sube una mitad del par de **un ambiente** (`?ambiente=` obligatorio), con las mismas validaciones y la misma auditoría que la facturación |
+| `DELETE {prefix}/servicios/{servicio}/credenciales` | Saca el par de un ambiente |
+| `POST {prefix}/servicios/{servicio}/probar` | Se autentica por WSAA **para ese servicio**; traduce `coe.notAuthorized`, `cms.cert.untrusted` y compañía y deja el texto de ARCA al final. Si el servicio tiene `dummy` (`wscpe`), informa si está arriba |
+
+Las credenciales de estos servicios viven en `arca_credenciales_servicio`, una fila por
+`(empresa, servicio, ambiente)` (`libracore.db.arca_credenciales_servicio`,
+`arca_credenciales.paths_en_disco_de_servicio`); la facturación sigue en `arca_config`
+y en sus rutas de siempre. En `wscpe` el certificado puede estar a nombre de la persona
+que representa a la empresa: el CUIT que se opera va en cada llamada
+(`cuitRepresentada`), no sale del certificado.
+
 ### Las dos costuras de negocio
 
 Lo que **no** es igual en todos entra por parámetro:

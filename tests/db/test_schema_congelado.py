@@ -187,7 +187,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (410)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (418)"}
     finally:
         conn.close()
         _liberar()

@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (409)
+## tablas (417)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -16,6 +16,14 @@ arca_config|fce_transmision|text|NN|''::text
 arca_config|id|bigint|NN|nextval('arca_config_id_seq'::regclass)
 arca_config|punto_venta|integer|NN|
 arca_config|updated_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+arca_credenciales_servicio|ambiente|text|NN|
+arca_credenciales_servicio|certificado_path|text|NN|''::text
+arca_credenciales_servicio|clave_path|text|NN|''::text
+arca_credenciales_servicio|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+arca_credenciales_servicio|empresa|text|NN|
+arca_credenciales_servicio|id|bigint|NN|nextval('arca_credenciales_servicio_id_seq'::regclass)
+arca_credenciales_servicio|servicio|text|NN|
+arca_credenciales_servicio|updated_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
 auth_log|detalle|text||
 auth_log|evento|text|NN|
 auth_log|id|bigint|NN|nextval('auth_log_id_seq'::regclass)
@@ -411,8 +419,9 @@ ventas|total|numeric|NN|0
 ventas|turno_id|integer||
 ventas|usuario_id|integer||
 
-## claves primarias (34)
+## claves primarias (35)
 arca_config|PRIMARY KEY (id)
+arca_credenciales_servicio|PRIMARY KEY (id)
 auth_log|PRIMARY KEY (id)
 caja_movimientos|PRIMARY KEY (id)
 cajas|PRIMARY KEY (id)
@@ -497,9 +506,11 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (68)
+## índices (70)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
+arca_credenciales_servicio|arca_credenciales_servicio_empresa_servicio_ambiente_key|CREATE UNIQUE INDEX arca_credenciales_servicio_empresa_servicio_ambiente_key ON public.arca_credenciales_servicio USING btree (empresa, servicio, ambiente)
+arca_credenciales_servicio|arca_credenciales_servicio_pkey|CREATE UNIQUE INDEX arca_credenciales_servicio_pkey ON public.arca_credenciales_servicio USING btree (id)
 auth_log|auth_log_pkey|CREATE UNIQUE INDEX auth_log_pkey ON public.auth_log USING btree (id)
 caja_movimientos|caja_movimientos_pkey|CREATE UNIQUE INDEX caja_movimientos_pkey ON public.caja_movimientos USING btree (id)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON public.caja_movimientos USING btree (fecha)
@@ -567,7 +578,9 @@ ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON public.ventas USING btr
 ventas|ventas_numero_key|CREATE UNIQUE INDEX ventas_numero_key ON public.ventas USING btree (numero)
 ventas|ventas_pkey|CREATE UNIQUE INDEX ventas_pkey ON public.ventas USING btree (id)
 
-## checks (8)
+## checks (10)
+arca_credenciales_servicio|arca_credenciales_servicio_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
+arca_credenciales_servicio|arca_credenciales_servicio_servicio_check|CHECK ((servicio <> ''::text))
 cc_asientos|cc_asientos_check1|CHECK (((((debe)::double precision > (0)::double precision) AND ((haber)::double precision = (0)::double precision)) OR (((haber)::double precision > (0)::double precision) AND ((debe)::double precision = (0)::double precision)) OR (origen_legado IS NOT NULL)))
 cc_asientos|cc_asientos_check|CHECK ((((debe)::double precision >= (0)::double precision) AND ((haber)::double precision >= (0)::double precision)))
 cc_asientos|cc_asientos_rol_check|CHECK ((rol <> ''::text))

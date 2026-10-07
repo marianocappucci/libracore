@@ -25,8 +25,11 @@ esquive.
 """
 from __future__ import annotations
 
+import os
+
 from libracore import arca_certificados, config_manager
 from libracore.db import arca_config as db_arca_config
+from libracore.db import arca_credenciales_servicio as db_servicio
 
 
 def paths_en_disco(config: dict | None, ambiente: str = "") -> tuple[str, str]:
@@ -52,6 +55,32 @@ def paths_en_disco(config: dict | None, ambiente: str = "") -> tuple[str, str]:
     # 🔴 Las claves guardadas abiertas (644) se cierran acá, que es por donde pasa
     # toda emisión: así las instancias vivas se corrigen solas al actualizar el
     # motor, sin un paso manual. Ver `escribir_clave_privada`.
+    if clave:
+        arca_certificados.cerrar_permisos_de_la_clave(clave)
+    return cert, clave
+
+
+def paths_en_disco_de_servicio(empresa: str, servicio: str, ambiente: str) -> tuple[str, str]:
+    """El `(certificado, clave)` de un servicio que NO es la facturación, listo para abrir.
+
+    Es el equivalente de `paths_en_disco` para `arca_credenciales_servicio`
+    (ADR-032). La facturación sigue pasando por `paths_en_disco`.
+
+    Devuelve `("", "")` cuando no hay nada cargado: acá no hay par «de rescate» al
+    que caer, y un ambiente que no conocemos no tiene credenciales (nunca cae a
+    producción). Una sola mitad cargada devuelve esa y `""` en la otra. Lo único que se rescata es una ruta guardada que quedó vieja
+    porque el volumen cambió de lugar: si el archivo no está donde dice la fila
+    pero sí en `CERTS_DIR` con el mismo nombre, se usa ése.
+    """
+    cert, clave = db_servicio.paths_de_servicio(empresa, servicio, ambiente)
+
+    def _resolver(path: str) -> str:
+        if not path or os.path.exists(path):
+            return path
+        candidato = os.path.join(config_manager.CERTS_DIR, os.path.basename(path))
+        return candidato if os.path.exists(candidato) else path
+
+    cert, clave = _resolver(cert), _resolver(clave)
     if clave:
         arca_certificados.cerrar_permisos_de_la_clave(clave)
     return cert, clave
