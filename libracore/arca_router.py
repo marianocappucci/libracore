@@ -54,16 +54,25 @@ el primero en correr definiría dónde. Se lee adentro de cada endpoint.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
+import re
 from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
-from libracore import arca_certificados, arca_credenciales, arca_wsaa, config_manager
+from libracore import (
+    arca_certificados,
+    arca_credenciales,
+    arca_servicios,
+    arca_wsaa,
+    config_manager,
+)
 from libracore.db import arca_config as db_arca_config
+from libracore.db import arca_credenciales_servicio as db_servicio
 from libracore.validacion import sin_booleanos
 
 logger = logging.getLogger(__name__)
@@ -200,6 +209,18 @@ def _estado_del_par(cfg: dict | None, ambiente: str) -> dict:
     "falta poco" cuando en realidad no funciona nada.
     """
     cert_path, clave_path = _paths(cfg, ambiente)
+    return _estado_de_archivos(ambiente, cert_path, clave_path)
+
+
+def _estado_de_archivos(ambiente: str, cert_path: str, clave_path: str, *,
+                        con_cuit: bool = False) -> dict:
+    """El estado de un par a partir de sus dos rutas. Lo comparten la facturación
+    y los demás servicios: **una sola cuenta**, para que las dos pantallas digan lo mismo.
+
+    `con_cuit` agrega el CUIT que trae el sujeto del certificado
+    (`cuit_certificado`). Es del dato nuevo (ADR-032) y por eso es opcional: las
+    respuestas que ya existían no ganan una clave que sus consumidores no esperan.
+    """
     tiene_cert, tiene_clave = _existe(cert_path), _existe(clave_path)
     salida = {
         "ambiente":          ambiente,
@@ -219,7 +240,62 @@ def _estado_del_par(cfg: dict | None, ambiente: str) -> dict:
                 vencido=datos.vencido,
                 sujeto=datos.sujeto,
             )
+            if con_cuit:
+                salida["cuit_certificado"] = datos.cuit
     return salida
+
+
+def _certificado_valido(contenido: bytes):
+    """Los datos del `.crt` subido, o 422 con la causa. Antes de tocar el disco."""
+    try:
+        return arca_certificados.leer_certificado(contenido)
+    except arca_certificados.ArchivoInvalido as e:
+        raise HTTPException(422, f"El certificado {e}") from None
+
+
+def _clave_valida(contenido: bytes) -> None:
+    try:
+        arca_certificados.leer_clave(contenido)
+    except arca_certificados.ArchivoInvalido as e:
+        raise HTTPException(422, f"La clave privada {e}") from None
+
+
+def _exigir_pareja_con_la_clave_cargada(contenido: bytes, clave_path: str, ambiente: str) -> None:
+    """Si ya hay clave para ese ambiente, el certificado nuevo tiene que ser su pareja."""
+    if _existe(clave_path):
+        with open(clave_path, "rb") as f:
+            if not arca_certificados.son_pareja(contenido, f.read()):
+                raise HTTPException(
+                    422,
+                    "Este certificado no es pareja de la clave privada que ya "
+                    f"está cargada para {ambiente}. Subí las dos mitades del mismo par.",
+                )
+
+
+def _exigir_pareja_con_el_certificado_cargado(contenido: bytes, cert_path: str, ambiente: str) -> None:
+    """Si ya hay certificado para ese ambiente, la clave nueva tiene que ser su pareja."""
+    if _existe(cert_path):
+        with open(cert_path, "rb") as f:
+            if not arca_certificados.son_pareja(f.read(), contenido):
+                raise HTTPException(
+                    422,
+                    "Esta clave privada no es pareja del certificado que ya "
+                    f"está cargado para {ambiente}. Subí las dos mitades del mismo par.",
+                )
+
+
+def _nombres_de_servicio(servicio: str, ambiente: str, empresa: str) -> tuple[str, str]:
+    """Con qué nombre se guarda en disco el par de un servicio que no es la facturación.
+
+    🔑 Lleva el servicio, el ambiente **y una huella de la empresa**: dos servicios
+    o dos ambientes nunca comparten archivo (el defecto que `ARCHIVOS_POR_AMBIENTE`
+    corrigió para la facturación), y la huella evita que dos empresas del mismo
+    servicio se pisen sin meter el nombre de la empresa, que puede traer cualquier
+    carácter, en una ruta del disco.
+    """
+    huella = hashlib.sha1(empresa.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+    base = f"{re.sub(r'[^a-z0-9]+', '-', servicio.lower()).strip('-')}-{ambiente}-{huella}"
+    return f"{base}.crt", f"{base}.key"
 
 
 def _guardar_path(empresa: str, ambiente: str, *,
@@ -257,6 +333,7 @@ def build_arca_router(
     empresa_por_defecto: str = "default",
     usuario_actual: Callable[..., Any] | None = None,
     al_cambiar: Callable[[str, dict, Any], None] | None = None,
+    servicios: tuple[str, ...] = ("wsfe",),
 ) -> APIRouter:
     """El router de configuración de ARCA. Sin gate propio: lo pone el producto.
 
@@ -302,7 +379,47 @@ def build_arca_router(
     empresa y de qué ambiente es, y —para el certificado— lo que ya es público
     de él: sujeto, vencimiento y número de serie. Un log de auditoría con la
     clave privada adentro es peor que no tener log. Hay un test que lo fija.
+
+    ## `servicios`: más de un servicio de ARCA en la misma pantalla (ADR-032)
+
+    Por omisión sólo la facturación (`wsfe`), y el router es **idéntico al de
+    siempre**: ninguna ruta nueva salvo `GET /servicios`, que lista un solo
+    servicio. Un producto que además usa otro servicio de ARCA —LibraCargo, con el
+    CTG y la Carta de Porte (`wscpe`)— lo declara una vez al montar:
+
+        build_arca_router(servicios=("wsfe", "wscpe"))
+
+    y obtiene, por cada servicio **que no es la facturación**:
+
+    - `GET  {prefix}/servicios/{servicio}/estado`: el estado de los dos ambientes.
+    - `POST {prefix}/servicios/{servicio}/certificado` y `/clave`: suben una mitad
+      del par de **un ambiente**, con las mismas validaciones que la facturación.
+    - `DELETE {prefix}/servicios/{servicio}/credenciales`: saca el par de un ambiente.
+    - `POST {prefix}/servicios/{servicio}/probar`: se autentica contra WSAA **para
+      ese servicio** y dice, en castellano, por qué ARCA lo rechaza.
+
+    La facturación sigue en sus rutas de siempre y en `arca_config`: lo que cambia
+    es que `GET /servicios` la lista junto a las demás, para que la pantalla pinte
+    un bloque por servicio sin casos especiales.
+
+    🔑 **Para estos servicios el `ambiente` es obligatorio** en subir, quitar y
+    probar. La facturación puede caer al selector de la instancia porque lo tiene;
+    un servicio sin selector que adivinara el ambiente subiría un certificado de
+    prueba sobre el real, o al revés.
+
+    🔑 Sin `empresa`, es `empresa_por_defecto` y **no** «la primera fila de
+    facturación»: un servicio que se carga antes de tener fila de `arca_config`
+    tiene que quedar en el mismo lugar cuando la fila aparezca.
     """
+    for _id in servicios:
+        try:
+            arca_servicios.servicio(_id)
+        except arca_servicios.ServicioDesconocido:
+            raise ValueError(
+                f"Servicio de ARCA desconocido: {_id!r}. Los que conoce el motor son "
+                + ", ".join(arca_servicios.CATALOGO) + ".") from None
+    #: Los que tienen rutas propias: todos menos la facturación, que no cambia.
+    extras = tuple(dict.fromkeys(i for i in servicios if i != arca_servicios.SERVICIO_FACTURACION))
     router = APIRouter(prefix=prefix, tags=["arca"])
     identidad = usuario_actual or _sin_identidad
 
@@ -414,23 +531,13 @@ def build_arca_router(
         el de homologación pisaba el de producción.
         """
         contenido = archivo.file.read()
-        try:
-            datos = arca_certificados.leer_certificado(contenido)
-        except arca_certificados.ArchivoInvalido as e:
-            raise HTTPException(422, f"El certificado {e}") from None
+        datos = _certificado_valido(contenido)
 
         empresa = _empresa_de(empresa or "", empresa_por_defecto)
         cfg = _resolver(empresa)
         amb = _ambiente_del_pedido(cfg, ambiente)
         _, clave_path = _paths(cfg, amb)
-        if _existe(clave_path):
-            with open(clave_path, "rb") as f:
-                if not arca_certificados.son_pareja(contenido, f.read()):
-                    raise HTTPException(
-                        422,
-                        "Este certificado no es pareja de la clave privada que ya "
-                        f"está cargada para {amb}. Subí las dos mitades del mismo par.",
-                    )
+        _exigir_pareja_con_la_clave_cargada(contenido, clave_path, amb)
 
         os.makedirs(_certs_dir(), exist_ok=True)
         destino = os.path.join(_certs_dir(), _nombres_de(amb)[0])
@@ -453,23 +560,13 @@ def build_arca_router(
                           ambiente: str = "", usuario: Any = Depends(identidad)):
         """Sube el `.key` del ambiente indicado. Mismas validaciones, del otro lado."""
         contenido = archivo.file.read()
-        try:
-            arca_certificados.leer_clave(contenido)
-        except arca_certificados.ArchivoInvalido as e:
-            raise HTTPException(422, f"La clave privada {e}") from None
+        _clave_valida(contenido)
 
         empresa = _empresa_de(empresa or "", empresa_por_defecto)
         cfg = _resolver(empresa)
         amb = _ambiente_del_pedido(cfg, ambiente)
         cert_path, _ = _paths(cfg, amb)
-        if _existe(cert_path):
-            with open(cert_path, "rb") as f:
-                if not arca_certificados.son_pareja(f.read(), contenido):
-                    raise HTTPException(
-                        422,
-                        "Esta clave privada no es pareja del certificado que ya "
-                        f"está cargado para {amb}. Subí las dos mitades del mismo par.",
-                    )
+        _exigir_pareja_con_el_certificado_cargado(contenido, cert_path, amb)
 
         os.makedirs(_certs_dir(), exist_ok=True)
         destino = os.path.join(_certs_dir(), _nombres_de(amb)[1])
@@ -591,6 +688,191 @@ def build_arca_router(
         info = arca_wsaa.info_certificado(cert_path)
         return {"ok": True, "ambiente": ambiente, "cuit": cfg.get("cuit", ""),
                 "certificado": info}
+
+    # ── Los servicios que no son la facturación (ADR-032) ───────────────────
+
+    def _estado_del_servicio(svc: arca_servicios.Servicio, empresa: str) -> dict:
+        """El bloque de un servicio: una entrada de `GET /servicios`."""
+        if svc.id == arca_servicios.SERVICIO_FACTURACION:
+            cfg = _resolver(empresa)
+            pares = {a: _estado_de_archivos(a, *_paths(cfg, a), con_cuit=True) for a in AMBIENTES}
+            nombre = (cfg or {}).get("empresa", "") or empresa
+        else:
+            nombre = empresa or empresa_por_defecto
+            pares = {
+                a: _estado_de_archivos(
+                    a, *arca_credenciales.paths_en_disco_de_servicio(nombre, svc.id, a),
+                    con_cuit=True)
+                for a in AMBIENTES
+            }
+        return {
+            "servicio":    svc.id,
+            "etiqueta":    svc.etiqueta,
+            "ayuda":       svc.ayuda,
+            "empresa":     nombre,
+            # Hay con qué autenticarse en algún ambiente. NO dice que ande.
+            "configurado": any(p["completo"] for p in pares.values()),
+            "pares":       pares,
+        }
+
+    @router.get("/servicios")
+    def listar_servicios(empresa: str = ""):
+        """Los servicios de ARCA de este producto, cada uno con el estado de sus dos pares.
+
+        Existe siempre y con la facturación sola devuelve un único bloque: es la
+        pregunta con la que una pantalla decide si pinta uno o varios.
+        """
+        return [_estado_del_servicio(arca_servicios.servicio(i), empresa.strip()) for i in servicios]
+
+    if not extras:
+        return router
+
+    def _servicio_o_404(servicio: str) -> arca_servicios.Servicio:
+        if (servicio or "").strip().lower() not in extras:
+            raise HTTPException(404, f"Este producto no configura el servicio {servicio!r} de ARCA.")
+        return arca_servicios.servicio(servicio)
+
+    def _ambiente_exigido(ambiente: str) -> str:
+        pedido = (ambiente or "").strip().lower()
+        if pedido not in AMBIENTES:
+            raise HTTPException(
+                422,
+                "Indicá el ambiente: " + " o ".join(AMBIENTES) + "."
+                + (f" Llegó {ambiente!r}." if pedido else ""),
+            )
+        return pedido
+
+    @router.get("/servicios/{servicio}/estado")
+    def estado_del_servicio(servicio: str, empresa: str = ""):
+        """Qué hay cargado para el servicio, por ambiente, y hasta cuándo dura."""
+        svc = _servicio_o_404(servicio)
+        return _estado_del_servicio(svc, empresa.strip())
+
+    @router.post("/servicios/{servicio}/certificado")
+    def subir_certificado_de_servicio(servicio: str, archivo: UploadFile = File(...),
+                                      empresa: str = "", ambiente: str = "",
+                                      usuario: Any = Depends(identidad)):
+        """Sube el `.crt` del servicio **en el ambiente indicado**. Se valida antes de escribirlo."""
+        svc = _servicio_o_404(servicio)
+        amb = _ambiente_exigido(ambiente)
+        contenido = archivo.file.read()
+        datos = _certificado_valido(contenido)
+
+        nombre = empresa.strip() or empresa_por_defecto
+        _, clave_path = arca_credenciales.paths_en_disco_de_servicio(nombre, svc.id, amb)
+        _exigir_pareja_con_la_clave_cargada(contenido, clave_path, amb)
+
+        os.makedirs(_certs_dir(), exist_ok=True)
+        destino = os.path.join(_certs_dir(), _nombres_de_servicio(svc.id, amb, nombre)[0])
+        with open(destino, "wb") as f:
+            f.write(contenido)
+        db_servicio.guardar_paths_de_servicio(nombre, svc.id, amb, certificado_path=destino)
+        _avisar("certificado", {
+            "empresa": nombre, "servicio": svc.id, "ambiente": amb,
+            "archivo": archivo.filename or "", "sujeto": datos.sujeto,
+            "numero_de_serie": datos.numero_de_serie,
+            "vence": datos.vence.strftime("%d-%m-%Y"),
+        }, usuario)
+        return _estado_del_servicio(svc, nombre)
+
+    @router.post("/servicios/{servicio}/clave")
+    def subir_clave_de_servicio(servicio: str, archivo: UploadFile = File(...),
+                                empresa: str = "", ambiente: str = "",
+                                usuario: Any = Depends(identidad)):
+        """Sube el `.key` del servicio en el ambiente indicado. Mismas validaciones, del otro lado."""
+        svc = _servicio_o_404(servicio)
+        amb = _ambiente_exigido(ambiente)
+        contenido = archivo.file.read()
+        _clave_valida(contenido)
+
+        nombre = empresa.strip() or empresa_por_defecto
+        cert_path, _ = arca_credenciales.paths_en_disco_de_servicio(nombre, svc.id, amb)
+        _exigir_pareja_con_el_certificado_cargado(contenido, cert_path, amb)
+
+        os.makedirs(_certs_dir(), exist_ok=True)
+        destino = os.path.join(_certs_dir(), _nombres_de_servicio(svc.id, amb, nombre)[1])
+        # 🔴 0600, igual que la facturación: ver `escribir_clave_privada`.
+        arca_certificados.escribir_clave_privada(destino, contenido)
+        db_servicio.guardar_paths_de_servicio(nombre, svc.id, amb, clave_path=destino)
+        _avisar("clave", {"empresa": nombre, "servicio": svc.id, "ambiente": amb}, usuario)
+        return _estado_del_servicio(svc, nombre)
+
+    @router.delete("/servicios/{servicio}/credenciales")
+    def borrar_credenciales_de_servicio(servicio: str, empresa: str = "", ambiente: str = "",
+                                        usuario: Any = Depends(identidad)):
+        """Saca el par del servicio **de un ambiente**; el otro y la facturación no se tocan.
+
+        Se borran los dos archivos **y** la fila: dejar la ruta apuntando a un
+        archivo que ya no está no revive nada acá (no hay rescate por nombre de
+        facturación), pero una fila huérfana mostraría «cargado» sin estarlo.
+        """
+        svc = _servicio_o_404(servicio)
+        amb = _ambiente_exigido(ambiente)
+        nombre = empresa.strip() or empresa_por_defecto
+        for path in arca_credenciales.paths_en_disco_de_servicio(nombre, svc.id, amb):
+            if _existe(path):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+        db_servicio.borrar_paths_de_servicio(nombre, svc.id, amb)
+        _avisar("borrar", {"empresa": nombre, "servicio": svc.id, "ambiente": amb}, usuario)
+        return _estado_del_servicio(svc, nombre)
+
+    @router.post("/servicios/{servicio}/probar")
+    def probar_servicio(servicio: str, empresa: str = "", ambiente: str = ""):
+        """Se autentica de verdad contra WSAA **para este servicio**.
+
+        Es el único chequeo que dice que el certificado está **habilitado para el
+        servicio**: un par perfecto al que nadie le asoció el servicio en el
+        Administrador de Relaciones pasa toda validación local y lo rechaza ARCA.
+
+        El ticket se **reusa** si hay uno vigente (`arca_wsaa.autenticar` lo cachea
+        por certificado, ambiente y servicio): «Probar» OK no es pedir otro, que
+        ARCA rechazaría con `coe.alreadyAuthenticated`.
+
+        Para los servicios con `dummy` (`wscpe`) se agrega si el servicio está
+        arriba. Es **informativo**: que ARCA no conteste no desmiente que el
+        certificado sirva.
+        """
+        svc = _servicio_o_404(servicio)
+        amb = _ambiente_exigido(ambiente)
+        nombre = empresa.strip() or empresa_por_defecto
+        cert_path, clave_path = arca_credenciales.paths_en_disco_de_servicio(nombre, svc.id, amb)
+
+        if not _existe(cert_path) or not _existe(clave_path):
+            falta = ("el certificado y la clave privada" if not _existe(cert_path) and not _existe(clave_path)
+                     else "el certificado" if not _existe(cert_path) else "la clave privada")
+            raise HTTPException(
+                400, f"Falta cargar {falta} de {svc.etiqueta} para {amb}.")
+        errores = arca_certificados.revisar_par_de_archivos(cert_path, clave_path)
+        if errores:
+            raise HTTPException(400, " | ".join(errores))
+
+        try:
+            ticket = asyncio.run(
+                arca_wsaa.autenticar(cert_path, clave_path, amb, servicio=svc.wsaa))
+        except Exception as e:
+            # La explicación va primero y el texto de ARCA tal cual al final: es el
+            # que dice si el problema es el certificado, la relación o la hora.
+            raise HTTPException(
+                502, "ARCA rechazó la autenticación: "
+                + arca_servicios.traducir_error_wsaa(str(e))) from None
+
+        info = arca_wsaa.info_certificado(cert_path)
+        salida = {
+            "ok": True, "servicio": svc.id, "ambiente": amb, "empresa": nombre,
+            "certificado": info,
+            "cuit_certificado": arca_certificados.leer_certificado_de_archivo(cert_path).cuit,
+            "ticket_vence": (ticket or {}).get("expiracion", ""),
+            "mensaje": f"Autenticado con ARCA para {svc.etiqueta} ({amb}).",
+        }
+        try:
+            salida["servicio_en_linea"] = arca_servicios.dummy(svc.id, amb)
+        except Exception as e:  # informativo: no desmiente la autenticación
+            salida["servicio_en_linea"] = None
+            salida["aviso_en_linea"] = f"El servicio no contestó el chequeo de estado: {e}"
+        return salida
 
     return router
 

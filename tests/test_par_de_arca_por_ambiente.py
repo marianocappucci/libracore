@@ -98,6 +98,9 @@ PERMITIDOS = {
     "db/arca_config.py": "define el mapa: el único lugar donde vive la asimetría",
     "db/schema.py": "el DDL las crea",
     "arca_router.py": "la pantalla que las escribe nombra el destino",
+    "db/arca_credenciales_servicio.py": (
+        "es OTRA tabla (ADR-032) cuyas columnas se llaman igual pero no tienen la "
+        "asimetría: cada ambiente es una fila, no un par con sufijo"),
 }
 
 

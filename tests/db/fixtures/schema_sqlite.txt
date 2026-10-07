@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (409)
+## tablas (417)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -16,6 +16,14 @@ arca_config|fce_transmision|TEXT|NN|''
 arca_config|id|INTEGER||
 arca_config|punto_venta|INTEGER|NN|
 arca_config|updated_at|TEXT||datetime('now','-3 hours')
+arca_credenciales_servicio|ambiente|TEXT|NN|
+arca_credenciales_servicio|certificado_path|TEXT|NN|''
+arca_credenciales_servicio|clave_path|TEXT|NN|''
+arca_credenciales_servicio|created_at|TEXT||datetime('now','-3 hours')
+arca_credenciales_servicio|empresa|TEXT|NN|
+arca_credenciales_servicio|id|INTEGER||
+arca_credenciales_servicio|servicio|TEXT|NN|
+arca_credenciales_servicio|updated_at|TEXT||datetime('now','-3 hours')
 auth_log|detalle|TEXT||
 auth_log|evento|TEXT|NN|
 auth_log|id|INTEGER||
@@ -411,8 +419,9 @@ ventas|total|REAL|NN|0
 ventas|turno_id|INTEGER||
 ventas|usuario_id|INTEGER||
 
-## claves primarias (34)
+## claves primarias (35)
 arca_config|id
+arca_credenciales_servicio|id
 auth_log|id
 caja_movimientos|id
 cajas|id
@@ -497,8 +506,9 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (35)
+## índices (36)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
+arca_credenciales_servicio|sqlite_autoindex_arca_credenciales_servicio_1|UNIQUE implícito (empresa,servicio,ambiente)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
 categorias_egreso|sqlite_autoindex_categorias_egreso_1|UNIQUE implícito (nombre)
 categorias_producto|sqlite_autoindex_categorias_producto_1|UNIQUE implícito (nombre)

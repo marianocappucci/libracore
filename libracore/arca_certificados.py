@@ -33,6 +33,7 @@ implementación, dos puertas de entrada**.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -70,6 +71,17 @@ class DatosDelCertificado:
     @property
     def dias_para_vencer(self) -> int:
         return (self.vence - datetime.now(UTC)).days
+
+    @property
+    def cuit(self) -> str:
+        """El CUIT del titular, si el sujeto lo trae (`serialNumber=CUIT 20…`).
+
+        Los certificados que emite ARCA lo llevan ahí: es el CUIT de **quien se
+        autentica**, que en un servicio con delegación (`wscpe`) puede ser una
+        persona que actúa en nombre de la empresa. `""` si no está.
+        """
+        m = re.search(r"CUIT\s*(\d{11})", self.sujeto)
+        return m.group(1) if m else ""
 
 
 def leer_certificado(contenido: bytes) -> DatosDelCertificado:
