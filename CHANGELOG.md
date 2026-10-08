@@ -7,6 +7,20 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Emitir la Carta de Porte Electrónica (propuesta: v1.144.0)
+
+ADR-035. **Sin migración y sin cambio de schema.**
+
+- **`libracore.arca_wscpe.emitir_cpe(cuit_representada, token, sign, SolicitudCpe(...))`**: pide el último número, autoriza el siguiente y devuelve la `CartaDePorte` con el CTG y el PDF. El representado tiene que ser el solicitante, y hay un cerrojo entre procesos por sucursal. **Si ARCA no contesta al autorizar no reintenta**: consulta por el número pedido y devuelve la carta, informa que no se emitió, o levanta `EmisionIncierta`.
+- `SolicitudCpe` (con `OrigenPlanta`/`OrigenCampo`, `DestinoSolicitud` y `TransporteSolicitud`), con `problemas()` para los rangos del esquema y `SolicitudInvalida`.
+- Catálogos: `tipos_grano`, `localidades`, `plantas` y `ultimo_nro_orden`. `anular_cpe`.
+- `RespuestaNoSoap`, subclase de `RuntimeError`, para un 502 del balanceador.
+
+### Para los productos
+
+- **LibraCargo**: subir el pin para emitir desde la orden (fase 4).
+- **El resto**: nada.
+
 ## [Unreleased] — Leer la Carta de Porte Electrónica de ARCA (propuesta: v1.143.0)
 
 ADR-034. **Sin migración y sin cambio de schema.** Ningún producto cambia si no importa el módulo nuevo.

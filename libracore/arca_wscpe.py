@@ -39,6 +39,9 @@ _CATALOGO = arca_servicios.servicio(SERVICIO)
 WSCPE_URL = _CATALOGO.endpoints
 _NS = _CATALOGO.namespace
 
+#: `tipoCPE` de la carta de porte automotor de granos.
+TIPO_AUTOMOTOR = 74
+
 #: ARCA informa las fechas sin zona; son de la Argentina.
 _AR = timezone(timedelta(hours=-3))
 
@@ -73,6 +76,10 @@ class CpeNoEncontrada(ErrorWscpe):
 
 class CuitNoRelacionado(ErrorWscpe):
     """El CUIT representado no está relacionado con el certificado para `wscpe` (falta la delegación en ARCA)."""
+
+
+class RespuestaNoSoap(RuntimeError):
+    """ARCA (o su balanceador) contestó algo que no es SOAP: un 502, una línea suelta. No se sabe qué pasó adentro."""
 
 
 class SinCredenciales(RuntimeError):
@@ -232,7 +239,8 @@ async def _llamar(operacion: str, cuerpo: str, ambiente: str) -> ET.Element:
     try:
         raiz = ET.fromstring(resp.text)
     except ET.ParseError:
-        raise RuntimeError(f"WSCPE: respuesta que no es SOAP (HTTP {resp.status_code}): {resp.text[:200]}") from None
+        raise RespuestaNoSoap(
+            f"WSCPE: respuesta que no es SOAP (HTTP {resp.status_code}): {resp.text[:200]}") from None
     fault = next((e.text or "" for e in raiz.iter() if e.tag.split("}")[-1] == "faultstring"), None)
     if fault is not None:
         if "no esta relacionada" in fault.lower() or "no está relacionada" in fault.lower():
@@ -414,3 +422,328 @@ async def consultar_por_ctg(empresa: str, ambiente: str, *, cuit_representada, c
     """
     ticket = await autenticar(empresa, ambiente)
     return await consultar_cpe(cuit_representada, ticket["token"], ticket["sign"], ctg=ctg, ambiente=ambiente)
+
+
+# ── Catálogos de ARCA ──────────────────────────────────────────────────────
+#
+# Los códigos que pide la emisión (grano, localidad, planta) son los **de ARCA**, no los de los maestros de un
+# producto. Se consultan acá y el producto los guarda junto a los suyos.
+
+def _codigos(respuesta: ET.Element, nombre: str) -> dict[int, str]:
+    return {int(_texto(e, "codigo")): _texto(e, "descripcion")
+            for e in respuesta if e.tag.split("}")[-1] == nombre and _entero(_texto(e, "codigo")) is not None}
+
+
+async def tipos_grano(cuit_representada, token: str, sign: str, ambiente: str = "produccion") -> dict[int, str]:
+    """`código -> nombre` de los granos (`consultarTiposGrano`). Medido: 39 en homologación (Soja = 23)."""
+    respuesta = await _llamar("consultarTiposGrano", _pedido(
+        "ConsultarTiposGranoReq", cuit_representada, token, sign, {}), ambiente)
+    return _codigos(respuesta, "grano")
+
+
+async def localidades(cuit_representada, token: str, sign: str, *, cod_provincia: int,
+                      ambiente: str = "produccion") -> dict[int, str]:
+    """`código -> nombre` de las localidades de una provincia de ARCA (`consultarLocalidadesPorProvincia`)."""
+    respuesta = await _llamar("consultarLocalidadesPorProvincia", _pedido(
+        "ConsultarLocalidadesPorProvinciaReq", cuit_representada, token, sign,
+        {"solicitud": {"codProvincia": int(cod_provincia)}}), ambiente)
+    return _codigos(respuesta, "localidad")
+
+
+@dataclass(frozen=True)
+class Planta:
+    numero: int
+    cod_provincia: int | None
+    cod_localidad: int | None
+
+
+async def plantas(cuit_representada, token: str, sign: str, *, cuit, ambiente: str = "produccion") -> list[Planta]:
+    """Las plantas inscriptas de `cuit` (`consultarPlantas`). Sin plantas, ARCA contesta `800`: acá es `[]`."""
+    try:
+        respuesta = await _llamar("consultarPlantas", _pedido(
+            "ConsultarPlantasReq", cuit_representada, token, sign, {"solicitud": {"cuit": _digitos(cuit)}}), ambiente)
+    except CpeNoEncontrada:
+        return []
+    return [Planta(numero=int(_texto(p, "nroPlanta")), cod_provincia=_entero(_texto(p, "codProvincia")),
+                   cod_localidad=_entero(_texto(p, "codLocalidad")))
+            for p in respuesta if p.tag.split("}")[-1] == "planta" and _entero(_texto(p, "nroPlanta")) is not None]
+
+
+async def ultimo_nro_orden(cuit_representada, token: str, sign: str, *, sucursal: int,
+                           tipo_cpe: int = TIPO_AUTOMOTOR, ambiente: str = "produccion") -> int:
+    """El último número de orden autorizado para (sucursal, tipo) de `cuit_representada` (`consultarUltNroOrden`).
+
+    La numeración la lleva ARCA por solicitante, sucursal y tipo. Medido en homologación: `0` sin ninguna emitida.
+    """
+    respuesta = await _llamar("consultarUltNroOrden", _pedido(
+        "ConsultarUltNroOrdenReq", cuit_representada, token, sign,
+        {"solicitud": {"sucursal": int(sucursal), "tipoCPE": int(tipo_cpe)}}), ambiente)
+    numero = _entero(_texto(respuesta, "nroOrden"))
+    if numero is None:
+        raise RuntimeError("WSCPE: consultarUltNroOrden sin nroOrden ni errores")
+    return numero
+
+
+# ── Emitir (ADR-035) ───────────────────────────────────────────────────────
+
+#: El orden de los intervinientes en el esquema (`IntervinientesSolicitud` es `sequence`).
+_ORDEN_INTERVINIENTES = (
+    "cuitRemitenteComercialVentaPrimaria", "cuitRemitenteComercialVentaSecundaria",
+    "cuitRemitenteComercialVentaSecundaria2", "cuitMercadoATermino", "cuitCorredorVentaPrimaria",
+    "cuitCorredorVentaSecundaria", "cuitRepresentanteEntregador", "cuitRepresentanteRecibidor",
+)
+
+
+@dataclass(frozen=True)
+class OrigenPlanta:
+    """La carga sale de una planta inscripta (acopio, por ejemplo) del solicitante."""
+
+    cod_provincia: int
+    cod_localidad: int
+    planta: int
+
+
+@dataclass(frozen=True)
+class OrigenCampo:
+    """La carga sale de un campo. ARCA exige que el solicitante tenga actividad de productor (error `1015`)."""
+
+    cod_provincia: int
+    cod_localidad: int
+    renspa: str | None = None
+
+
+@dataclass(frozen=True)
+class TransporteSolicitud:
+    cuit_transportista: str
+    dominios: tuple[str, ...]
+    fecha_hora_partida: datetime
+    km: int
+    cuit_chofer: str
+    cuit_pagador_flete: str
+    mercaderia_fumigada: bool = False
+    tarifa: Decimal | None = None
+    cuit_intermediario_flete: str | None = None
+    codigo_turno: str | None = None
+
+
+@dataclass(frozen=True)
+class DestinoSolicitud:
+    cuit: str
+    cod_provincia: int
+    cod_localidad: int
+    planta: int | None = None
+    es_campo: bool = False
+
+
+@dataclass(frozen=True)
+class SolicitudCpe:
+    """Todo lo que pide `autorizarCPEAutomotor` menos el número de orden, que lo pone `emitir_cpe`.
+
+    Los campos y su orden siguen el WSDL v2.2.0 (`AutorizarAutomotorSolicitud`). Los rangos del esquema se validan
+    acá (`problemas`) para que un dato fuera de rango no viaje a ARCA.
+    """
+
+    cuit_solicitante: str
+    sucursal: int
+    origen: OrigenPlanta | OrigenCampo
+    cod_grano: int
+    cosecha: int
+    peso_bruto: int
+    peso_tara: int
+    destino: DestinoSolicitud
+    cuit_destinatario: str
+    transporte: TransporteSolicitud
+    #: Cuando el productor retira: el CUIT del remitente comercial productor.
+    cuit_remitente_comercial_productor: str | None = None
+    #: `cuitRemitenteComercialVentaPrimaria`, `cuitCorredorVentaPrimaria`… con el nombre del WSDL.
+    intervinientes: dict[str, str] | None = None
+    observaciones: str | None = None
+    tipo_cpe: int = TIPO_AUTOMOTOR
+
+    def problemas(self) -> list[str]:
+        """Lo que ARCA rechazaría por el esquema, dicho antes de llamar. Vacío si está todo en rango."""
+        p = []
+        cuits = {"del solicitante": self.cuit_solicitante, "del destino": self.destino.cuit,
+                 "del destinatario": self.cuit_destinatario, "del transportista": self.transporte.cuit_transportista,
+                 "del chofer": self.transporte.cuit_chofer, "del pagador del flete": self.transporte.cuit_pagador_flete}
+        for nombre, cuit in cuits.items():
+            if len(_digitos(cuit)) != 11:
+                p.append(f"el CUIT {nombre} tiene que tener 11 dígitos")
+        for nombre, kg in (("bruto", self.peso_bruto), ("tara", self.peso_tara)):
+            if not 1 <= kg <= 88000:
+                p.append(f"el peso {nombre} tiene que estar entre 1 y 88.000 kg")
+        if self.peso_tara >= self.peso_bruto:
+            p.append("la tara tiene que ser menor que el peso bruto")
+        if not 0 <= self.cosecha <= 9999:
+            p.append("la cosecha es un número de 4 cifras (2526 = 2025/2026)")
+        if not 1 <= self.transporte.km <= 99999:
+            p.append("los kilómetros a recorrer tienen que estar entre 1 y 99.999")
+        if not 1 <= len(self.transporte.dominios) <= 3:
+            p.append("hacen falta entre 1 y 3 dominios (chasis y acoplados)")
+        for d in self.transporte.dominios:
+            if not 6 <= len(d) <= 7:
+                p.append(f"el dominio «{d}» tiene que tener 6 o 7 caracteres")
+        t = self.transporte.tarifa
+        if t is not None and not Decimal(0) <= t <= Decimal("99999.99"):
+            p.append("la tarifa tiene que estar entre 0 y 99.999,99")
+        if self.observaciones and len(self.observaciones) > 2000:
+            p.append("las observaciones tienen hasta 2.000 caracteres")
+        return p
+
+    def _campos(self, nro_orden: int) -> dict:
+        o, d, t = self.origen, self.destino, self.transporte
+        if isinstance(o, OrigenPlanta):
+            origen = {"operador": {"codProvincia": o.cod_provincia, "codLocalidad": o.cod_localidad,
+                                   "planta": o.planta}}
+        else:
+            origen = {"productor": {"codProvincia": o.cod_provincia, "codLocalidad": o.cod_localidad,
+                                    "nroRenspa": o.renspa}}
+        retira = self.cuit_remitente_comercial_productor is not None
+        dados = self.intervinientes or {}
+        desconocidos = set(dados) - set(_ORDEN_INTERVINIENTES)
+        if desconocidos:
+            raise ValueError(f"WSCPE: intervinientes que el esquema no tiene: {sorted(desconocidos)}")
+        intervinientes = {k: _digitos(dados[k]) for k in _ORDEN_INTERVINIENTES if dados.get(k)}
+        return {
+            "cabecera": {"tipoCP": self.tipo_cpe, "cuitSolicitante": _digitos(self.cuit_solicitante),
+                         "sucursal": self.sucursal, "nroOrden": nro_orden},
+            "origen": origen,
+            "correspondeRetiroProductor": "true" if retira else "false",
+            # 🔑 No es una elección: sale del origen. Medido en homologación (2026-10-08): con origen en campo y
+            # `false`, ARCA contesta 949 («el campo productor no se debe informar»); con `true` llega a validar
+            # que el solicitante sea productor (1015). Con planta va en `false`.
+            "esSolicitanteCampo": "true" if isinstance(o, OrigenCampo) else "false",
+            "retiroProductor": ({"cuitRemitenteComercialProductor": _digitos(self.cuit_remitente_comercial_productor)}
+                                if retira else None),
+            "intervinientes": intervinientes or None,
+            "datosCarga": {"codGrano": self.cod_grano, "cosecha": self.cosecha,
+                           "pesoBruto": self.peso_bruto, "pesoTara": self.peso_tara},
+            "destino": {"cuit": _digitos(d.cuit), "esDestinoCampo": "true" if d.es_campo else "false",
+                        "codProvincia": d.cod_provincia, "codLocalidad": d.cod_localidad, "planta": d.planta},
+            "destinatario": {"cuit": _digitos(self.cuit_destinatario)},
+            "transporte": {
+                "cuitTransportista": _digitos(t.cuit_transportista),
+                # `dominio` se repite: va aparte, ver `_xml_transporte`.
+                "fechaHoraPartida": t.fecha_hora_partida.astimezone(_AR).strftime("%Y-%m-%dT%H:%M:%S"),
+                "kmRecorrer": t.km, "codigoTurno": t.codigo_turno, "cuitChofer": _digitos(t.cuit_chofer),
+                "tarifa": f"{t.tarifa:.2f}" if t.tarifa is not None else None,
+                "cuitPagadorFlete": _digitos(t.cuit_pagador_flete),
+                "cuitIntermediarioFlete": _digitos(t.cuit_intermediario_flete) if t.cuit_intermediario_flete else None,
+                "mercaderiaFumigada": "true" if t.mercaderia_fumigada else "false",
+            },
+            "observaciones": self.observaciones or None,
+        }
+
+    def xml(self, nro_orden: int) -> str:
+        """El `<solicitud>` en el orden del esquema, con los `dominio` repetidos después del transportista."""
+        campos = self._campos(nro_orden)
+        transporte = campos.pop("transporte")
+        dominios = "".join(f"<dominio>{escape(d.upper())}</dominio>" for d in self.transporte.dominios)
+        cuerpo_transporte = (f"<cuitTransportista>{transporte.pop('cuitTransportista')}</cuitTransportista>"
+                             f"{dominios}{_xml(transporte)}")
+        antes = {k: v for k, v in campos.items() if k != "observaciones"}
+        return (f"<solicitud>{_xml(antes)}<transporte>{cuerpo_transporte}</transporte>"
+                f"{_xml({'observaciones': campos['observaciones']})}</solicitud>")
+
+
+class EmisionIncierta(RuntimeError):
+    """ARCA no contestó al autorizar y tampoco se pudo saber si la carta quedó emitida.
+
+    🔴 **No se reintenta**: reintentar con el mismo número puede chocar con una carta emitida, y con el siguiente
+    puede dejar dos cartas para el mismo viaje. Hay que consultar (`consultar_cpe` por tipo, sucursal y número)
+    antes de volver a emitir. `nro_orden` es el número que se pidió.
+    """
+
+    def __init__(self, mensaje: str, *, sucursal: int, nro_orden: int, tipo_cpe: int):
+        super().__init__(mensaje)
+        self.sucursal, self.nro_orden, self.tipo_cpe = sucursal, nro_orden, tipo_cpe
+
+
+class SolicitudInvalida(ValueError):
+    """La solicitud tiene datos fuera de lo que admite el esquema de ARCA. `problemas` dice cuáles."""
+
+    def __init__(self, problemas: list[str]):
+        super().__init__("; ".join(problemas))
+        self.problemas = problemas
+
+
+async def autorizar_cpe(cuit_representada, token: str, sign: str, solicitud: SolicitudCpe, *, nro_orden: int,
+                        ambiente: str = "produccion") -> CartaDePorte:
+    """`autorizarCPEAutomotor` con un número de orden dado. **Sin guardas**: el camino normal es `emitir_cpe`."""
+    cuerpo = (f"<wsc:AutorizarCPEAutomotorReq>"
+              f"{_xml({'auth': {'token': token, 'sign': sign, 'cuitRepresentada': _exigir_once(cuit_representada)}})}"
+              f"{solicitud.xml(nro_orden)}</wsc:AutorizarCPEAutomotorReq>")
+    return _carta_de_porte(await _llamar("autorizarCPEAutomotor", cuerpo, ambiente))
+
+
+def _exigir_once(cuit) -> str:
+    digitos = _digitos(cuit)
+    if len(digitos) != 11:
+        raise ValueError(f"WSCPE: el CUIT representado tiene que tener 11 dígitos, no «{cuit}»")
+    return digitos
+
+
+def _ruta_del_cerrojo(cuit: str, sucursal: int, tipo_cpe: int, ambiente: str) -> str:
+    import os
+    directorio = arca_wsaa._dir_de_tickets()
+    os.makedirs(directorio, mode=0o700, exist_ok=True)
+    return os.path.join(directorio, f"cpe-{ambiente}-{cuit}-{sucursal}-{tipo_cpe}")
+
+
+async def emitir_cpe(cuit_representada, token: str, sign: str, solicitud: SolicitudCpe, *,
+                     ambiente: str = "produccion") -> CartaDePorte:
+    """Emite la carta: pide el último número, autoriza con el siguiente y devuelve la CPE con su CTG y su PDF.
+
+    - 🔑 **El CUIT representado tiene que ser el solicitante**: se emite *en nombre de* quien delegó. Si no
+      coinciden se rechaza antes de llamar (con dos CUIT posibles, firmar por otro es el error caro).
+    - **Un cerrojo entre procesos por (solicitante, sucursal, tipo, ambiente)**: dos emisiones a la vez pedirían
+      el mismo número.
+    - 🔴 **Si ARCA no contesta al autorizar, no se reintenta.** Se consulta por el número pedido: si la carta
+      está, se devuelve; si ARCA dice que no existe, se informa que no se emitió (y se puede volver a intentar);
+      si tampoco contesta, `EmisionIncierta`. Es la regla del manual (sección 1.3) y la misma lección del CAE.
+    """
+    cuit = _exigir_once(cuit_representada)
+    if _digitos(solicitud.cuit_solicitante) != cuit:
+        raise ValueError("WSCPE: se emite en nombre del solicitante: el CUIT representado tiene que ser el "
+                         f"del solicitante ({_digitos(solicitud.cuit_solicitante)}), no {cuit}")
+    problemas = solicitud.problemas()
+    if problemas:
+        raise SolicitudInvalida(problemas)
+    ruta = _ruta_del_cerrojo(cuit, solicitud.sucursal, solicitud.tipo_cpe, ambiente)
+    async with arca_wsaa._cerrojo(ruta):
+        nro = await ultimo_nro_orden(cuit, token, sign, sucursal=solicitud.sucursal, tipo_cpe=solicitud.tipo_cpe,
+                                     ambiente=ambiente) + 1
+        try:
+            return await autorizar_cpe(cuit, token, sign, solicitud, nro_orden=nro, ambiente=ambiente)
+        except (httpx.TransportError, RespuestaNoSoap) as falla:
+            try:
+                return await consultar_cpe(cuit, token, sign, tipo_cpe=solicitud.tipo_cpe,
+                                           sucursal=solicitud.sucursal, nro_orden=nro, ambiente=ambiente)
+            except CpeNoEncontrada:
+                raise RuntimeError(
+                    f"WSCPE: ARCA no contestó al autorizar ({type(falla).__name__}) y la carta "
+                    f"{solicitud.sucursal:05d}-{nro:08d} no figura: no se emitió. Se puede volver a intentar."
+                ) from falla
+            except Exception as consulta:
+                raise EmisionIncierta(
+                    f"WSCPE: ARCA no contestó al autorizar la carta {solicitud.sucursal:05d}-{nro:08d} y tampoco "
+                    "se pudo consultar si quedó emitida. No reintentar: consultala primero.",
+                    sucursal=solicitud.sucursal, nro_orden=nro, tipo_cpe=solicitud.tipo_cpe,
+                ) from consulta
+
+
+async def anular_cpe(cuit_representada, token: str, sign: str, *, sucursal: int, nro_orden: int,
+                     tipo_cpe: int = TIPO_AUTOMOTOR, motivo: int | None = None, observaciones: str | None = None,
+                     ambiente: str = "produccion") -> str:
+    """Anula una carta emitida (`anularCPE`) y devuelve el estado que informa ARCA (`AN`).
+
+    ARCA pone sus condiciones (plazo, estado, topes de anuladas del titular); cualquier rechazo llega como
+    `ErrorWscpe` con sus códigos.
+    """
+    if observaciones is not None and not 1 <= len(observaciones) <= 100:
+        raise ValueError("WSCPE: las observaciones de la anulación tienen entre 1 y 100 caracteres")
+    respuesta = await _llamar("anularCPE", _pedido(
+        "AnularCPEReq", cuit_representada, token, sign,
+        {"solicitud": {"cartaPorte": {"tipoCPE": int(tipo_cpe), "sucursal": int(sucursal), "nroOrden": int(nro_orden)},
+                       "anulacionMotivo": motivo, "anulacionObservaciones": observaciones}}), ambiente)
+    return _texto(_hijo(respuesta, "cabecera"), "estado")

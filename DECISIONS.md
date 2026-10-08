@@ -704,3 +704,31 @@ Detalle en `docs/fce.md`.
 - Las CPE completas de los tests son sintéticas sobre el WSDL (no hay todavía una CPE real legible); los errores y las provincias son respuestas reales de producción, anonimizadas (`tests/fixtures_wscpe/README.md`). Cuando haya una CPE real, se graba y reemplaza a la sintética.
 - Dónde guardar la CPE (tabla `cartas_porte`), vincularla a la orden de carga y refrescarla hasta la descarga es del producto (LibraCargo), con este módulo como única puerta a ARCA.
 - 🔴 Una delegación nueva no se ve hasta que vence el ticket vigente (≈12 h), porque WSAA no entrega otro antes (`coe.alreadyAuthenticated`). No hay forma de forzarlo desde acá.
+
+## ADR-035 — Emitir la Carta de Porte Electrónica en el motor, sin reintentar a ciegas
+
+**Contexto.** Fase 4 del plan de CTG y Carta de Porte de LibraCargo: Suitrans emite cartas de porte **por delegación** de un titular (Agropecuaria Pereiro) con un software de terceros, y quiere hacerlo desde el sistema. ADR-034 dejó la lectura. Lo medido en homologación el 2026-10-08, con el certificado de la persona que representa a Suitrans:
+- `consultarUltNroOrden` da `0` sin cartas emitidas.
+- Los catálogos andan: 39 granos (Soja = 23) y 905 localidades en la provincia 12.
+- `consultarPlantas` sin plantas da `800`.
+- `anularCPE` sobre una carta que no existe da `1302`.
+- **Autorizar valida contra los registros reales también en homologación**:
+  - origen en campo con `esSolicitanteCampo=false` da `949`;
+  - origen en campo con `true` da `1015` (el solicitante no tiene actividad de productor);
+  - origen en planta da `2008` (no está activo en SISA).
+- En homologación el certificado sólo opera por su propio CUIT, así que una emisión exitosa necesita un certificado de homologación del titular.
+
+**Decisión.**
+1. **En `libracore.arca_wscpe`**, con la lectura. La emisión es del protocolo, no de un producto (`reglas/producto.md`).
+2. **`SolicitudCpe` tipada**, con `OrigenPlanta | OrigenCampo`, `DestinoSolicitud` y `TransporteSolicitud`. Arma el XML en el orden del esquema: los `dominio` repetidos van después del transportista y los intervinientes en el orden del WSDL, sin importar cómo lleguen. **`esSolicitanteCampo` no es un campo: sale del origen** (949 medido). `problemas()` valida los rangos del esquema antes de llamar: pesos de 1 a 88.000 kg, tara menor que el bruto, cosecha de 4 cifras, 1 a 99.999 km, 1 a 3 dominios de 6 o 7 caracteres, tarifa hasta 99.999,99, observaciones de hasta 2.000 caracteres y CUIT de 11 dígitos.
+3. **`emitir_cpe` es el camino**; `autorizar_cpe` queda sin guardas:
+   - **el CUIT representado tiene que ser el solicitante**: se emite *en nombre de* quien delegó;
+   - **cerrojo entre procesos** por (solicitante, sucursal, tipo, ambiente), con el `flock` de `arca_wsaa`, alrededor de «último número + autorizar»;
+   - 🔴 **si ARCA no contesta al autorizar** (error de transporte o respuesta que no es SOAP), **no se reintenta**. Se consulta por el número pedido: si la carta está, se devuelve; si ARCA dice que no existe, se informa que no se emitió; si tampoco contesta, `EmisionIncierta`, con la sucursal y el número. Es la regla del manual (sección 1.3) y la misma lección del CAE.
+4. **Catálogos**: `tipos_grano`, `localidades(cod_provincia)`, `plantas(cuit)` (sin plantas, `[]`) y `ultimo_nro_orden`. **Anular**: `anular_cpe`, con observaciones de 1 a 100 caracteres.
+5. Fuera de este ADR: desvío, contingencia, confirmación de arribo y editar. Se suman cuando el producto los use.
+
+**Consecuencias.**
+- Sin migración y sin cambio de schema. MINOR (v1.144.0).
+- Los rechazos de los tests son respuestas reales de homologación, anonimizadas. La autorización exitosa es sintética (la forma de `DetalleAutomotorRespuesta`) hasta que haya un certificado de homologación de un titular con SISA.
+- El test del cerrojo usa un doble de ARCA que cede el control: sin eso pasaba aunque se sacara el cerrojo (se verificó sacándolo).
