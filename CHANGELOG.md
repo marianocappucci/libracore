@@ -7,6 +7,17 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La localidad del catálogo por su id (propuesta: v1.145.0)
+
+Sin migración ni cambio de schema.
+
+- **`libracore.geografia.localidad(id)`** devuelve la localidad del catálogo por su código censal de 8 dígitos (o `None`), y **`GET /api/geo/localidades/{id}`** la sirve (404 si no está). Sirve para que un producto **vincule** su maestro editable de localidades con el catálogo: el nombre se escribe de muchas maneras, el id no.
+
+### Para los productos
+
+- **LibraCargo**: lo usa para vincular sus localidades al catálogo y cargar parajes como excepción.
+- **El resto**: nada.
+
 ## [Unreleased] — Emitir la Carta de Porte Electrónica (propuesta: v1.144.0)
 
 ADR-035. **Sin migración y sin cambio de schema.**
