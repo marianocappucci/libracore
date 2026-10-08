@@ -109,6 +109,26 @@ y en sus rutas de siempre. En `wscpe` el certificado puede estar a nombre de la 
 que representa a la empresa: el CUIT que se opera va en cada llamada
 (`cuitRepresentada`), no sale del certificado.
 
+### El pedido de certificado: la clave nace en el servidor (ADR-036)
+
+Para una empresa nueva —o una renovación— el motor genera la clave y el `.csr`, y la clave
+no sale nunca. Las mismas cuatro rutas, para la facturación y para cada servicio, con
+`?ambiente=` **obligatorio**:
+
+| Ruta | Qué hace |
+|---|---|
+| `POST {prefix}/pedido` · `POST {prefix}/servicios/{servicio}/pedido` | Cuerpo `{cuit, razon_social, alias, reemplazar}`. Genera la clave **pendiente** (aparte de la vigente, sin pisarla) y devuelve el pedido con el `.csr` en PEM. 409 si ya hay uno pendiente, salvo `reemplazar: true` |
+| `GET …/pedido` | `{pendiente, alias, cuit, razon_social, sujeto, creado}`; sin pedido, `{pendiente: false}` |
+| `GET …/pedido.csr` | El `.csr` como descarga (`{alias}.csr`) |
+| `DELETE …/pedido` | Descarta el pedido y su clave. El par vigente no se toca |
+
+Al subir el `.crt` por `…/certificado`: si empareja con la clave pendiente, el par queda
+instalado y el pedido se borra; si empareja con la vigente, como siempre; si no empareja con
+ninguna, 422. Los estados (`GET {prefix}`, `/estado`, `/servicios…`) suman `pedido` dentro del
+par del ambiente **sólo cuando hay uno pendiente**. La clave pendiente vive en `CERTS_DIR`
+(`pedido-{servicio}-{ambiente}-{huella}.key`, 0600) y entra en el respaldo; ninguna respuesta,
+asiento de auditoría ni log la lleva. Ver `libracore.arca_pedidos`.
+
 ### Las dos costuras de negocio
 
 Lo que **no** es igual en todos entra por parámetro:

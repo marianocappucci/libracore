@@ -7,6 +7,24 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El pedido de certificado de ARCA se genera en el servidor (propuesta: v1.147.0)
+
+ADR-036. **Sin migración y sin cambio de schema.** Para una empresa nueva: la clave privada nace dentro del servidor y no sale nunca; de ahí sólo sale el `.csr`.
+
+- **`arca_certificados.generar_pedido(cuit, razón social, alias)`** devuelve la clave (RSA 2048, PKCS#8, sin passphrase) y el `.csr` con el sujeto que pide ARCA (`C=AR, O, CN=<alias>, serialNumber=CUIT <n>`). `datos_del_pedido` normaliza y valida (`PedidoInvalido`). La clave no aparece en el `repr`.
+- **`libracore.arca_pedidos`**: la clave **pendiente** se guarda aparte de la vigente, en `CERTS_DIR` (`pedido-{servicio}-{ambiente}-{huella}.key` en 0600 y `.json`), un pedido por (servicio, ambiente, empresa). Pedir uno no pisa el par que está facturando.
+- **Rutas**, para la facturación (`{prefix}/pedido`) y para cada servicio (`{prefix}/servicios/{servicio}/pedido`), con `?ambiente=` obligatorio: `POST` (genera y devuelve el `.csr`; 409 si ya hay uno salvo `reemplazar: true`), `GET` (estado), `GET …/pedido.csr` (descarga) y `DELETE` (descarta pedido y clave).
+- **Al subir el `.crt` por `…/certificado`**: si empareja con la clave pendiente, pasa a vigente (par instalado, pedido borrado); si empareja con la vigente, como siempre; si no empareja con ninguna, 422 que nombra el pedido.
+- Los estados que ya existían suman `pedido` dentro del par del ambiente **sólo cuando hay un pedido pendiente**. `GET {prefix}/servicios` suma `admite_pedido: true` en cada servicio: es la marca con la que el kit sabe que este motor tiene las rutas.
+- **`ACCIONES`** suma `pedido` y `descartar_pedido`; la promoción deja `certificado` y `clave` con `desde_pedido`. Ningún asiento, respuesta ni log lleva la clave.
+- `docs/guia-certificado-arca.md` y `docs/facturacion-arca.md` describen el flujo nuevo.
+
+### Para los productos
+
+- **Subir el pin** de libracore y el de libra-ui (ADR-041 del kit): el botón «Generar pedido de certificado» aparece en la pantalla de ARCA, sin cambios en el producto. Con un LibraCore viejo el kit no muestra el botón.
+- Un hook de auditoría que mapee `ACCIONES` a mano recibe dos acciones nuevas (`pedido`, `descartar_pedido`); el de LibraCargo ya registra lo desconocido como modificación.
+- Si el producto pasa `razonSocial` a `ArcaCard`, el diálogo la trae prellenada (opcional).
+
 ## [Unreleased] — El catálogo geográfico suma el resto del Mercosur (propuesta: v1.146.0)
 
 Sin migración ni cambio de schema. **Por omisión todo sigue siendo Argentina.**

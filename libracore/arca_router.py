@@ -61,14 +61,16 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from libracore import (
     arca_certificados,
     arca_credenciales,
+    arca_pedidos,
     arca_servicios,
     arca_wsaa,
+    arca_wsfe,
     config_manager,
 )
 from libracore.db import arca_config as db_arca_config
@@ -84,7 +86,12 @@ logger = logging.getLogger(__name__)
 #: 🔑 **`probar` no está**, y no es un olvido: autentica contra ARCA y **no
 #: cambia nada**. Un log de auditoría que registre lecturas se llena de ruido y
 #: esconde las cuatro líneas que importan.
-ACCIONES = ("configurar", "certificado", "clave", "borrar")
+#:
+#: `pedido` y `descartar_pedido` son el pedido de certificado (ADR-036): se genera una clave
+#: nueva en el servidor, o se tira la que estaba esperando su `.crt`. Cuando el `.crt` llega y la
+#: clave pendiente pasa a vigente, quedan los asientos de siempre —`certificado` y `clave`—, con
+#: `desde_pedido` en el detalle.
+ACCIONES = ("configurar", "certificado", "clave", "borrar", "pedido", "descartar_pedido")
 
 
 def _sin_identidad() -> None:
@@ -153,6 +160,18 @@ class ArcaPayload(BaseModel):
         return v
 
 
+class PedidoPayload(BaseModel):
+    """Los datos del pedido de certificado. `empresa` y `ambiente` van en la query, como en
+    todas las rutas que escriben un par; acá sólo lo que va en el sujeto del `.csr`."""
+
+    cuit: str
+    razon_social: str
+    alias: str
+    #: 🔴 Reemplazar un pedido pendiente destruye su clave: si el `.csr` anterior ya está en
+    #: ARCA, el `.crt` que devuelva queda sin pareja. Sin esta confirmación explícita es 409.
+    reemplazar: bool = False
+
+
 def _resolver(empresa: str) -> dict | None:
     """La configuración sobre la que opera la pantalla.
 
@@ -209,7 +228,10 @@ def _estado_del_par(cfg: dict | None, ambiente: str) -> dict:
     "falta poco" cuando en realidad no funciona nada.
     """
     cert_path, clave_path = _paths(cfg, ambiente)
-    return _estado_de_archivos(ambiente, cert_path, clave_path)
+    return _con_pedido(
+        _estado_de_archivos(ambiente, cert_path, clave_path),
+        arca_servicios.SERVICIO_FACTURACION, (cfg or {}).get("empresa", ""),
+    )
 
 
 def _estado_de_archivos(ambiente: str, cert_path: str, clave_path: str, *,
@@ -243,6 +265,19 @@ def _estado_de_archivos(ambiente: str, cert_path: str, clave_path: str, *,
             if con_cuit:
                 salida["cuit_certificado"] = datos.cuit
     return salida
+
+
+def _con_pedido(par: dict, servicio: str, empresa: str) -> dict:
+    """Agrega al estado de un par el pedido de certificado que espera su `.crt`, si hay uno.
+
+    🔑 **La clave `pedido` aparece sólo cuando hay un pedido pendiente.** Las respuestas que ya
+    existían no ganan una clave que sus consumidores no esperan, y ninguna lleva la clave privada:
+    el pedido se describe con su alias, su CUIT, su razón social y su fecha (ADR-036).
+    """
+    pedido = arca_pedidos.leer(_certs_dir(), servicio, par["ambiente"], empresa)
+    if pedido:
+        par["pedido"] = pedido.como_dict()
+    return par
 
 
 def _certificado_valido(contenido: bytes):
@@ -282,6 +317,62 @@ def _exigir_pareja_con_el_certificado_cargado(contenido: bytes, cert_path: str, 
                     "Esta clave privada no es pareja del certificado que ya "
                     f"está cargado para {ambiente}. Subí las dos mitades del mismo par.",
                 )
+
+
+def _clave_pendiente_que_empareja(contenido: bytes, servicio: str, ambiente: str, empresa: str,
+                                  clave_path: str) -> tuple[arca_pedidos.Pedido, bytes] | None:
+    """La clave pendiente a instalar si este `.crt` es la respuesta a su pedido; si no, `None`.
+
+    - Sin pedido pendiente: `None`, y el upload sigue como siempre.
+    - Con pedido, y el `.crt` empareja con **su** clave: `(pedido, clave)`. Es la promoción.
+    - Con pedido, y el `.crt` empareja con la clave **vigente** (un `.crt` de la clave de siempre
+      que se sube mientras hay un pedido a medias): `None`, sigue como siempre y el pedido espera.
+    - Con pedido, y no empareja con ninguna: 422. Dejar pasar un certificado que no es de ninguna
+      de las dos claves es el defecto que `son_pareja` existe para evitar.
+    """
+    carpeta = _certs_dir()
+    pedido = arca_pedidos.leer(carpeta, servicio, ambiente, empresa)
+    if pedido is None:
+        return None
+    pendiente = arca_pedidos.clave(carpeta, servicio, ambiente, empresa)
+
+    def _es_pareja(clave: bytes | None) -> bool:
+        try:
+            return clave is not None and arca_certificados.son_pareja(contenido, clave)
+        except arca_certificados.ArchivoInvalido:
+            return False
+
+    if _es_pareja(pendiente):
+        return pedido, pendiente
+    vigente = None
+    if _existe(clave_path):
+        with open(clave_path, "rb") as f:
+            vigente = f.read()
+    if _es_pareja(vigente):
+        return None
+    raise HTTPException(
+        422,
+        f"Este certificado no corresponde al pedido pendiente para {ambiente} (alias "
+        f"{pedido.alias}, del {pedido.como_dict()['creado']})"
+        + (" ni a la clave que ya está cargada" if vigente is not None else "")
+        + ". Tiene que ser el .crt que ARCA devolvió para ese .csr.",
+    )
+
+
+def _instalar_par(nombres: tuple[str, str], certificado: bytes, clave: bytes) -> tuple[str, str]:
+    """Escribe el par en `CERTS_DIR` con los nombres del ambiente: `(ruta del .crt, ruta del .key)`.
+
+    La clave con `escribir_clave_privada` (0600), como en toda subida. Es lo que hace la promoción
+    de un pedido: la clave sale de su archivo pendiente y entra al de la clave vigente, sin pasar por
+    ninguna respuesta.
+    """
+    os.makedirs(_certs_dir(), exist_ok=True)
+    destino_clave = os.path.join(_certs_dir(), nombres[1])
+    destino_cert = os.path.join(_certs_dir(), nombres[0])
+    arca_certificados.escribir_clave_privada(destino_clave, clave)
+    with open(destino_cert, "wb") as f:
+        f.write(certificado)
+    return destino_cert, destino_clave
 
 
 def _nombres_de_servicio(servicio: str, ambiente: str, empresa: str) -> tuple[str, str]:
@@ -362,7 +453,7 @@ def build_arca_router(
 
     ## `al_cambiar`, y por qué es *best-effort*
 
-    Se llama con una de las cuatro `ACCIONES`, un `detalle` y el usuario. **Lo
+    Se llama con una de las `ACCIONES`, un `detalle` y el usuario. **Lo
     que levante no tumba la request**, igual que el `al_emitir` de
     `facturas_router` y por el mismo motivo: para cuando corre, el archivo ya
     está escrito en `CERTS_DIR` y la fila ya está guardada, así que un error no
@@ -410,6 +501,24 @@ def build_arca_router(
     🔑 Sin `empresa`, es `empresa_por_defecto` y **no** «la primera fila de
     facturación»: un servicio que se carga antes de tener fila de `arca_config`
     tiene que quedar en el mismo lugar cuando la fila aparezca.
+
+    ## El pedido de certificado: la clave nace en el servidor (ADR-036)
+
+    Para una empresa nueva, la clave y el `.csr` ya no se generan afuera para subir la clave
+    como archivo. Cada par —la facturación en `{prefix}/pedido…` y cada servicio en
+    `{prefix}/servicios/{servicio}/pedido…`— tiene:
+
+    - `POST …/pedido?ambiente=` (cuerpo: `cuit`, `razon_social`, `alias`, `reemplazar`): genera la
+      clave **pendiente** y devuelve el `.csr` (PEM). `ambiente` es obligatorio. Si ya hay un
+      pedido pendiente, 409 salvo `reemplazar: true`.
+    - `GET …/pedido?ambiente=`: si hay pedido pendiente, y de qué alias, CUIT y fecha.
+    - `GET …/pedido.csr?ambiente=`: el `.csr` como descarga.
+    - `DELETE …/pedido?ambiente=`: descarta el pedido y su clave.
+
+    🔑 **La clave pendiente vive aparte de la vigente** y no la pisa: ver `arca_pedidos`. Cuando se
+    sube el `.crt` por `…/certificado` y empareja con la clave pendiente, el par se instala y el
+    pedido desaparece; si empareja con la vigente, sigue como siempre; si no empareja con ninguna,
+    422. **La clave privada no sale en ninguna respuesta, ni va al `detalle` de `al_cambiar`.**
     """
     for _id in servicios:
         try:
@@ -508,6 +617,17 @@ def build_arca_router(
             )
         return _ambiente_de(cfg, pedido)
 
+    def _ambiente_exigido(ambiente: str) -> str:
+        """El ambiente, **obligatorio**: sin selector que adivinar, o con uno que no se debe adivinar."""
+        pedido = (ambiente or "").strip().lower()
+        if pedido not in AMBIENTES:
+            raise HTTPException(
+                422,
+                "Indicá el ambiente: " + " o ".join(AMBIENTES) + "."
+                + (f" Llegó {ambiente!r}." if pedido else ""),
+            )
+        return pedido
+
     # 🔴 Subir el certificado, la clave y `probar` son `def` y no `async def`:
     # uvicorn corre con UN solo proceso, y las tres van a la base y al disco
     # —`probar` además firma el TRA con `openssl` por subproceso—. Como
@@ -537,21 +657,36 @@ def build_arca_router(
         cfg = _resolver(empresa)
         amb = _ambiente_del_pedido(cfg, ambiente)
         _, clave_path = _paths(cfg, amb)
-        _exigir_pareja_con_la_clave_cargada(contenido, clave_path, amb)
+        # 🔑 Si este `.crt` es la respuesta a un pedido pendiente, la clave pendiente pasa a
+        # vigente junto con él (ADR-036). Si hay un pedido y no empareja con nada, es 422.
+        promovido = _clave_pendiente_que_empareja(
+            contenido, arca_servicios.SERVICIO_FACTURACION, amb, empresa, clave_path)
+        detalle_extra = {}
+        if promovido:
+            pedido, clave_nueva = promovido
+            destino_cert, destino_clave = _instalar_par(_nombres_de(amb), contenido, clave_nueva)
+            _guardar_path(empresa, amb, certificado_path=destino_cert, clave_path=destino_clave)
+            arca_pedidos.descartar(_certs_dir(), arca_servicios.SERVICIO_FACTURACION, amb, empresa)
+            detalle_extra = {"desde_pedido": True, "alias": pedido.alias}
+        else:
+            _exigir_pareja_con_la_clave_cargada(contenido, clave_path, amb)
 
-        os.makedirs(_certs_dir(), exist_ok=True)
-        destino = os.path.join(_certs_dir(), _nombres_de(amb)[0])
-        with open(destino, "wb") as f:
-            f.write(contenido)
-        _guardar_path(empresa, amb, certificado_path=destino)
+            os.makedirs(_certs_dir(), exist_ok=True)
+            destino = os.path.join(_certs_dir(), _nombres_de(amb)[0])
+            with open(destino, "wb") as f:
+                f.write(contenido)
+            _guardar_path(empresa, amb, certificado_path=destino)
         # 🔑 Los datos del certificado y no el certificado: son los que dicen
         # **cuál** se subió —el modo de fallar que este registro cubre es
         # "alguien lo cambió y nadie sabe por cuál"— y ninguno es secreto.
         _avisar("certificado", {
             "empresa": empresa, "ambiente": amb, "archivo": archivo.filename or "",
             "sujeto": datos.sujeto, "numero_de_serie": datos.numero_de_serie,
-            "vence": datos.vence.strftime("%d-%m-%Y"),
+            "vence": datos.vence.strftime("%d-%m-%Y"), **detalle_extra,
         }, usuario)
+        if promovido:
+            # La clave también cambió: el registro de «quién cambió la clave» no se lo pierde.
+            _avisar("clave", {"empresa": empresa, "ambiente": amb, "desde_pedido": True}, usuario)
         return {**obtener(empresa), "vence": datos.vence.strftime("%d-%m-%Y"),
                 "dias_para_vencer": datos.dias_para_vencer}
 
@@ -579,6 +714,116 @@ def build_arca_router(
         # copiar campos desde acá.
         _avisar("clave", {"empresa": empresa, "ambiente": amb}, usuario)
         return obtener(empresa)
+
+    # ── El pedido de certificado (ADR-036) ──────────────────────────────────
+    #
+    # Las cuatro operaciones son iguales para la facturación y para cada servicio: sólo
+    # cambia de dónde salen la empresa y el servicio. Las funciones de abajo son lo
+    # compartido, para que las dos familias de rutas no diverjan.
+
+    def _generar_pedido(servicio: str, empresa: str, ambiente: str,
+                        datos: PedidoPayload, usuario: Any) -> arca_pedidos.Pedido:
+        """Valida, genera la clave **pendiente** y la guarda. No toca la vigente."""
+        try:
+            cuit, razon_social, alias = arca_certificados.datos_del_pedido(
+                datos.cuit, datos.razon_social, datos.alias)
+        except arca_certificados.PedidoInvalido as e:
+            raise HTTPException(422, str(e)) from None
+        if not arca_wsfe.cuit_con_verificador_valido(cuit):
+            raise HTTPException(
+                422, "El CUIT no es válido: el dígito verificador no cierra. Revisá que esté bien escrito.")
+
+        carpeta = _certs_dir()
+        previo = arca_pedidos.leer(carpeta, servicio, ambiente, empresa)
+        if previo and not datos.reemplazar:
+            raise HTTPException(
+                409,
+                f"Ya hay un pedido pendiente para {ambiente} (alias {previo.alias}, del "
+                f"{previo.como_dict()['creado']}). Si lo reemplazás se pierde su clave: el "
+                "certificado que ARCA devuelva para ese pedido ya no va a servir. "
+                "Confirmá el reemplazo o usá el pedido que ya está.")
+
+        generado = arca_certificados.generar_pedido(cuit, razon_social, alias)
+        pedido = arca_pedidos.guardar(carpeta, servicio, ambiente, empresa, generado)
+        # 🔑 Sujeto, alias y CUIT: lo que dice **qué** se pidió. La clave no está en el
+        # `PedidoDeCertificado` que se imprime, y acá tampoco.
+        _avisar("pedido", {
+            "empresa": empresa, "servicio": servicio, "ambiente": ambiente,
+            "alias": pedido.alias, "cuit": pedido.cuit, "sujeto": pedido.sujeto,
+            "reemplazo": previo is not None,
+        }, usuario)
+        return pedido
+
+    def _descargar_csr(servicio: str, empresa: str, ambiente: str) -> Response:
+        pedido = arca_pedidos.leer(_certs_dir(), servicio, ambiente, empresa)
+        if pedido is None:
+            raise HTTPException(404, f"No hay un pedido de certificado pendiente para {ambiente}.")
+        return Response(
+            pedido.csr, media_type="application/pkcs10",
+            headers={"Content-Disposition": f'attachment; filename="{pedido.alias}.csr"'},
+        )
+
+    def _descartar_pedido(servicio: str, empresa: str, ambiente: str, usuario: Any) -> dict:
+        previo = arca_pedidos.leer(_certs_dir(), servicio, ambiente, empresa)
+        if not arca_pedidos.descartar(_certs_dir(), servicio, ambiente, empresa):
+            raise HTTPException(404, f"No hay un pedido de certificado pendiente para {ambiente}.")
+        _avisar("descartar_pedido", {
+            "empresa": empresa, "servicio": servicio, "ambiente": ambiente,
+            "alias": previo.alias if previo else "",
+        }, usuario)
+        return {"pendiente": False, "servicio": servicio, "ambiente": ambiente}
+
+    def _estado_del_pedido(servicio: str, empresa: str, ambiente: str) -> dict:
+        pedido = arca_pedidos.leer(_certs_dir(), servicio, ambiente, empresa)
+        return pedido.como_dict() if pedido else {
+            "pendiente": False, "servicio": servicio, "ambiente": ambiente}
+
+    @router.post("/pedido")
+    def generar_pedido_de_certificado(datos: PedidoPayload, empresa: str = "", ambiente: str = "",
+                                      usuario: Any = Depends(identidad)):
+        """Genera la clave **dentro del servidor** y devuelve el `.csr` para ARCA.
+
+        Esta es la ruta de la facturación; las de los demás servicios, más abajo, hacen lo mismo.
+        La clave queda pendiente hasta que se sube el `.crt` por `POST /certificado` (ver
+        `arca_pedidos`): **no pisa la clave vigente**, así que pedir uno nuevo con una instancia
+        facturando —una renovación— no la deja sin facturar.
+
+        Una instancia sin fila de `arca_config` la gana acá: es el primer paso de un cliente nuevo,
+        y la pantalla no tendría de dónde leer el pedido pendiente si la fila no estuviera.
+        """
+        nombre = _empresa_de(empresa or "", empresa_por_defecto)
+        amb = _ambiente_exigido(ambiente)
+        pedido = _generar_pedido(
+            arca_servicios.SERVICIO_FACTURACION, nombre, amb, datos, usuario)
+        existente = db_arca_config.obtener_arca_config(nombre)
+        if existente is None:
+            _guardar_path(nombre, amb)
+            existente = db_arca_config.obtener_arca_config(nombre)
+        if existente and not (existente.get("cuit") or "").strip():
+            db_arca_config.actualizar_arca_config(nombre, cuit=pedido.cuit)
+        return pedido.como_dict(con_csr=True)
+
+    @router.get("/pedido")
+    def pedido_de_certificado(empresa: str = "", ambiente: str = ""):
+        """Si hay un pedido pendiente para el ambiente, y de qué alias, CUIT y fecha. Sin la clave."""
+        return _estado_del_pedido(
+            arca_servicios.SERVICIO_FACTURACION, _empresa_de(empresa or "", empresa_por_defecto),
+            _ambiente_exigido(ambiente))
+
+    @router.get("/pedido.csr")
+    def descargar_pedido_de_certificado(empresa: str = "", ambiente: str = ""):
+        """El `.csr` del pedido pendiente, como archivo. Es público: es lo que se le manda a ARCA."""
+        return _descargar_csr(
+            arca_servicios.SERVICIO_FACTURACION, _empresa_de(empresa or "", empresa_por_defecto),
+            _ambiente_exigido(ambiente))
+
+    @router.delete("/pedido")
+    def descartar_pedido_de_certificado(empresa: str = "", ambiente: str = "",
+                                        usuario: Any = Depends(identidad)):
+        """Tira el pedido pendiente **y su clave**. El par vigente no se toca."""
+        return _descartar_pedido(
+            arca_servicios.SERVICIO_FACTURACION, _empresa_de(empresa or "", empresa_por_defecto),
+            _ambiente_exigido(ambiente), usuario)
 
     @router.delete("/credenciales")
     def borrar_credenciales(empresa: str = "", ambiente: str = "",
@@ -695,14 +940,21 @@ def build_arca_router(
         """El bloque de un servicio: una entrada de `GET /servicios`."""
         if svc.id == arca_servicios.SERVICIO_FACTURACION:
             cfg = _resolver(empresa)
-            pares = {a: _estado_de_archivos(a, *_paths(cfg, a), con_cuit=True) for a in AMBIENTES}
             nombre = (cfg or {}).get("empresa", "") or empresa
+            pares = {
+                a: _con_pedido(
+                    _estado_de_archivos(a, *_paths(cfg, a), con_cuit=True),
+                    arca_servicios.SERVICIO_FACTURACION, nombre)
+                for a in AMBIENTES
+            }
         else:
             nombre = empresa or empresa_por_defecto
             pares = {
-                a: _estado_de_archivos(
-                    a, *arca_credenciales.paths_en_disco_de_servicio(nombre, svc.id, a),
-                    con_cuit=True)
+                a: _con_pedido(
+                    _estado_de_archivos(
+                        a, *arca_credenciales.paths_en_disco_de_servicio(nombre, svc.id, a),
+                        con_cuit=True),
+                    svc.id, nombre)
                 for a in AMBIENTES
             }
         return {
@@ -712,6 +964,10 @@ def build_arca_router(
             "empresa":     nombre,
             # Hay con qué autenticarse en algún ambiente. NO dice que ande.
             "configurado": any(p["completo"] for p in pares.values()),
+            # 🔑 Un motor con el pedido de certificado (ADR-036) lo dice acá: la pantalla del kit
+            # muestra el botón sólo si esta clave está, y un motor viejo —que no la manda— no
+            # recibe un botón que contestaría 404.
+            "admite_pedido": True,
             "pares":       pares,
         }
 
@@ -732,16 +988,6 @@ def build_arca_router(
             raise HTTPException(404, f"Este producto no configura el servicio {servicio!r} de ARCA.")
         return arca_servicios.servicio(servicio)
 
-    def _ambiente_exigido(ambiente: str) -> str:
-        pedido = (ambiente or "").strip().lower()
-        if pedido not in AMBIENTES:
-            raise HTTPException(
-                422,
-                "Indicá el ambiente: " + " o ".join(AMBIENTES) + "."
-                + (f" Llegó {ambiente!r}." if pedido else ""),
-            )
-        return pedido
-
     @router.get("/servicios/{servicio}/estado")
     def estado_del_servicio(servicio: str, empresa: str = ""):
         """Qué hay cargado para el servicio, por ambiente, y hasta cuándo dura."""
@@ -760,20 +1006,66 @@ def build_arca_router(
 
         nombre = empresa.strip() or empresa_por_defecto
         _, clave_path = arca_credenciales.paths_en_disco_de_servicio(nombre, svc.id, amb)
-        _exigir_pareja_con_la_clave_cargada(contenido, clave_path, amb)
+        # 🔑 Igual que en la facturación: el `.crt` de un pedido pendiente trae su clave (ADR-036).
+        promovido = _clave_pendiente_que_empareja(contenido, svc.id, amb, nombre, clave_path)
+        detalle_extra = {}
+        if promovido:
+            pedido, clave_nueva = promovido
+            destino_cert, destino_clave = _instalar_par(
+                _nombres_de_servicio(svc.id, amb, nombre), contenido, clave_nueva)
+            db_servicio.guardar_paths_de_servicio(
+                nombre, svc.id, amb, certificado_path=destino_cert, clave_path=destino_clave)
+            arca_pedidos.descartar(_certs_dir(), svc.id, amb, nombre)
+            detalle_extra = {"desde_pedido": True, "alias": pedido.alias}
+        else:
+            _exigir_pareja_con_la_clave_cargada(contenido, clave_path, amb)
 
-        os.makedirs(_certs_dir(), exist_ok=True)
-        destino = os.path.join(_certs_dir(), _nombres_de_servicio(svc.id, amb, nombre)[0])
-        with open(destino, "wb") as f:
-            f.write(contenido)
-        db_servicio.guardar_paths_de_servicio(nombre, svc.id, amb, certificado_path=destino)
+            os.makedirs(_certs_dir(), exist_ok=True)
+            destino = os.path.join(_certs_dir(), _nombres_de_servicio(svc.id, amb, nombre)[0])
+            with open(destino, "wb") as f:
+                f.write(contenido)
+            db_servicio.guardar_paths_de_servicio(nombre, svc.id, amb, certificado_path=destino)
         _avisar("certificado", {
             "empresa": nombre, "servicio": svc.id, "ambiente": amb,
             "archivo": archivo.filename or "", "sujeto": datos.sujeto,
             "numero_de_serie": datos.numero_de_serie,
-            "vence": datos.vence.strftime("%d-%m-%Y"),
+            "vence": datos.vence.strftime("%d-%m-%Y"), **detalle_extra,
         }, usuario)
+        if promovido:
+            _avisar("clave", {"empresa": nombre, "servicio": svc.id, "ambiente": amb,
+                              "desde_pedido": True}, usuario)
         return _estado_del_servicio(svc, nombre)
+
+    @router.post("/servicios/{servicio}/pedido")
+    def generar_pedido_de_servicio(servicio: str, datos: PedidoPayload, empresa: str = "",
+                                   ambiente: str = "", usuario: Any = Depends(identidad)):
+        """Genera la clave del servicio **dentro del servidor** y devuelve el `.csr`. `ambiente` obligatorio."""
+        svc = _servicio_o_404(servicio)
+        amb = _ambiente_exigido(ambiente)
+        pedido = _generar_pedido(svc.id, empresa.strip() or empresa_por_defecto, amb, datos, usuario)
+        return pedido.como_dict(con_csr=True)
+
+    @router.get("/servicios/{servicio}/pedido")
+    def pedido_de_servicio(servicio: str, empresa: str = "", ambiente: str = ""):
+        """Si hay un pedido pendiente para el servicio en ese ambiente. Sin la clave."""
+        svc = _servicio_o_404(servicio)
+        return _estado_del_pedido(
+            svc.id, empresa.strip() or empresa_por_defecto, _ambiente_exigido(ambiente))
+
+    @router.get("/servicios/{servicio}/pedido.csr")
+    def descargar_pedido_de_servicio(servicio: str, empresa: str = "", ambiente: str = ""):
+        """El `.csr` del pedido pendiente del servicio, como archivo."""
+        svc = _servicio_o_404(servicio)
+        return _descargar_csr(
+            svc.id, empresa.strip() or empresa_por_defecto, _ambiente_exigido(ambiente))
+
+    @router.delete("/servicios/{servicio}/pedido")
+    def descartar_pedido_de_servicio(servicio: str, empresa: str = "", ambiente: str = "",
+                                     usuario: Any = Depends(identidad)):
+        """Tira el pedido pendiente del servicio **y su clave**. El par vigente no se toca."""
+        svc = _servicio_o_404(servicio)
+        return _descartar_pedido(
+            svc.id, empresa.strip() or empresa_por_defecto, _ambiente_exigido(ambiente), usuario)
 
     @router.post("/servicios/{servicio}/clave")
     def subir_clave_de_servicio(servicio: str, archivo: UploadFile = File(...),

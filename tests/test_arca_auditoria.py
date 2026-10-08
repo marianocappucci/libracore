@@ -110,9 +110,11 @@ def test_los_cuatro_cambios_quedan_registrados_con_su_usuario(client, tmp_path,
 
     acciones = [a for a, _, _ in registro]
     assert acciones == ["configurar", "certificado", "clave", "borrar"], registro
-    # Las cuatro son las que el módulo declara: si alguien agrega una quinta sin
-    # ponerla en `ACCIONES`, un consumidor que mapee por esa tupla la ignoraría.
-    assert set(acciones) == set(app.state.acciones)
+    # Las cuatro están declaradas: si alguien agrega una quinta sin ponerla en
+    # `ACCIONES`, un consumidor que mapee por esa tupla la ignoraría. (Desde el
+    # pedido de certificado, ADR-036, la tupla tiene además `pedido` y
+    # `descartar_pedido`: las prueba `test_arca_pedido.py`.)
+    assert set(acciones) <= set(app.state.acciones)
     assert all(u == USUARIO for _, _, u in registro), "perdió quién lo hizo"
     assert all(d["empresa"] == "negocio" for _, d, _ in registro)
 

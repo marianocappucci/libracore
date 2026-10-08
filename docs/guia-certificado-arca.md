@@ -18,12 +18,61 @@ qué cargar después en la pantalla de Configuración → ARCA.
 | `clave.key` | La clave privada. **Es la identidad digital del contribuyente.** | Nunca se comparte, nunca entra a git, no viaja por mail |
 | `alias.crt` | El certificado que ARCA devuelve | Público, pero igual conviene tratarlo con cuidado |
 
-Los dos se suben desde la pantalla de Configuración. **No hace falta entrar al
-servidor ni copiar nada a mano** — y no se puede: la pantalla es la única vía.
+Desde la pantalla de Configuración → ARCA, **la clave se genera dentro del servidor y
+no sale nunca** (ver abajo). Quien ya tiene un par hecho afuera lo sube de a una mitad.
+**No hace falta entrar al servidor ni copiar nada a mano.**
 
 ---
 
-## Paso 1 — Generar la clave y el pedido (en tu PC)
+## El camino recomendado: «Generar pedido de certificado»
+
+Para una empresa nueva, o para renovar un certificado por vencer. **Es el paso 1 de
+abajo hecho por el sistema**, y la clave nunca viaja por un mail ni por un chat.
+
+1. En **Configuración → ARCA**, en la tarjeta del ambiente (homologación o producción),
+   apretá **Generar pedido de certificado**. Completá el **CUIT**, la **razón social** y un
+   **alias** (sólo letras y números; el sistema propone uno).
+2. Descargá el **`.csr`**. Es lo único que sale del servidor: la clave privada queda
+   guardada ahí, en un lugar aparte, **sin tocar la que ya esté cargada**. La pantalla
+   muestra los pasos para ARCA con el CUIT y el alias de esa empresa.
+3. Hacé los pasos 2 y 3 de esta guía (subir el `.csr` a ARCA, descargar el `.crt` y
+   habilitar el servicio). Mientras tanto la tarjeta dice *«Esperando el certificado de
+   ARCA (pedido del dd-mm-aaaa)»*; se puede volver a descargar el `.csr` o **descartar el
+   pedido** (se pierde su clave).
+4. Cuando ARCA devuelve el `.crt`, **subilo en esa misma tarjeta, sin campo de clave**. El
+   sistema comprueba que es pareja de la clave del pedido y, si lo es, deja el par
+   instalado. Si no es pareja de ninguna clave, lo rechaza y dice por qué.
+5. Apretá **Probar**.
+
+Qué cambia según el ambiente en el paso 3:
+
+| | Homologación | Producción |
+|---|---|---|
+| Dónde se sube el `.csr` | **WSASS** (*Autogestión de Certificados Homologación*) → nuevo certificado | **Administración de Certificados Digitales** → agregar alias |
+| Habilitar el servicio | En WSASS: **Crear autorización a servicio** | **Administrador de Relaciones de Clave Fiscal** → Nueva relación |
+
+Detalles que conviene saber:
+
+- **Renovar es lo mismo:** con un certificado por vencer, generá un pedido nuevo. El par
+  vigente sigue facturando hasta que llega el `.crt` nuevo; en ese momento se reemplazan
+  los dos archivos juntos.
+- **Un solo pedido pendiente por ambiente y por servicio.** Generar otro lo reemplaza y
+  **pierde la clave del anterior**: si su `.csr` ya está en ARCA, el `.crt` que vuelva no
+  va a servir. El sistema pide confirmación.
+- Para el **CTG y la Carta de Porte** (`wscpe`) el certificado puede ir a nombre de la
+  persona que representa a la empresa: usá **su** CUIT y su nombre, no los de la empresa.
+- La razón social va **sin tildes** (la `Ñ` se escribe `N`); el sistema las quita.
+- La clave se guarda en el volumen de la instancia (`arca_certs/`), con permisos 0600, y
+  entra en el respaldo igual que el resto del par.
+
+El resto de la guía es el mismo trámite hecho a mano.
+
+---
+
+## Paso 1 — Generar la clave y el pedido a mano (en tu PC)
+
+> Sólo si no podés usar el botón de arriba —un par ya hecho afuera, un producto sin la
+> pantalla nueva—. Con el botón, este paso lo hace el sistema.
 
 ```bash
 openssl genrsa -out clave.key 2048
@@ -92,7 +141,8 @@ En la instancia: **Configuración → ARCA**.
 
 1. **CUIT** y **punto de venta** del contribuyente.
 2. **Ambiente**: `homologación` para probar, `producción` para emitir de verdad.
-3. Subí el **certificado** (`.crt`) y la **clave** (`.key`).
+3. Si generaste el pedido desde la pantalla, subí sólo el **certificado** (`.crt`): la clave
+   ya está. Si lo hiciste a mano, subí el **certificado** (`.crt`) y la **clave** (`.key`).
 4. Apretá **Probar**.
 
 La pantalla valida al subir, no al emitir. Lo que rechaza y por qué:
@@ -154,8 +204,7 @@ diff <(openssl x509 -in alias.crt -pubkey -noout) <(openssl pkey -in clave.key -
 
 ## Checklist
 
-- [ ] `clave.key` generada **sin passphrase**
-- [ ] `pedido.csr` generado con el CUIT correcto en `serialNumber`
+- [ ] Pedido generado desde la pantalla (o, a mano, `clave.key` **sin passphrase** y `pedido.csr` con el CUIT correcto en `serialNumber`)
 - [ ] CSR subido a ARCA y certificado en estado **Activo**
 - [ ] `.crt` descargado
 - [ ] Relación con **wsfe** creada en Administrador de Relaciones
@@ -170,7 +219,9 @@ diff <(openssl x509 -in alias.crt -pubkey -noout) <(openssl pkey -in clave.key -
 ## Seguridad
 
 - `clave.key` **no entra a git ni viaja por mail.** Es la identidad digital del
-  contribuyente: quien la tiene puede emitir comprobantes a su nombre.
+  contribuyente: quien la tiene puede emitir comprobantes a su nombre. Con el pedido
+  generado desde la pantalla ese riesgo no existe: la clave nace en el servidor y no se
+  puede descargar.
 - El `.gitignore` de todos los productos ya excluye `*.key`, `*.pem` y el directorio de
   certificados. Si aparece un archivo nuevo con pinta de credencial, va al `.gitignore`
   **antes** de cualquier `git add`.
