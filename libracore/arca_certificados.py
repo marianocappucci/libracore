@@ -34,11 +34,15 @@ implementación, dos puertas de entrada**.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from cryptography.hazmat.primitives import serialization
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509 import load_pem_x509_certificate
+from cryptography.x509.oid import NameOID
 
 
 class ArchivoInvalido(ValueError):
@@ -273,3 +277,101 @@ def cerrar_permisos_de_la_clave(path: str) -> bool:
     except OSError:
         pass
     return False
+
+
+# ── El pedido de certificado: la clave nace en el servidor ──────────────────
+#
+# Hasta el 2026-10-08 la clave y el `.csr` los generaba a mano quien daba de alta
+# la instancia, con `openssl` en su PC, y la clave se **subía como archivo**: pasaba
+# por un mail, un chat o un pendrive antes de llegar al servidor. Acá se generan
+# adentro y la clave no sale: de este módulo sólo sale el `.csr`, que es público.
+
+
+class PedidoInvalido(ValueError):
+    """Los datos del pedido no sirven. El mensaje va tal cual a la pantalla."""
+
+
+#: ARCA no admite guiones ni espacios en el alias: letras y números.
+_ALIAS = re.compile(r"[A-Za-z0-9]{3,40}")
+#: Lo que se deja pasar de la razón social. Tilde y eñe se normalizan; lo demás que
+#: no figure acá se rechaza antes de que ARCA devuelva un error que no dice cuál era.
+_RAZON_SOCIAL = re.compile(r"[A-Za-z0-9 .,&'-]{1,64}")
+
+
+@dataclass(frozen=True)
+class PedidoDeCertificado:
+    """La clave privada nueva y el `.csr` que se le manda a ARCA.
+
+    🔴 `clave` **no** se imprime: está fuera del `repr`, para que un `print`, un
+    `logger.debug(pedido)` o el informe de un test fallido no la escriban en un log.
+    """
+
+    clave: bytes = field(repr=False)
+    csr: bytes
+    sujeto: str
+    alias: str
+    cuit: str
+    razon_social: str
+
+
+def datos_del_pedido(cuit: str, razon_social: str, alias: str) -> tuple[str, str, str]:
+    """Normaliza y valida `(cuit, razón social, alias)` del pedido. Levanta `PedidoInvalido`.
+
+    - **CUIT**: 11 dígitos, sin guiones ni espacios (se aceptan escritos con ellos).
+    - **Razón social**: sin tildes ni eñe (`Ñ` pasa a `N`), de hasta 64 caracteres, con
+      letras, números, espacio y `. , & ' -`. 64 es el tope del campo `O` de X.509.
+    - **Alias**: sólo letras y números, de 3 a 40. Es el `CN` del pedido y el nombre con el
+      que ARCA lo muestra en su lista.
+    """
+    c = re.sub(r"[\s-]", "", cuit or "")
+    if not (len(c) == 11 and c.isdigit()):
+        raise PedidoInvalido("El CUIT tiene 11 dígitos, sin guiones.")
+
+    r = unicodedata.normalize("NFKD", razon_social or "")
+    r = "".join(ch for ch in r if not unicodedata.combining(ch))
+    r = re.sub(r"\s+", " ", r).strip()
+    if not r:
+        raise PedidoInvalido("Falta la razón social.")
+    if not _RAZON_SOCIAL.fullmatch(r):
+        raise PedidoInvalido(
+            "La razón social admite hasta 64 caracteres, con letras, números, espacio y "
+            "los signos . , & ' - (sin tildes: se escribe «Ñ» como «N»).")
+
+    a = (alias or "").strip()
+    if not _ALIAS.fullmatch(a):
+        raise PedidoInvalido(
+            "El alias lleva sólo letras y números, de 3 a 40 (ARCA no admite guiones ni espacios).")
+    return c, r, a
+
+
+def generar_pedido(cuit: str, razon_social: str, alias: str) -> PedidoDeCertificado:
+    """Genera una clave RSA de 2048 bits **sin passphrase** y su pedido de certificado (PKCS#10).
+
+    El sujeto es el que pide ARCA: `C=AR, O=<razón social>, CN=<alias>, serialNumber=CUIT <n>`
+    (el mismo que armaba a mano `docs/guia-certificado-arca.md`), firmado con SHA-256.
+
+    Sin passphrase no es una preferencia: el ticket de acceso se pide sin nadie que la escriba
+    (ver `leer_clave`). La clave sale en PKCS#8, que es lo que escribe `openssl genrsa` desde la 3.0.
+
+    🔑 **Quien llama guarda `clave` (con `escribir_clave_privada`) y muestra `csr`.** Esta función
+    no toca el disco ni la base.
+    """
+    cuit, razon_social, alias = datos_del_pedido(cuit, razon_social, alias)
+    clave = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    sujeto = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "AR"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, razon_social),
+        x509.NameAttribute(NameOID.COMMON_NAME, alias),
+        x509.NameAttribute(NameOID.SERIAL_NUMBER, f"CUIT {cuit}"),
+    ])
+    csr = x509.CertificateSigningRequestBuilder().subject_name(sujeto).sign(clave, hashes.SHA256())
+    return PedidoDeCertificado(
+        clave=clave.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ),
+        csr=csr.public_bytes(serialization.Encoding.PEM),
+        sujeto=sujeto.rfc4514_string(),
+        alias=alias, cuit=cuit, razon_social=razon_social,
+    )
