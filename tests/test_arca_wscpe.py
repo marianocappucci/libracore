@@ -299,3 +299,282 @@ def test_consultar_por_ctg_traduce_el_error_de_wsaa(arca, monkeypatch):
     monkeypatch.setattr(w.arca_wsaa, "autenticar", autenticar)
     with pytest.raises(RuntimeError, match="Administrador de Relaciones.*coe.notAuthorized"):
         asyncio.run(w.consultar_por_ctg("suitrans", "produccion", cuit_representada="30222222223", ctg=1))
+
+
+# ══ Emitir (ADR-035) ═══════════════════════════════════════════════════════
+
+from datetime import UTC  # noqa: E402
+
+AR = timezone(timedelta(hours=-3))
+SOLICITANTE = "30444444445"
+
+
+@pytest.fixture
+def arca_ops(monkeypatch, tmp_path):
+    """ARCA de mentira que contesta por operación (`SOAPAction`): cada una tiene su cola de respuestas.
+
+    Una respuesta es el nombre de un fixture, un texto, o una excepción de `httpx` que se levanta.
+    """
+    monkeypatch.setenv("ARCA_TA_DIR", str(tmp_path))
+    colas: dict[str, list] = {}
+    pedidos: list[tuple[str, ET.Element]] = []
+
+    async def handler(request):
+        op = request.headers["SOAPAction"].strip('"').rsplit("/", 1)[-1]
+        pedidos.append((op, _body(request)))
+        # Cede el control como lo haría la red: sin esto dos emisiones simultáneas no se pisan nunca y el
+        # test del cerrojo pasa aunque el cerrojo no esté.
+        await asyncio.sleep(0.01)
+        respuesta = colas[op].pop(0) if len(colas.get(op, [])) > 1 else colas[op][0]
+        if isinstance(respuesta, Exception):
+            raise respuesta
+        texto = respuesta if respuesta.lstrip().startswith("<") or " " in respuesta else _respuesta(respuesta)
+        return httpx.Response(200, text=texto)
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return _RealAsyncClient(**kwargs)
+
+    monkeypatch.setattr(w.httpx, "AsyncClient", factory)
+
+    def contestar(op, *respuestas):
+        colas[op] = list(respuestas)
+        return pedidos
+
+    return contestar
+
+
+def _autorizada(ctg=10100000001, nro_orden=1):
+    """La respuesta de una autorización: la misma forma que la consulta (`DetalleAutomotorRespuesta`)."""
+    return (_respuesta("cpe_activa").replace("ConsultarCPEAutomotorResp", "AutorizarCPEAutomotorResp")
+            .replace("<nroOrden>72413</nroOrden>", f"<nroOrden>{nro_orden}</nroOrden>")
+            .replace("<nroCTG>10100000001</nroCTG>", f"<nroCTG>{ctg}</nroCTG>"))
+
+
+def _solicitud(**cambios):
+    base = dict(
+        cuit_solicitante=SOLICITANTE, sucursal=1, origen=w.OrigenPlanta(12, 5321, 77),
+        cod_grano=23, cosecha=2526, peso_bruto=45200, peso_tara=15900,
+        destino=w.DestinoSolicitud(cuit="30666666667", cod_provincia=12, cod_localidad=4211, planta=1234),
+        cuit_destinatario="30-66666666-7",
+        transporte=w.TransporteSolicitud(
+            cuit_transportista="30222222223", dominios=("aa123bb", "AC456DD"),
+            fecha_hora_partida=datetime(2026, 10, 8, 12, 30, tzinfo=UTC), km=310, cuit_chofer="20777777778",
+            cuit_pagador_flete="30444444445", tarifa=Decimal("65207.39")),
+        intervinientes={"cuitCorredorVentaPrimaria": "30555555556",
+                        "cuitRemitenteComercialVentaPrimaria": "30444444445"},
+        observaciones="Viaje de prueba",
+    )
+    base.update(cambios)
+    return w.SolicitudCpe(**base)
+
+
+def _emitir(solicitud=None, cuit=SOLICITANTE):
+    return asyncio.run(w.emitir_cpe(cuit, "TKN", "SGN", solicitud or _solicitud(), ambiente="homologacion"))
+
+
+# ── Cómo se pide ───────────────────────────────────────────────────────────
+
+def test_emitir_pide_el_ultimo_numero_y_autoriza_el_siguiente(arca_ops):
+    arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    pedidos = arca_ops("autorizarCPEAutomotor", _autorizada())
+    cpe = _emitir()
+    assert (cpe.nro_ctg, cpe.numero, cpe.pdf) == (10100000001, "00001-00000001", b"%PDF-1.4 carta de porte de prueba")
+    assert [op for op, _ in pedidos] == ["consultarUltNroOrden", "autorizarCPEAutomotor"]
+    ult = pedidos[0][1].find("solicitud")
+    assert [(h.tag, h.text) for h in ult] == [("sucursal", "1"), ("tipoCPE", "74")]
+    assert pedidos[0][1].findtext("auth/cuitRepresentada") == SOLICITANTE
+
+
+def test_la_solicitud_va_en_el_orden_del_esquema(arca_ops):
+    arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    pedidos = arca_ops("autorizarCPEAutomotor", _autorizada())
+    _emitir()
+    raiz = pedidos[1][1]
+    assert raiz.tag == f"{{{NS}}}AutorizarCPEAutomotorReq"
+    s = raiz.find("solicitud")
+    assert [h.tag for h in s] == ["cabecera", "origen", "correspondeRetiroProductor", "esSolicitanteCampo",
+                                  "intervinientes", "datosCarga", "destino", "destinatario", "transporte",
+                                  "observaciones"]
+    assert [(h.tag, h.text) for h in s.find("cabecera")] == [
+        ("tipoCP", "74"), ("cuitSolicitante", SOLICITANTE), ("sucursal", "1"), ("nroOrden", "1")]
+    assert [(h.tag, h.text) for h in s.find("origen/operador")] == [
+        ("codProvincia", "12"), ("codLocalidad", "5321"), ("planta", "77")]
+    assert (s.findtext("correspondeRetiroProductor"), s.findtext("esSolicitanteCampo")) == ("false", "false")
+    assert [h.tag for h in s.find("intervinientes")] == [
+        "cuitRemitenteComercialVentaPrimaria", "cuitCorredorVentaPrimaria"], "el orden del esquema, no el del dict"
+    assert [(h.tag, h.text) for h in s.find("datosCarga")] == [
+        ("codGrano", "23"), ("cosecha", "2526"), ("pesoBruto", "45200"), ("pesoTara", "15900")]
+    assert [(h.tag, h.text) for h in s.find("destino")] == [
+        ("cuit", "30666666667"), ("esDestinoCampo", "false"), ("codProvincia", "12"), ("codLocalidad", "4211"),
+        ("planta", "1234")]
+    assert s.findtext("destinatario/cuit") == "30666666667"
+    assert [(h.tag, h.text) for h in s.find("transporte")] == [
+        ("cuitTransportista", "30222222223"), ("dominio", "AA123BB"), ("dominio", "AC456DD"),
+        ("fechaHoraPartida", "2026-10-08T09:30:00"), ("kmRecorrer", "310"), ("cuitChofer", "20777777778"),
+        ("tarifa", "65207.39"), ("cuitPagadorFlete", "30444444445"), ("mercaderiaFumigada", "false")]
+    assert s.findtext("observaciones") == "Viaje de prueba"
+
+
+def test_origen_en_campo_va_con_solicitante_campo_y_renspa(arca_ops):
+    """Medido: con origen en campo, `esSolicitanteCampo=false` da 949. Sale del origen, no se elige."""
+    arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    pedidos = arca_ops("autorizarCPEAutomotor", _autorizada())
+    _emitir(_solicitud(origen=w.OrigenCampo(12, 14, renspa="01.001.0.00001/01"), intervinientes=None,
+                       cuit_remitente_comercial_productor="20111111112"))
+    s = pedidos[1][1].find("solicitud")
+    assert [(h.tag, h.text) for h in s.find("origen/productor")] == [
+        ("codProvincia", "12"), ("codLocalidad", "14"), ("nroRenspa", "01.001.0.00001/01")]
+    assert (s.findtext("correspondeRetiroProductor"), s.findtext("esSolicitanteCampo")) == ("true", "true")
+    assert s.findtext("retiroProductor/cuitRemitenteComercialProductor") == "20111111112"
+    assert s.find("intervinientes") is None
+
+
+def test_un_interviniente_que_el_esquema_no_tiene_no_sale(arca_ops):
+    pedidos = arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    with pytest.raises(ValueError, match="cuitInventado"):
+        _emitir(_solicitud(intervinientes={"cuitInventado": "30555555556"}))
+    assert [op for op, _ in pedidos] == ["consultarUltNroOrden"], "falla al armar, antes de autorizar"
+
+
+# ── Antes de llamar ────────────────────────────────────────────────────────
+
+def test_se_emite_en_nombre_del_solicitante(arca_ops):
+    pedidos = arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    with pytest.raises(ValueError, match="solicitante"):
+        _emitir(cuit="30222222223")
+    assert pedidos == []
+
+
+@pytest.mark.parametrize(("cambios", "texto"), [
+    ({"peso_bruto": 90000}, "88.000"),
+    ({"peso_tara": 46000}, "tara tiene que ser menor"),
+    ({"cosecha": 20252026}, "cosecha"),
+    ({"cuit_destinatario": "3066"}, "destinatario"),
+])
+def test_lo_que_el_esquema_rechaza_se_dice_antes(arca_ops, cambios, texto):
+    pedidos = arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    with pytest.raises(w.SolicitudInvalida, match=texto):
+        _emitir(_solicitud(**cambios))
+    assert pedidos == []
+
+
+def test_dominios_y_km_fuera_de_rango():
+    t = w.TransporteSolicitud(cuit_transportista="30222222223", dominios=("A1", "B", "C", "D"),
+                              fecha_hora_partida=datetime(2026, 10, 8, tzinfo=UTC), km=0,
+                              cuit_chofer="20777777778", cuit_pagador_flete="30444444445",
+                              tarifa=Decimal("100000"))
+    problemas = _solicitud(transporte=t).problemas()
+    assert any("entre 1 y 3 dominios" in p for p in problemas)
+    assert any("«A1»" in p for p in problemas)
+    assert any("kilómetros" in p for p in problemas)
+    assert any("tarifa" in p for p in problemas)
+
+
+# ── Lo que contesta ARCA ───────────────────────────────────────────────────
+
+@pytest.mark.parametrize(("fixture", "codigo"), [("autorizar_rechazo_949", 949), ("autorizar_rechazo_2008", 2008)])
+def test_los_rechazos_reales_de_homologacion(arca_ops, fixture, codigo):
+    """Medidos el 2026-10-08: 949 (productor informado sin corresponder) y 2008 (solicitante sin SISA)."""
+    arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    arca_ops("autorizarCPEAutomotor", fixture)
+    with pytest.raises(w.ErrorWscpe) as e:
+        _emitir()
+    assert e.value.codigos[0][0] == codigo
+    assert not isinstance(e.value, w.CpeNoEncontrada)
+
+
+# ── Si ARCA no contesta al autorizar ───────────────────────────────────────
+
+def test_sin_respuesta_pero_la_carta_esta_se_devuelve(arca_ops):
+    arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    arca_ops("autorizarCPEAutomotor", httpx.ReadTimeout("lento"))
+    pedidos = arca_ops("consultarCPEAutomotor", _autorizada().replace("AutorizarCPEAutomotorResp",
+                                                                       "ConsultarCPEAutomotorResp"))
+    cpe = _emitir()
+    assert cpe.nro_ctg == 10100000001
+    assert [op for op, _ in pedidos] == ["consultarUltNroOrden", "autorizarCPEAutomotor", "consultarCPEAutomotor"]
+    consulta = pedidos[2][1].find("solicitud")
+    assert [(h.tag, h.text) for h in consulta.find("cartaPorte")] == [
+        ("tipoCPE", "74"), ("sucursal", "1"), ("nroOrden", "1")], "consulta el número que se pidió"
+    assert [op for op, _ in pedidos].count("autorizarCPEAutomotor") == 1, "no reintenta"
+
+
+def test_sin_respuesta_y_la_carta_no_esta_se_dice_que_no_se_emitio(arca_ops):
+    arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    arca_ops("autorizarCPEAutomotor", "BL 502 Bad Gateway")
+    arca_ops("consultarCPEAutomotor", "cpe_inexistente")
+    with pytest.raises(RuntimeError, match="no se emitió") as e:
+        _emitir()
+    assert not isinstance(e.value, w.EmisionIncierta)
+
+
+def test_sin_respuesta_y_sin_poder_consultar_es_incierta(arca_ops):
+    arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    pedidos = arca_ops("autorizarCPEAutomotor", httpx.ConnectError("caido"))
+    arca_ops("consultarCPEAutomotor", httpx.ReadTimeout("caido"))
+    with pytest.raises(w.EmisionIncierta, match="No reintentar") as e:
+        _emitir()
+    assert (e.value.sucursal, e.value.nro_orden, e.value.tipo_cpe) == (1, 1, 74)
+    assert [op for op, _ in pedidos].count("autorizarCPEAutomotor") == 1
+
+
+def test_dos_emisiones_a_la_vez_no_piden_el_mismo_numero(arca_ops):
+    """El cerrojo por (solicitante, sucursal, tipo, ambiente): la segunda pide el número cuando la primera terminó."""
+    pedidos = arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    arca_ops("autorizarCPEAutomotor", _autorizada())
+
+    async def dos():
+        return await asyncio.gather(*(w.emitir_cpe(SOLICITANTE, "TKN", "SGN", _solicitud(), ambiente="homologacion")
+                                      for _ in range(2)))
+
+    asyncio.run(dos())
+    assert [op for op, _ in pedidos] == ["consultarUltNroOrden", "autorizarCPEAutomotor"] * 2
+
+
+# ── Catálogos, número y anulación ──────────────────────────────────────────
+
+def test_catalogos(arca_ops):
+    arca_ops("consultarTiposGrano", "tipos_grano")
+    pedidos = arca_ops("consultarLocalidadesPorProvincia", "localidades")
+    assert asyncio.run(w.tipos_grano(SOLICITANTE, "TKN", "SGN")) == {31: "Algodón", 30: "Alpiste", 35: "Arroz"}
+    locs = asyncio.run(w.localidades(SOLICITANTE, "TKN", "SGN", cod_provincia=12))
+    assert list(locs.items())[0] == (14, "22 DE MAYO")
+    assert pedidos[-1][1].findtext("solicitud/codProvincia") == "12"
+
+
+def test_sin_plantas_es_una_lista_vacia(arca_ops):
+    """Medido: ARCA contesta 800 cuando el CUIT no tiene plantas."""
+    pedidos = arca_ops("consultarPlantas", "plantas_sin_plantas")
+    assert asyncio.run(w.plantas(SOLICITANTE, "TKN", "SGN", cuit="30-66666666-7")) == []
+    assert pedidos[0][1].findtext("solicitud/cuit") == "30666666667"
+
+
+def test_ultimo_nro_orden(arca_ops):
+    arca_ops("consultarUltNroOrden", "ult_nro_orden")
+    assert asyncio.run(w.ultimo_nro_orden(SOLICITANTE, "TKN", "SGN", sucursal=1)) == 0
+
+
+def test_anular(arca_ops):
+    anulada = _respuesta("cpe_activa").replace("ConsultarCPEAutomotorResp", "AnularCPEResp").replace(
+        "<estado>AC</estado>", "<estado>AN</estado>")
+    pedidos = arca_ops("anularCPE", anulada)
+    assert asyncio.run(w.anular_cpe(SOLICITANTE, "TKN", "SGN", sucursal=1, nro_orden=7, observaciones="Error")) == "AN"
+    s = pedidos[0][1].find("solicitud")
+    assert [h.tag for h in s] == ["cartaPorte", "anulacionObservaciones"]
+    assert [(h.tag, h.text) for h in s.find("cartaPorte")] == [("tipoCPE", "74"), ("sucursal", "1"), ("nroOrden", "7")]
+
+
+def test_anular_una_que_no_existe(arca_ops):
+    """Medido: 1302 «No existe una CPE con los parámetros indicados»."""
+    arca_ops("anularCPE", "anular_inexistente")
+    with pytest.raises(w.ErrorWscpe) as e:
+        asyncio.run(w.anular_cpe(SOLICITANTE, "TKN", "SGN", sucursal=1, nro_orden=99999))
+    assert e.value.codigos[0][0] == 1302
+
+
+def test_anular_con_observaciones_largas_no_sale(arca_ops):
+    pedidos = arca_ops("anularCPE", "anular_inexistente")
+    with pytest.raises(ValueError, match="100"):
+        asyncio.run(w.anular_cpe(SOLICITANTE, "TKN", "SGN", sucursal=1, nro_orden=1, observaciones="x" * 101))
+    assert pedidos == []

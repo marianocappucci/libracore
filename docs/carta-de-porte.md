@@ -1,7 +1,7 @@
 # Carta de Porte Electrónica (WSCPE) — lectura
 
-`libracore.arca_wscpe` (ADR-034) lee de ARCA una Carta de Porte Electrónica automotor por su CTG. **Sólo lectura**:
-emitir y el ciclo de vida de la CPE son otra etapa.
+`libracore.arca_wscpe` lee de ARCA una Carta de Porte Electrónica automotor por su CTG (ADR-034) y la **emite** por
+delegación (ADR-035). Desvío, contingencia y confirmación de arribo todavía no.
 
 ## Lo medido
 
@@ -28,3 +28,32 @@ cpe.respuesta_xml                             # para archivar, sin el PDF
 ```
 
 El CUIT representado **no tiene valor por defecto**: el producto lo elige en cada llamada.
+
+## Emitir (ADR-035)
+
+```python
+from libracore import arca_wscpe as w
+
+solicitud = w.SolicitudCpe(
+    cuit_solicitante="33XXXXXXXXX", sucursal=1,            # el titular que delegó
+    origen=w.OrigenPlanta(cod_provincia=12, cod_localidad=5321, planta=77),   # o OrigenCampo(..., renspa=)
+    cod_grano=23, cosecha=2526, peso_bruto=45200, peso_tara=15900,
+    destino=w.DestinoSolicitud(cuit="30XXXXXXXXX", cod_provincia=12, cod_localidad=4211, planta=1234),
+    cuit_destinatario="30XXXXXXXXX",
+    transporte=w.TransporteSolicitud(cuit_transportista="30XXXXXXXXX", dominios=("AA123BB",),
+                                     fecha_hora_partida=partida, km=310, cuit_chofer="20XXXXXXXXX",
+                                     cuit_pagador_flete="30XXXXXXXXX"),
+)
+cpe = await w.emitir_cpe(solicitud.cuit_solicitante, token, sign, solicitud, ambiente="produccion")
+cpe.nro_ctg, cpe.numero, cpe.pdf
+```
+
+| Lo medido en homologación (2026-10-08) | |
+|---|---|
+| Origen en campo con `esSolicitanteCampo=false` | `949`: por eso sale del origen y no se elige |
+| Origen en campo, solicitante sin actividad de productor | `1015` |
+| Origen en planta, solicitante sin SISA | `2008` |
+| Anular una que no existe | `1302` |
+| En homologación | el certificado sólo opera por su propio CUIT: para una emisión exitosa hace falta el certificado de homologación **del titular** |
+
+🔴 Si ARCA no contesta al autorizar, `emitir_cpe` **no reintenta**: consulta por el número pedido y, si no puede saberlo, levanta `EmisionIncierta` con la sucursal y el número. Se consulta antes de volver a emitir.

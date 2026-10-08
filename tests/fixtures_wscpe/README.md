@@ -7,3 +7,9 @@ Respuestas de WSCPE (Carta de Porte Electrónica) para `tests/test_arca_wscpe.py
   `cpe_activa.xml` (sin descarga) y `cpe_descargada.xml` (con los kilos de descarga). Todavía no hay una CPE real
   que se pueda leer; cuando la haya, reemplazarlas por la grabada (anonimizada). CUIT y dominios ficticios; el PDF
   es un texto, no un PDF.
+
+- **Emisión, reales de homologación (2026-10-08)**, anonimizadas igual:
+  - `ult_nro_orden.xml` (`0`), `tipos_grano.xml` y `localidades.xml` (recortadas a tres);
+  - `plantas_sin_plantas.xml` (`800`) y `anular_inexistente.xml` (`1302`);
+  - `autorizar_rechazo_949.xml` (productor informado sin corresponder) y `autorizar_rechazo_2008.xml` (solicitante sin SISA).
+  - La autorización exitosa se arma en el test sobre `cpe_activa.xml`, hasta tener un certificado de homologación de un titular con SISA.
