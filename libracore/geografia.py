@@ -46,7 +46,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 _ARCHIVO = Path(__file__).resolve().parent / "datos" / "argentina.json"
 
@@ -79,9 +79,10 @@ def _catalogo() -> dict[str, Any]:
         for id_, nombre, prov in crudo["localidades"]
     ]
     indice: dict[str, list[dict[str, Any]]] = {}
-    for localidad in localidades:
-        indice.setdefault(normalizar(localidad["nombre"]), []).append(localidad)
-    return {"provincias": crudo["provincias"], "localidades": localidades, "indice": indice}
+    for loc in localidades:
+        indice.setdefault(normalizar(loc["nombre"]), []).append(loc)
+    return {"provincias": crudo["provincias"], "localidades": localidades, "indice": indice,
+            "por_id": {loc["id"]: loc for loc in localidades}}
 
 
 def provincias() -> list[dict[str, str]]:
@@ -106,6 +107,15 @@ def localidades(provincia_id: str | None = None, q: str | None = None,
         empiezan = [f for f in filas if normalizar(f["nombre"]).startswith(aguja)]
         filas = empiezan or [f for f in filas if aguja in normalizar(f["nombre"])]
     return filas[: (limite if limite is not None else len(filas))]
+
+
+def localidad(id_: str) -> dict[str, Any] | None:
+    """La localidad del catálogo con ese id (el código censal de 8 dígitos), o `None`.
+
+    Es lo que guarda un producto para **vincular** su maestro editable con el catálogo: el nombre se puede
+    escribir de muchas maneras, el id no.
+    """
+    return _catalogo()["por_id"].get((id_ or "").strip())
 
 
 def buscar(nombre: str, provincia_id: str | None = None) -> list[dict[str, Any]]:
@@ -137,5 +147,12 @@ def build_geo_router(prefijo: str = "/api/geo") -> APIRouter:
         limite: int = Query(default=LIMITE_POR_OMISION, ge=1, le=LIMITE_MAXIMO),
     ) -> list[dict[str, Any]]:
         return localidades(provincia_id, q, limite)
+
+    @router.get("/localidades/{id_}")
+    def _localidad(id_: str) -> dict[str, Any]:
+        encontrada = localidad(id_)
+        if encontrada is None:
+            raise HTTPException(404, f"no hay una localidad con id {id_!r} en el catálogo")
+        return encontrada
 
     return router

@@ -116,3 +116,26 @@ def test_el_router_es_de_solo_lectura():
 
     # No hay forma de escribirle al catalogo.
     assert cliente.post("/api/geo/localidades", json={"nombre": "X"}).status_code == 405
+
+
+# ── Por id (para vincular un maestro editable con el catálogo) ─────────────
+
+def test_localidad_por_id():
+    from libracore import geografia as g
+    assert g.localidad("06784020") == {"id": "06784020", "nombre": "Suipacha", "provincia_id": "06",
+                                       "provincia": "Buenos Aires"}
+    assert g.localidad(" 06784020 ") is not None, "tolera espacios"
+    assert g.localidad("99999999") is None and g.localidad("") is None
+
+
+def test_el_endpoint_por_id():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from libracore.geografia import build_geo_router
+    app = FastAPI()
+    app.include_router(build_geo_router())
+    c = TestClient(app)
+    assert c.get("/api/geo/localidades/06784020").json()["nombre"] == "Suipacha"
+    assert c.get("/api/geo/localidades/99999999").status_code == 404
+    assert len(c.get("/api/geo/localidades", params={"q": "suip"}).json()) >= 1, "la búsqueda sigue andando"
