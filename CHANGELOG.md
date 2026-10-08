@@ -7,6 +7,20 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El catálogo geográfico suma el resto del Mercosur (propuesta: v1.146.0)
+
+Sin migración ni cambio de schema. **Por omisión todo sigue siendo Argentina.**
+
+- **`libracore/datos/mercosur.json`**: 6.621 lugares poblados de Brasil (5.882), Chile (305), Paraguay (151), Bolivia (148) y Uruguay (135), con sus 89 divisiones de primer nivel. Fuente: **GeoNames** (`cities1000`, más de 1.000 habitantes), licencia **CC-BY 4.0**, citada en el archivo. Se regenera con `scripts/generar_mercosur.py`.
+- **`geografia.paises()`** y el parámetro **`pais`** en `provincias`, `localidades` y `buscar` (por omisión `"AR"`; `None` es todo el Mercosur, con Argentina primero). `localidad(id)` encuentra cualquier país: los ids de afuera son `{PAÍS}-{geonameid}` y nunca chocan con los códigos censales.
+- Cada provincia y cada localidad trae **`pais`** (clave nueva en los diccionarios).
+- Router: `GET /api/geo/paises` y `?pais=AR|BR|CL|PY|BO|UY|todos` en `/provincias` y `/localidades`.
+
+### Para los productos
+
+- **LibraCargo**: busca destinos en todo el Mercosur.
+- **El resto**: nada, salvo un test que compare un diccionario de localidad entero, que ahora tiene `pais`.
+
 ## [Unreleased] — La localidad del catálogo por su id (propuesta: v1.145.0)
 
 Sin migración ni cambio de schema.

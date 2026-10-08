@@ -49,6 +49,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 _ARCHIVO = Path(__file__).resolve().parent / "datos" / "argentina.json"
+#: El resto del Mercosur (Brasil, Chile, Paraguay, Bolivia, Uruguay), de GeoNames (CC-BY 4.0): ver
+#: `scripts/generar_mercosur.py`.
+_MERCOSUR = Path(__file__).resolve().parent / "datos" / "mercosur.json"
 
 #: Tope de filas que devuelve el endpoint de localidades. El desplegable del
 #: producto busca por teclado; traer las 4.027 de una es transferir 200 KB para
@@ -72,27 +75,53 @@ def normalizar(texto: str) -> str:
 
 @lru_cache(maxsize=1)
 def _catalogo() -> dict[str, Any]:
+    """Argentina (Georef, códigos censales) y el resto del Mercosur (GeoNames), con el país en cada fila."""
     crudo = json.loads(_ARCHIVO.read_text(encoding="utf-8"))
-    por_id = {p["id"]: p["nombre"] for p in crudo["provincias"]}
-    localidades = [
-        {"id": id_, "nombre": nombre, "provincia_id": prov, "provincia": por_id[prov]}
+    nombres = {p["id"]: p["nombre"] for p in crudo["provincias"]}
+    provincias_ = [{**p, "pais": "AR"} for p in crudo["provincias"]]
+    localidades_ = [
+        {"id": id_, "nombre": nombre, "provincia_id": prov, "provincia": nombres[prov], "pais": "AR"}
         for id_, nombre, prov in crudo["localidades"]
     ]
+    paises_ = [{"id": "AR", "nombre": "Argentina"}]
+    if _MERCOSUR.exists():
+        mer = json.loads(_MERCOSUR.read_text(encoding="utf-8"))
+        paises_ += mer["paises"]
+        provincias_ += mer["provincias"]
+        nombres.update({p["id"]: p["nombre"] for p in mer["provincias"]})
+        localidades_ += [
+            {"id": id_, "nombre": nombre, "provincia_id": prov, "provincia": nombres[prov], "pais": id_[:2]}
+            for id_, nombre, prov in mer["localidades"]
+        ]
     indice: dict[str, list[dict[str, Any]]] = {}
-    for loc in localidades:
+    for loc in localidades_:
         indice.setdefault(normalizar(loc["nombre"]), []).append(loc)
-    return {"provincias": crudo["provincias"], "localidades": localidades, "indice": indice,
-            "por_id": {loc["id"]: loc for loc in localidades}}
+    return {"paises": paises_, "provincias": provincias_, "localidades": localidades_, "indice": indice,
+            "por_id": {loc["id"]: loc for loc in localidades_}}
 
 
-def provincias() -> list[dict[str, str]]:
-    """Las 24, ordenadas por nombre. CABA es una de ellas."""
-    return list(_catalogo()["provincias"])
+def _del_pais(filas: list[dict[str, Any]], pais: str | None) -> list[dict[str, Any]]:
+    return filas if pais is None else [f for f in filas if f["pais"] == pais.upper()]
+
+
+def paises() -> list[dict[str, str]]:
+    """Argentina primero y después el resto del Mercosur: Brasil, Chile, Paraguay, Bolivia y Uruguay."""
+    return list(_catalogo()["paises"])
+
+
+def provincias(pais: str | None = "AR") -> list[dict[str, str]]:
+    """Las provincias (o estados, regiones, departamentos) de `pais`, ordenadas por nombre. `None`: todas.
+
+    Por omisión **Argentina**, que es lo que devolvía antes de sumarse el Mercosur: las 24, CABA incluida.
+    """
+    # El orden de los archivos: Argentina primero y, en cada país, por nombre (es como se generaron).
+    return _del_pais(_catalogo()["provincias"], pais)
 
 
 def localidades(provincia_id: str | None = None, q: str | None = None,
-                limite: int | None = None) -> list[dict[str, Any]]:
-    """Filtradas por provincia y por texto, en ese orden.
+                limite: int | None = None, pais: str | None = "AR") -> list[dict[str, Any]]:
+    """Filtradas por país (por omisión **Argentina**; `None` es todo el Mercosur, Argentina primero), provincia y
+    texto, en ese orden.
 
     `q` matchea por **prefijo normalizado** y, si no encuentra nada, cae a
     "contiene". El prefijo primero porque quien escribe "mer" en un buscador
@@ -102,24 +131,28 @@ def localidades(provincia_id: str | None = None, q: str | None = None,
     filas = _catalogo()["localidades"]
     if provincia_id:
         filas = [f for f in filas if f["provincia_id"] == provincia_id]
+    else:
+        filas = _del_pais(filas, pais)
     if q and q.strip():
         aguja = normalizar(q)
         empiezan = [f for f in filas if normalizar(f["nombre"]).startswith(aguja)]
         filas = empiezan or [f for f in filas if aguja in normalizar(f["nombre"])]
+        filas = sorted(filas, key=lambda f: f["pais"] != "AR")
     return filas[: (limite if limite is not None else len(filas))]
 
 
 def localidad(id_: str) -> dict[str, Any] | None:
-    """La localidad del catálogo con ese id (el código censal de 8 dígitos), o `None`.
+    """La localidad del catálogo con ese id, de cualquier país, o `None`.
 
-    Es lo que guarda un producto para **vincular** su maestro editable con el catálogo: el nombre se puede
-    escribir de muchas maneras, el id no.
+    El código censal de 8 dígitos en Argentina; `{PAÍS}-{geonameid}` en el resto del Mercosur. Es lo que guarda un
+    producto para **vincular** su maestro editable con el catálogo: el nombre se puede escribir de muchas maneras,
+    el id no.
     """
     return _catalogo()["por_id"].get((id_ or "").strip())
 
 
-def buscar(nombre: str, provincia_id: str | None = None) -> list[dict[str, Any]]:
-    """Coincidencias **exactas** por nombre normalizado.
+def buscar(nombre: str, provincia_id: str | None = None, pais: str | None = "AR") -> list[dict[str, Any]]:
+    """Coincidencias **exactas** por nombre normalizado, en `pais` (por omisión Argentina; `None`: todos).
 
     Devuelve una lista y no un resultado porque un nombre puede estar en varias
     provincias: `San Pedro` está en ocho. Quien la llama decide qué hacer con
@@ -129,24 +162,33 @@ def buscar(nombre: str, provincia_id: str | None = None) -> list[dict[str, Any]]
     encontradas = _catalogo()["indice"].get(normalizar(nombre), [])
     if provincia_id:
         return [f for f in encontradas if f["provincia_id"] == provincia_id]
-    return list(encontradas)
+    return _del_pais(list(encontradas), pais)
 
 
 def build_geo_router(prefijo: str = "/api/geo") -> APIRouter:
     """El router de consulta del catálogo. Sólo lectura: no hay `POST`."""
     router = APIRouter(prefix=prefijo, tags=["geografia"])
 
+    def _pais(pais: str) -> str | None:
+        return None if pais.strip().lower() in ("todos", "*", "") else pais
+
+    @router.get("/paises")
+    def _paises() -> list[dict[str, str]]:
+        return paises()
+
     @router.get("/provincias")
-    def _provincias() -> list[dict[str, str]]:
-        return provincias()
+    def _provincias(pais: str = Query(default="AR", description="AR, BR, CL, PY, BO, UY o «todos»")
+                    ) -> list[dict[str, str]]:
+        return provincias(_pais(pais))
 
     @router.get("/localidades")
     def _localidades(
         provincia_id: str | None = None,
         q: str | None = Query(default=None, description="busca por nombre"),
         limite: int = Query(default=LIMITE_POR_OMISION, ge=1, le=LIMITE_MAXIMO),
+        pais: str = Query(default="AR", description="AR, BR, CL, PY, BO, UY o «todos»"),
     ) -> list[dict[str, Any]]:
-        return localidades(provincia_id, q, limite)
+        return localidades(provincia_id, q, limite, _pais(pais))
 
     @router.get("/localidades/{id_}")
     def _localidad(id_: str) -> dict[str, Any]:
