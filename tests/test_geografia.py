@@ -123,7 +123,7 @@ def test_el_router_es_de_solo_lectura():
 def test_localidad_por_id():
     from libracore import geografia as g
     assert g.localidad("06784020") == {"id": "06784020", "nombre": "Suipacha", "provincia_id": "06",
-                                       "provincia": "Buenos Aires"}
+                                       "provincia": "Buenos Aires", "pais": "AR"}
     assert g.localidad(" 06784020 ") is not None, "tolera espacios"
     assert g.localidad("99999999") is None and g.localidad("") is None
 
@@ -139,3 +139,47 @@ def test_el_endpoint_por_id():
     assert c.get("/api/geo/localidades/06784020").json()["nombre"] == "Suipacha"
     assert c.get("/api/geo/localidades/99999999").status_code == 404
     assert len(c.get("/api/geo/localidades", params={"q": "suip"}).json()) >= 1, "la búsqueda sigue andando"
+
+
+
+# ── El resto del Mercosur (GeoNames) ───────────────────────────────────────
+
+def test_por_omision_sigue_siendo_argentina():
+    """Lo que ya usaban los productos no cambia: Argentina, salvo que se pida otro país."""
+    from libracore import geografia as g
+    assert len(g.provincias()) == 24 and all(p["pais"] == "AR" for p in g.provincias())
+    assert len(g.localidades()) == 4027
+    assert all(f["pais"] == "AR" for f in g.localidades(q="san"))
+
+
+def test_los_cinco_paises_y_sus_lugares():
+    from libracore import geografia as g
+    assert [p["id"] for p in g.paises()] == ["AR", "BR", "CL", "PY", "BO", "UY"]
+    uy = g.localidades(q="nueva palmira", pais="UY")
+    assert [(f["nombre"], f["provincia"], f["pais"]) for f in uy] == [("Nueva Palmira", "Colonia", "UY")]
+    assert g.localidad(uy[0]["id"])["nombre"] == "Nueva Palmira"
+    assert any(f["nombre"] == "Paranaguá" for f in g.localidades(q="paranagu", pais="BR"))
+    assert any(p["nombre"] == "Beni" for p in g.provincias("BO")), "sin el sufijo en inglés"
+
+
+def test_todo_el_mercosur_con_argentina_primero():
+    from libracore import geografia as g
+    filas = g.localidades(q="san", pais=None)
+    paises = [f["pais"] for f in filas]
+    assert paises[0] == "AR" and set(paises) > {"AR", "BR"}
+    assert paises == sorted(paises, key=lambda p: p != "AR"), "Argentina antes que el resto"
+
+
+def test_el_router_con_pais():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from libracore.geografia import build_geo_router
+    app = FastAPI()
+    app.include_router(build_geo_router())
+    c = TestClient(app)
+    assert len(c.get("/api/geo/paises").json()) == 6
+    assert len(c.get("/api/geo/provincias").json()) == 24
+    assert {p["pais"] for p in c.get("/api/geo/provincias", params={"pais": "UY"}).json()} == {"UY"}
+    r = c.get("/api/geo/localidades", params={"q": "nueva palmira", "pais": "todos"}).json()
+    assert [x["pais"] for x in r] == ["UY"]
