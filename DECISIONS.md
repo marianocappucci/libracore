@@ -791,3 +791,32 @@ Detalle en `docs/fce.md`.
 - **libracommerce y Restolibra pasan a usar `libracore.fechas.rango_por_dia`** al subir el pin, y sacan sus copias (la de `margen.py` y cualquier filtro de rango propio).
 - Los tests de integración (`tests/db/test_rango_por_dia.py`) siembran el mismo día de tres maneras más dos vecinos que no deben entrar, y corren también contra PostgreSQL si hay `LIBRACORE_POSTGRES_URL`.
 - Fuera de alcance: **validar la fecha en los routers** o normalizar lo ya guardado. Sigue siendo TEXT libre; esto sólo hace que el filtro no dependa de cómo se escribió. Los filtros que se hacen en Python sobre listas ya leídas (`get_cc_movimientos_periodo`) no usan la función y quedan como estaban.
+
+## ADR-038 — En una demo, la empresa es siempre ficticia: la garantía la da `config_manager`, no la semilla
+
+- Estado: aceptada
+- Fecha: 2026-10-09
+- Contexto: la demo pública de LibraDesk mostraba en la barra lateral, en Configuración y en
+  los PDF la razón social, el CUIT, el domicilio, los teléfonos y los Ingresos Brutos **reales**
+  de un cliente, y un logo con el nombre de otra empresa real. Alguien los había cargado a mano
+  y el reset nocturno no los limpiaba: resiembra la base, y los datos de la empresa viven en
+  `config.json` (`DATA_DIR`), al lado. Cualquiera con un código de demo los veía. Las semillas
+  cargan datos por la API, desde afuera del contenedor, así que tampoco podían garantizar nada
+  sobre ese archivo.
+- Decisión:
+  - Con `DEMO_MODE=1` (el criterio que ya usaba `mp_bandeja_router`, leído en cada llamada),
+    `config_manager.load()` **pisa** los campos `CAMPOS_EMPRESA` con una empresa ficticia, y
+    `resolve_logo_path()` sólo devuelve el logo de demo registrado: ni el `logo_path` guardado ni
+    el «más reciente» de `LOGO_DIR`. Lo que esté en disco se ignora.
+  - Costura del producto: `usar_empresa_demo(datos, logo_path)`, una vez al arrancar, con la
+    empresa ficticia de su rubro y un logo que viaja **con la imagen**, no con `DATA_DIR`. Rechaza
+    campos que no son de la empresa, para que un error de tipeo no pase en silencio.
+  - Sin costura, `EMPRESA_DEMO_POR_DEFECTO`: «Empresa Demo SRL», CUIT `30-99999900-6` (dígito
+    verificador válido, prefijo `30-999` que ARCA no asigna), correo en `.example` y sin logo.
+- Consecuencias:
+  - Fuera de una demo no cambia nada: los tests lo fijan.
+  - Guardar datos reales en una demo sigue escribiendo el JSON, pero nunca se ven. Un test lo cubre.
+  - **Lo que no cubre:** el emisor que `emisor_del_pdf` toma de la base (`arca_config` y el
+    resolvedor del producto). Esos datos los rehace la semilla cada noche, así que no acumulan lo
+    que alguien cargó a mano. Si un producto guarda la empresa fuera de la base y fuera de
+    `config.json`, tiene que entrar por esta misma guarda.
