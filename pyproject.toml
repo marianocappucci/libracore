@@ -87,6 +87,8 @@ local_scheme = "no-local-version"
 # LibraCore no tienen `alembic_version` ninguna. Hay un test que abre el wheel
 # construido y lo verifica.
 libracore-migrar = "libracore.migrar:main"
+# Conserva demo_codigos a traves del reset nocturno de las demos (ADR-039).
+libracore-demo-codigos = "libracore.provisioning.demo_codigos:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["libracore"]
