@@ -7,6 +7,17 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Los códigos de acceso de las demos sobreviven al reset nocturno (propuesta: v1.150.0)
+
+ADR-039. **Sin migración y sin cambio de schema.** Seis demos perdían todos los códigos entregados cada noche (el reset recrea la base, y `demo_codigos` vive ahí); sólo LibraCargo y LibraClub los preservaban, con un bloque bash propio.
+
+- **`libracore.provisioning.demo_codigos`**: `guardar(sidecar, archivo, base=None)` vuelca `demo_codigos` (`pg_dump --data-only`, archivo 0600) y devuelve cuántas filas hay, o `None` si la tabla todavía no existe; `devolver(...)` lo carga con `psql -v ON_ERROR_STOP=1`, devuelve el conteo y borra el archivo, y si `psql` falla levanta `NoSePudieronDevolver` **sin borrarlo**. Las variables `$POSTGRES_USER`/`$POSTGRES_DB` se resuelven dentro del sidecar.
+- **CLI `libracore-demo-codigos guardar|devolver --sidecar S --archivo F [--base B]`**, con las mismas líneas de salida que el bloque bash. Código de salida 0 ok (incluye «nada que preservar»), 1 si `devolver` falla (el archivo queda), 2 si falla Docker/`psql` o los argumentos no sirven.
+
+### Para los productos
+
+- **Subir el pin y cambiar `scripts/reset_demo.sh`**: `libracore-demo-codigos guardar` antes del `DROP SCHEMA` y `devolver` con la app ya arriba (la tabla la crea libraauth al arrancar), desde el `.venv-scripts`. LibraCargo y LibraClub sacan su bloque bash.
+
 ## [Unreleased] — Los rangos de fecha se miden por día (propuesta: v1.148.0)
 
 ADR-037. **Sin migración y sin cambio de schema.** Las columnas de fecha son TEXT libre y pueden traer hora (`2026-10-09 13:00:00`, `2026-10-09T13:00`): `fecha <= '2026-10-09'` dejaba esas filas afuera y el último día del rango desaparecía del listado, del reporte o del libro IVA sin error.

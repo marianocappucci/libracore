@@ -820,3 +820,44 @@ Detalle en `docs/fce.md`.
     resolvedor del producto). Esos datos los rehace la semilla cada noche, así que no acumulan lo
     que alguien cargó a mano. Si un producto guarda la empresa fuera de la base y fuera de
     `config.json`, tiene que entrar por esta misma guarda.
+
+## ADR-039 — Los códigos de acceso de una demo sobreviven al reset nocturno: el bloque vive en el motor (`libracore-demo-codigos`)
+
+- Estado: aceptada
+- Fecha: 2026-10-09
+- Contexto: `demo_codigos` (libraauth: los códigos que se le entregan a un cliente potencial,
+  válidos 7 días y 10 usos) vive en la misma base que la demo, y el `scripts/reset_demo.sh` de
+  cada producto la recrea todas las noches con `DROP SCHEMA` dentro de un contenedor sidecar de
+  PostgreSQL. 🔴 Medido en `/var/log/demo_reset.log` del 2026-10-09: en **seis** de las ocho demos
+  el reset se lleva todos los códigos entregados, o sea que un código dura hasta la próxima
+  medianoche y no los 7 días que promete. Sólo LibraCargo y LibraClub los preservan, con un bloque
+  bash propio; el comentario de LibraCargo que decía que en las otras la tabla vivía en otra base
+  ya no es cierto.
+- Qué ya existía (se miró antes de diseñar): el bloque bash de LibraCargo y LibraClub (volcado
+  `pg_dump --data-only --table=demo_codigos` antes del `DROP SCHEMA`, `psql -v ON_ERROR_STOP=1` al
+  volver a levantar la app, que es quien crea la tabla). Es una copia a mano en dos repos, y hay
+  seis repos sin ella. `libracore.provisioning` ya es el paquete del lado del servidor que corre
+  Docker y está instalado en el `.venv-scripts` de cada producto.
+- Decisión:
+  - `libracore.provisioning.demo_codigos` con `guardar(sidecar, archivo, base=None)` y
+    `devolver(sidecar, archivo, base=None)`, y la CLI `libracore-demo-codigos guardar|devolver
+    --sidecar S --archivo F [--base B]`. Los ocho `reset_demo.sh` la llaman desde su
+    `.venv-scripts` y se sacan el bloque propio.
+  - Se conserva lo que ya funcionaba: `$POSTGRES_USER` y `$POSTGRES_DB` se resuelven dentro del
+    sidecar (`sh -c` con comillas simples), así la contraseña no pasa por la línea de comandos del
+    host; y la CLI imprime las mismas líneas que el bloque viejo, para que el log del cron se siga
+    leyendo igual.
+  - Lo que cambia: el volcado se crea 0600 (son códigos vivos); un `pg_dump` o un conteo que
+    falla ya no se traga (`|| true`): sale con código 2 y no deja un volcado a medias; un
+    `devolver` fallido sale con 1 y **deja el archivo** para reintentar a mano. `--base` opcional
+    (identificador simple, validado) por si un producto tuviera la tabla en otra base.
+  - Códigos de salida: 0 ok (incluye «nada que preservar» y «no había archivo»), 1 `devolver` no
+    pudo, 2 falló Docker/psql en `guardar` o argumentos inválidos. El script llamador decide: en
+    `guardar` un 2 significa que no se sabe si había códigos.
+- Consecuencias:
+  - Sin migración ni cambio de schema. MINOR (propuesta v1.150.0). Las demos las recogen al subir
+    el pin y cambiar su `reset_demo.sh`: hasta entonces siguen perdiendo los códigos.
+  - Los tests usan un ejecutor falso (sin Docker): fijan las órdenes, los permisos, que un error no
+    borre el archivo y las líneas de la CLI. No hay prueba contra un PostgreSQL real.
+  - Fuera de alcance: otras tablas de la base que también mueran con el reset (sólo se preserva
+    `demo_codigos`) y la política de vigencia de los códigos.
