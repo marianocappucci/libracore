@@ -137,11 +137,27 @@ def test_lee_la_cpe_activa(arca):
 
 
 def test_lee_los_kilos_de_descarga(arca):
+    """La CPE real de producción, ya descargada: trae lo que el WSDL no deja ver (vacíos, entregador, sin referencia)."""
     arca("cpe_descargada")
     cpe = _consultar()
-    assert cpe.estado == "CN" and cpe.tiene_descarga
+    ar = timezone(timedelta(hours=-3))
+    assert (cpe.nro_ctg, cpe.numero) == (10100000002, "00001-00072413")
+    assert (cpe.estado, cpe.estado_descripcion) == ("CN", "Confirmada")
+    assert cpe.fecha_inicio_estado == datetime(2026, 9, 16, 15, 34, 14, tzinfo=ar)
+    assert cpe.tiene_descarga
+    assert (cpe.carga.peso_bruto, cpe.carga.peso_tara, cpe.carga.peso_neto) == (44460, 15160, 29300)
     assert (cpe.carga.peso_bruto_descarga, cpe.carga.peso_tara_descarga, cpe.carga.peso_neto_descarga) == (
-        45100, 15800, 29300)
+        44280, 14940, 29340)
+    assert (cpe.origen.cuit, cpe.origen.cod_provincia, cpe.origen.cod_localidad) == ("30444444445", 1, 13575)
+    assert (cpe.destino.cuit, cpe.destino.planta, cpe.destino.cuit_destinatario) == ("30666666667", 1234, "30666666667")
+    t = cpe.transporte
+    assert (t.cuit_transportista, t.cuit_chofer, t.cuit_pagador_flete) == ("30222222223", "20777777778", "30444444445")
+    assert t.dominios == ("AAA123", "BBB456")
+    assert (t.km, t.tarifa) == (386, Decimal("65207.39"))
+    assert t.tarifa_referencia is None, "la CPE real no trae tarifa de referencia"
+    assert cpe.intervinientes == {"cuitCorredorVentaPrimaria": "30555555556",
+                                  "cuitRepresentanteEntregador": "30888888884"}
+    assert ET.fromstring(cpe.respuesta_xml).find("errores") is not None, "`<errores/>` vacío no es un error"
 
 
 def test_el_pdf_viene_aparte_y_no_se_archiva(arca):
