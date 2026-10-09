@@ -19,6 +19,7 @@ LibraCore) se resuelven en tiempo de ejecución vía imports diferidos, mismo
 patrón que `libracore.admin.services::_plans()/_pa()/_nc()`.
 """
 import ast
+import logging
 import os
 import re
 import shutil
@@ -1044,6 +1045,31 @@ def _como_se_escribe_habilitado(con):
         return bool
     tipo = str(fila[0]).lower()
     return int if ("int" in tipo or "numeric" in tipo) else bool
+
+
+def resolver_plan(plans, plan: str | None) -> str:
+    """El plan vigente para un alta o un cambio de plan, según el `plans.py` del producto.
+
+    - Vacío o `None`: el primero de `plans.PLANES`.
+    - Uno de `plans.PLANES`: ese.
+    - Uno de `plans.PLANES_RETIRADOS` (si el producto lo declara): su reemplazo, con un
+      `WARNING`. Es lo que permite que un producto **retire** planes sin romper a quien
+      todavía pide el viejo: el formulario del backoffice y `crear_cliente` mandan
+      `plan="basico"` por defecto, y VentaLibra pasó a un plan único (2026-10-09).
+    - Cualquier otro: `ValueError`, en vez de adivinar.
+    """
+    vigentes = list(plans.PLANES)
+    plan = (plan or "").strip()
+    if not plan:
+        return vigentes[0]
+    if plan in vigentes:
+        return plan
+    reemplazo = getattr(plans, "PLANES_RETIRADOS", {}).get(plan)
+    if reemplazo in vigentes:
+        logging.getLogger(__name__).warning(
+            "El plan %r está retirado: se usa %r en su lugar.", plan, reemplazo)
+        return reemplazo
+    raise ValueError(f"Plan inválido: {plan!r}. Los vigentes son {vigentes}.")
 
 
 def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: str) -> None:
