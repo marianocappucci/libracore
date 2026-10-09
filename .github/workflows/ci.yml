@@ -27,23 +27,19 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: public.ecr.aws/docker/library/postgres:16
-        env:
-          POSTGRES_DB: libracore
-          POSTGRES_USER: libracore
-          POSTGRES_PASSWORD: libracore-ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U libracore -d libracore"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
     env:
       LIBRACORE_POSTGRES_URL: postgresql://libracore:libracore-ci@localhost:5432/libracore
     steps:
+      # El PostgreSQL de la suite sale de la Action compartida (libra-web-kit, `postgres-ci-v1`) y no de un `services:`
+      # propio: una sola referencia para toda la familia, desde el espejo de ECR (reglas/ci.md del wiki). Mismos datos y
+      # mismo healthcheck que el `services:` de antes; queda en localhost:5432.
+      - name: PostgreSQL de la suite
+        uses: marianocappucci/libra-web-kit/.github/actions/postgres-ci@postgres-ci-v1
+        with:
+          variante: debian
+          base: libracore
+          usuario: libracore
+          clave: libracore-ci
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
