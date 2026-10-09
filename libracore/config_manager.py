@@ -144,6 +144,85 @@ def almacen_de_secretos():
     return _almacen
 
 
+# ── Empresa ficticia de las demos (ADR-038) ─────────────────────────────────
+#
+# 🔴 **En una demo pública los datos de la empresa NUNCA salen de `config.json`.**
+# El 2026-10-09 la demo de LibraDesk mostraba la razón social, el CUIT, el
+# domicilio y los Ingresos Brutos reales de un cliente, y un logo con el nombre
+# de otra empresa real: alguien los había cargado a mano y el reset nocturno no
+# los limpia, porque resiembra la base y `config.json` vive al lado. Cualquiera
+# con un código de demo los veía.
+#
+# Por eso la garantía no depende de que una semilla o una persona hagan lo
+# correcto: si la instancia es una demo (`DEMO_MODE=1`), `load()` **pisa** los
+# campos `empresa_*` con una empresa ficticia y `resolve_logo_path()` sólo
+# devuelve el logo de demo registrado. Lo guardado en disco se ignora.
+#
+# El producto puede registrar la suya con `usar_empresa_demo()` (nombre y logo
+# acordes a su rubro); si no, se usa `EMPRESA_DEMO_POR_DEFECTO`.
+
+#: Los campos de la empresa que la demo fija. Son los que encabezan PDFs y
+#: comprobantes y los que muestra la barra lateral.
+CAMPOS_EMPRESA = (
+    "empresa_nombre", "empresa_cuit", "empresa_direccion", "empresa_telefono",
+    "empresa_email", "empresa_iibb", "empresa_iva_condition",
+    "empresa_inicio_actividades",
+)
+
+#: Ficticia de punta a punta: CUIT con dígito verificador válido y prefijo que
+#: ARCA no asigna (`30-999…`), domicilio y teléfono inventados y correo en el
+#: dominio reservado `.example`. Nunca los de una persona o empresa real.
+EMPRESA_DEMO_POR_DEFECTO = {
+    "empresa_nombre":             "Empresa Demo SRL",
+    "empresa_cuit":               "30-99999900-6",
+    "empresa_direccion":          "Av. Ficticia 1000, CABA",
+    "empresa_telefono":           "011 4000-0000",
+    "empresa_email":              "contacto@empresa-demo.example",
+    "empresa_iibb":               "901-000000-0",
+    "empresa_iva_condition":      "Monotributista",
+    "empresa_inicio_actividades": "2020-01-01",
+}
+
+_empresa_demo: dict = dict(EMPRESA_DEMO_POR_DEFECTO)
+_logo_demo: str = ""
+
+
+def es_demo() -> bool:
+    """¿Esta instancia es una demo pública? Lo dice `DEMO_MODE`, el mismo
+    criterio que `mp_bandeja_router`. Se lee en cada llamada, no al importar:
+    un test o un script que lo prende después igual lo ve."""
+    return os.environ.get("DEMO_MODE", "").strip() in ("1", "true", "True")
+
+
+def usar_empresa_demo(datos: dict | None = None, logo_path: str = "") -> None:
+    """Costura del producto: la empresa ficticia y el logo de SU demo.
+
+    `datos` completa o reemplaza campos de `EMPRESA_DEMO_POR_DEFECTO`; un campo
+    que no es de la empresa se rechaza, para que un error de tipeo no quede en
+    silencio usando el valor genérico. `logo_path` es un archivo que viaja con
+    la imagen del producto (no con `DATA_DIR`, que es lo que se ensucia).
+    """
+    global _empresa_demo, _logo_demo
+    datos = datos or {}
+    ajenos = set(datos) - set(CAMPOS_EMPRESA)
+    if ajenos:
+        raise ValueError(f"usar_empresa_demo: campos que no son de la empresa: {sorted(ajenos)}")
+    _empresa_demo = {**EMPRESA_DEMO_POR_DEFECTO, **datos}
+    _logo_demo = logo_path or ""
+
+
+def empresa_demo() -> dict:
+    """La empresa ficticia vigente (copia). Para tests y para quien la muestre."""
+    return dict(_empresa_demo)
+
+
+def _aplicar_empresa_demo(cfg: dict) -> dict:
+    if es_demo():
+        cfg.update(_empresa_demo)
+        cfg["logo_path"] = _logo_demo if _logo_demo and os.path.exists(_logo_demo) else ""
+    return cfg
+
+
 def load(extra_defaults: dict | None = None):
     """La config efectiva: el JSON, con los secretos traidos del almacen.
 
@@ -173,7 +252,7 @@ def load(extra_defaults: dict | None = None):
             guardado = _almacen.get(clave)
             if guardado:
                 cfg[clave] = guardado
-    return cfg
+    return _aplicar_empresa_demo(cfg)
 
 
 def save(data, extra_defaults: dict | None = None):
@@ -286,6 +365,10 @@ def resolve_logo_path(cfg=None):
     de path). Si el path guardado no existe, se cae al logo mas reciente
     encontrado en LOGO_DIR.
     """
+    if es_demo():
+        # En una demo, sólo el logo registrado: ni el guardado ni el «más
+        # reciente» de LOGO_DIR, que es justo donde quedó el de un cliente.
+        return _logo_demo if _logo_demo and os.path.exists(_logo_demo) else ""
     cfg = cfg if cfg is not None else load()
     p = (cfg.get("logo_path") or "").strip()
     if p and os.path.exists(p):
