@@ -10,6 +10,7 @@ from fpdf.enums import RenderStyle as _RS
 
 from . import config_manager, emisor_del_pdf, medios_pago
 from . import tipos_comprobante as tipos
+from .db import arca_config as _db_arca_config
 
 
 def fecha_de_documento(valor) -> datetime | None:
@@ -1504,11 +1505,19 @@ def generate_pdf_pre_factura(pre_factura: dict, empresa: dict | None = None, *,
         partes.append(f"Per. facturado: {desde} al {hasta}")
     if vto:
         partes.append(f"Vto. pago: {vto}")
-    if partes:
+    lineas = ["  ·  ".join(partes)] if partes else []
+    # FCE: en qué cuenta se va a cobrar, la elegida o, si no eligió, la predeterminada (ADR-040).
+    # En su propia línea: con el período y el vencimiento, el CBU de 22 dígitos no entra.
+    cuenta = _db_arca_config.cuenta_de_cobro(pf, conn=conn)
+    if cuenta:
+        alias = f" (alias {cuenta['alias']})" if cuenta["alias"] else ""
+        lineas.append(f"Cobro en: CBU {cuenta['cbu']}{alias}")
+    if lineas:
         pdf.set_font("Helvetica", "", 8)
         pdf.set_text_color(*_MUTED)
-        pdf.set_x(_LX)
-        pdf.cell(_CW, 5, "  ·  ".join(partes), ln=True)
+        for linea in lineas:
+            pdf.set_x(_LX)
+            pdf.cell(_CW, 5, linea, ln=True)
         pdf.set_text_color(*_INK)
         pdf.ln(2)
 

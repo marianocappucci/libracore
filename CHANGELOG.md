@@ -7,6 +7,22 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La FCE puede cobrar en varios CBU (propuesta: v1.152.0)
+
+ADR-040. **Trae la migración `0023_fce_varios_cbu`** (columnas `arca_config.fce_cbus` y `comprobantes_pendientes.fce_cbu`; hay que correrla antes de subir el pin). Un cliente puede cargar varias cuentas para la Factura de Crédito Electrónica y elegir en cuál cobrar cada una. `arca_config.fce_cbu` se conserva y pasa a ser **el CBU predeterminado**: quien lo lee sigue andando.
+
+- **`arca_config.fce_cbus`** (`TEXT NOT NULL DEFAULT ''`): JSON `[{"cbu", "alias", "etiqueta"}]`. La migración rellena con `[{"cbu": fce_cbu, "alias": "", "etiqueta": ""}]` las filas que tenían `fce_cbu` y no lista. No se baja (restaurar el backup).
+- **`libracore.db.arca_config`**: `cbus_fce(config)` (la lista, siempre con las tres claves; sin lista cae a `fce_cbu`; JSON inválido es `[]`), `cbu_para_fce(config, pedido)` (el predeterminado sin `pedido`; con `pedido`, el CBU **o el alias** de una fila, y siempre devuelve el CBU; fuera de la lista, `ValueError`) y `actualizar_arca_config(..., fce_cbus=None)` (`None` no la toca).
+- **`PUT/GET /config/arca`**: `fce_cbus: [{cbu, alias?, etiqueta?}]`. CBU de 22 dígitos sin espacios ni guiones; alias en minúsculas de 6 a 20 caracteres (`a-z`, `0-9`, `.`, `-`); etiqueta de hasta 60. 422 con CBU o alias repetidos, o con un `fce_cbu` predeterminado que no está en la lista. Sin `fce_cbus` en el cuerpo (pantalla vieja) se comporta como antes, y el CBU que no estaba se agrega a la lista.
+- **Pre factura**: `comprobantes_pendientes.fce_cbu TEXT` (nullable; **también en la `0023`**) guarda la cuenta elegida. `POST/PUT /api/pre-facturas` aceptan `fce_cbu` (CBU o alias de la config del emisor de esa pre factura; 422 si no está; se ignora si el tipo no es FCE; en el PUT, sin mandarlo no se toca y `""` vuelve a la predeterminada). Toda respuesta trae `fce_cuenta` (`{cbu, alias, etiqueta}` o `null`) y el PDF imprime «Cobro en: CBU … (alias …)» con la cuenta guardada o la predeterminada. Cambiar el emisor con una cuenta que el nuevo no tiene es 422.
+- **`POST /api/facturas`**: `fce_cbu` opcional (CBU o alias de una cuenta cargada). Sin elegir sale el predeterminado; uno fuera de la lista es 422 antes de pedir el número. A ARCA va sólo el CBU (opcional 2101).
+
+### Para los productos
+
+- **Correr la `0023` y subir el pin.** Una pantalla que no conozca `fce_cbus` sigue funcionando. Para ofrecer la elección, leer `fce_cbus` del `GET /config/arca` y mandar `fce_cbu` en el alta de la FCE.
+- Quien lea `arca_config["fce_cbu"]` para emitir debería pasar por `cbu_para_fce(cfg, None)`.
+- Al facturar una pre factura FCE, pasar su `fce_cbu` (si no es `null`) al alta de la factura.
+
 ## [Unreleased] — Los códigos de acceso de las demos sobreviven al reset nocturno (propuesta: v1.150.0)
 
 ADR-039. **Sin migración y sin cambio de schema.** Seis demos perdían todos los códigos entregados cada noche (el reset recrea la base, y `demo_codigos` vive ahí); sólo LibraCargo y LibraClub los preservaban, con un bloque bash propio.

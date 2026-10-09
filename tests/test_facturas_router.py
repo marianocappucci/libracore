@@ -1112,6 +1112,88 @@ def test_la_nota_de_credito_de_una_fce_es_una_nota_de_fce_con_la_fecha_del_asoci
     assert db_facturas.get_factura(nd["id"])["tipo"] == 202
 
 
+# ── FCE con varios CBU (ADR-040): en cuál cobrar ────────────────────────────
+
+CBU_B, CBU_C = "2" * 22, "3" * 22
+
+
+def _habilitar_fce_con_varios():
+    """Tres cuentas cargadas (dos con alias); la predeterminada es `CBU`."""
+    from libracore.db import arca_config as db_arca
+    _habilitar_fce()
+    db_arca.actualizar_arca_config("x", fce_cbus=[
+        {"cbu": CBU, "alias": "", "etiqueta": "Principal"},
+        {"cbu": CBU_B, "alias": "cuenta.segunda", "etiqueta": "Segunda"},
+        {"cbu": CBU_C, "alias": "", "etiqueta": ""},
+    ])
+
+
+def _cbu_de(factura) -> str:
+    from libracore.db import facturas as db_facturas
+    return db_facturas.get_factura(factura["id"])["fce_cbu"]
+
+
+def test_una_fce_con_el_cbu_elegido_de_la_lista_sale_con_ese_cbu(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce_con_varios()
+    assert _cbu_de(_emitir(client, **_fce(fce_cbu=CBU_C))) == CBU_C
+
+
+def test_una_fce_se_puede_elegir_por_alias_y_sale_con_el_cbu(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce_con_varios()
+    assert _cbu_de(_emitir(client, **_fce(fce_cbu="Cuenta.Segunda"))) == CBU_B
+
+
+def test_una_fce_sin_elegir_sale_con_el_predeterminado(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce_con_varios()
+    assert _cbu_de(_emitir(client, **_fce())) == CBU
+    assert _cbu_de(_emitir(client, **_fce(fce_cbu=""))) == CBU
+    assert _cbu_de(_emitir(client, **_fce(fce_cbu=None))) == CBU
+
+
+def test_una_fce_con_un_cbu_fuera_de_la_lista_es_422_y_no_gasta_un_numero(client, monkeypatch):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce_con_varios()
+    pidieron_numero = []
+    real = fr.get_next_numero_with_arca
+
+    async def espia(*args, **kwargs):
+        pidieron_numero.append(args)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(fr, "get_next_numero_with_arca", espia)
+    for elegido in ("9" * 22, "alias.inexistente"):
+        r = client.post(API, json=_fce(fce_cbu=elegido))
+        assert r.status_code == 422
+        assert r.json()["detail"] == "El CBU elegido no está entre los cargados en la configuración de ARCA."
+    assert not pidieron_numero, "se pidió número (y CAE) para un comprobante que se iba a rechazar"
+    assert client.get(API).json()["total"] == 0
+
+
+def test_elegir_un_cbu_en_una_factura_que_no_es_fce_no_hace_nada(client):
+    """El campo es de la FCE: una factura común lo ignora en vez de rechazarla."""
+    config_manager.save({"empresa_iva_condition": "Monotributista"})
+    factura = _emitir(client, fce_cbu="9" * 22)
+    assert factura["tipo"] == 11 and _cbu_de(factura) == ""
+
+
+def test_una_instancia_con_el_cbu_legado_y_sin_lista_emite_igual(client):
+    """La config de antes de la lista (sólo `fce_cbu`) sigue emitiendo, y elige ese mismo CBU."""
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce()
+    assert _cbu_de(_emitir(client, **_fce())) == CBU
+    assert _cbu_de(_emitir(client, **_fce(fce_cbu=CBU))) == CBU
+    assert client.post(API, json=_fce(fce_cbu=CBU_B)).status_code == 422
+
+
+def test_la_fce_se_ofrece_si_hay_predeterminado_aunque_haya_lista(client):
+    config_manager.save({"empresa_iva_condition": "Responsable Inscripto"})
+    _habilitar_fce_con_varios()
+    assert [t["value"] for t in client.get(f"{API}/tipos").json()["tipos"]] == [1, 6, 201, 206]
+
+
 def test_las_notas_de_una_fce_no_se_emiten_desde_el_alta(client):
     r = client.post(API, json=_factura(tipo=203))
     assert r.status_code == 422

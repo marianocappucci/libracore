@@ -949,7 +949,11 @@ def init_core_schema(conn: Conexion):
     # FCE MiPyME. El CBU y la modalidad de transmisión (SCA/ADC) son del EMISOR:
     # viven en su config de ARCA y se copian a cada FCE al emitirla, para que el
     # comprobante diga con qué CBU se emitió aunque la config cambie después.
-    for columna in ("fce_cbu", "fce_transmision"):
+    #
+    # `fce_cbus` (ADR-040) es la lista de cuentas donde se puede cobrar una FCE, en
+    # JSON: `[{"cbu", "alias", "etiqueta"}]`. `fce_cbu` pasó a ser el CBU
+    # predeterminado de esa lista, y se conserva para quien ya lo lee.
+    for columna in ("fce_cbu", "fce_transmision", "fce_cbus"):
         if columna not in cols_arca:
             conn.execute(
                 f"ALTER TABLE arca_config ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''"
@@ -1046,6 +1050,11 @@ def init_core_schema(conn: Conexion):
         conn.execute("ALTER TABLE comprobantes_pendientes ADD COLUMN tipo_comprobante INTEGER")
     if "fecha_vencimiento_pago" not in cols_cp:
         conn.execute("ALTER TABLE comprobantes_pendientes ADD COLUMN fecha_vencimiento_pago TEXT")
+    if "fce_cbu" not in cols_cp:
+        # En qué cuenta de la config del emisor se cobra la FCE de esta pre factura (ADR-040).
+        # `NULL` es «la predeterminada»: se resuelve recién al facturar, así que cambiar el
+        # predeterminado después sigue valiendo para lo que no eligió cuenta.
+        conn.execute("ALTER TABLE comprobantes_pendientes ADD COLUMN fce_cbu TEXT")
     for columna in ("enviado_at", "enviado_a", "aceptado_at", "aceptado_por"):
         if columna not in cols_cp:
             conn.execute(f"ALTER TABLE comprobantes_pendientes ADD COLUMN {columna} TEXT")

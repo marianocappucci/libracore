@@ -122,6 +122,40 @@ def _nombres_de(ambiente: str) -> tuple[str, str]:
     return config_manager.ARCHIVOS_POR_AMBIENTE[ambiente]
 
 
+class CbuFce(BaseModel):
+    """Una cuenta donde se puede cobrar una FCE: su CBU, su alias bancario y un nombre para elegirla."""
+
+    cbu: str
+    #: Opcional. Se guarda en minúsculas, como lo normaliza la banca.
+    alias: str = ""
+    etiqueta: str = ""
+
+    @field_validator("cbu")
+    @classmethod
+    def _cbu(cls, v):
+        v = db_arca_config.normalizar_cbu(v)
+        if not (len(v) == 22 and v.isdigit()):
+            raise ValueError("El CBU tiene 22 dígitos.")
+        return v
+
+    @field_validator("alias")
+    @classmethod
+    def _alias(cls, v):
+        v = db_arca_config.normalizar_alias(v)
+        if v and not db_arca_config.ALIAS_VALIDO.match(v):
+            raise ValueError(
+                "El alias tiene de 6 a 20 caracteres: letras sin tildes ni ñ, números, punto o guion.")
+        return v
+
+    @field_validator("etiqueta")
+    @classmethod
+    def _etiqueta(cls, v):
+        v = v.strip()
+        if len(v) > 60:
+            raise ValueError("La etiqueta tiene hasta 60 caracteres.")
+        return v
+
+
 class ArcaPayload(BaseModel):
     """Lo que la pantalla edita. **Los paths no están acá a propósito**: los
     pone el servidor al recibir el archivo, no el cliente en un JSON."""
@@ -138,8 +172,13 @@ class ArcaPayload(BaseModel):
     #: FCE MiPyME: el CBU del emisor (22 dígitos) y la modalidad de transmisión.
     #: 🔑 `None` es «no lo toqués» y `""` es «borralo»: una pantalla que no conoce
     #: la FCE no manda el campo, y no tiene que dejar el CBU en blanco.
+    #:
+    #: `fce_cbu` es el CBU **predeterminado**. `fce_cbus` (ADR-040) es la lista de
+    #: cuentas entre las que se elige al emitir; `None` es «no la toqués», así que
+    #: una pantalla que sólo conoce `fce_cbu` sigue andando (ver `_cbus_a_guardar`).
     fce_cbu: str | None = None
     fce_transmision: str | None = None
+    fce_cbus: list[CbuFce] | None = None
 
     _no_son_booleanos = sin_booleanos("punto_venta")
 
@@ -170,6 +209,45 @@ class PedidoPayload(BaseModel):
     #: 🔴 Reemplazar un pedido pendiente destruye su clave: si el `.csr` anterior ya está en
     #: ARCA, el `.crt` que devuelva queda sin pareja. Sin esta confirmación explícita es 409.
     reemplazar: bool = False
+
+
+def _cbus_a_guardar(payload: ArcaPayload, existente: dict | None) -> tuple[str | None, list[dict] | None]:
+    """`(fce_cbu, fce_cbus)` a guardar, con `None` en lo que no hay que tocar. 422 si no cierra.
+
+    🔑 **Lista y predeterminado nunca quedan desalineados.**
+
+    - Viene `fce_cbus` (pantalla nueva): no puede repetir CBU ni alias; vacía borra
+      también el predeterminado; si no, `fce_cbu` tiene que estar en la lista, y si
+      no vino se usa el primero.
+    - No viene (pantalla vieja): manda `fce_cbu` como siempre. Un CBU nuevo se
+      **agrega** a la lista (sin alias ni etiqueta) y queda de predeterminado; `""`
+      es «borralo» y vacía todo, porque esa pantalla no sabe que hay más cuentas.
+      Los alias y etiquetas de las que ya estaban no se tocan.
+    """
+    if payload.fce_cbus is None:
+        if payload.fce_cbu is None:
+            return None, None
+        if not payload.fce_cbu:
+            return "", []
+        lista = db_arca_config.cbus_fce(existente)
+        if payload.fce_cbu not in [f["cbu"] for f in lista]:
+            lista.append({"cbu": payload.fce_cbu, "alias": "", "etiqueta": ""})
+        return payload.fce_cbu, lista
+
+    lista = [f.model_dump() for f in payload.fce_cbus]
+    cbus = [f["cbu"] for f in lista]
+    if len(set(cbus)) != len(cbus):
+        raise HTTPException(422, "Hay un CBU repetido en la lista.")
+    aliases = [f["alias"] for f in lista if f["alias"]]
+    if len(set(aliases)) != len(aliases):
+        raise HTTPException(422, "Hay un alias repetido en la lista.")
+    if not lista:
+        return "", []
+    if not payload.fce_cbu:
+        return cbus[0], lista
+    if payload.fce_cbu not in cbus:
+        raise HTTPException(422, "El CBU predeterminado tiene que ser uno de los de la lista.")
+    return payload.fce_cbu, lista
 
 
 def _resolver(empresa: str) -> dict | None:
@@ -562,6 +640,7 @@ def build_arca_router(
             "ambiente":         cfg.get("ambiente", "homologacion"),
             "alias":            cfg.get("alias", "") or "",
             "fce_cbu":          cfg.get("fce_cbu", "") or "",
+            "fce_cbus":         db_arca_config.cbus_fce(cfg),
             "fce_transmision":  cfg.get("fce_transmision", "") or "",
             # 🔑 El estado de LOS DOS pares, no sólo el del selector. La pantalla
             # tiene que poder decir "ya tenés cargado el de producción" mientras
@@ -579,11 +658,13 @@ def build_arca_router(
         empresa = payload.empresa.strip() or _empresa_de("", empresa_por_defecto)
         ambiente = payload.ambiente if payload.ambiente in AMBIENTES else "homologacion"
         existente = db_arca_config.obtener_arca_config(empresa)
+        # Antes de escribir nada: un 422 de la lista no puede dejar la fila a medias.
+        fce_cbu, fce_cbus = _cbus_a_guardar(payload, existente)
         if existente:
             db_arca_config.actualizar_arca_config(
                 empresa, cuit=payload.cuit, punto_venta=payload.punto_venta,
                 ambiente=ambiente, alias=payload.alias,
-                fce_cbu=payload.fce_cbu, fce_transmision=payload.fce_transmision,
+                fce_cbu=fce_cbu, fce_transmision=payload.fce_transmision, fce_cbus=fce_cbus,
             )
         else:
             db_arca_config.crear_arca_config(
@@ -591,9 +672,10 @@ def build_arca_router(
                 clave_path="", certificado_path="", ambiente=ambiente,
                 alias=payload.alias,
             )
-            if payload.fce_cbu or payload.fce_transmision:
+            if fce_cbu or fce_cbus or payload.fce_transmision:
                 db_arca_config.actualizar_arca_config(
-                    empresa, fce_cbu=payload.fce_cbu, fce_transmision=payload.fce_transmision)
+                    empresa, fce_cbu=fce_cbu, fce_transmision=payload.fce_transmision,
+                    fce_cbus=fce_cbus)
         _avisar("configurar", {
             "empresa": empresa, "cuit": payload.cuit,
             "punto_venta": payload.punto_venta, "ambiente": ambiente,

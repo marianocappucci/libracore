@@ -140,7 +140,8 @@ PAGE_SIZE = 50
 def _datos_de_fce(payload, cliente: dict) -> tuple[str, str]:
     """`(cbu, transmisión)` para una FCE, o `("", "")` si no lo es. 422 si falta algo.
 
-    El CBU y la modalidad son del emisor y salen de su config de ARCA; el
+    El CBU y la modalidad son del emisor y salen de su config de ARCA (el CBU, el que
+    eligió `payload.fce_cbu` entre los cargados, o el predeterminado); el
     vencimiento de pago lo pone quien factura; y el receptor tiene que ser una
     empresa con CUIT (con consumidor final ARCA contesta 10015).
     """
@@ -155,12 +156,17 @@ def _datos_de_fce(payload, cliente: dict) -> tuple[str, str]:
     if not (payload.fch_vto_pago or "").strip():
         raise HTTPException(422, "La FCE exige la fecha de vencimiento de pago.")
     cfg = _config_del_emisor(payload.emisor_id) or {}
-    cbu = (cfg.get("fce_cbu") or "").strip()
     transmision = (cfg.get("fce_transmision") or "").strip().upper()
-    if not cbu or transmision not in ("SCA", "ADC"):
+    if not db_arca.cbu_para_fce(cfg, None) or transmision not in ("SCA", "ADC"):
         raise HTTPException(
             422, "Para emitir una FCE falta cargar el CBU y la modalidad de "
                  "transmisión (SCA o ADC) en la configuración de ARCA.")
+    # 🔑 El elegido tiene que ser uno de los cargados: un CBU de 22 dígitos que el dueño
+    # no puso en su configuración es una FCE cobrada en una cuenta ajena.
+    try:
+        cbu = db_arca.cbu_para_fce(cfg, payload.fce_cbu)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
     return cbu, transmision
 
 
@@ -183,7 +189,7 @@ def _config_del_emisor(emisor_id: int | None) -> dict | None:
 def _tipos_fce_del_emisor(emisor_id: int | None = None) -> list[dict]:
     """Las opciones de FCE para el selector, o `[]` si el emisor no la habilitó."""
     cfg = _config_del_emisor(emisor_id) or {}
-    if not (cfg.get("fce_cbu") and cfg.get("fce_transmision")):
+    if not (db_arca.cbu_para_fce(cfg, None) and cfg.get("fce_transmision")):
         return []
     emisor = config_manager.load().get("empresa_iva_condition", "Monotributista")
     return [{"value": t, "label": TIPO_LABEL[t]} for t in TIPOS_FCE_POR_CONDICION.get(emisor, [])]
@@ -363,6 +369,9 @@ class FacturaPayload(BaseModel):
     #: Con qué configuración de ARCA se emite (`arca_config.id`). Sólo la manda un
     #: producto con varias razones sociales; sin ella, el emisor único de la instancia.
     emisor_id: int | None = None
+    #: FCE: en qué cuenta cobrar, entre las que el emisor cargó en la configuración de
+    #: ARCA (ADR-040). Puede ser el CBU o el alias; sin elegir, el predeterminado.
+    fce_cbu: str | None = None
 
     _no_son_booleanos = sin_booleanos(
         "tipo", "punto_venta", "concepto", "tax_rate", "client_id", "emisor_id")

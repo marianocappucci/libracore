@@ -57,6 +57,7 @@ import sqlite3
 
 from libracore import email_sender, emisor_del_pdf, pdf_generator
 from libracore import tipos_comprobante as tipos
+from libracore.db import arca_config
 from libracore.db import comprobantes_pendientes as bandeja
 from libracore.db.arca_config import EmisorDesconocido
 from libracore.db.core import Conexion, _ar_now, sql_busqueda
@@ -75,7 +76,7 @@ ESTADOS_FINALES = bandeja.ESTADOS_FINALES
 EDITABLES = frozenset({
     "cliente_id", "cliente_cuit", "cliente_razon", "cliente_domicilio", "emisor_id",
     "tipo_comprobante", "fecha_sugerida", "fecha_vencimiento_pago", "periodo_desde",
-    "periodo_hasta", "concepto", "condicion_venta", "observaciones", "items",
+    "periodo_hasta", "concepto", "condicion_venta", "observaciones", "items", "fce_cbu",
 })
 
 _MAX_INTENTOS = 5
@@ -226,6 +227,20 @@ def _validar_emisor(emisor_id, c) -> None:
         raise EmisorDesconocido(f"No hay una configuración de ARCA activa con id {emisor_id}.")
 
 
+def _cuenta_elegida(c, emisor_id, tipo, pedido) -> str | None:
+    """El CBU a guardar para una FCE, o `None`. `ValueError` si no es una cuenta del emisor.
+
+    `pedido` es el CBU **o el alias** de una de las cargadas en la config de ARCA del
+    emisor; se guarda siempre el CBU, resuelto con `cbu_para_fce`. `None` (y no el
+    predeterminado) cuando no se eligió: la predeterminada se resuelve al facturar, así
+    que si cambia mientras tanto vale la nueva. Una pre factura que no es FCE no tiene
+    cuenta, se pida lo que se pida.
+    """
+    if tipo not in tipos.FCE_FACTURA or not str(pedido or "").strip():
+        return None
+    return arca_config.cbu_para_fce(arca_config.config_del_emisor_en(emisor_id, conn=c), pedido)
+
+
 def _validar_cliente(razon) -> str:
     razon = str(razon or "").strip()
     if not razon:
@@ -253,7 +268,8 @@ def crear(*, origen_producto: str, cliente_razon: str, items: list, origen_insta
           emisor_id: int | None = None, tipo_comprobante: int | None = None,
           fecha_sugerida: str = "", fecha_vencimiento_pago: str = "", periodo_desde: str = "",
           periodo_hasta: str = "", concepto: str = "", condicion_venta: str = "",
-          observaciones: str = "", conn: Conexion | None = None) -> dict:
+          observaciones: str = "", fce_cbu: str | None = None,
+          conn: Conexion | None = None) -> dict:
     """Crea una pre factura `pendiente`, le asigna su número interno y la devuelve.
 
     El cliente va **como foto** (razón social, CUIT, domicilio): no depende de que
@@ -269,6 +285,9 @@ def crear(*, origen_producto: str, cliente_razon: str, items: list, origen_insta
     - `tipo_comprobante`: 1/6/11 (A/B/C) o 201/206/211 (FCE). `None` es «todavía no se
       eligió».
     - `fecha_sugerida`: la fecha del documento (sale en el PDF); vacía es hoy.
+    - `fce_cbu`: sólo para una FCE, en qué cuenta se cobra: el CBU **o el alias** de una de
+      las que el emisor cargó en la config de ARCA (ADR-040). Se guarda el CBU. Sin elegir,
+      queda `None` y al facturar sale el predeterminado; en un tipo que no es FCE se ignora.
     - `items`: `{description, qty, unit_price, iva_rate}` (y lo que el producto quiera
       guardar). **El total sale de los ítems**, nunca de afuera
       (`db.comprobantes_pendientes.calcular_total`).
@@ -291,6 +310,7 @@ def crear(*, origen_producto: str, cliente_razon: str, items: list, origen_insta
         try:
             with _savepoint(conn, "libracore_pre_factura"), _con(conn) as c:
                 _validar_emisor(emisor_id, c)
+                cuenta = _cuenta_elegida(c, emisor_id, tipo_comprobante, fce_cbu)
                 numero = _siguiente_numero(c, origen_producto, origen_instancia)
                 o_id = str(origen_id) if origen_id is not None else numero
                 ya = c.execute(
@@ -306,13 +326,13 @@ def crear(*, origen_producto: str, cliente_razon: str, items: list, origen_insta
                     " cliente_cuit, cliente_razon, cliente_domicilio, fecha_sugerida, "
                     " periodo_desde, periodo_hasta, concepto, condicion_venta, observaciones, "
                     " items, total, estado, numero_interno, emisor_id, tipo_comprobante, "
-                    " fecha_vencimiento_pago) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " fecha_vencimiento_pago, fce_cbu) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (origen_producto, origen_instancia, origen_tipo, o_id, cliente_id,
                      cliente_cuit, cliente_razon, cliente_domicilio, fecha, periodo_desde,
                      periodo_hasta, concepto, condicion_venta, observaciones,
                      json.dumps(items, ensure_ascii=False), total, bandeja.ESTADO_PENDIENTE,
-                     numero, emisor_id, tipo_comprobante, fecha_vencimiento_pago or None))
+                     numero, emisor_id, tipo_comprobante, fecha_vencimiento_pago or None, cuenta))
                 return bandeja.get_comprobante(cur.lastrowid, conn=c)
         except sqlite3.IntegrityError:
             # Dos altas calcularon el mismo número y la otra ganó (el índice único
@@ -351,7 +371,23 @@ def editar(pre_factura_id: int, *, conn: Conexion | None = None, **campos) -> di
         _validar_tipo(nuevo["tipo_comprobante"], nuevo["items"])
         if "emisor_id" in campos:
             _validar_emisor(campos["emisor_id"], c)
-        cambios = {k: nuevo[k] for k in campos if not _igual(actual[k], nuevo[k])}
+        # La cuenta de cobro de la FCE (ADR-040). `""` es «volver a la predeterminada»
+        # (se guarda `None`, como `fecha_vencimiento_pago`); lo no mandado no se toca.
+        if "fce_cbu" in campos:
+            nuevo["fce_cbu"] = _cuenta_elegida(
+                c, nuevo["emisor_id"], nuevo["tipo_comprobante"], campos["fce_cbu"])
+        elif nuevo["tipo_comprobante"] not in tipos.FCE_FACTURA:
+            nuevo["fce_cbu"] = None  # dejó de ser FCE: la cuenta ya no tiene sentido
+        elif actual.get("fce_cbu") and "emisor_id" in campos:
+            try:  # otro emisor, otras cuentas: la elegida tiene que existir en la nueva config
+                arca_config.cbu_para_fce(
+                    arca_config.config_del_emisor_en(nuevo["emisor_id"], conn=c), actual["fce_cbu"])
+            except ValueError:
+                raise ValueError(
+                    "La cuenta de cobro elegida no está entre las del nuevo emisor: elegí otra "
+                    "o mandá fce_cbu vacío para usar la predeterminada.") from None
+        cambios = {k: nuevo[k] for k in (*campos, "fce_cbu")
+                   if not _igual(actual.get(k), nuevo.get(k))}
         if not cambios:
             return actual
 
