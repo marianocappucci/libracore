@@ -20,6 +20,7 @@ from libracore.db.core import Conexion, _ar_now, get_connection, sql_busqueda
 from libracore.db.cuenta_corriente import create_cc_pago
 from libracore.db.stock import add_movimiento_stock, descontar_stock_venta
 from libracore.db.turnos import get_turno_activo, vincular_venta_turno
+from libracore.fechas import rango_por_dia
 
 
 def get_next_venta_numero(conn: Conexion | None = None) -> str:
@@ -141,10 +142,8 @@ def get_all_ventas(desde: str = "", hasta: str = "", q: str = "",
                    tab: str = "todas", limit: int = 100, offset: int = 0) -> list[dict]:
     with get_connection() as conn:
         where, params = [], []
-        if desde:
-            where.append("v.fecha >= ?"); params.append(desde)
-        if hasta:
-            where.append("v.fecha <= ?"); params.append(hasta)
+        c_fecha, p_fecha = rango_por_dia("v.fecha", desde, hasta)
+        where += c_fecha; params += p_fecha
         if q:
             where.append(sql_busqueda("v.numero", "v.cliente_nombre"))
             params += [f"%{q}%", f"%{q}%"]

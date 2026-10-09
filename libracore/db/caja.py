@@ -10,6 +10,7 @@ import re
 
 from libracore import medios_pago
 from libracore.db.core import get_connection
+from libracore.fechas import rango_por_dia
 
 from .core import Conexion
 
@@ -364,7 +365,8 @@ def get_caja_movimientos(desde=None, hasta=None, limit=500, caja_id=None):
     with get_connection() as conn:
         where, params = [], []
         if desde and hasta:
-            where.append("cm.fecha BETWEEN ? AND ?"); params += [desde, hasta]
+            c_fecha, p_fecha = rango_por_dia("cm.fecha", desde, hasta)
+            where += c_fecha; params += p_fecha
         if caja_id:
             where.append("cm.caja_id = ?"); params.append(caja_id)
         sql = """SELECT cm.*, c.nombre AS caja_nombre, u.nombre AS usuario_nombre
@@ -390,7 +392,8 @@ def get_caja_resumen(desde=None, hasta=None, caja_id=None):
     with get_connection() as conn:
         where, params = [_cc_excl, sql_no_anulado()], []
         if desde and hasta:
-            where.append("fecha BETWEEN ? AND ?"); params += [desde, hasta]
+            c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+            where += c_fecha; params += p_fecha
         if caja_id:
             where.append("caja_id = ?"); params.append(caja_id)
         w = "WHERE " + " AND ".join(where)

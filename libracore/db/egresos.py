@@ -6,6 +6,7 @@ wiki/entities/libracore.md).
 """
 from libracore.db.caja import get_default_caja_id
 from libracore.db.core import get_connection, sql_busqueda
+from libracore.fechas import rango_por_dia
 
 
 def get_categorias_egreso() -> list[dict]:
@@ -107,10 +108,8 @@ def get_all_egresos(desde: str = "", hasta: str = "", categoria: str = "",
                     estado: str = "", proveedor_id: int = 0, limit: int = 200) -> list[dict]:
     conds = []
     params: list = []
-    if desde:
-        conds.append("e.fecha >= ?"); params.append(desde)
-    if hasta:
-        conds.append("e.fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("e.fecha", desde, hasta)
+    conds += c_fecha; params += p_fecha
     if categoria:
         conds.append("e.categoria = ?"); params.append(categoria)
     if estado:
@@ -133,10 +132,8 @@ def get_all_egresos(desde: str = "", hasta: str = "", categoria: str = "",
 def get_resumen_egresos(desde: str = "", hasta: str = "") -> dict:
     conds = []
     params: list = []
-    if desde:
-        conds.append("fecha >= ?"); params.append(desde)
-    if hasta:
-        conds.append("fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+    conds += c_fecha; params += p_fecha
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
     with get_connection() as conn:
         row = conn.execute(

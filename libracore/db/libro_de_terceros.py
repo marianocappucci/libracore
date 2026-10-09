@@ -22,6 +22,7 @@ de quien llama y no confirman nada, así el producto asienta junto con su docume
 """
 from libracore.db.core import Conexion
 from libracore.db.facturas import _con
+from libracore.fechas import dia_iso, rango_por_dia
 
 #: Lo que `corregir` deja cambiar: todo lo que cambia cuando se edita el documento
 #: que originó el asiento (también la cuenta: un cobro que pasa a ser de otro
@@ -149,12 +150,8 @@ def contraasentar(asiento_id: int, *, fecha: str | None = None, concepto: str | 
 
 
 def _rango(desde: str | None, hasta: str | None) -> tuple[str, tuple]:
-    sql, params = "", ()
-    if desde:
-        sql, params = sql + " AND fecha >= ?", params + (desde,)
-    if hasta:
-        sql, params = sql + " AND fecha <= ?", params + (hasta,)
-    return sql, params
+    conds, params = rango_por_dia("fecha", desde, hasta)
+    return "".join(f" AND {c}" for c in conds), tuple(params)
 
 
 def saldo(tercero_id: int, rol: str, *, hasta: str | None = None,
@@ -180,9 +177,14 @@ def extracto(tercero_id: int, rol: str, *, desde: str | None = None, hasta: str 
     with _con(conn) as c:
         anterior = 0.0
         if desde:
+            # «Antes de desde» es antes del DÍA de desde: el rango de abajo arranca en ese día
+            # (`rango_por_dia`), y con la hora de `desde` en la comparación el mismo asiento
+            # entraría en el saldo anterior y también en el período.
+            dia = dia_iso(desde)
             fila = c.execute(
                 "SELECT COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) FROM cc_asientos "
-                "WHERE tercero_id = ? AND rol = ? AND fecha < ?", (tercero_id, rol, desde)).fetchone()
+                "WHERE tercero_id = ? AND rol = ? AND fecha < ?",
+                (tercero_id, rol, dia.isoformat() if dia else desde)).fetchone()
             anterior = float(fila[0] or 0)
         filas = c.execute(
             f"SELECT * FROM cc_asientos WHERE tercero_id = ? AND rol = ?{filtro} ORDER BY fecha, id",

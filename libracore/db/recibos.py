@@ -17,6 +17,7 @@ import json
 import sqlite3
 
 from libracore.db.core import get_connection, sql_busqueda
+from libracore.fechas import rango_por_dia
 
 # Los tres orígenes posibles. Un recibo siempre nace de una operación que ya
 # ocurrió: no se emite un recibo "suelto" porque el papel afirma que entró
@@ -125,10 +126,8 @@ def get_recibos(desde="", hasta="", q="", cliente_id=None, incluir_anulados=True
                 limit=50, offset=0) -> list[dict]:
     """Listado para la pantalla, más nuevos primero."""
     conds, params = [], []
-    if desde:
-        conds.append("fecha >= ?"); params.append(desde)
-    if hasta:
-        conds.append("fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+    conds += c_fecha; params += p_fecha
     if cliente_id is not None:
         conds.append("cliente_id = ?"); params.append(cliente_id)
     if q:
@@ -150,10 +149,8 @@ def contar_recibos(desde="", hasta="", q="", cliente_id=None,
                    incluir_anulados=True) -> int:
     """Total que matchea los mismos filtros que `get_recibos`, para paginar."""
     conds, params = [], []
-    if desde:
-        conds.append("fecha >= ?"); params.append(desde)
-    if hasta:
-        conds.append("fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+    conds += c_fecha; params += p_fecha
     if cliente_id is not None:
         conds.append("cliente_id = ?"); params.append(cliente_id)
     if q:

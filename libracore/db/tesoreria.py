@@ -5,6 +5,7 @@ Restolibra (idéntico en ambos) como parte de la migración real a
 libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
 from libracore.db.core import get_connection
+from libracore.fechas import rango_por_dia
 
 _TIPOS_CUENTA = {
     "efectivo": "Efectivo",
@@ -77,10 +78,8 @@ def get_movimientos_tesoreria(cuenta_id: int | None = None, limit: int = 200,
     if cuenta_id:
         conds.append("(m.cuenta_id=? OR m.cuenta_destino_id=?)")
         params += [cuenta_id, cuenta_id]
-    if desde:
-        conds.append("m.fecha >= ?"); params.append(desde)
-    if hasta:
-        conds.append("m.fecha <= ?"); params.append(hasta + " 23:59:59")
+    c_fecha, p_fecha = rango_por_dia("m.fecha", desde, hasta)
+    conds += c_fecha; params += p_fecha
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
     with get_connection() as conn:
         rows = conn.execute(f"""

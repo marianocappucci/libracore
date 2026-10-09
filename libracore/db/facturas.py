@@ -12,6 +12,7 @@ import sqlite3
 from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_es_cuenta_corriente, sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import Conexion, get_connection, sql_busqueda
+from libracore.fechas import rango_por_dia
 
 
 def _con(conn: Conexion | None):
@@ -375,10 +376,8 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
     ph = ",".join("?" * len(tipos))
     conds = [f"f.tipo IN ({ph})"]
     params = list(tipos)
-    if desde:
-        conds.append("f.fecha >= ?"); params.append(desde)
-    if hasta:
-        conds.append("f.fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("f.fecha", desde, hasta)
+    conds += c_fecha; params += p_fecha
     if q:
         conds.append(sql_busqueda(
             "CAST(f.numero AS TEXT)", "f.cliente_razon", "f.observaciones"))

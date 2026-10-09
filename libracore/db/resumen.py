@@ -19,6 +19,7 @@ from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 from libracore.db.facturas import sql_vigente
+from libracore.fechas import rango_por_dia
 
 #: Los tipos que son factura. Las notas de credito y debito quedan afuera de
 #  "facturado": restan o suman por otro lado y mezclarlas infla el numero.
@@ -29,12 +30,15 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
     """Facturacion y caja del periodo. Todo con COUNT/SUM, en una conexion."""
     ph = ",".join("?" * len(TIPOS_FACTURA))
     tipos = list(TIPOS_FACTURA)
+    # Rango por día (ADR-037): una fila con hora del último día entra igual.
+    c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+    w_fecha = " AND ".join(c_fecha) or "1=1"
 
     with get_connection() as conn:
         facturado, comprobantes = conn.execute(
             f"SELECT COALESCE(SUM(total), 0), COUNT(*) FROM facturas "
-            f"WHERE tipo IN ({ph}) AND fecha BETWEEN ? AND ? AND {sql_vigente()}",
-            tipos + [desde, hasta],
+            f"WHERE tipo IN ({ph}) AND {w_fecha} AND {sql_vigente()}",
+            tipos + p_fecha,
         ).fetchone()
 
         cobrado, egresos = conn.execute(
@@ -42,8 +46,8 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
                  COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE 0 END), 0),
                  COALESCE(SUM(CASE WHEN tipo='egreso'  THEN monto ELSE 0 END), 0)
                FROM caja_movimientos
-               WHERE fecha BETWEEN ? AND ? AND """ + sql_no_anulado(),
-            (desde, hasta),
+               WHERE """ + w_fecha + " AND " + sql_no_anulado(),
+            p_fecha,
         ).fetchone()
 
         # El saldo es historico a proposito: es cuanta plata hay, no cuanta
