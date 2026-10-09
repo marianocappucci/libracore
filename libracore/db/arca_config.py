@@ -4,6 +4,10 @@ Extraído de database.py de Contalibra/Restolibra (idéntico en ambos) como
 parte de la migración real a libracore.db (Fase 3 de LibraCore, ver
 wiki/entities/libracore.md).
 """
+import contextlib
+import json
+import re
+
 from libracore.db.core import get_connection
 
 #: Los dos ambientes, y de qué columnas sale el par de cada uno.
@@ -42,6 +46,128 @@ def paths_de(config: dict | None, ambiente: str | None = None) -> tuple[str, str
         return "", ""
     cert, clave = columnas
     return (config.get(cert) or ""), (config.get(clave) or "")
+
+
+#: Cómo es un alias bancario en la Argentina: de 6 a 20 caracteres, en minúsculas,
+#: sólo letras sin ñ ni tildes, números, punto y guion.
+ALIAS_VALIDO = re.compile(r"^[a-z0-9.\-]{6,20}$")
+
+
+def normalizar_cbu(valor) -> str:
+    """El CBU sin espacios ni guiones, que es como se guarda y se compara."""
+    return "".join(str(valor or "").split()).replace("-", "")
+
+
+def normalizar_alias(valor) -> str:
+    """El alias sin espacios de los costados y en minúsculas. No valida: ver `ALIAS_VALIDO`."""
+    return str(valor or "").strip().lower()
+
+
+def cbus_fce(config: dict | None) -> list[dict]:
+    """Las cuentas donde se puede cobrar una FCE: `[{"cbu", "alias", "etiqueta"}]` (ADR-040).
+
+    Sale de `arca_config.fce_cbus`. Devuelve **siempre las tres claves**, con `""`
+    donde la fila no las tenía (lo legado y lo que rellenó la migración no traen
+    alias). Un JSON inválido o que no es una lista es `[]` y no un error: una
+    pantalla a medio llenar no puede dar un 500 al emitir.
+
+    🔑 **Si la lista está vacía pero hay `fce_cbu`, ese CBU es la única cuenta.**
+    Es la instancia que cargó su CBU antes de que existiera la lista, o con una
+    pantalla vieja: para quien lee, tener un solo CBU es tener una lista de uno.
+    """
+    config = config or {}
+    try:
+        crudo = json.loads(config.get("fce_cbus") or "[]")
+    except (TypeError, ValueError):
+        crudo = []
+    filas = []
+    for fila in crudo if isinstance(crudo, list) else []:
+        if not isinstance(fila, dict):
+            continue
+        cbu = normalizar_cbu(fila.get("cbu"))
+        if cbu:
+            filas.append({
+                "cbu": cbu,
+                "alias": normalizar_alias(fila.get("alias")),
+                "etiqueta": str(fila.get("etiqueta") or "").strip(),
+            })
+    if not filas:
+        predeterminado = normalizar_cbu(config.get("fce_cbu"))
+        if predeterminado:
+            filas = [{"cbu": predeterminado, "alias": "", "etiqueta": ""}]
+    return filas
+
+
+def cbu_para_fce(config: dict | None, pedido: str | None) -> str:
+    """El CBU con el que se emite una FCE. Siempre devuelve **el CBU**, nunca el alias.
+
+    Sin `pedido` (`None` o vacío), el predeterminado: `fce_cbu`, o el primero de la
+    lista si ese está vacío, o `""` si no hay ninguno. Con `pedido`, tiene que ser el
+    CBU **o el alias** de una fila de la lista; si no, `ValueError`.
+
+    ⚠️ **Un CBU que no está en la lista no se acepta aunque tenga 22 dígitos.** Es lo
+    que impide que un formulario mal armado cobre una FCE en una cuenta que el dueño
+    no cargó.
+    """
+    config = config or {}
+    if not str(pedido or "").strip():
+        predeterminado = normalizar_cbu(config.get("fce_cbu"))
+        if predeterminado:
+            return predeterminado
+        filas = cbus_fce(config)
+        return filas[0]["cbu"] if filas else ""
+    cbu_pedido, alias_pedido = normalizar_cbu(pedido), normalizar_alias(pedido)
+    for fila in cbus_fce(config):
+        if fila["cbu"] == cbu_pedido or (fila["alias"] and fila["alias"] == alias_pedido):
+            return fila["cbu"]
+    raise ValueError("El CBU elegido no está entre los cargados en la configuración de ARCA.")
+
+
+def config_del_emisor_en(emisor_id, *, conn=None) -> dict | None:
+    """La config de ARCA de ese `emisor_id` (o la primera activa si es `None`), leída desde `conn`.
+
+    A diferencia de `config_del_emisor`, **no levanta** ante un id que no existe (devuelve
+    `None`) y busca **también entre las inactivas**: es para mostrar y validar un documento
+    ya armado (la pre factura), que tiene que seguir imprimiéndose aunque se dé de baja
+    la razón social. Con `conn` trabaja en la transacción de quien llama.
+    """
+    with (contextlib.nullcontext(conn) if conn is not None else get_connection()) as c:
+        if emisor_id is None:
+            fila = c.execute(
+                "SELECT * FROM arca_config WHERE activo=1 ORDER BY empresa LIMIT 1").fetchone()
+        else:
+            fila = c.execute("SELECT * FROM arca_config WHERE id=?", (emisor_id,)).fetchone()
+        return dict(fila) if fila else None
+
+
+def cuenta_fce(config: dict | None, cbu: str | None = None) -> dict | None:
+    """`{"cbu", "alias", "etiqueta"}` de la cuenta de cobro, o `None` si no hay ninguna.
+
+    Sin `cbu`, la predeterminada de la config. Si el `cbu` ya no está en la lista (se
+    sacó de la configuración después de elegirlo) se devuelve igual, sin alias ni
+    etiqueta: lo que se eligió no se pierde.
+    """
+    elegido = normalizar_cbu(cbu) or cbu_para_fce(config, None)
+    if not elegido:
+        return None
+    for fila in cbus_fce(config):
+        if fila["cbu"] == elegido:
+            return dict(fila)
+    return {"cbu": elegido, "alias": "", "etiqueta": ""}
+
+
+def cuenta_de_cobro(documento: dict, *, conn=None) -> dict | None:
+    """La cuenta donde se cobraría la FCE de un documento sin emitir (la pre factura).
+
+    `None` si el documento no es una FCE o su emisor no tiene ningún CBU cargado. Usa
+    `documento["fce_cbu"]` si lo trae y, si no, el predeterminado del `emisor_id`.
+    """
+    from libracore import tipos_comprobante as tipos
+
+    if documento.get("tipo_comprobante") not in tipos.FCE_FACTURA:
+        return None
+    config = config_del_emisor_en(documento.get("emisor_id"), conn=conn)
+    return cuenta_fce(config, documento.get("fce_cbu"))
 
 
 def crear_arca_config(empresa, cuit, punto_venta, clave_path, certificado_path,
@@ -141,8 +267,12 @@ def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None
                           certificado_path=None, ambiente=None, alias=None,
                           clave_path_homologacion=None,
                           certificado_path_homologacion=None,
-                          fce_cbu=None, fce_transmision=None):
-    """Actualiza configuración ARCA."""
+                          fce_cbu=None, fce_transmision=None, fce_cbus=None):
+    """Actualiza configuración ARCA.
+
+    `fce_cbus` es la lista `[{"cbu", "alias", "etiqueta"}]`: `None` = no la toqués, una
+    lista (incluso vacía) la reemplaza. Quien llama la valida; acá sólo se serializa.
+    """
     with get_connection() as conn:
         config = obtener_arca_config(empresa)
         if not config:
@@ -153,7 +283,7 @@ def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None
                SET cuit=?, punto_venta=?, clave_path=?, certificado_path=?,
                    ambiente=?, alias=?,
                    clave_path_homologacion=?, certificado_path_homologacion=?,
-                   fce_cbu=?, fce_transmision=?,
+                   fce_cbu=?, fce_transmision=?, fce_cbus=?,
                    updated_at=datetime('now','-3 hours')
                WHERE empresa=?""",
             (
@@ -174,6 +304,9 @@ def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None
                 fce_cbu if fce_cbu is not None else config.get("fce_cbu") or "",
                 (fce_transmision if fce_transmision is not None
                  else config.get("fce_transmision") or ""),
+                # Vacía se guarda como `''` y no como `'[]'`: un solo valor para «sin lista».
+                ((json.dumps(fce_cbus, ensure_ascii=False) if fce_cbus else "")
+                 if fce_cbus is not None else config.get("fce_cbus") or ""),
                 empresa,
             ),
         )

@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (417)
+## tablas (419)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -11,6 +11,7 @@ arca_config|clave_path|TEXT|NN|
 arca_config|created_at|TEXT||datetime('now','-3 hours')
 arca_config|cuit|TEXT|NN|
 arca_config|empresa|TEXT|NN|
+arca_config|fce_cbus|TEXT|NN|''
 arca_config|fce_cbu|TEXT|NN|''
 arca_config|fce_transmision|TEXT|NN|''
 arca_config|id|INTEGER||
@@ -129,6 +130,7 @@ comprobantes_pendientes|enviado_at|TEXT||
 comprobantes_pendientes|enviado_a|TEXT||
 comprobantes_pendientes|estado|TEXT|NN|'pendiente'
 comprobantes_pendientes|factura_id|INTEGER||
+comprobantes_pendientes|fce_cbu|TEXT||
 comprobantes_pendientes|fecha_sugerida|TEXT||''
 comprobantes_pendientes|fecha_vencimiento_pago|TEXT||
 comprobantes_pendientes|id|INTEGER||

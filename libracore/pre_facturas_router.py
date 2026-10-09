@@ -36,6 +36,14 @@ nada escrito.
 - `al_editar` corre también cuando no cambió nada del motor (el producto puede haber
   cambiado sus órdenes), y recibe la pre factura como quedó.
 
+## La cuenta de cobro de una FCE (ADR-040)
+
+Crear y editar aceptan `fce_cbu`: el CBU **o el alias** de una de las cuentas que el emisor
+cargó en su config de ARCA (una que no está es 422). Se guarda el CBU; sin elegir queda `null`
+y al facturar sale el predeterminado. En editar, sin mandarlo no se toca y `""` vuelve al
+predeterminado. Toda respuesta trae además `fce_cuenta` (`{cbu, alias, etiqueta}`, o `null` si
+no es una FCE): la cuenta guardada o, si no eligió, la predeterminada.
+
 El «facturar» **no está acá**: lo hace el producto con su camino de emisión y después llama
 a `pre_facturas.marcar_facturada(id, factura_id, conn=...)` en la misma transacción.
 """
@@ -48,6 +56,7 @@ from pydantic import BaseModel, ConfigDict
 
 from libracore import pre_facturas as dominio
 from libracore.db import comprobantes_pendientes as bandeja
+from libracore.db.arca_config import cuenta_de_cobro
 from libracore.db.core import get_connection
 from libracore.validacion import sin_booleanos
 
@@ -87,6 +96,8 @@ class CrearPayload(BaseModel):
     concepto: str = ""
     condicion_venta: str = ""
     observaciones: str = ""
+    #: FCE: el CBU o el alias de una de las cuentas de la config de ARCA del emisor (ADR-040).
+    fce_cbu: str | None = None
     origen_tipo: str = bandeja.ORIGEN_PRE_FACTURA
     origen_id: str | None = None
 
@@ -113,6 +124,8 @@ class EditarPayload(BaseModel):
     concepto: str | None = None
     condicion_venta: str | None = None
     observaciones: str | None = None
+    #: `""` vuelve a la cuenta predeterminada; sin mandarlo (o `null`) no se toca.
+    fce_cbu: str | None = None
 
     _no_son_booleanos = sin_booleanos("cliente_id", "emisor_id", "tipo_comprobante")
 
@@ -207,6 +220,12 @@ def build_pre_facturas_router(
             raise HTTPException(404, "Pre factura no encontrada")
         return pf
 
+    def _con_cuenta(pf: dict) -> dict:
+        """La pre factura con `fce_cuenta`: `{cbu, alias, etiqueta}` de la cuenta donde se cobra
+        su FCE (la guardada en `fce_cbu` o, si no eligió, la predeterminada del emisor), o `None`
+        si no es una FCE o el emisor no tiene CBU cargado."""
+        return {**pf, "fce_cuenta": cuenta_de_cobro(pf)}
+
     def _emisor(pf: dict) -> dict | None:
         return emisor_del_pdf(pf) if emisor_del_pdf else None
 
@@ -217,8 +236,8 @@ def build_pre_facturas_router(
             raise HTTPException(422, f"Estado inválido: {estado!r}.")
         propio = dict(origen_producto=origen_producto, origen_instancia=origen_instancia)
         return {
-            "items": dominio.listar(estado=estado or None, cliente=cliente,
-                                    cliente_id=cliente_id, limit=limit, **propio),
+            "items": [_con_cuenta(pf) for pf in dominio.listar(
+                estado=estado or None, cliente=cliente, cliente_id=cliente_id, limit=limit, **propio)],
             "counts": dominio.contar_por_estado(**propio),
         }
 
@@ -236,14 +255,14 @@ def build_pre_facturas_router(
                 fecha_vencimiento_pago=payload.fecha_vencimiento_pago,
                 periodo_desde=payload.periodo_desde, periodo_hasta=payload.periodo_hasta,
                 concepto=payload.concepto, condicion_venta=payload.condicion_venta,
-                observaciones=payload.observaciones, conn=conn)
+                observaciones=payload.observaciones, fce_cbu=payload.fce_cbu, conn=conn)
             if al_crear:
                 al_crear(conn, pf, datos)
-        return pf
+        return _con_cuenta(pf)
 
     @router.get("/{pre_factura_id}")
     def detalle(pre_factura_id: int):
-        return _propia(pre_factura_id)
+        return _con_cuenta(_propia(pre_factura_id))
 
     @router.put("/{pre_factura_id}")
     def editar(pre_factura_id: int, payload: EditarPayload):
@@ -260,7 +279,7 @@ def build_pre_facturas_router(
             pf = dominio.editar(pre_factura_id, conn=conn, **campos)
             if al_editar:
                 al_editar(conn, pf, datos)
-        return pf
+        return _con_cuenta(pf)
 
     @router.get("/{pre_factura_id}/pdf")
     def descargar_pdf(pre_factura_id: int):
@@ -276,9 +295,9 @@ def build_pre_facturas_router(
         pf = _propia(pre_factura_id)
         with _traducir():
             try:
-                return dominio.enviar_por_correo(
+                return _con_cuenta(dominio.enviar_por_correo(
                     pre_factura_id, payload.email, smtp_resolver=smtp_resolver,
-                    asunto=payload.asunto, cuerpo=payload.cuerpo, emisor=_emisor(pf))
+                    asunto=payload.asunto, cuerpo=payload.cuerpo, emisor=_emisor(pf)))
             except dominio.SmtpNoConfigurado:
                 raise HTTPException(400, f"Configurá el servidor SMTP en {donde_configurar_smtp}.")
             except OSError as e:  # `smtplib.SMTPException` y los errores de red son OSError
@@ -288,7 +307,7 @@ def build_pre_facturas_router(
     def aceptar(pre_factura_id: int, usuario: str = Depends(_usuario)):
         _propia(pre_factura_id)
         with _traducir():
-            return dominio.marcar_aceptada(pre_factura_id, usuario)
+            return _con_cuenta(dominio.marcar_aceptada(pre_factura_id, usuario))
 
     @router.post("/{pre_factura_id}/anular")
     def anular(pre_factura_id: int, payload: AnularPayload, usuario: str = Depends(_usuario)):
@@ -297,7 +316,7 @@ def build_pre_facturas_router(
             pf = dominio.anular(pre_factura_id, usuario, payload.motivo, conn=conn)
             if al_anular:
                 al_anular(conn, pf, payload.model_dump())
-        return pf
+        return _con_cuenta(pf)
 
     return router
 

@@ -265,6 +265,166 @@ def test_una_que_no_existe_da_404(api):
     assert api.put("/api/pre-facturas/999", json={}, headers=ADMIN).status_code == 404
 
 
+# ── La cuenta de cobro de una FCE (ADR-040) ─────────────────────────────────
+
+CBU_A, CBU_B, CBU_C = "1" * 22, "2" * 22, "3" * 22
+EMPRESA_ARCA = "Transportes del Plata S.R.L."
+CUENTA_A = {"cbu": CBU_A, "alias": "", "etiqueta": "Principal"}
+CUENTA_B = {"cbu": CBU_B, "alias": "cuenta.segunda", "etiqueta": "Segunda"}
+
+
+def _arca_con_cuentas(cuentas=(CUENTA_A, CUENTA_B), predeterminado=CBU_A):
+    """El emisor con sus CBU cargados. Devuelve el `arca_config.id`."""
+    from libracore.db import arca_config as db_arca
+    emisor = _arca()
+    db_arca.actualizar_arca_config(
+        EMPRESA_ARCA, fce_cbu=predeterminado, fce_transmision="SCA", fce_cbus=list(cuentas))
+    return emisor
+
+
+def _fce(api, **kwargs):
+    return api.post("/api/pre-facturas", headers=ADMIN, json=_cuerpo(
+        tipo_comprobante=201, cliente_cuit="30-70933285-2", cliente_razon="Cliente SA", **kwargs))
+
+
+def _texto_del_pdf(api, pf_id) -> str:
+    r = api.get(f"/api/pre-facturas/{pf_id}/pdf", headers=ADMIN)
+    assert r.status_code == 200
+    return "\n".join(p.extract_text() for p in PdfReader(io.BytesIO(r.content)).pages)
+
+
+def test_crear_una_fce_con_un_cbu_de_la_lista_lo_guarda_y_devuelve_la_cuenta(api):
+    emisor = _arca_con_cuentas()
+    r = _fce(api, emisor_id=emisor, fce_cbu=CBU_B)
+    assert r.status_code == 201, r.text
+    pf = r.json()
+    assert pf["fce_cbu"] == CBU_B
+    assert pf["fce_cuenta"] == CUENTA_B
+
+
+def test_crear_una_fce_eligiendo_por_alias_guarda_el_cbu(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor, fce_cbu="Cuenta.Segunda").json()
+    assert pf["fce_cbu"] == CBU_B and pf["fce_cuenta"]["alias"] == "cuenta.segunda"
+
+
+def test_crear_una_fce_sin_elegir_guarda_null_y_la_cuenta_es_la_predeterminada(api):
+    emisor = _arca_con_cuentas(predeterminado=CBU_B)
+    pf = _fce(api, emisor_id=emisor).json()
+    assert pf["fce_cbu"] is None
+    assert pf["fce_cuenta"] == CUENTA_B
+
+
+def test_crear_una_fce_con_un_cbu_fuera_de_la_lista_es_422_y_no_escribe(api):
+    emisor = _arca_con_cuentas()
+    for elegido in (CBU_C, "alias.inexistente"):
+        r = _fce(api, emisor_id=emisor, fce_cbu=elegido)
+        assert r.status_code == 422
+        assert "no está entre los cargados" in r.json()["detail"]
+    assert api.get("/api/pre-facturas", headers=ADMIN).json()["items"] == []
+
+
+def test_crear_una_pre_factura_que_no_es_fce_ignora_el_cbu(api):
+    emisor = _arca_con_cuentas()
+    pf = _crear(api, emisor_id=emisor, tipo_comprobante=1, fce_cbu=CBU_C)  # ni siquiera es de la lista
+    assert pf["fce_cbu"] is None and pf["fce_cuenta"] is None
+
+
+def test_una_fce_de_un_emisor_sin_cbu_no_tiene_cuenta(api):
+    pf = _fce(api, emisor_id=_arca()).json()
+    assert pf["fce_cbu"] is None and pf["fce_cuenta"] is None
+
+
+def test_la_cuenta_sale_en_el_detalle_y_en_el_listado(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor, fce_cbu=CBU_B).json()
+    assert api.get(f"/api/pre-facturas/{pf['id']}", headers=ADMIN).json()["fce_cuenta"] == CUENTA_B
+    items = api.get("/api/pre-facturas", headers=ADMIN).json()["items"]
+    assert items[0]["fce_cbu"] == CBU_B and items[0]["fce_cuenta"] == CUENTA_B
+
+
+def test_editar_la_cuenta_por_cbu_o_por_alias(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor).json()
+    url = f"/api/pre-facturas/{pf['id']}"
+    assert api.put(url, headers=ADMIN, json={"fce_cbu": CBU_B}).json()["fce_cbu"] == CBU_B
+    assert api.put(url, headers=ADMIN, json={"fce_cbu": "cuenta.segunda"}).json()["fce_cbu"] == CBU_B
+    assert api.put(url, headers=ADMIN, json={"fce_cbu": CBU_A}).json()["fce_cbu"] == CBU_A
+
+
+def test_editar_sin_mandar_la_cuenta_o_con_null_no_la_toca_y_vacio_vuelve_a_la_predeterminada(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor, fce_cbu=CBU_B).json()
+    url = f"/api/pre-facturas/{pf['id']}"
+    assert api.put(url, headers=ADMIN, json={"observaciones": "x"}).json()["fce_cbu"] == CBU_B
+    assert api.put(url, headers=ADMIN, json={"fce_cbu": None}).json()["fce_cbu"] == CBU_B
+    vuelta = api.put(url, headers=ADMIN, json={"fce_cbu": ""}).json()
+    assert vuelta["fce_cbu"] is None and vuelta["fce_cuenta"] == CUENTA_A
+
+
+def test_editar_con_un_cbu_fuera_de_la_lista_es_422_y_no_cambia_nada(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor, fce_cbu=CBU_B).json()
+    r = api.put(f"/api/pre-facturas/{pf['id']}", headers=ADMIN, json={"fce_cbu": CBU_C})
+    assert r.status_code == 422
+    assert api.get(f"/api/pre-facturas/{pf['id']}", headers=ADMIN).json()["fce_cbu"] == CBU_B
+
+
+def test_cambiar_la_cuenta_de_una_aceptada_la_devuelve_a_pendiente(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor).json()
+    api.post(f"/api/pre-facturas/{pf['id']}/aceptar", headers=ADMIN)
+    nuevo = api.put(f"/api/pre-facturas/{pf['id']}", headers=ADMIN, json={"fce_cbu": CBU_B}).json()
+    assert nuevo["estado"] == "pendiente" and nuevo["aceptado_por"] is None
+
+
+def test_pasar_una_fce_a_un_tipo_que_no_lo_es_borra_la_cuenta(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor, fce_cbu=CBU_B).json()
+    nuevo = api.put(f"/api/pre-facturas/{pf['id']}", headers=ADMIN, json={"tipo_comprobante": 1}).json()
+    assert nuevo["fce_cbu"] is None and nuevo["fce_cuenta"] is None
+    # y volver a FCE no la resucita
+    assert api.put(f"/api/pre-facturas/{pf['id']}", headers=ADMIN,
+                   json={"tipo_comprobante": 201}).json()["fce_cbu"] is None
+
+
+def test_cambiar_de_emisor_con_una_cuenta_que_el_otro_no_tiene_es_422(api):
+    from libracore.db import arca_config as db_arca
+    emisor = _arca_con_cuentas()
+    with core.get_connection() as c:
+        otro = c.execute("INSERT INTO arca_config (empresa, cuit, punto_venta, clave_path, certificado_path) "
+                         "VALUES ('Otra S.A.', '30-71111111-3', 1, 'k', 'c')").lastrowid
+        c.commit()
+    db_arca.actualizar_arca_config("Otra S.A.", fce_cbu=CBU_C, fce_transmision="SCA")
+    pf = _fce(api, emisor_id=emisor, fce_cbu=CBU_B).json()
+    url = f"/api/pre-facturas/{pf['id']}"
+    r = api.put(url, headers=ADMIN, json={"emisor_id": otro})
+    assert r.status_code == 422 and "nuevo emisor" in r.json()["detail"]
+    # con la cuenta vacía (la predeterminada del otro) sí
+    ok = api.put(url, headers=ADMIN, json={"emisor_id": otro, "fce_cbu": ""}).json()
+    assert ok["emisor_id"] == otro and ok["fce_cuenta"]["cbu"] == CBU_C
+
+
+def test_el_pdf_de_una_fce_dice_en_que_cuenta_se_cobra(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor, fce_cbu=CBU_B).json()
+    texto = _texto_del_pdf(api, pf["id"])
+    assert f"Cobro en: CBU {CBU_B} (alias cuenta.segunda)" in texto
+
+
+def test_el_pdf_sin_cuenta_elegida_usa_la_predeterminada_y_sin_alias_no_pone_parentesis(api):
+    emisor = _arca_con_cuentas()
+    pf = _fce(api, emisor_id=emisor).json()
+    texto = _texto_del_pdf(api, pf["id"])
+    assert f"Cobro en: CBU {CBU_A}" in texto and "alias" not in texto
+
+
+def test_el_pdf_de_una_pre_factura_que_no_es_fce_no_tiene_cobro(api):
+    emisor = _arca_con_cuentas()
+    pf = _crear(api, emisor_id=emisor, fce_cbu=CBU_B)
+    assert "Cobro en" not in _texto_del_pdf(api, pf["id"])
+
+
 # ── El PDF y el correo ───────────────────────────────────────────────────────
 
 

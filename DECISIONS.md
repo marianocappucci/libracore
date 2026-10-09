@@ -861,3 +861,24 @@ Detalle en `docs/fce.md`.
     borre el archivo y las líneas de la CLI. No hay prueba contra un PostgreSQL real.
   - Fuera de alcance: otras tablas de la base que también mueran con el reset (sólo se preserva
     `demo_codigos`) y la política de vigencia de los códigos.
+
+## ADR-040 — La FCE puede cobrar en varios CBU: `fce_cbus` es la lista y `fce_cbu` queda como el predeterminado
+
+- Estado: aceptada
+- Fecha: 2026-10-09
+- Contexto: pedido del dueño de Suitrans (2026-10-09): «el dueño puede querer que le depositen en una u otra cuenta». Hasta acá una empresa tenía **un** CBU para la Factura de Crédito Electrónica MiPyME (`arca_config.fce_cbu`, ADR de la FCE), copiado a cada FCE al emitirla. Para cobrar en otra cuenta había que cambiar la configuración antes de cada factura. Después se pidió que cada cuenta lleve además su alias bancario, que es como la conoce quien paga.
+- Qué ya existía (se miró antes de diseñar): `fce_cbu` y `fce_transmision` en `arca_config`; su lectura en `facturas_router` (`_datos_de_fce`, `_tipos_fce_del_emisor`); `facturas.fce_cbu`, que guarda con qué CBU salió cada comprobante y es lo que leen WSFE (opcional `2101`) y el PDF; el patrón de columna FCE con `init_core_schema()` y una revisión que lo llama (`0014`). Los otros lectores de `fce_cbu` leen la **factura**, no la config, y no cambian.
+- Decisión:
+  - Columna nueva `arca_config.fce_cbus TEXT NOT NULL DEFAULT ''`: JSON `[{"cbu": "<22 dígitos>", "alias": "<alias o vacío>", "etiqueta": "<texto o vacío>"}]`. JSON en una columna y no una tabla hija: es una lista corta que se edita entera desde una pantalla y se lee siempre junto con la config, igual que el resto de lo FCE.
+  - **`fce_cbu` se conserva y pasa a significar el CBU predeterminado.** Es la compatibilidad: quien lo lee (productos, pantallas viejas, tests) no se entera. La alternativa —sacarlo y que todos lean la lista— obligaba a tocar cada lector y cada instancia a la vez.
+  - Tres helpers en `libracore.db.arca_config`: `cbus_fce` (la lista, con las tres claves; sin lista, la de uno armada con `fce_cbu`; JSON inválido, `[]`), `cbu_para_fce(config, pedido)` (el predeterminado, o el CBU/alias elegido; devuelve siempre el CBU; fuera de la lista, `ValueError`) y `actualizar_arca_config(fce_cbus=)`. Todo lector de la config que emita pasa por ahí.
+  - Elegir se hace con el CBU **o el alias**, siempre dentro de la lista: un CBU de 22 dígitos válido pero no cargado se rechaza (422), porque aceptarlo es cobrar una FCE en una cuenta que el dueño no puso. El alias es opcional, de 6 a 20 caracteres (`a-z`, `0-9`, `.`, `-`, en minúsculas) y no se repite entre filas, como el CBU.
+  - A ARCA sigue yendo sólo el CBU (opcional `2101`). El alias bancario (`2102`) **no** se agrega: es para elegir en la pantalla.
+  - `PUT /config/arca`: lista y predeterminado no se desalinean. Con `fce_cbus`, `fce_cbu` tiene que estar en la lista (si no vino, el primero) y una lista vacía lo borra. Sin `fce_cbus` (pantalla vieja) rige `fce_cbu` como antes y, si no estaba en la lista, se agrega; mandarlo vacío vacía la lista, porque esa pantalla no sabe que hay más cuentas.
+  - **La pre factura recuerda la cuenta**: `comprobantes_pendientes.fce_cbu TEXT` (nullable, como `fecha_vencimiento_pago`). Crear y editar aceptan `fce_cbu` (CBU o alias, resuelto con `cbu_para_fce` contra la config del `emisor_id` de esa pre factura; se guarda el CBU). `NULL` es «la predeterminada»: no se copia al elegir, así que si el predeterminado cambia antes de facturar, vale el nuevo. Sólo rige si el tipo es FCE; si no, `NULL`. En editar, sin mandarlo no se toca y `""` vuelve a `NULL` (la convención del módulo para `fecha_vencimiento_pago`). Cambiar el emisor con una cuenta que el nuevo no tiene es 422 y no un cambio silencioso de destino. Las respuestas traen `fce_cuenta` (`{cbu, alias, etiqueta}` o `null`) y el PDF imprime «Cobro en: CBU … (alias …)». Quien factura (el producto) pasa ese `fce_cbu` al alta de la factura.
+  - Migración `0023_fce_varios_cbu`: llama a `init_core_schema` (que trae las dos columnas) y rellena con una lista de uno las filas que tenían `fce_cbu` y no lista (idempotente). No se baja: se perderían las cuentas cargadas además del predeterminado.
+- Consecuencias:
+  - MINOR (propuesta v1.152.0), **con migración**. Los productos corren la `0023` al subir el pin; una pantalla que no conozca `fce_cbus` sigue andando.
+  - Una pantalla vieja que cambia el CBU predeterminado deja el anterior en la lista (sólo la nueva pantalla puede quitar cuentas).
+  - Las FCE ya emitidas no cambian: `facturas.fce_cbu` guarda el CBU con el que salió cada una.
+  - Fuera de alcance: la pantalla del kit y la elección en LibraCargo (consumen este contrato), y borrar una cuenta de la lista cuando hay FCE emitidas con ella (la factura conserva su CBU, así que no hace falta).

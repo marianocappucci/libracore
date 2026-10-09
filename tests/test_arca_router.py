@@ -451,6 +451,155 @@ def test_un_cbu_o_una_modalidad_invalidos_se_rechazan(client, campo, valor):
     assert r.status_code == 422
 
 
+# ── FCE con varios CBU (ADR-040) ────────────────────────────────────────────
+
+CBU_A, CBU_B, CBU_C = "1" * 22, "2" * 22, "3" * 22
+BASE_FCE = {"empresa": "default", "cuit": "20289933604", "punto_venta": 1, "ambiente": "homologacion"}
+
+
+def _put(client, **extra):
+    return client.put("/config/arca", headers=ADMIN, json={**BASE_FCE, **extra})
+
+
+def test_el_get_devuelve_la_lista_con_las_tres_claves(client):
+    _put(client, fce_cbus=[{"cbu": CBU_A, "alias": "Cuenta.Uno", "etiqueta": " Galicia "},
+                           {"cbu": CBU_B}])
+    leido = client.get("/config/arca", headers=ADMIN).json()
+    assert leido["fce_cbus"] == [
+        {"cbu": CBU_A, "alias": "cuenta.uno", "etiqueta": "Galicia"},
+        {"cbu": CBU_B, "alias": "", "etiqueta": ""},
+    ]
+    # sin predeterminado explícito, el primero de la lista
+    assert leido["fce_cbu"] == CBU_A
+
+
+def test_el_put_con_lista_guarda_el_predeterminado_elegido(client):
+    leido = _put(client, fce_cbu=CBU_B, fce_cbus=[{"cbu": CBU_A}, {"cbu": CBU_B}]).json()
+    assert leido["fce_cbu"] == CBU_B
+    assert [f["cbu"] for f in leido["fce_cbus"]] == [CBU_A, CBU_B]
+
+
+def test_el_put_normaliza_el_cbu_y_el_alias_y_recorta_la_etiqueta(client):
+    leido = _put(client, fce_cbus=[
+        {"cbu": "1111 1111-1111 1111-1111 11", "alias": "  MI.ALIAS-1 ", "etiqueta": "  Principal  "}]).json()
+    assert leido["fce_cbus"] == [{"cbu": CBU_A, "alias": "mi.alias-1", "etiqueta": "Principal"}]
+
+
+def test_un_predeterminado_fuera_de_la_lista_se_rechaza_sin_tocar_nada(client):
+    _put(client, fce_cbus=[{"cbu": CBU_A}])
+    r = _put(client, fce_cbu=CBU_C, fce_cbus=[{"cbu": CBU_A}, {"cbu": CBU_B}])
+    assert r.status_code == 422 and "predeterminado" in r.json()["detail"]
+    leido = client.get("/config/arca", headers=ADMIN).json()
+    assert leido["fce_cbu"] == CBU_A and [f["cbu"] for f in leido["fce_cbus"]] == [CBU_A]
+
+
+def test_un_cbu_repetido_se_rechaza(client):
+    r = _put(client, fce_cbus=[{"cbu": CBU_A, "etiqueta": "uno"}, {"cbu": CBU_A, "etiqueta": "dos"}])
+    assert r.status_code == 422 and "CBU repetido" in r.json()["detail"]
+
+
+def test_un_cbu_repetido_con_otro_formato_tambien_se_rechaza(client):
+    r = _put(client, fce_cbus=[{"cbu": CBU_A}, {"cbu": "1111-1111-1111-1111-1111-11"}])
+    assert r.status_code == 422
+
+
+@pytest.mark.parametrize("cbu", ["123", "x" * 22, "1" * 23, ""])
+def test_un_cbu_mal_formado_en_la_lista_se_rechaza(client, cbu):
+    assert _put(client, fce_cbus=[{"cbu": cbu}]).status_code == 422
+
+
+def test_una_etiqueta_de_mas_de_60_caracteres_se_rechaza(client):
+    assert _put(client, fce_cbus=[{"cbu": CBU_A, "etiqueta": "x" * 61}]).status_code == 422
+    assert _put(client, fce_cbus=[{"cbu": CBU_A, "etiqueta": "x" * 60}]).status_code == 200
+
+
+def test_una_lista_vacia_borra_tambien_el_predeterminado(client):
+    _put(client, fce_cbus=[{"cbu": CBU_A}])
+    leido = _put(client, fce_cbus=[]).json()
+    assert leido["fce_cbu"] == "" and leido["fce_cbus"] == []
+
+
+# El alias bancario: 6 a 20 caracteres, a-z, números, punto y guion.
+
+@pytest.mark.parametrize("alias", ["abcdef", "mi.cuenta-01", "a" * 20, "  Mi.Cuenta  "])
+def test_un_alias_valido_se_acepta(client, alias):
+    r = _put(client, fce_cbus=[{"cbu": CBU_A, "alias": alias}])
+    assert r.status_code == 200, r.text
+    assert r.json()["fce_cbus"][0]["alias"] == alias.strip().lower()
+
+
+@pytest.mark.parametrize("alias", ["corto", "a" * 21, "con espacio", "ñandu.cuenta", "tilde.café",
+                                   "guion_bajo", "barra/uno", "arroba@uno"])
+def test_un_alias_mal_formado_se_rechaza_con_un_mensaje(client, alias):
+    r = _put(client, fce_cbus=[{"cbu": CBU_A, "alias": alias}])
+    assert r.status_code == 422
+    assert "El alias tiene de 6 a 20 caracteres" in str(r.json()["detail"])
+
+
+def test_un_alias_repetido_entre_filas_se_rechaza_aunque_cambie_la_mayuscula(client):
+    r = _put(client, fce_cbus=[{"cbu": CBU_A, "alias": "mi.cuenta"}, {"cbu": CBU_B, "alias": "MI.CUENTA"}])
+    assert r.status_code == 422 and "alias repetido" in r.json()["detail"]
+
+
+def test_varias_filas_sin_alias_no_cuentan_como_repetidas(client):
+    assert _put(client, fce_cbus=[{"cbu": CBU_A}, {"cbu": CBU_B}]).status_code == 200
+
+
+def test_la_pantalla_vieja_sin_lista_agrega_su_cbu_a_la_lista(client):
+    leido = _put(client, fce_cbu=CBU_A, fce_transmision="SCA").json()
+    assert leido["fce_cbu"] == CBU_A
+    assert leido["fce_cbus"] == [{"cbu": CBU_A, "alias": "", "etiqueta": ""}]
+
+
+def test_la_pantalla_vieja_que_cambia_el_cbu_no_desalinea_lista_y_predeterminado(client):
+    _put(client, fce_cbu=CBU_A, fce_cbus=[{"cbu": CBU_A, "alias": "cuenta.uno", "etiqueta": "Uno"}])
+    leido = _put(client, fce_cbu=CBU_B).json()
+    assert leido["fce_cbu"] == CBU_B
+    # el nuevo se agregó y el que ya estaba conserva su alias y etiqueta
+    assert leido["fce_cbus"] == [
+        {"cbu": CBU_A, "alias": "cuenta.uno", "etiqueta": "Uno"},
+        {"cbu": CBU_B, "alias": "", "etiqueta": ""},
+    ]
+
+
+def test_la_pantalla_vieja_que_no_manda_nada_no_toca_la_lista(client):
+    _put(client, fce_cbus=[{"cbu": CBU_A, "alias": "cuenta.uno"}, {"cbu": CBU_B}], fce_cbu=CBU_B)
+    leido = _put(client).json()
+    assert leido["fce_cbu"] == CBU_B and len(leido["fce_cbus"]) == 2
+
+
+def test_la_pantalla_vieja_que_borra_el_cbu_vacia_la_lista(client):
+    _put(client, fce_cbus=[{"cbu": CBU_A}, {"cbu": CBU_B}])
+    leido = _put(client, fce_cbu="").json()
+    assert leido["fce_cbu"] == "" and leido["fce_cbus"] == []
+
+
+def test_una_pantalla_nueva_que_no_manda_la_lista_no_la_borra(client):
+    _put(client, fce_cbus=[{"cbu": CBU_A}, {"cbu": CBU_B}])
+    leido = _put(client, fce_transmision="ADC").json()
+    assert len(leido["fce_cbus"]) == 2 and leido["fce_transmision"] == "ADC"
+
+
+def test_el_alta_de_la_fila_nueva_guarda_la_lista(client):
+    leido = _put(client, empresa="recien-creada", fce_transmision="SCA", fce_cbu=CBU_B,
+                 fce_cbus=[{"cbu": CBU_A, "alias": "cuenta.uno"}, {"cbu": CBU_B, "etiqueta": "Dos"}]).json()
+    assert leido["empresa"] == "recien-creada"
+    assert leido["fce_cbu"] == CBU_B
+    assert leido["fce_cbus"] == [{"cbu": CBU_A, "alias": "cuenta.uno", "etiqueta": ""},
+                                 {"cbu": CBU_B, "alias": "", "etiqueta": "Dos"}]
+
+
+def test_el_alta_de_la_fila_nueva_con_la_pantalla_vieja_arma_la_lista_de_uno(client):
+    leido = _put(client, empresa="otra-nueva", fce_cbu=CBU_A).json()
+    assert leido["fce_cbus"] == [{"cbu": CBU_A, "alias": "", "etiqueta": ""}]
+
+
+def test_el_alta_de_la_fila_nueva_con_una_lista_mala_no_deja_la_fila(client):
+    r = _put(client, empresa="no-debe-existir", fce_cbus=[{"cbu": CBU_A}, {"cbu": CBU_A}])
+    assert r.status_code == 422
+    assert client.get("/config/arca", params={"empresa": "no-debe-existir"}, headers=ADMIN).json() is None
+
+
 # ── La clave privada no se guarda legible por cualquiera ────────────────────
 
 

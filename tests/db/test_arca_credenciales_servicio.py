@@ -182,17 +182,19 @@ def _version(ruta: str) -> str:
         c.close()
 
 
-def test_la_0022_es_el_head(tmp_path):
+def test_la_0022_cuelga_de_la_0021(tmp_path):
+    """Ya no es el head (la `0023` la sigue): lo que se fija es su lugar en la cadena. Las pruebas
+    de abajo suben **hasta ella** y no hasta el head, para medir esta revisión y no las que vengan."""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
     script = ScriptDirectory.from_config(Config(str(RAIZ / "alembic.ini")))
-    assert script.get_current_head() == REVISION
     assert script.get_revision(REVISION).down_revision == ANTERIOR
+    assert REVISION in {r.revision for r in script.walk_revisions()}
 
 
 def test_la_migracion_sube_baja_y_vuelve_a_subir_sqlite(tmp_path):
     destino = str(tmp_path / "mig.db")
-    assert _alembic(destino, "upgrade", "head").returncode == 0
+    assert _alembic(destino, "upgrade", REVISION).returncode == 0
     assert "arca_credenciales_servicio" in _tablas(destino)
     assert _version(destino) == REVISION
 
@@ -211,14 +213,14 @@ def test_la_migracion_sube_baja_y_vuelve_a_subir_sqlite(tmp_path):
     assert c.execute("SELECT certificado_path FROM arca_config").fetchone()[0] == "/f.crt"
     c.close()
 
-    assert _alembic(destino, "upgrade", "head").returncode == 0
+    assert _alembic(destino, "upgrade", REVISION).returncode == 0
     assert "arca_credenciales_servicio" in _tablas(destino)
     assert _version(destino) == REVISION
 
 
 def test_subir_dos_veces_no_pisa_lo_cargado_sqlite(tmp_path):
     destino = str(tmp_path / "idem.db")
-    assert _alembic(destino, "upgrade", "head").returncode == 0
+    assert _alembic(destino, "upgrade", REVISION).returncode == 0
     c = sqlite3.connect(destino)
     c.execute("INSERT INTO arca_credenciales_servicio (empresa, servicio, ambiente, certificado_path)"
               " VALUES ('acme','wscpe','produccion','/p.crt')")
@@ -226,7 +228,7 @@ def test_subir_dos_veces_no_pisa_lo_cargado_sqlite(tmp_path):
     c.execute("UPDATE alembic_version SET version_num=?", (ANTERIOR,))
     c.commit()
     c.close()
-    assert _alembic(destino, "upgrade", "head").returncode == 0
+    assert _alembic(destino, "upgrade", REVISION).returncode == 0
     c = sqlite3.connect(destino)
     assert c.execute("SELECT certificado_path FROM arca_credenciales_servicio").fetchone()[0] == "/p.crt"
     c.close()
@@ -242,12 +244,12 @@ def test_la_migracion_sube_baja_y_vuelve_a_subir_postgres(bases):
             return c.execute(
                 "SELECT to_regclass('public.arca_credenciales_servicio') IS NOT NULL").fetchone()[0]
 
-    assert _alembic(url, "upgrade", "head").returncode == 0
+    assert _alembic(url, "upgrade", REVISION).returncode == 0
     assert existe()
     r = _alembic(url, "downgrade", "-1")
     assert r.returncode == 0, r.stderr
     assert not existe()
     assert ANTERIOR in _alembic(url, "current").stdout
-    assert _alembic(url, "upgrade", "head").returncode == 0
+    assert _alembic(url, "upgrade", REVISION).returncode == 0
     assert existe()
     assert REVISION in _alembic(url, "current").stdout

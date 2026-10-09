@@ -288,6 +288,45 @@ un listado nuevo.
 la ofrece y `POST /api/facturas` contesta 422. Sin pantalla nueva: entra como una
 opción más del selector de tipos.
 
+### Varios CBU (ADR-040)
+
+Una empresa puede cargar **varias cuentas** y elegir en cuál cobrar cada FCE.
+`arca_config.fce_cbus` es la lista (JSON, `TEXT NOT NULL DEFAULT ''`; migración
+`0023_fce_varios_cbu`, que rellena la lista de uno con el `fce_cbu` que ya había):
+
+```json
+[{"cbu": "<22 dígitos>", "alias": "<alias o vacío>", "etiqueta": "<texto o vacío>"}]
+```
+
+**`fce_cbu` se conserva y es el CBU predeterminado**: el PDF, WSFE y los productos
+que lo leen siguen andando sin cambios. A ARCA va sólo el CBU (opcional `2101`);
+el alias y la etiqueta son para elegir en pantalla y no viajan.
+
+- **`PUT /config/arca`** acepta `fce_cbus`. El `cbu` se guarda sin espacios ni guiones
+  y con 22 dígitos; el `alias` (opcional) en minúsculas, de 6 a 20 caracteres con
+  letras sin tilde ni ñ, números, punto y guion; la `etiqueta` con hasta 60.
+  Sin CBU repetidos ni alias repetidos entre filas (422). Una lista vacía borra
+  también `fce_cbu`; si no, `fce_cbu` tiene que estar en la lista (422 si no) y,
+  si no vino, queda el primero. Sin `fce_cbus` en el cuerpo la lista no se toca, y una
+  pantalla que sólo manda `fce_cbu` sigue andando: si ese CBU no estaba, **se agrega**
+  a la lista (sin alias) y queda de predeterminado; mandarlo vacío vacía todo.
+- **`GET /config/arca`** devuelve además `fce_cbus` (siempre con las tres claves).
+- **`POST /api/facturas`** acepta `fce_cbu` opcional: el **CBU o el alias** de una de las
+  cuentas cargadas, y sale siempre el CBU. Sin elegir, el predeterminado. Uno que no está
+  en la lista es 422 («El CBU elegido no está entre los cargados en la configuración de
+  ARCA.») **antes** de pedir el número. En una factura que no es FCE se ignora.
+- **La pre factura** (`/api/pre-facturas`) guarda la cuenta elegida en
+  `comprobantes_pendientes.fce_cbu` (`NULL` = la predeterminada, que se resuelve al
+  facturar). Crear y editar aceptan `fce_cbu` (CBU o alias de la config de su
+  `emisor_id`; 422 si no está; se ignora si el tipo no es FCE; en editar, sin mandarlo
+  no se toca y `""` vuelve a la predeterminada). Toda respuesta trae `fce_cuenta`
+  (`{cbu, alias, etiqueta}` o `null`) y el PDF dice «Cobro en: CBU <cbu> (alias <alias>)».
+  Al facturar, el producto pasa ese `fce_cbu` al alta de la factura.
+- Quien lea el CBU de la config lo hace con `libracore.db.arca_config.cbu_para_fce(cfg, pedido)`
+  (y la lista con `cbus_fce(cfg)`), **no** con `cfg["fce_cbu"]`: así ve también la config
+  que todavía no tiene lista. Lo que se lee de una *factura ya emitida* (`facturas.fce_cbu`)
+  no cambia.
+
 Lo que ARCA exige, **medido en homologación** (2026-10-02):
 
 | Qué | Error si falta |
