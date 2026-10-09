@@ -161,7 +161,10 @@ def get_all_ventas(desde: str = "", hasta: str = "", q: str = "",
                  LEFT JOIN facturas f ON f.id = v.factura_id"""
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " GROUP BY v.id ORDER BY v.fecha DESC, v.id DESC LIMIT ? OFFSET ?"
+        # `f.*` en el GROUP BY: PostgreSQL acepta `v.*` por depender de `v.id` (la clave), pero no las columnas de
+        # `facturas`. Nunca se había corrido en PostgreSQL hasta los tests de ADR-037; en SQLite es lo mismo.
+        sql += (" GROUP BY v.id, f.tipo, f.punto_venta, f.numero"
+                " ORDER BY v.fecha DESC, v.id DESC LIMIT ? OFFSET ?")
         params += [limit, offset]
         rows = conn.execute(sql, params).fetchall()
     result = []
