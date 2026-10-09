@@ -32,6 +32,7 @@ from . import (
     mail_cuentas,
     migraciones_de_la_imagen,
     npm_available,
+    resolver_plan,
 )
 
 # Huso horario del ecosistema: Argentina, UTC-3 fijo, sin horario de verano
@@ -625,8 +626,10 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
     if client_dir.exists():
         raise ClienteError(f"Ya existe un cliente con slug '{slug}'.")
 
-    if plan not in plans.PLANES:
-        raise ClienteError(f"Plan inválido: {plan!r}.")
+    try:
+        plan = resolver_plan(plans, plan)
+    except ValueError as e:
+        raise ClienteError(str(e)) from None
 
     # — identidad fiscal —
     #

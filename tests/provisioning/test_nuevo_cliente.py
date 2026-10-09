@@ -251,6 +251,16 @@ def test_crear_cliente_aplica_plan_cuando_db_lista(cfg, fake_plans, monkeypatch)
     assert fake_plans.aplicar_plan_calls[-1][0].endswith("testprod.db")
 
 
+def test_un_producto_de_plan_unico_acepta_el_plan_basico_por_defecto(cfg, fake_plans, monkeypatch):
+    """VentaLibra: `PLANES = ["unico"]` y el `plan="basico"` por defecto se resuelve con
+    `PLANES_RETIRADOS`, en vez de rechazar el alta (`resolver_plan`)."""
+    fake_plans.PLANES = ["unico"]
+    fake_plans.PLANES_RETIRADOS = {"basico": "unico", "premium": "unico"}
+    monkeypatch.setattr(nc, "_esperar_db_lista", lambda *a, **k: True)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Unico", slug="cliente-unico", setup_npm=False)
+    assert fake_plans.aplicar_plan_calls[-1][1] == "unico"
+
+
 def test_crear_cliente_sin_dominio_no_configura_proxy(cfg):
     info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Tres", slug="cliente-tres", setup_npm=True)
     assert info["proxy_ok"] is None

@@ -244,8 +244,11 @@ def editar_cliente(slug: str, nombre: str, domain: str) -> dict:
 
 def set_plan(slug: str, plan: str) -> None:
     plans = _plans()
-    if plan not in plans.PLANES:
-        raise ServiceError(f"Plan inválido: {plan!r}.")
+    from libracore.provisioning import resolver_plan
+    try:
+        plan = resolver_plan(plans, plan)
+    except ValueError as e:
+        raise ServiceError(str(e)) from None
     c = _pa().find_client(slug)
     if not c:
         raise ServiceError(f"Cliente '{slug}' no encontrado.")
