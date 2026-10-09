@@ -7,16 +7,15 @@ libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 from libracore.db.facturas import sql_vigente
+from libracore.fechas import rango_por_dia
 
 
 def get_reporte_ventas(desde: str = "", hasta: str = "", agrupacion: str = "dia") -> list[dict]:
     """Ventas agrupadas por día, semana o mes."""
     fmt = {"dia": "%Y-%m-%d", "semana": "%Y-W%W", "mes": "%Y-%m"}.get(agrupacion, "%Y-%m-%d")
     where, params = [], []
-    if desde:
-        where.append("fecha >= ?"); params.append(desde)
-    if hasta:
-        where.append("fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+    where += c_fecha; params += p_fecha
     w = ("WHERE " + " AND ".join(where)) if where else ""
     sql = f"""
         SELECT strftime('{fmt}', fecha) AS periodo,
@@ -32,10 +31,8 @@ def get_reporte_ventas(desde: str = "", hasta: str = "", agrupacion: str = "dia"
 def get_reporte_medios_pago(desde: str = "", hasta: str = "") -> list[dict]:
     """Totales por medio de pago en el período."""
     where, params = [], []
-    if desde:
-        where.append("v.fecha >= ?"); params.append(desde)
-    if hasta:
-        where.append("v.fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("v.fecha", desde, hasta)
+    where += c_fecha; params += p_fecha
     w = ("WHERE " + " AND ".join(where)) if where else ""
     sql = f"""
         SELECT vp.medio, COUNT(DISTINCT vp.venta_id) AS operaciones,
@@ -51,10 +48,8 @@ def get_reporte_medios_pago(desde: str = "", hasta: str = "") -> list[dict]:
 def get_reporte_productos_top(desde: str = "", hasta: str = "", limit: int = 20) -> list[dict]:
     """Productos más vendidos (por cantidad y por monto) en el período."""
     where, params = [], []
-    if desde:
-        where.append("v.fecha >= ?"); params.append(desde)
-    if hasta:
-        where.append("v.fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("v.fecha", desde, hasta)
+    where += c_fecha; params += p_fecha
     w = ("WHERE " + " AND ".join(where)) if where else ""
     sql = f"""
         SELECT ji.value->>'$.nombre' AS nombre,
@@ -77,10 +72,8 @@ def get_reporte_caja(desde: str = "", hasta: str = "", sin_fiado: bool = False) 
     los sumaría como ingreso de caja, y el reporte dejaría de coincidir con `get_caja_resumen` y con el arqueo del
     turno. Default `False`: lo de siempre."""
     where, params = [], []
-    if desde:
-        where.append("fecha >= ?"); params.append(desde)
-    if hasta:
-        where.append("fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+    where += c_fecha; params += p_fecha
     # Un movimiento anulado no cuenta en ningún reporte de plata. El `where`
     # puede venir vacío, así que la condición se agrega a la lista y no al
     # fragmento ya armado.
@@ -99,7 +92,9 @@ def get_reporte_caja(desde: str = "", hasta: str = "", sin_fiado: bool = False) 
 
 def get_reporte_caja_medios(desde: str = "", hasta: str = "", caja_id: int = 0, sin_fiado: bool = False) -> list[dict]:
     """Movimientos de caja agrupados por caja y medio de pago. `sin_fiado`: ver `get_reporte_caja`."""
-    where, params = ["cm.fecha BETWEEN ? AND ?"], [desde or "1900-01-01", hasta or "2999-12-31"]
+    # Sin extremo se sigue usando el tope de siempre (y no «sin condición»): una fila sin fecha
+    # no entraba en el reporte y no tiene por qué entrar ahora.
+    where, params = rango_por_dia("cm.fecha", desde or "1900-01-01", hasta or "2999-12-31")
     where.append(sql_no_anulado("cm"))
     if sin_fiado:
         where.append(sql_no_es_cuenta_corriente("cm.medio_pago"))
@@ -153,10 +148,8 @@ def get_reporte_stock_bajo() -> list[dict]:
 def get_reporte_resumen(desde: str = "", hasta: str = "", sin_fiado: bool = False) -> dict:
     """KPIs rápidos para el período."""
     where, params = [], []
-    if desde:
-        where.append("fecha >= ?"); params.append(desde)
-    if hasta:
-        where.append("fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+    where += c_fecha; params += p_fecha
     w = ("WHERE " + " AND ".join(where)) if where else ""
     with get_connection() as conn:
         v = conn.execute(

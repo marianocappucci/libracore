@@ -15,6 +15,7 @@ import json
 
 from libracore.db.core import Conexion, get_connection, get_resolver_receta
 from libracore.db.productos import get_default_deposito_id
+from libracore.fechas import rango_por_dia
 
 
 def add_movimiento_stock(producto_id: int, tipo: str, cantidad: float,
@@ -69,10 +70,8 @@ def get_movimientos_stock(producto_id: int | None = None,
         where, params = [], []
         if producto_id:
             where.append("m.producto_id = ?"); params.append(producto_id)
-        if desde:
-            where.append("m.fecha >= ?"); params.append(desde)
-        if hasta:
-            where.append("m.fecha <= ?"); params.append(hasta)
+        c_fecha, p_fecha = rango_por_dia("m.fecha", desde, hasta)
+        where += c_fecha; params += p_fecha
         sql = """SELECT m.*, p.nombre AS producto_nombre, p.unidad
                  FROM movimientos_stock m
                  JOIN productos p ON p.id = m.producto_id"""

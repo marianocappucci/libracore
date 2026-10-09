@@ -7,6 +7,7 @@ from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
 from libracore.db.facturas import sql_vigente
+from libracore.fechas import rango_por_dia
 
 
 def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) -> dict:
@@ -16,12 +17,15 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) 
     (`sql_no_es_cuenta_corriente`), mismo criterio y misma razón que `db.reportes.get_reporte_resumen`
     (P9-M4/fase 8): **fiar no es cobrar**. Sin esto, "Cobrado del mes", "Saldo de caja" y "Facturas sin
     cobrar" cuentan una venta a cuenta corriente como plata ya entrada. Default `False`: lo de siempre."""
+    # Rango por día (ADR-037): una fila con hora del último día entra igual.
+    c_fecha, p_fecha = rango_por_dia("fecha", mes_desde, mes_hasta)
+    w_fecha = " AND ".join(c_fecha) or "1=1"
     with get_connection() as conn:
         # KPI 1: total facturado en el mes (solo facturas, no NC/ND)
         row = conn.execute(
-            f"SELECT COALESCE(SUM(total), 0) FROM facturas WHERE tipo IN ({tipos.en_sql(tipos.FACTURAS)}) AND fecha BETWEEN ? AND ?"
+            f"SELECT COALESCE(SUM(total), 0) FROM facturas WHERE tipo IN ({tipos.en_sql(tipos.FACTURAS)}) AND {w_fecha}"
             f" AND {sql_vigente()}",
-            (mes_desde, mes_hasta),
+            p_fecha,
         ).fetchone()
         facturado_mes = row[0]
 
@@ -32,8 +36,8 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) 
                  COALESCE(SUM(CASE WHEN tipo='ingreso' THEN monto ELSE 0 END), 0),
                  COALESCE(SUM(CASE WHEN tipo='egreso'  THEN monto ELSE 0 END), 0)
                FROM caja_movimientos
-               WHERE fecha BETWEEN ? AND ? AND """ + sql_no_anulado() + cond_cc,
-            (mes_desde, mes_hasta),
+               WHERE """ + w_fecha + " AND " + sql_no_anulado() + cond_cc,
+            p_fecha,
         ).fetchone()
         cobrado_mes = row[0]
         egresos_mes = row[1]
@@ -46,9 +50,9 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) 
 
         # Cantidad de facturas emitidas en el mes
         cant_facturas_mes = conn.execute(
-            f"SELECT COUNT(*) FROM facturas WHERE tipo IN ({tipos.en_sql(tipos.FACTURAS)}) AND fecha BETWEEN ? AND ?"
+            f"SELECT COUNT(*) FROM facturas WHERE tipo IN ({tipos.en_sql(tipos.FACTURAS)}) AND {w_fecha}"
             f" AND {sql_vigente()}",
-            (mes_desde, mes_hasta),
+            p_fecha,
         ).fetchone()[0]
 
         # Facturas sin cobrar (tipo factura, sin ingreso en caja). Con `sin_fiado`, un ingreso a cuenta

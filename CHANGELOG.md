@@ -7,6 +7,19 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Los rangos de fecha se miden por día (propuesta: v1.148.0)
+
+ADR-037. **Sin migración y sin cambio de schema.** Las columnas de fecha son TEXT libre y pueden traer hora (`2026-10-09 13:00:00`, `2026-10-09T13:00`): `fecha <= '2026-10-09'` dejaba esas filas afuera y el último día del rango desaparecía del listado, del reporte o del libro IVA sin error.
+
+- **`libracore.fechas.rango_por_dia(columna, desde, hasta)`** devuelve `(condiciones, params)` con `?`: `desde` como `>=` del día y `hasta` como `<` del día siguiente. Sólo comparaciones de texto, igual en SQLite y PostgreSQL. Un extremo que no es fecha ISO se usa tal cual (`>=` / `<=`); vacío o `None`, sin condición. `dia_iso` lee el día de un texto.
+- **Lo usan todos los filtros de rango del motor**: `egresos`, `facturas`, `recibos`, `ventas`, `stock`, `tesoreria` (sin el parche `+ " 23:59:59"`, que fallaba con la `T`), `reportes`, `resumen`, `dashboard`, `caja` (`BETWEEN`), `libros_iva`, `logs` y `libro_de_terceros`. Mismos parámetros de entrada; para fechas sin hora, el mismo resultado.
+- `libro_de_terceros.extracto`: el saldo anterior es el de antes del **día** de `desde`.
+
+### Para los productos
+
+- **Subir el pin** para que los totales de un día incluyan las filas con hora. Los números de esos días **suben**: son los correctos.
+- **libracommerce** (`erp/margen.py`, `_filtro_de_ventas`) y **Restolibra** reemplazan sus filtros propios por `libracore.fechas.rango_por_dia`.
+
 ## [Unreleased] — El pedido de certificado de ARCA se genera en el servidor (propuesta: v1.147.0)
 
 ADR-036. **Sin migración y sin cambio de schema.** Para una empresa nueva: la clave privada nace dentro del servidor y no sale nunca; de ahí sólo sale el `.csr`.

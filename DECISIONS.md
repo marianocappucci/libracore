@@ -771,3 +771,23 @@ Detalle en `docs/fce.md`.
 - Un `.crt` que no sale de un pedido sigue pudiéndose subir con su clave (el campo «Clave privada (.key)» del kit queda como alternativa avanzada, para quien ya tiene un par hecho afuera), y sin pedido pendiente un `.crt` suelto se acepta como siempre.
 - Fuera de alcance: **presentar el `.csr` ante ARCA** (se hace a mano, en «Administración de Certificados Digitales» o en WSASS), la relación con el servicio en el «Administrador de Relaciones de Clave Fiscal» y cualquier automatización de ARCA con clave fiscal. La renovación es el mismo flujo: pedir uno nuevo con la vigente cargada la deja facturando hasta que llega el `.crt`.
 - No verificado contra ARCA: que acepte `Ñ` normalizada y el conjunto de signos de la razón social. El sujeto es el del `openssl req -subj` que ya se usó con Suitrans y Pereiro; el `.csr` se validó con una CA de prueba (firma válida, sujeto, clave pública) y no subiéndolo a ARCA.
+
+## ADR-037 — Los rangos de fecha se miden por día, en un solo lugar (`libracore.fechas`)
+
+**Contexto.** Las columnas de fecha del motor son `TEXT` libre (`facturas.fecha`, `egresos.fecha`, `ventas.fecha`, `caja_movimientos.fecha`, `movimientos_stock.fecha`, `movimientos_tesoreria.fecha`, `cc_asientos.fecha`, `recibos.fecha`, `cierres_diarios.fecha`, `remitos.date`, `presupuestos.date`). Los escritores internos guardan `AAAA-MM-DD`, pero los routers aceptan `fecha: str` sin validar, así que una fila puede traer hora (`2026-10-09 13:00:00` o `2026-10-09T13:00`). 🔴 Con `fecha <= '2026-10-09'` esa fila **queda afuera**: como texto es mayor que la fecha pelada. El último día del rango desaparece del listado, del reporte, del resumen o del libro IVA sin ningún error. Más de veinte consultas del motor tenían el filtro así.
+
+**Qué ya existía** (se miró antes de arreglar):
+- `db/tesoreria.get_movimientos_tesoreria` ya lo había parcheado: `hasta + " 23:59:59"`. Resuelve la hora con espacio, pero **falla con la `T`** (`'T'` > `' '`) y era el único lugar.
+- `libracommerce/erp/margen.py` (`_filtro_de_ventas`) ya usa el criterio bueno: `desde` como `>=` del día y `hasta` como `<` del **día siguiente**. Es una copia local del producto; la lógica de fondo vive en el motor (ADR-001, enmienda).
+
+**Decisión.**
+1. **`libracore.fechas.rango_por_dia(columna, desde, hasta) -> (condiciones, params)`**, función pura sin base: `desde` → `columna >= 'AAAA-MM-DD'`; `hasta` → `columna < '<día siguiente>'`. Sólo comparaciones de texto con `?`: el mismo SQL en SQLite y en PostgreSQL, sin `substr`, `date()` ni `CAST` (que además taparían el índice). Para fechas sin hora el resultado es el de siempre: `[d, h]` incluye los dos días.
+2. **Un extremo que no es una fecha ISO se usa tal cual**, con `>=` / `<=` como antes (`dia_iso` acepta `AAAA-MM-DD` solo o seguido de espacio o `T`): un llamador raro conserva su comportamiento. Vacío o `None`, sin condición.
+3. **Todos los filtros de rango del motor la usan**: egresos, facturas, recibos, ventas, stock, tesorería (sin el parche), reportes, resumen, dashboard, caja, libro IVA, log de actividad y libro de terceros. Los parámetros de entrada de cada función no cambian.
+4. **El saldo anterior de un extracto mide «antes del día de `desde`»** (`libro_de_terceros.extracto`): con la hora de `desde` en la comparación, el mismo asiento entraba en el saldo anterior y también en el período.
+
+**Consecuencias.**
+- Sin migración y sin cambio de schema. MINOR (propuesta v1.148.0). Un rango que antes dejaba afuera las filas con hora del último día ahora las incluye: los totales de esos días **suben** y son los correctos.
+- **libracommerce y Restolibra pasan a usar `libracore.fechas.rango_por_dia`** al subir el pin, y sacan sus copias (la de `margen.py` y cualquier filtro de rango propio).
+- Los tests de integración (`tests/db/test_rango_por_dia.py`) siembran el mismo día de tres maneras más dos vecinos que no deben entrar, y corren también contra PostgreSQL si hay `LIBRACORE_POSTGRES_URL`.
+- Fuera de alcance: **validar la fecha en los routers** o normalizar lo ya guardado. Sigue siendo TEXT libre; esto sólo hace que el filtro no dependa de cómo se escribió. Los filtros que se hacen en Python sobre listas ya leídas (`get_cc_movimientos_periodo`) no usan la función y quedan como estaban.

@@ -15,6 +15,7 @@ cinco de acá; este módulo no sabe de LibraCommerce.
 import contextlib
 
 from libracore.db.core import get_connection
+from libracore.fechas import rango_por_dia
 
 _LOG_TIPOS = ("venta", "caja", "stock", "factura", "turno", "remito", "presupuesto",
              "cierre_diario")
@@ -189,10 +190,8 @@ def armar_consulta(partes, tipos=None, usuario_id=None, turno_id=None,
         marks = ",".join("?" * len(tipos))
         where.append(f"tipo IN ({marks})")
         params.extend(tipos)
-    if desde:
-        where.append("fecha >= ?"); params.append(desde)
-    if hasta:
-        where.append("fecha <= ?"); params.append(hasta)
+    c_fecha, p_fecha = rango_por_dia("fecha", desde, hasta)
+    where += c_fecha; params += p_fecha
     if turno_id:
         where.append("turno_id = ?"); params.append(turno_id)
 
