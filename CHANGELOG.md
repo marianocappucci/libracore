@@ -7,6 +7,21 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Sucursales contratadas: el abono y el tope (propuesta: v1.153.0)
+
+ADR-041. **Sin migración y sin cambio de schema.** El plan único de VentaLibra cobra $39.900 con UNA sucursal incluida y $19.950 por cada una más. Hasta acá era sólo un precio comercial: nada contaba sucursales. Ahora la cantidad **contratada** es un dato de la instancia, el abono se calcula y pasarse **bloquea el alta**. Sin dato cargado no hay límite: ninguna instancia existente cambia.
+
+- **`libracore.abono.calcular_abono(precio_base, incluidas, precio_adicional, contratadas)`**: puro. Devuelve `{contratadas, incluidas, base, adicionales, precio_adicional, extra, total}`; `contratadas=None` (o por debajo de lo incluido) da `total == base`.
+- **`libracore.limites`**: la cantidad contratada vive en la clave `limite_sucursales` del `config.json` de la instancia (el mismo mecanismo que el tema). `sucursales_contratadas()` (un valor ilegible se lee como «sin dato»; nunca lanza), `fijar_sucursales_contratadas(n | None)`, `verificar_alta_de_sucursal(activas_actuales)` -> `LimiteExcedido` con el mensaje «Tu plan incluye N sucursal(es). Para sumar otra, comunicate con nosotros.», y `build_limites_router(guard_lectura=, guard_escritura=, medir_activas=, prefix="/api/limites")` con `GET`/`PUT /api/limites/sucursales` (`{contratadas, activas}`; el `PUT` recibe `{"contratadas": entero 1..1000 | null}`, 422 si no, y los booleanos no pasan, ADR-013). Las **guardas las inyecta el producto**: leer es de admin **o** del token de servicio del backoffice; **escribir, sólo del token de servicio** (el admin del cliente no puede subirse su propio tope).
+- **`admin.services.planes_info()`** suma `adicional`: `{"unidad", "incluidas", "precio"}` si el `plans.py` del producto declara `PLAN_UNIDADES_ADICIONALES[plan]`, y `None` si no (`getattr`: los demás productos no la tienen). Llega al backoffice por `GET /api/planes`.
+- **`admin.services.plan_vigente(plan)`**: el plan de `plans.py` que rige para el que dice un `cliente.json` (un plan retirado se resuelve a su reemplazo; nunca lanza). Para buscar el plan de una instancia vieja en `planes_info()`.
+- **`admin.services.crear_cliente(..., sucursales_contratadas=None)` y `provisioning.nuevo_cliente.crear_cliente(...)`**: con un número (entero 1..1000, `ClienteError` si no) la instancia **nace con `limite_sucursales` en su `config.json`**, antes de levantar el contenedor. Sin número no se escribe nada ni se pasa el argumento.
+
+### Para los productos
+
+- **VentaLibra**: declarar `PLAN_UNIDADES_ADICIONALES`, montar `build_limites_router` con sus guardas (lectura admin-o-servicio, escritura sólo servicio) y su medidor de sucursales activas, y llamar a `verificar_alta_de_sucursal` desde los ganchos de alta y de reactivación. Los demás productos no hacen nada.
+- **Backoffice**: subir el pin; `GET /api/planes` ya trae `adicional`.
+
 ## [Unreleased] — La FCE puede cobrar en varios CBU (propuesta: v1.152.0)
 
 ADR-040. **Trae la migración `0023_fce_varios_cbu`** (columnas `arca_config.fce_cbus` y `comprobantes_pendientes.fce_cbu`; hay que correrla antes de subir el pin). Un cliente puede cargar varias cuentas para la Factura de Crédito Electrónica y elegir en cuál cobrar cada una. `arca_config.fce_cbu` se conserva y pasa a ser **el CBU predeterminado**: quien lo lee sigue andando.

@@ -600,7 +600,8 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
                   admin_nombre: str = "", plan: str = "basico",
                   empresa_cuit: str = "", empresa_nombre: str = "",
                   sin_identidad: bool = False,
-                  setup_npm: bool = True, rebuild: bool = False, log=lambda *a: None) -> dict:
+                  setup_npm: bool = True, rebuild: bool = False, log=lambda *a: None,
+                  sucursales_contratadas: int | None = None) -> dict:
     """Da de alta un cliente de forma NO interactiva: crea el directorio, config,
     docker-compose y cliente.json, buildea la imagen si falta, levanta el contenedor,
     aplica el plan inicial y (si hay dominio + NPM) crea el proxy con SSL.
@@ -610,6 +611,10 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
     saca lo que le contesta al panel del dueño. `empresa_nombre` es la razón
     social —que puede no ser el nombre comercial de `nombre`— y cae a `nombre`
     si no se pasa.
+
+    `sucursales_contratadas` (ADR-041) es lo que el cliente contrató, un entero >= 1:
+    nace en el `config.json` de la instancia como `limite_sucursales` y de ahí lo lee
+    `libracore.limites`. `None` (el default) no escribe nada: la instancia nace sin límite.
 
     Devuelve un dict con los datos del cliente (incluida la contraseña generada).
     Lanza ClienteError ante validaciones o fallos de infraestructura.
@@ -671,6 +676,17 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         raise ClienteError(
             f"CUIT inválido: {empresa_cuit!r}. Son once dígitos, con o sin guiones."
         )
+
+    # Se valida con lo demás, antes de tocar Docker: un número inválido no deja una instancia a medias.
+    # Import diferido: `libracore.limites` trae FastAPI y este módulo corre también en el venv de scripts, que no lo necesita.
+    if sucursales_contratadas is not None:
+        from libracore import limites
+
+        if (isinstance(sucursales_contratadas, bool) or not isinstance(sucursales_contratadas, int)
+                or not 1 <= sucursales_contratadas <= limites.MAXIMO):
+            raise ClienteError(
+                f"Las sucursales contratadas tienen que ser un entero entre 1 y {limites.MAXIMO}."
+            )
 
     _used = used_ports()
     port = int(port) if port else next_port(_used)
@@ -748,6 +764,8 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
             "empresa_cuit": empresa_cuit,
             "empresa_iva_condition": "Responsable Inscripto",
         }
+        if sucursales_contratadas is not None:
+            config["limite_sucursales"] = sucursales_contratadas  # `libracore.limites.CLAVE_CONFIG`
         (data_dir / "config.json").write_text(
             json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
         )

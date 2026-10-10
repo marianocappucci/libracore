@@ -98,7 +98,7 @@ def fake_scripts(monkeypatch, tmp_path):
     # nada — que es justo lo que hizo ruido al sumar la identidad fiscal.
     def crear_cliente(nombre, slug="", domain="", port=0, admin_user="admin",
                       admin_password="", plan="basico", empresa_cuit="",
-                      empresa_nombre="", sin_identidad=False, setup_npm=True):
+                      empresa_nombre="", sin_identidad=False, setup_npm=True, **extra):
         slug = slug or nombre.lower().replace(" ", "-")
         if fake_pa.find_client(slug):
             raise ClienteError(f"Ya existe un cliente con slug '{slug}'.")
@@ -106,6 +106,8 @@ def fake_scripts(monkeypatch, tmp_path):
         fake_nc.ultima_alta = {
             "empresa_cuit": empresa_cuit, "empresa_nombre": empresa_nombre,
             "sin_identidad": sin_identidad,
+            # lo que el servicio pasó de MÁS (ADR-041): vacío si no había nada que pasar
+            "extra": extra,
         }
         return {"slug": slug, "admin_password": admin_password or "generated123"}
 
@@ -147,6 +149,16 @@ def test_crear_cliente_y_listar(fake_scripts):
     assert len(clientes) == 1
     assert clientes[0]["slug"] == "cliente-uno"
     assert clientes[0]["estado"] == "running"
+
+
+def test_crear_cliente_pasa_las_sucursales_contratadas_solo_si_hay(fake_scripts):
+    """ADR-041: con un número viaja al alta; sin él el `nuevo_cliente` del producto no recibe ni el argumento (una versión que no lo conozca no se rompe)."""
+    import nuevo_cliente as nc
+
+    services.crear_cliente(nombre="Con Tope", slug="con-tope", sucursales_contratadas=2)
+    assert nc.ultima_alta["extra"] == {"sucursales_contratadas": 2}
+    services.crear_cliente(nombre="Sin Tope", slug="sin-tope")
+    assert nc.ultima_alta["extra"] == {}
 
 
 def test_crear_cliente_duplicado_lanza_service_error(fake_scripts):
@@ -419,6 +431,32 @@ def test_planes_info(fake_scripts):
     basico = next(p for p in info if p["key"] == "basico")
     assert basico["label"] == "Básico"
     assert basico["precio"] == 1000
+
+
+def test_plan_vigente_resuelve_un_plan_retirado_y_deja_el_resto(fake_scripts):
+    """Una instancia vieja guarda `basico` en su `cliente.json`; si el producto lo retiró, el plan que rige es su reemplazo (ADR-041)."""
+    fake_scripts["plans"].PLANES_RETIRADOS = {"viejo": "pro"}
+    assert services.plan_vigente("viejo") == "pro"
+    assert services.plan_vigente("basico") == "basico"
+    assert services.plan_vigente("desconocido") == "desconocido"
+    assert services.plan_vigente("") == ""
+
+
+def test_planes_info_sin_unidades_adicionales_dice_none(fake_scripts):
+    """Un `plans.py` que no declara `PLAN_UNIDADES_ADICIONALES` (los otros productos) no rompe y no cobra nada de más (ADR-041)."""
+    assert not hasattr(fake_scripts["plans"], "PLAN_UNIDADES_ADICIONALES")
+    assert all(p["adicional"] is None for p in services.planes_info())
+
+
+def test_planes_info_trae_la_unidad_adicional_del_plan_que_la_declara(fake_scripts):
+    adicional = {"unidad": "sucursal", "incluidas": 1, "precio": 19950}
+    fake_scripts["plans"].PLAN_UNIDADES_ADICIONALES = {"pro": adicional}
+    info = {p["key"]: p for p in services.planes_info()}
+    assert info["pro"]["adicional"] == adicional
+    assert info["basico"]["adicional"] is None
+    # una copia: quien la modifica no toca el `plans.py`
+    info["pro"]["adicional"]["precio"] = 1
+    assert fake_scripts["plans"].PLAN_UNIDADES_ADICIONALES["pro"]["precio"] == 19950
 
 
 def test_configure_requerido_antes_de_usar():
