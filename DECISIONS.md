@@ -882,3 +882,29 @@ Detalle en `docs/fce.md`.
   - Una pantalla vieja que cambia el CBU predeterminado deja el anterior en la lista (sólo la nueva pantalla puede quitar cuentas).
   - Las FCE ya emitidas no cambian: `facturas.fce_cbu` guarda el CBU con el que salió cada una.
   - Fuera de alcance: la pantalla del kit y la elección en LibraCargo (consumen este contrato), y borrar una cuenta de la lista cuando hay FCE emitidas con ella (la factura conserva su CBU, así que no hace falta).
+
+
+## ADR-041 — Las sucursales se cobran por lo CONTRATADO, y pasarse bloquea el alta: el dato vive en la instancia (`libracore.limites`)
+
+- Estado: aceptada
+- Fecha: 2026-10-10
+- Contexto: pedido del dueño (2026-10-10). VentaLibra (plan único, ADR-072 de ese producto) cuesta **$39.900 por mes por instancia con UNA sucursal incluida**, y cada sucursal adicional en la misma instancia suma **$19.950** (precios finales, IVA incluido). Hasta acá la sucursal adicional era sólo un precio comercial: `plans.py` lo decía en un comentario y nada la contaba, la cobraba ni la limitaba.
+- Qué ya existía (se miró antes de diseñar): `PLAN_PRECIOS` en el `plans.py` de cada producto, leído por `admin.services.planes_info()` y expuesto por el backoffice en `GET /api/planes`; el token de servicio (`X-Internal-Auth`) con el que el backoffice le habla a cada instancia; el patrón de config de la instancia en `config_manager` (`config.json`) con un router propio para la lectura/escritura (`tema_router`, ADR-012); la guarda inyectada de `resumen_router` (LibraCore no depende del motor de auth); `AltaIncompleta`/`crear_cliente` como único camino del alta, que ya siembra el `config.json`.
+- Decisión (las tres, del dueño):
+  1. **Se cobra lo contratado, no lo usado.** La cantidad de sucursales contratadas es un dato de la instancia que se carga desde el backoffice; el sistema calcula el abono `base + max(0, contratadas − incluidas) × adicional` (`libracore.abono.calcular_abono`, puro) y muestra «activas vs contratadas».
+  2. **Si se supera lo contratado, se BLOQUEA el alta** (y la reactivación): con la sucursal nueva, las activas no pueden superar las contratadas. Mensaje para el cliente, en castellano: «Tu plan incluye N sucursal(es). Para sumar otra, comunicate con nosotros.». Lo que ya existe no se toca: si el contrato se achica por debajo de las activas, siguen andando; sólo se frena sumar.
+  3. **Sin dato cargado, no hay límite**, para no romper ninguna instancia existente ni las demos. El backoffice lo muestra como «Sin cargar». El alta de una instancia nueva pide el número (default 1).
+- Dónde vive el dato:
+  - **En la instancia** (clave `limite_sucursales` de su `config.json`) y no en el `cliente.json` del host. Es lo que permite que la instancia bloquee un alta sin leer archivos del host ni llamar al backoffice (que puede estar caído: ADR-012 ya fijó que la instancia sigue funcionando sola). Fuente única: el backoffice, el cliente y el bloqueo leen el mismo número. Se descartó guardarlo en el `cliente.json` y empujarlo: serían dos copias que se desfasan.
+  - Un valor ilegible (editado a mano, un texto, un cero) se lee como «sin dato»: nunca bloquea ni rompe la lectura. La clave se escribe sólo por `fijar_sucursales_contratadas` (entero 1..1000) o por el alta.
+- Contrato:
+  - `GET`/`PUT /api/limites/sucursales` (`build_limites_router(guard_lectura=, guard_escritura=, medir_activas=)`): `{contratadas: int | null, activas: int}`; el `PUT` recibe `{"contratadas": entero | null}` (`null` quita el dato). **Las guardas las inyecta el producto y son distintas a propósito**: leer es de admin **o** del token de servicio (el cliente puede ver «activas vs contratadas»); **escribir es sólo del token de servicio**, porque el tope es un límite comercial y un admin que pudiera cargar su propio número lo dejaría sin efecto. El medidor de activas lo pasa el producto (sabe dónde viven sus sucursales).
+  - `verificar_alta_de_sucursal(activas_actuales)` levanta `LimiteExcedido` (con el mensaje); el producto la llama desde su gancho de alta **y** de reactivación y la traduce a su respuesta HTTP.
+  - `planes_info()` suma `adicional` (`{"unidad", "incluidas", "precio"}` o `None`), leído con `getattr(plans, "PLAN_UNIDADES_ADICIONALES", {})`: es una costura opcional y los otros productos no la declaran.
+  - `admin.services.plan_vigente(plan)` resuelve el plan de un `cliente.json` viejo (un plan retirado pasa a su reemplazo) para poder buscarlo en `planes_info()`: sin eso, una instancia que quedó guardada como `basico` aparecería como «el plan no cobra sucursales adicionales».
+  - El alta (`crear_cliente(sucursales_contratadas=)`) escribe `limite_sucursales` en el `config.json` **antes** de levantar el contenedor: la instancia nace con su tope, sin la carrera de empujárselo por HTTP a una que todavía no contesta.
+- Consecuencias:
+  - MINOR (propuesta v1.153.0), **sin migración**. Nada cambia hasta que un producto monte el router y alguien cargue un número; los otros productos no hacen nada.
+  - El tope lo hace cumplir el producto en su gancho de alta: LibraCore no conoce las sucursales de nadie. Una sucursal creada por fuera de ese gancho (un script, la base a mano) no pasa por la verificación.
+  - Dos escrituras simultáneas del `config.json` (la carga del límite y otra pantalla de configuración) se pisan como siempre en este módulo (leer-modificar-guardar); es un dato que cambia pocas veces al año.
+  - Fuera de alcance: facturar el abono (el sistema lo calcula y lo muestra, no cobra), un tope para otras unidades (usuarios, depósitos) y avisos al cliente al acercarse al límite.

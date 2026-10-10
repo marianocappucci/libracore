@@ -188,14 +188,17 @@ def get_cliente(slug: str) -> dict | None:
 
 def crear_cliente(nombre, slug="", domain="", port=0, admin_user="admin",
                   admin_password="", plan="basico", empresa_cuit="",
-                  empresa_nombre="", sin_identidad=False, setup_npm=True) -> dict:
+                  empresa_nombre="", sin_identidad=False, setup_npm=True,
+                  sucursales_contratadas=None) -> dict:
     nc = _nc()
+    # `sucursales_contratadas` (ADR-041) sólo viaja si hay un número: un `nuevo_cliente` que no lo conozca no tiene por qué recibirlo.
+    extra = {} if sucursales_contratadas is None else {"sucursales_contratadas": sucursales_contratadas}
     try:
         return nc.crear_cliente(
             nombre=nombre, slug=slug, domain=domain, port=int(port or 0),
             admin_user=admin_user or "admin", admin_password=admin_password,
             plan=plan, empresa_cuit=empresa_cuit, empresa_nombre=empresa_nombre,
-            sin_identidad=sin_identidad, setup_npm=setup_npm,
+            sin_identidad=sin_identidad, setup_npm=setup_npm, **extra,
         )
     # 🔴 La excepción se importa de LibraCore, NO se busca en `nc`.
     #
@@ -528,13 +531,31 @@ def _npm_eliminar_proxy(domain: str) -> bool | None:
 
 # ── metadatos de planes para la UI ──────────────────────────────────────────────
 
+def plan_vigente(plan: str) -> str:
+    """El plan de `plans.py` que rige hoy para el que dice el `cliente.json` de una instancia: un plan retirado (`PLANES_RETIRADOS`, p. ej. el
+    `basico` de VentaLibra antes de su plan único) se resuelve a su reemplazo; uno vacío o que no es de ninguna lista vuelve igual. Es lo que permite
+    buscar el plan de una instancia vieja en `planes_info()` (ADR-041). Nunca lanza."""
+    from libracore.provisioning import resolver_plan
+    if not (plan or "").strip():
+        return plan
+    try:
+        return resolver_plan(_plans(), plan)
+    except ValueError:
+        return plan
+
+
 def planes_info() -> list[dict]:
+    """Los planes del producto para la UI. `adicional` (ADR-041) es `{"unidad", "incluidas", "precio"}` cuando el plan cobra unidades de más
+    (VentaLibra: sucursales) y `None` si no. 🔴 `getattr` y no `plans.PLAN_UNIDADES_ADICIONALES`: es una costura OPCIONAL del `plans.py` del
+    producto y los otros productos no la declaran."""
     plans = _plans()
+    adicionales = getattr(plans, "PLAN_UNIDADES_ADICIONALES", {}) or {}
     return [
         {
             "key": p,
             "label": plans.PLAN_LABELS.get(p, p.title()),
             "precio": plans.PLAN_PRECIOS.get(p),
+            "adicional": dict(adicionales[p]) if adicionales.get(p) else None,
             "modulos": sorted(plans.modulos_de_plan(p)),
         }
         for p in plans.PLANES

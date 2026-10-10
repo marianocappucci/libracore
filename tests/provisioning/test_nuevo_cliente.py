@@ -261,6 +261,27 @@ def test_un_producto_de_plan_unico_acepta_el_plan_basico_por_defecto(cfg, fake_p
     assert fake_plans.aplicar_plan_calls[-1][1] == "unico"
 
 
+def test_el_alta_siembra_las_sucursales_contratadas_en_el_config_de_la_instancia(cfg):
+    """ADR-041: la instancia nace con su tope, sin esperar a que levante para empujárselo por HTTP."""
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Dos Locales", slug="dos-locales", setup_npm=False, sucursales_contratadas=2)
+    config = json.loads((cfg.clientes_dir / "dos-locales" / "data" / "config.json").read_text(encoding="utf-8"))
+    assert config["limite_sucursales"] == 2
+
+
+def test_el_alta_sin_sucursales_contratadas_no_escribe_la_clave(cfg):
+    """Sin dato, sin límite: la instancia se comporta como siempre."""
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Sin Tope", slug="sin-tope", setup_npm=False)
+    config = json.loads((cfg.clientes_dir / "sin-tope" / "data" / "config.json").read_text(encoding="utf-8"))
+    assert "limite_sucursales" not in config
+
+
+@pytest.mark.parametrize("malo", [0, -1, 1001, True, "2", 1.5])
+def test_el_alta_rechaza_sucursales_contratadas_invalidas_sin_dejar_nada(cfg, malo):
+    with pytest.raises(nc.ClienteError, match="sucursales contratadas"):
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Malo", slug="cliente-malo", setup_npm=False, sucursales_contratadas=malo)
+    assert not (cfg.clientes_dir / "cliente-malo").exists()
+
+
 def test_crear_cliente_sin_dominio_no_configura_proxy(cfg):
     info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Tres", slug="cliente-tres", setup_npm=True)
     assert info["proxy_ok"] is None
