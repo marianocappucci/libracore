@@ -8,6 +8,7 @@ import contextlib
 import json
 import re
 
+from libracore.cuit import solo_digitos
 from libracore.db.core import get_connection
 
 #: Los dos ambientes, y de qué columnas sale el par de cada uno.
@@ -241,10 +242,6 @@ def config_del_emisor(emisor_id=None):
     return cfg
 
 
-def _digitos(valor) -> str:
-    return "".join(c for c in str(valor or "") if c.isdigit())
-
-
 def config_por_cuit(cuit):
     """La configuración activa de ese CUIT, o `None` si no hay. `ArcaAmbiguo` si hay dos.
 
@@ -252,10 +249,10 @@ def config_por_cuit(cuit):
     un CUIT, así que una razón social sólo emite con la fila de su CUIT. Si no
     hay, registra a mano; si hay dos, no adivina.
     """
-    digitos = _digitos(cuit)
+    digitos = solo_digitos(cuit)
     if not digitos:
         return None
-    candidatas = [c for c in obtener_todas_arca_configs() if _digitos(c.get("cuit")) == digitos]
+    candidatas = [c for c in obtener_todas_arca_configs() if solo_digitos(c.get("cuit")) == digitos]
     if len(candidatas) > 1:
         raise ArcaAmbiguo(
             f"Hay {len(candidatas)} configuraciones de ARCA activas para el CUIT {digitos}."

@@ -7,6 +7,12 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — `libracore.cuit.solo_digitos`: «sólo los dígitos del CUIT» es una función del motor
+
+**Sin migración y sin cambio de comportamiento.** `solo_digitos(valor) -> str` (`re.sub(r"\D", "", str(valor or ""))`) es la regla única: quita guiones, puntos, espacios y todo lo que no es dígito; `None` y vacío dan `""`; lo que no es texto no lanza. `arca_wsfe.cuit_del_receptor` (y con ella `problema_del_receptor` y `solicitar_cae`) se apoya en ella y devuelve lo mismo que antes. Los productos dejan de tener su helper propio: LibraCargo tenía cinco copias.
+
+También se migran las cuatro copias que vivían en el motor (`arca_wsfecred._digitos`, `arca_wscpe._digitos`, `db.arca_config._digitos` y el `join` de `facturas_router.fce_corresponde`); un test falla si vuelve un `join(... isdigit())` en `libracore/`. Único matiz: `arca_wsfecred` y `arca_wscpe` hacían `str(cuit)` sin el `or ""`, así que un `0` numérico daba `"0"` y ahora da `""`; en ambos casos no es un CUIT de 11 dígitos y se rechaza igual.
+
 ## [Unreleased] — Se retira `libracore.cc_resumen` (código muerto)
 
 **Sin migración y sin cambio de schema.** Se borran `libracore/cc_resumen.py` (el envío periódico del resumen de cuenta corriente por mail) y sus dos archivos de tests: ningún producto, script ni router de la familia lo importaba (relevado el 2026-10-12 en `origin/develop` de contalibra, restolibra, ventalibra, gestiolibra, medlibra, libradesk, libracargo, libraclub, libra-panel, libra-backoffice, libracommerce, libra-ui, libraauth, libraedge, libragenda y este motor). Un consumidor que lo importara dejaría de poder hacerlo; no hay ninguno conocido. Las columnas `clients.cc_resumen_*`, la tabla `cc_resumenes_enviados`, las claves `cc_resumen_*` del `config.json` y `pdf_generator.generate_pdf_resumen_cc` **se quedan**: sacarlas es otra decisión (tocan schema).
