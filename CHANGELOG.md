@@ -7,6 +7,10 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Se retira `libracore.cc_resumen` (código muerto)
+
+**Sin migración y sin cambio de schema.** Se borran `libracore/cc_resumen.py` (el envío periódico del resumen de cuenta corriente por mail) y sus dos archivos de tests: ningún producto, script ni router de la familia lo importaba (relevado el 2026-10-12 en `origin/develop` de contalibra, restolibra, ventalibra, gestiolibra, medlibra, libradesk, libracargo, libraclub, libra-panel, libra-backoffice, libracommerce, libra-ui, libraauth, libraedge, libragenda y este motor). Un consumidor que lo importara dejaría de poder hacerlo; no hay ninguno conocido. Las columnas `clients.cc_resumen_*`, la tabla `cc_resumenes_enviados`, las claves `cc_resumen_*` del `config.json` y `pdf_generator.generate_pdf_resumen_cc` **se quedan**: sacarlas es otra decisión (tocan schema).
+
 ## [Unreleased] — Sucursales contratadas: el abono y el tope (propuesta: v1.153.0)
 
 ADR-041. **Sin migración y sin cambio de schema.** El plan único de VentaLibra cobra $39.900 con UNA sucursal incluida y $19.950 por cada una más. Hasta acá era sólo un precio comercial: nada contaba sucursales. Ahora la cantidad **contratada** es un dato de la instancia, el abono se calcula y pasarse **bloquea el alta**. Sin dato cargado no hay límite: ninguna instancia existente cambia.
