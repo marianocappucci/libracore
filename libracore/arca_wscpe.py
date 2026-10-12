@@ -31,6 +31,7 @@ from xml.sax.saxutils import escape
 import httpx
 
 from libracore import arca_credenciales, arca_servicios, arca_wsaa
+from libracore.cuit import solo_digitos
 
 #: El servicio a pedirle a WSAA. Un ticket de `wsfe` no sirve para este.
 SERVICIO = "wscpe"
@@ -212,12 +213,8 @@ def _xml(campos: dict) -> str:
     return "".join(partes)
 
 
-def _digitos(cuit) -> str:
-    return "".join(c for c in str(cuit) if c.isdigit())
-
-
 def _pedido(elemento: str, cuit_representada, token: str, sign: str, campos: dict) -> str:
-    cuit = _digitos(cuit_representada)
+    cuit = solo_digitos(cuit_representada)
     if len(cuit) != 11:
         raise ValueError(f"WSCPE: el CUIT representado tiene que tener 11 dígitos, no «{cuit_representada}»")
     auth = {"auth": {"token": token, "sign": sign, "cuitRepresentada": cuit}}
@@ -331,7 +328,7 @@ async def consultar_cpe(
     if ctg is None and None in (tipo_cpe, sucursal, nro_orden):
         raise ValueError("WSCPE: hace falta el CTG, o el tipo, la sucursal y el número de orden de la CPE")
     solicitud = {
-        "cuitSolicitante": _digitos(cuit_solicitante) if cuit_solicitante else None,
+        "cuitSolicitante": solo_digitos(cuit_solicitante) if cuit_solicitante else None,
         "cartaPorte": (None if ctg is not None else
                        {"tipoCPE": int(tipo_cpe), "sucursal": int(sucursal), "nroOrden": int(nro_orden)}),
         "nroCTG": int(ctg) if ctg is not None else None,
@@ -461,7 +458,7 @@ async def plantas(cuit_representada, token: str, sign: str, *, cuit, ambiente: s
     """Las plantas inscriptas de `cuit` (`consultarPlantas`). Sin plantas, ARCA contesta `800`: acá es `[]`."""
     try:
         respuesta = await _llamar("consultarPlantas", _pedido(
-            "ConsultarPlantasReq", cuit_representada, token, sign, {"solicitud": {"cuit": _digitos(cuit)}}), ambiente)
+            "ConsultarPlantasReq", cuit_representada, token, sign, {"solicitud": {"cuit": solo_digitos(cuit)}}), ambiente)
     except CpeNoEncontrada:
         return []
     return [Planta(numero=int(_texto(p, "nroPlanta")), cod_provincia=_entero(_texto(p, "codProvincia")),
@@ -567,7 +564,7 @@ class SolicitudCpe:
                  "del destinatario": self.cuit_destinatario, "del transportista": self.transporte.cuit_transportista,
                  "del chofer": self.transporte.cuit_chofer, "del pagador del flete": self.transporte.cuit_pagador_flete}
         for nombre, cuit in cuits.items():
-            if len(_digitos(cuit)) != 11:
+            if len(solo_digitos(cuit)) != 11:
                 p.append(f"el CUIT {nombre} tiene que tener 11 dígitos")
         for nombre, kg in (("bruto", self.peso_bruto), ("tara", self.peso_tara)):
             if not 1 <= kg <= 88000:
@@ -603,9 +600,9 @@ class SolicitudCpe:
         desconocidos = set(dados) - set(_ORDEN_INTERVINIENTES)
         if desconocidos:
             raise ValueError(f"WSCPE: intervinientes que el esquema no tiene: {sorted(desconocidos)}")
-        intervinientes = {k: _digitos(dados[k]) for k in _ORDEN_INTERVINIENTES if dados.get(k)}
+        intervinientes = {k: solo_digitos(dados[k]) for k in _ORDEN_INTERVINIENTES if dados.get(k)}
         return {
-            "cabecera": {"tipoCP": self.tipo_cpe, "cuitSolicitante": _digitos(self.cuit_solicitante),
+            "cabecera": {"tipoCP": self.tipo_cpe, "cuitSolicitante": solo_digitos(self.cuit_solicitante),
                          "sucursal": self.sucursal, "nroOrden": nro_orden},
             "origen": origen,
             "correspondeRetiroProductor": "true" if retira else "false",
@@ -613,22 +610,22 @@ class SolicitudCpe:
             # `false`, ARCA contesta 949 («el campo productor no se debe informar»); con `true` llega a validar
             # que el solicitante sea productor (1015). Con planta va en `false`.
             "esSolicitanteCampo": "true" if isinstance(o, OrigenCampo) else "false",
-            "retiroProductor": ({"cuitRemitenteComercialProductor": _digitos(self.cuit_remitente_comercial_productor)}
+            "retiroProductor": ({"cuitRemitenteComercialProductor": solo_digitos(self.cuit_remitente_comercial_productor)}
                                 if retira else None),
             "intervinientes": intervinientes or None,
             "datosCarga": {"codGrano": self.cod_grano, "cosecha": self.cosecha,
                            "pesoBruto": self.peso_bruto, "pesoTara": self.peso_tara},
-            "destino": {"cuit": _digitos(d.cuit), "esDestinoCampo": "true" if d.es_campo else "false",
+            "destino": {"cuit": solo_digitos(d.cuit), "esDestinoCampo": "true" if d.es_campo else "false",
                         "codProvincia": d.cod_provincia, "codLocalidad": d.cod_localidad, "planta": d.planta},
-            "destinatario": {"cuit": _digitos(self.cuit_destinatario)},
+            "destinatario": {"cuit": solo_digitos(self.cuit_destinatario)},
             "transporte": {
-                "cuitTransportista": _digitos(t.cuit_transportista),
+                "cuitTransportista": solo_digitos(t.cuit_transportista),
                 # `dominio` se repite: va aparte, ver `_xml_transporte`.
                 "fechaHoraPartida": t.fecha_hora_partida.astimezone(_AR).strftime("%Y-%m-%dT%H:%M:%S"),
-                "kmRecorrer": t.km, "codigoTurno": t.codigo_turno, "cuitChofer": _digitos(t.cuit_chofer),
+                "kmRecorrer": t.km, "codigoTurno": t.codigo_turno, "cuitChofer": solo_digitos(t.cuit_chofer),
                 "tarifa": f"{t.tarifa:.2f}" if t.tarifa is not None else None,
-                "cuitPagadorFlete": _digitos(t.cuit_pagador_flete),
-                "cuitIntermediarioFlete": _digitos(t.cuit_intermediario_flete) if t.cuit_intermediario_flete else None,
+                "cuitPagadorFlete": solo_digitos(t.cuit_pagador_flete),
+                "cuitIntermediarioFlete": solo_digitos(t.cuit_intermediario_flete) if t.cuit_intermediario_flete else None,
                 "mercaderiaFumigada": "true" if t.mercaderia_fumigada else "false",
             },
             "observaciones": self.observaciones or None,
@@ -677,7 +674,7 @@ async def autorizar_cpe(cuit_representada, token: str, sign: str, solicitud: Sol
 
 
 def _exigir_once(cuit) -> str:
-    digitos = _digitos(cuit)
+    digitos = solo_digitos(cuit)
     if len(digitos) != 11:
         raise ValueError(f"WSCPE: el CUIT representado tiene que tener 11 dígitos, no «{cuit}»")
     return digitos
@@ -703,9 +700,9 @@ async def emitir_cpe(cuit_representada, token: str, sign: str, solicitud: Solici
       si tampoco contesta, `EmisionIncierta`. Es la regla del manual (sección 1.3) y la misma lección del CAE.
     """
     cuit = _exigir_once(cuit_representada)
-    if _digitos(solicitud.cuit_solicitante) != cuit:
+    if solo_digitos(solicitud.cuit_solicitante) != cuit:
         raise ValueError("WSCPE: se emite en nombre del solicitante: el CUIT representado tiene que ser el "
-                         f"del solicitante ({_digitos(solicitud.cuit_solicitante)}), no {cuit}")
+                         f"del solicitante ({solo_digitos(solicitud.cuit_solicitante)}), no {cuit}")
     problemas = solicitud.problemas()
     if problemas:
         raise SolicitudInvalida(problemas)

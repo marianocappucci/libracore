@@ -29,6 +29,7 @@ from xml.sax.saxutils import escape
 import httpx
 
 from libracore import arca_credenciales, arca_wsaa
+from libracore.cuit import solo_digitos
 
 #: El servicio a pedirle a WSAA. Un ticket de `wsfe` no sirve para este.
 SERVICIO = "wsfecred"
@@ -120,10 +121,6 @@ def _xml(campos: dict) -> str:
     return "".join(partes)
 
 
-def _digitos(cuit) -> str:
-    return "".join(c for c in str(cuit) if c.isdigit())
-
-
 async def _llamar(operacion: str, cuerpo: str, ambiente: str) -> ET.Element:
     """Manda `cuerpo` (ya armado, o vacío) y devuelve el elemento `…Return` de la respuesta."""
     url = WSFECRED_URL.get(ambiente, WSFECRED_URL["produccion"])
@@ -158,7 +155,7 @@ async def _llamar(operacion: str, cuerpo: str, ambiente: str) -> ET.Element:
 
 
 def _pedido(operacion: str, cuit_empresa: str, token: str, sign: str, campos: dict) -> str:
-    auth = {"authRequest": {"token": token, "sign": sign, "cuitRepresentada": _digitos(cuit_empresa)}}
+    auth = {"authRequest": {"token": token, "sign": sign, "cuitRepresentada": solo_digitos(cuit_empresa)}}
     return f"<fec:{operacion}Request>{_xml(auth | campos)}</fec:{operacion}Request>"
 
 
@@ -203,12 +200,12 @@ async def monto_obligado(
     """
     retorno = await _llamar("consultarMontoObligadoRecepcion", _pedido(
         "consultarMontoObligadoRecepcion", cuit_empresa, token, sign,
-        {"cuitConsultada": _digitos(cuit_receptor), "fechaEmision": fecha.isoformat()}), ambiente)
+        {"cuitConsultada": solo_digitos(cuit_receptor), "fechaEmision": fecha.isoformat()}), ambiente)
     return MontoObligado(obligado=_texto(retorno, "obligado") == "S", monto_desde=_importe(retorno, "montoDesde"))
 
 
 def _id_comprobante(cuit_emisor, tipo, punto_venta, numero) -> dict:
-    return {"CUITEmisor": _digitos(cuit_emisor), "codTipoCmp": int(tipo), "ptoVta": int(punto_venta),
+    return {"CUITEmisor": solo_digitos(cuit_emisor), "codTipoCmp": int(tipo), "ptoVta": int(punto_venta),
             "nroCmp": int(numero)}
 
 

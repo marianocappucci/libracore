@@ -3,13 +3,13 @@ Cliente WSFE (Facturación Electrónica v1) de ARCA/AFIP.
 Solicita CAE y consulta el último comprobante autorizado.
 """
 
-import re
 import ssl
 import xml.etree.ElementTree as ET
 
 import httpx
 
 from libracore import tipos_comprobante as tipos
+from libracore.cuit import solo_digitos
 
 WSFE_URL = {
     "homologacion": "https://wswhomo.afip.gov.ar/wsfev1/service.asmx",
@@ -70,7 +70,7 @@ def cuit_del_receptor(factura: dict) -> str:
     `30.70933285.2` llegaba antes como «no es un CUIT» y el comprobante salía a consumidor final
     (o, en una clase A, rebotaba en ARCA con un error que no explica nada).
     """
-    return re.sub(r"\D", "", str(factura.get("cliente_cuit") or ""))
+    return solo_digitos(factura.get("cliente_cuit"))
 
 
 def cuit_con_verificador_valido(digitos: str) -> bool:

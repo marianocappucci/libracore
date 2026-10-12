@@ -73,6 +73,7 @@ from libracore import pdf_generator as pdf_gen
 from libracore import tipos_comprobante as tipos_cbte
 from libracore.arca_facturacion import RECEPTORES_DE_FACTURA_A, get_next_numero_with_arca, solicitar_cae
 from libracore.cobros import MedioNoEsDeCobro, registrar_cobro_factura
+from libracore.cuit import solo_digitos
 from libracore.db import arca_config as db_arca
 from libracore.db import caja as db_caja
 from libracore.db import clients as db_clients
@@ -880,7 +881,7 @@ def build_comprobantes_router(
         motivo, y se emite como siempre. `fce_habilitada` dice si este emisor ya puede emitir FCE (cargó su CBU y su
         modalidad); si corresponde y no la tiene, hay que decirle qué cargar.
         """
-        digitos = "".join(c for c in cuit if c.isdigit())
+        digitos = solo_digitos(cuit)
         if len(digitos) != 11:
             raise HTTPException(422, "El CUIT del receptor tiene que tener 11 dígitos.")
         arca = _config_del_emisor(emisor_id)
