@@ -10,8 +10,6 @@ import json
 
 from libracore.db.core import get_connection
 
-CC_RESUMEN_FRECUENCIAS = ("semanal", "quincenal", "mensual")
-
 
 def _hay_parties(conn) -> bool:
     """`parties` es una tabla de LibraCommerce, no de LibraCore.
@@ -283,17 +281,11 @@ def get_facturas_by_client(cuit_dni: str, name: str, limit: int = 100) -> list:
 
 def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
                   phone=None, iva_condition=None, auto_facturar=None,
-                  cc_resumen_auto=None, cc_resumen_frecuencia=None,
                   empresa=None, ciudad=None, observaciones=None,
                   tipo_facturacion=None):
     client = get_client(client_id)
     if not client:
         return
-    if cc_resumen_frecuencia is not None and cc_resumen_frecuencia not in CC_RESUMEN_FRECUENCIAS:
-        raise ValueError(
-            f"Frecuencia de resumen inválida: {cc_resumen_frecuencia!r}. "
-            f"Válidas: {', '.join(CC_RESUMEN_FRECUENCIAS)}."
-        )
     nuevo_name     = name          if name          is not None else client["name"]
     nuevo_cuit     = cuit_dni      if cuit_dni      is not None else client["cuit_dni"]
     nuevo_email    = email         if email         is not None else client["email"]
@@ -303,8 +295,7 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
         # tocan sólo si la instancia las tiene. Ver `_columnas_de_clients`.
         asignaciones = [
             "name=?", "address=?", "cuit_dni=?", "email=?", "phone=?",
-            "iva_condition=?", "auto_facturar=?", "cc_resumen_auto=?",
-            "cc_resumen_frecuencia=?",
+            "iva_condition=?", "auto_facturar=?",
         ]
         valores = [
             nuevo_name,
@@ -314,9 +305,6 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
             nuevo_phone,
             iva_condition if iva_condition is not None else client.get("iva_condition", ""),
             int(auto_facturar) if auto_facturar is not None else int(client.get("auto_facturar", 0)),
-            int(cc_resumen_auto) if cc_resumen_auto is not None else int(client.get("cc_resumen_auto", 0)),
-            cc_resumen_frecuencia if cc_resumen_frecuencia is not None
-            else (client.get("cc_resumen_frecuencia") or "mensual"),
         ]
         nuevas = {
             "empresa": empresa if empresa is not None else (client.get("empresa") or ""),
@@ -359,26 +347,6 @@ def toggle_auto_facturar(client_id: int) -> bool:
         )
         row = conn.execute("SELECT auto_facturar FROM clients WHERE id=?", (client_id,)).fetchone()
         return bool(row["auto_facturar"]) if row else False
-
-
-def toggle_cc_resumen_auto(client_id: int) -> bool:
-    """Invierte el flag de envío automático del resumen de cuenta corriente.
-    Devuelve el nuevo valor. Mismo patrón que `toggle_auto_facturar`."""
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE clients SET cc_resumen_auto = 1 - cc_resumen_auto WHERE id=?",
-            (client_id,),
-        )
-        row = conn.execute("SELECT cc_resumen_auto FROM clients WHERE id=?", (client_id,)).fetchone()
-        return bool(row["cc_resumen_auto"]) if row else False
-
-
-def get_clients_cc_resumen_auto() -> list[dict]:
-    """Clientes activos con el envío automático de resumen habilitado."""
-    with get_connection() as conn:
-        return [dict(r) for r in conn.execute(
-            "SELECT * FROM clients WHERE activo = 1 AND cc_resumen_auto = 1 ORDER BY name"
-        )]
 
 
 def delete_client(client_id):

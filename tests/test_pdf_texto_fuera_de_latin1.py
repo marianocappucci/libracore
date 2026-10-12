@@ -96,21 +96,6 @@ def test_factura_con_tipografia_de_procesador_de_texto(tmp_path, monkeypatch):
     _es_pdf(pg2.generate_pdf_factura(factura, output_dir=str(tmp_path)))
 
 
-def test_resumen_cc_con_tipografia_de_procesador_de_texto(tmp_path, monkeypatch):
-    pg2 = _set_data_dir(tmp_path, monkeypatch, empresa_nombre=TIPOGRAFICOS)
-    cliente = {"id": 1, "name": TIPOGRAFICOS, "cuit_dni": "", "address": TIPOGRAFICOS,
-               "email": "", "phone": ""}
-    periodo = {
-        "desde": "2026-08-01", "hasta": "2026-08-31", "emitido": "2026-08-31",
-        "saldo_anterior": 0.0,
-        "movimientos": [{"fecha": "2026-08-05", "tipo": "debito",
-                         "concepto": TIPOGRAFICOS, "monto": 100.0,
-                         "referencia": TIPOGRAFICOS}],
-        "total_debitos": 100.0, "total_creditos": 0.0, "saldo_final": 100.0,
-    }
-    _es_pdf(pg2.generate_pdf_resumen_cc(cliente, periodo, output_dir=str(tmp_path)))
-
-
 def test_ticket_con_tipografia_de_procesador_de_texto(tmp_path, monkeypatch):
     """`TicketPDF` vive en otro módulo y heredaba de `FPDF` pelado."""
     _set_data_dir(tmp_path, monkeypatch, empresa_nombre=TIPOGRAFICOS)

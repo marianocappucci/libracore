@@ -223,24 +223,9 @@ def _recibo_doc(pgen, tmp_path, texto):
     })
 
 
-def _resumen_cc(pgen, tmp_path, texto):
-    return pgen.generate_pdf_resumen_cc(
-        {"id": 7, "name": texto, "cuit_dni": "30-71234567-9", "address": texto,
-         "email": texto, "phone": "02346-49-1200"},
-        {"desde": "2026-07-01", "hasta": "2026-07-31", "emitido": "2026-08-01",
-         "saldo_anterior": 1250000.0,
-         "movimientos": [{"fecha": "2026-07-05", "tipo": "debito",
-                          "concepto": texto, "monto": 2156230.9,
-                          "referencia": texto}],
-         "total_debitos": 2156230.9, "total_creditos": 0.0,
-         "saldo_final": 3406230.9},
-        output_dir=str(tmp_path))
-
-
 DOCUMENTOS = [
     ("remito", _remito), ("presupuesto", _presupuesto), ("factura", _factura),
     ("recibo", _recibo), ("recibo numerado", _recibo_doc),
-    ("resumen de cuenta", _resumen_cc),
 ]
 
 

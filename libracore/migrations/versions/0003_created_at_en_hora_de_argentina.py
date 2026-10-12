@@ -83,6 +83,8 @@ _COLUMNAS = (
     ("listas_precio", "created_at"),
     ("cc_pagos", "created_at"),
     ("cc_debitos", "created_at"),
+    # La tabla se retiró en la `0024` y una base nueva ya no la tiene: `alters_para_hora_ar`
+    # sólo emite el `ALTER` de las columnas que existen, así que la fila se saltea sola.
     ("cc_resumenes_enviados", "created_at"),
     ("recibos", "created_at"),
     ("comprobantes_pendientes", "created_at"),

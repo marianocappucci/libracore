@@ -908,3 +908,22 @@ Detalle en `docs/fce.md`.
   - El tope lo hace cumplir el producto en su gancho de alta: LibraCore no conoce las sucursales de nadie. Una sucursal creada por fuera de ese gancho (un script, la base a mano) no pasa por la verificación.
   - Dos escrituras simultáneas del `config.json` (la carga del límite y otra pantalla de configuración) se pisan como siempre en este módulo (leer-modificar-guardar); es un dato que cambia pocas veces al año.
   - Fuera de alcance: facturar el abono (el sistema lo calcula y lo muestra, no cobra), un tope para otras unidades (usuarios, depósitos) y avisos al cliente al acercarse al límite.
+
+
+## ADR-042 — Los restos de datos del resumen de cuenta corriente por mail se borran con una migración (`0024_retirar_cc_resumen`)
+
+- Estado: aceptada
+- Fecha: 2026-10-12
+- Contexto: la v1.154.0 retiró `libracore/cc_resumen.py` (el envío periódico del resumen de cuenta corriente por mail) por ser código muerto: ningún producto, script ni router de la familia lo importaba, y su llave maestra (`cc_resumen_habilitado`) venía en `0`. Quedaron a propósito los datos —la tabla `cc_resumenes_enviados`, las tres columnas `clients.cc_resumen_*`, las claves del `config.json` y `generate_pdf_resumen_cc`—, porque tocar el schema es otra decisión. El dueño la tomó el 2026-10-12: «los borramos con una migración».
+- Qué ya existía (se miró antes de diseñar): el patrón de revisión que llama a `init_core_schema()` y se apoya en que sea idempotente (`0001`, `0017`, `0023`); `alters_para_hora_ar`, que ya tolera una tabla ausente (lee las columnas reales de la base); y la regla del congelamiento de `init_core_schema` (`tests/db/test_schema_congelado.py`: un cambio a la función obliga a regenerar las fixtures y a preguntarse si no es una revisión). Para SQLite, que no tiene `DROP COLUMN IF EXISTS`, se sigue el criterio de `0010` y `0011`: preguntar por las columnas que hay antes de tocarlas.
+- Decisión:
+  - **Una revisión, `0024`, y no sólo sacar el DDL de `init_core_schema()`**: sacarlo evita que una base nueva tenga los restos, pero no los saca de las bases que ya los tienen, y esas son las que importan. Por eso la función y la revisión cambian juntas, y el gate del schema congelado (fixtures regeneradas) lo registra.
+  - **`DROP TABLE IF EXISTS cc_resumenes_enviados`** (se lleva el índice y la FK) y **`DROP COLUMN` de las tres columnas**, con `IF EXISTS` en PostgreSQL y preguntando por las columnas en SQLite. El CHECK `clients_cc_resumen_frecuencia_check` se nombra aparte en PostgreSQL. Sin `CASCADE`: si algún objeto de una instancia (una vista a mano) dependiera de esas columnas, la migración falla en lugar de llevárselo puesto.
+  - **No se baja**: el historial de envíos y las preferencias de cada cliente se pierden y recrear la estructura vacía sería fingir que volvieron. El rollback es restaurar el backup (como `0001`, `0017` y `0023`).
+  - **La `0003` y la `0018` no se editan**: nombran la tabla (`created_at`, `saldo`) pero sólo actúan sobre las columnas que existen, así que una base nueva —que ya no la tiene— las atraviesa. `0003` lleva un comentario que lo dice; `COLUMNAS_DE_DINERO` pierde la fila porque es la lista viva, no un registro histórico.
+  - **El `config.json` no se migra**: es un archivo por instancia, no una tabla. Las claves `cc_resumen_*` salen de `DEFAULTS` y las que haya guardadas quedan inertes.
+  - **`update_client` pierde dos kwargs** (`cc_resumen_auto`, `cc_resumen_frecuencia`). Se aceptó el corrimiento de los argumentos posicionales siguientes porque ningún consumidor llama con más de `client_id` posicional; quien lo haga tiene que pasar por nombre.
+- Consecuencias:
+  - MINOR (propuesta v1.155.0), **con migración, y borra datos**. Orden: primero el pin con el código nuevo, después la `0024`; al revés, el `update_client` de la versión anterior escribe columnas que ya no están.
+  - LibraDesk mapea las mismas columnas y crea la misma tabla en su propio modelo; las saca en su repo, con su revisión. Sobre una base que corre las dos cadenas, el `IF EXISTS` de cada una hace que no se pisen.
+  - Fuera de alcance: las claves `cc_resumen_*` ya guardadas en los `config.json` de las instancias, y `get_cc_movimientos_periodo`, que sigue siendo una lectura válida de la cuenta.

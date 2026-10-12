@@ -7,6 +7,24 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Se retiran los restos de datos del resumen de cuenta corriente por mail (propuesta: v1.155.0)
+
+ADR-042. **Trae la migración `0024_retirar_cc_resumen`**, que **borra datos**: la tabla `cc_resumenes_enviados` (con su índice `idx_cc_resumenes_cliente` y su FK a `clients`) y las columnas `clients.cc_resumen_auto`, `clients.cc_resumen_frecuencia` (con su CHECK `clients_cc_resumen_frecuencia_check`) y `clients.cc_resumen_ultimo_envio`. Idempotente (`IF EXISTS` en PostgreSQL; en SQLite pregunta por las columnas), y no se baja: restaurar el backup. Es la segunda mitad del retiro de la v1.154.0, que sacó el módulo `cc_resumen` y dejó los datos a propósito; el dueño decidió el 2026-10-12 borrarlos con una migración.
+
+🔴 **Primero el pin, después la migración.** El `update_client` de la v1.154.0 y anteriores escribe `cc_resumen_auto` y `cc_resumen_frecuencia` en cada edición de un cliente: con las columnas ya borradas, esa edición revienta. El deploy tiene que reconstruir la imagen con el pin nuevo y recién ahí correr la `0024` (`scripts/migrar_instancias.sh`); al revés, el contenedor viejo sigue sirviendo con un `update_client` que ya no tiene dónde escribir.
+
+- **Se van de `libracore.db.clients`**: `CC_RESUMEN_FRECUENCIAS`, `toggle_cc_resumen_auto`, `get_clients_cc_resumen_auto` y los kwargs `cc_resumen_auto` y `cc_resumen_frecuencia` de `update_client`. **Ojo con los argumentos posicionales:** al sacar esos dos, `empresa`, `ciudad`, `observaciones` y `tipo_facturacion` se corren dos lugares hacia adelante. Ningún consumidor conocido llama a `update_client` con más de `client_id` posicional (relevado el 2026-10-12 en `origin/develop` de los 12 repos de producto: Contalibra y Restolibra lo llaman con kwargs); quien lo haga tiene que pasar los campos por nombre.
+- **Se van de `libracore.db.cuenta_corriente`**: `registrar_resumen_enviado` y `get_resumenes_enviados`. `get_cc_movimientos_periodo` **se queda** (es una lectura de la cuenta que ya tiene otros llamadores).
+- **Se van de `libracore.pdf_generator`**: `generate_pdf_resumen_cc`, `ResumenCCPDF`, `_draw_movimientos_cc` y `RESUMENES_CC_PDF_DIR`. Ningún helper quedó huérfano: los que usaban (`_draw_header_block`, `_draw_emisor_cliente`, `_draw_no_fiscal_notice`, `_wrap_text`, `_rrect`) los comparten los demás documentos.
+- **Se van de `config_manager.DEFAULTS`** las seis claves `cc_resumen_*`. La config vive en el `config.json` de cada instancia, no en una tabla: la migración no la toca. Si una instancia las tiene guardadas quedan ahí, sin que nadie las lea; borrarlas a mano es cosmético.
+- **`init_core_schema()`** deja de crear la tabla, el índice y las columnas, y `COLUMNAS_DE_DINERO` pierde `("cc_resumenes_enviados", "saldo")`. La `0003` (`created_at` en hora de Argentina) todavía nombra la tabla en su lista, y sigue andando sobre una base que no la tiene: `alters_para_hora_ar` sólo emite el `ALTER` de las columnas que existen. Las dos fixtures del schema congelado se regeneraron (`schema_sqlite.txt`, `schema_postgres.txt`): lo único que cambia es lo retirado.
+- Los tests del resumen en PDF se sacaron de los archivos donde estaban (`test_pdf_generator`, `test_margenes_pdf`, `test_emisor_del_pdf`, `test_pdf_fecha_de_creacion`, `test_pdf_texto_fuera_de_latin1`) sin tocar los casos de los otros documentos. `tests/db/test_retirar_cc_resumen.py` prueba la `0024` en SQLite y en PostgreSQL: una base con los restos queda sin ellos y con sus clientes, repetirla no falla, y una base nueva atraviesa toda la cadena.
+
+### Para los productos
+
+- **LibraDesk** tiene su propio modelo de `clients` y su propia cadena de Alembic, con las tres columnas y la tabla: las saca en su propio PR, con su propia migración, y no depende de este pin.
+- El resto no hace nada más que subir el pin y correr la `0024`.
+
 ## [Unreleased] — `libracore.cuit.solo_digitos`: «sólo los dígitos del CUIT» es una función del motor
 
 **Sin migración y sin cambio de comportamiento.** `solo_digitos(valor) -> str` (`re.sub(r"\D", "", str(valor or ""))`) es la regla única: quita guiones, puntos, espacios y todo lo que no es dígito; `None` y vacío dan `""`; lo que no es texto no lanza. `arca_wsfe.cuit_del_receptor` (y con ella `problema_del_receptor` y `solicitar_cae`) se apoya en ella y devuelve lo mismo que antes. Los productos dejan de tener su helper propio: LibraCargo tenía cinco copias.

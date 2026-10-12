@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (419)
+## tablas (405)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -91,23 +91,9 @@ cc_pagos|medio_pago|TEXT||'efectivo'
 cc_pagos|monto|REAL|NN|
 cc_pagos|referencia|TEXT||''
 cc_pagos|usuario_id|INTEGER||
-cc_resumenes_enviados|automatico|INTEGER|NN|1
-cc_resumenes_enviados|cliente_id|INTEGER|NN|
-cc_resumenes_enviados|created_at|TEXT||datetime('now','-3 hours')
-cc_resumenes_enviados|detalle|TEXT||''
-cc_resumenes_enviados|email|TEXT||''
-cc_resumenes_enviados|estado|TEXT|NN|'ok'
-cc_resumenes_enviados|fecha|TEXT|NN|
-cc_resumenes_enviados|id|INTEGER||
-cc_resumenes_enviados|periodo_desde|TEXT|NN|
-cc_resumenes_enviados|periodo_hasta|TEXT|NN|
-cc_resumenes_enviados|saldo|REAL|NN|0
 clients|activo|INTEGER||1
 clients|address|TEXT||
 clients|auto_facturar|INTEGER|NN|0
-clients|cc_resumen_auto|INTEGER|NN|0
-clients|cc_resumen_frecuencia|TEXT|NN|'mensual'
-clients|cc_resumen_ultimo_envio|TEXT||''
 clients|created_at|TEXT||datetime('now','-3 hours')
 clients|cuit_dni|TEXT||
 clients|email|TEXT||
@@ -421,7 +407,7 @@ ventas|total|REAL|NN|0
 ventas|turno_id|INTEGER||
 ventas|usuario_id|INTEGER||
 
-## claves primarias (35)
+## claves primarias (34)
 arca_config|id
 arca_credenciales_servicio|id
 auth_log|id
@@ -432,7 +418,6 @@ categorias_producto|id
 cc_asientos|id
 cc_debitos|id
 cc_pagos|id
-cc_resumenes_enviados|id
 clients|id
 comprobantes_pendientes|id
 cuentas_tesoreria|id
@@ -458,7 +443,7 @@ usuarios|id
 ventas_pagos|id
 ventas|id
 
-## claves foráneas (48)
+## claves foráneas (47)
 caja_movimientos|caja_id|cajas|id|SET NULL|NO ACTION
 caja_movimientos|turno_id|turnos_caja|id|SET NULL|NO ACTION
 caja_movimientos|usuario_id|usuarios|id|SET NULL|NO ACTION
@@ -470,7 +455,6 @@ cc_debitos|usuario_id|usuarios|id|SET NULL|NO ACTION
 cc_pagos|caja_id|cajas|id|SET NULL|NO ACTION
 cc_pagos|cliente_id|clients|id|CASCADE|NO ACTION
 cc_pagos|usuario_id|usuarios|id|SET NULL|NO ACTION
-cc_resumenes_enviados|cliente_id|clients|id|CASCADE|NO ACTION
 comprobantes_pendientes|cliente_id|clients|id|SET NULL|NO ACTION
 comprobantes_pendientes|emisor_id|arca_config|id|RESTRICT|NO ACTION
 comprobantes_pendientes|factura_id|facturas|id|SET NULL|NO ACTION
@@ -508,7 +492,7 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (36)
+## índices (35)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
 arca_credenciales_servicio|sqlite_autoindex_arca_credenciales_servicio_1|UNIQUE implícito (empresa,servicio,ambiente)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
@@ -521,7 +505,6 @@ cc_asientos|idx_cc_asientos_origen|CREATE INDEX idx_cc_asientos_origen ON cc_asi
 cc_debitos|idx_cc_debitos_cliente|CREATE INDEX idx_cc_debitos_cliente ON cc_debitos(cliente_id)
 cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referencia ON cc_debitos(referencia) WHERE referencia != ''
 cc_pagos|idx_cc_pagos_cliente|CREATE INDEX idx_cc_pagos_cliente ON cc_pagos(cliente_id)
-cc_resumenes_enviados|idx_cc_resumenes_cliente|CREATE INDEX idx_cc_resumenes_cliente ON cc_resumenes_enviados(cliente_id, fecha)
 clients|idx_clients_cuit_norm|CREATE INDEX idx_clients_cuit_norm ON clients(REPLACE(cuit_dni, '-', ''))
 clients|idx_clients_external_ref|CREATE UNIQUE INDEX idx_clients_external_ref ON clients(external_ref) WHERE external_ref IS NOT NULL
 comprobantes_pendientes|idx_comprobantes_pendientes_estado|CREATE INDEX idx_comprobantes_pendientes_estado ON comprobantes_pendientes(estado, created_at)

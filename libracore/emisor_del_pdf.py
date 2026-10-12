@@ -1,7 +1,7 @@
 """Quién emite el documento que sale en el PDF: **un solo lugar** que lo resuelve (ADR-031).
 
 Todos los PDF del motor (`pdf_generator`: factura, nota de crédito y de débito, FCE, recibo,
-presupuesto, remito, pre factura, resumen de cuenta) arman el membrete con un `dict` `empresa`:
+presupuesto, remito, pre factura) arman el membrete con un `dict` `empresa`:
 `nombre`, `cuit`, `direccion`, `telefono`, `email`, `iva_condition`, `iibb`, `inicio_actividades`,
 `logo_path` y `logo_bytes`. Hasta acá salía **siempre** de la configuración global de la instancia
 (`config.json`), que supone un solo emisor. Un producto con varias razones sociales (LibraCargo,
@@ -37,7 +37,7 @@ tiene `emisor_id`.
 ## Qué recibe el resolvedor
 
 El `dict` del documento tal cual lo tiene el generador: una fila de `facturas`, un recibo, un
-presupuesto, un remito, una pre factura, o —en el resumen de cuenta— el cliente. **Leé con `.get`**: no
+presupuesto, un remito o una pre factura. **Leé con `.get`**: no
 todos tienen las mismas claves.
 
 🔴 **Lo que el resolvedor levante, sube.** No se traga: caer al membrete de la instancia ante un error
