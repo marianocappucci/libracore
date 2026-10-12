@@ -11,6 +11,11 @@ copiada la función entera sólo para cambiar dos de las siete —ventas y stock
 leen `sales`/`stock_movements` de LibraCommerce— y el resto era idéntico byte a
 byte. Ahora `libracommerce.erp.actividad` arma la lista con sus dos partes y las
 cinco de acá; este módulo no sabe de LibraCommerce.
+
+ADR-043 (2026-10-12): `PARTE_AUDITORIA` suma las filas de `actividad_log` (las altas, ediciones
+y bajas que dejan los registradores de `libracore.auditoria`, hoy las de clientes), para que
+la pantalla de Logs de Contalibra y Restolibra las muestre sin pantalla nueva. Como la de
+cierres diarios, **se saca sola si la tabla no existe**.
 """
 import contextlib
 
@@ -170,16 +175,49 @@ PARTE_CIERRES_DIARIOS = """
         LEFT JOIN usuarios u ON u.id = cd.usuario_id
 """
 
+# Las filas de `actividad_log` (quién creó, editó o borró qué: `libraauth.auditoria`
+# o `libracore.auditoria` con su registrador). La tabla la crea quien audita —el DDL de
+# `libracommerce`, `libraauth.crear_tabla_actividad_log`—; si la instancia no la tiene, la
+# parte se saca (ver `_PARTES_CON_TABLA`).
+#
+# - `ts` es TEXT en las instancias con el DDL de `libracommerce` y `timestamp` en las de
+#   `libraauth`: el `CAST` los deja iguales, como pide el UNION. `fecha` sale de ahí.
+# - El tipo es fijo (`actividad`) y no la entidad: `venta` o `stock` ya son tipos de otras
+#   partes y mezclarlos rompería el filtro por tipo de la pantalla.
+# - `actividad_log.usuario` es el login (`usuario_actual` de la sesión) y las otras partes
+#   muestran `usuarios.nombre`: se traduce cuando se puede, para que el filtro por usuario
+#   (`usuario = nombre`) encuentre estas filas y la pantalla muestre un solo nombre por persona.
+# - La descripción dice la acción, porque acá no se ve el detalle del diff.
+PARTE_AUDITORIA = """
+        SELECT
+            CAST(a.ts AS TEXT) AS ts,
+            substr(CAST(a.ts AS TEXT), 1, 10) AS fecha,
+            'actividad'   AS tipo,
+            a.descripcion || ' (' || CASE a.accion
+              WHEN 'crear' THEN 'alta' WHEN 'editar' THEN 'edición' WHEN 'borrar' THEN 'baja'
+              ELSE a.accion END || ')' AS descripcion,
+            NULL          AS monto,
+            COALESCE((SELECT u.nombre FROM usuarios u WHERE u.username = a.usuario), a.usuario) AS usuario,
+            NULL          AS turno_id,
+            a.id          AS ref_id,
+            'actividad_log' AS ref_tabla
+        FROM actividad_log a
+"""
+
 #: Las seis partes que son de este motor y no dependen de dónde viven las
 #: ventas ni el stock. Un consumidor cuyas ventas están en LibraCommerce arma
 #: `PARTES_CORE + (sus dos partes,)`.
 PARTES_CORE = (PARTE_CAJA, PARTE_FACTURAS, PARTE_TURNOS, PARTE_REMITOS, PARTE_PRESUPUESTOS,
-              PARTE_CIERRES_DIARIOS)
+              PARTE_CIERRES_DIARIOS, PARTE_AUDITORIA)
 
 #: Las ocho de siempre: las de arriba más ventas y stock sobre las tablas de
 #: este motor. Es el default, y lo que usan los productos sin LibraCommerce.
 PARTES_LIBRACORE = (PARTE_VENTAS, PARTE_CAJA, PARTE_STOCK, PARTE_FACTURAS, PARTE_TURNOS,
-                    PARTE_REMITOS, PARTE_PRESUPUESTOS, PARTE_CIERRES_DIARIOS)
+                    PARTE_REMITOS, PARTE_PRESUPUESTOS, PARTE_CIERRES_DIARIOS, PARTE_AUDITORIA)
+
+#: Las partes que dependen de una tabla que puede no existir en la instancia: se sacan
+#: solas cuando no está, en vez de romper la línea de tiempo entera.
+_PARTES_CON_TABLA = ((PARTE_CIERRES_DIARIOS, "cierres_diarios"), (PARTE_AUDITORIA, "actividad_log"))
 
 
 def armar_consulta(partes, tipos=None, usuario_id=None, turno_id=None,
@@ -230,13 +268,15 @@ def get_actividad_log(tipos=None, usuario_id=None, turno_id=None,
     migrar rompía la línea de tiempo ENTERA en todos los consumidores (un
     `UNION ALL` con una tabla que no existe no devuelve nada), no sólo la
     fila del cierre. Con la tabla ausente no hay cierres que mostrar, así que
-    sacar la parte da exactamente el resultado correcto.
+    sacar la parte da exactamente el resultado correcto. Lo mismo vale para
+    `PARTE_AUDITORIA` y `actividad_log` (`_PARTES_CON_TABLA`).
     """
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         partes = tuple(partes or PARTES_LIBRACORE)
-        if PARTE_CIERRES_DIARIOS in partes and not _tabla_existe(c, "cierres_diarios"):
-            partes = tuple(p for p in partes if p is not PARTE_CIERRES_DIARIOS)
+        for parte, tabla in _PARTES_CON_TABLA:
+            if parte in partes and not _tabla_existe(c, tabla):
+                partes = tuple(p for p in partes if p is not parte)
         sql, params_final = armar_consulta(
             partes, tipos=tipos, usuario_id=usuario_id, turno_id=turno_id,
             desde=desde, hasta=hasta, limit=limit, offset=offset,

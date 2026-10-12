@@ -5,10 +5,20 @@ Tier 2 — convergencia de comportamiento confirmada con el usuario:
 `activar_cliente`, la validación de CUIT/DNI duplicado en `create_client`
 y la normalización de email/CUIT en las búsquedas eran solo de Contalibra
 y pasan a core — ver wiki/entities/libracore.md).
+
+**Auditoría de escrituras (ADR-043).** Toda función de este módulo que escribe
+`clients` le avisa a `libracore.auditoria` qué cambió (`Cambio` con la fila de antes y
+la de después), **dentro de la misma transacción**. Sin registrador configurado no
+hace nada ni lee nada de más. Un test (`tests/test_auditoria_de_escrituras.py`) recorre
+el AST del motor y falla si una función con `INSERT`/`UPDATE`/`DELETE` sobre `clients`
+no emite el cambio: una escritura nueva que se olvide de auditar no pasa el CI.
 """
 import json
 
+from libracore import auditoria
 from libracore.db.core import get_connection
+
+_TABLA = "clients"
 
 
 def _hay_parties(conn) -> bool:
@@ -132,6 +142,33 @@ def _columnas_de_clients(conn) -> set[str]:
     return {r[1] for r in conn.execute("PRAGMA table_info(clients)").fetchall()}
 
 
+def _fila_cliente(conn, client_id) -> dict | None:
+    """La fila entera de `clients`, con la conexión de la escritura (la misma transacción)."""
+    row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def _antes(conn, client_id) -> dict | None:
+    """La fila antes de escribirla, **sólo si hay registrador**: sin él no se hace el SELECT."""
+    return _fila_cliente(conn, client_id) if auditoria.auditando() else None
+
+
+def _registrar_cambio(conn, accion: str, client_id, antes: dict | None = None) -> None:
+    """Le pasa el cambio al registrador, con la fila de después leída acá, en la misma
+    conexión. Va al final de la escritura, después del espejo y del libro: si el registro
+    falla, se cae todo (ver `libracore.auditoria`).
+
+    Una edición o una baja sobre un id que no existía (`antes is None`) no cambió nada y
+    no se registra.
+    """
+    if not auditoria.auditando():
+        return
+    if accion != auditoria.CREAR and antes is None:
+        return
+    despues = None if accion == auditoria.BORRAR else _fila_cliente(conn, client_id)
+    auditoria.registrar(conn, _TABLA, accion, client_id, antes, despues)
+
+
 def create_client(name, address="", cuit_dni="", email="", phone="", iva_condition="",
                   empresa="", ciudad="", observaciones="", tipo_facturacion="por_servicio"):
     validar_cuit_no_duplicado(cuit_dni)
@@ -159,7 +196,99 @@ def create_client(name, address="", cuit_dni="", email="", phone="", iva_conditi
         # un cliente al que no se le puede vender.
         _espejar_party(conn, client_id, name, cuit_dni, email, phone)
         _al_libro(conn, client_id)
+        _registrar_cambio(conn, auditoria.CREAR, client_id)
         return client_id
+
+
+def _columnas_a_escribir(conn, datos: dict, que: str) -> list[str]:
+    """Las claves de `datos`, validadas contra las columnas que tiene HOY la tabla.
+
+    Una clave que no es columna de esta instancia levanta `ValueError` **antes de
+    escribir nada**: es un error de quien llama (o una columna de una revisión que esta
+    instancia todavía no corrió), no algo que se pueda ignorar sin mentir. `id` no se
+    escribe nunca: lo asigna la base, y en PostgreSQL un `id` explícito deja la secuencia
+    atrás. Las claves salen de ese conjunto de nombres de columna, así que van al SQL sin
+    riesgo de inyección.
+    """
+    if not datos:
+        raise ValueError(f"{que}: no hay ninguna columna para escribir")
+    desconocidas = sorted(set(datos) - _columnas_de_clients(conn))
+    if desconocidas or "id" in datos:
+        raise ValueError(
+            f"{que}: columnas que clients no tiene en esta instancia o que no se escriben: "
+            + ", ".join(desconocidas + (["id"] if "id" in datos else []))
+        )
+    return list(datos)
+
+
+def crear_cliente(datos: dict) -> int:
+    """Alta de un cliente con **exactamente** las columnas de `datos` (`None` = NULL).
+
+    Es la costura para lo que `create_client` no conoce: una columna propia de un
+    producto (`price_list_id` de LibraDesk) o `activo` en el alta. Acepta cualquier
+    columna que exista en la instancia (`_columnas_de_clients`); una desconocida levanta
+    `ValueError`. No pone defaults ni normaliza `None` a `""`: lo que no está en `datos`
+    queda con el default de la base, y eso es lo que distingue a esta función de
+    `create_client`, que conserva su comportamiento para los productos que ya la usan.
+
+    Hace lo mismo que `create_client` a su alrededor, en la misma transacción: el espejo
+    en `parties` (si la instancia lo tiene), el asiento al libro de clientes y el aviso a
+    `libracore.auditoria`. **No** valida CUIT duplicado: eso lo decide quien llama con
+    `validar_cuit_no_duplicado`, que existe aparte justamente para esto.
+    """
+    with get_connection() as conn:
+        columnas = _columnas_a_escribir(conn, datos, "crear_cliente")
+        cur = conn.execute(
+            f"INSERT INTO clients ({', '.join(columnas)})"
+            f" VALUES ({', '.join(['?'] * len(columnas))})",
+            tuple(datos[c] for c in columnas),
+        )
+        client_id = cur.lastrowid
+        _espejar_party(
+            conn, client_id, datos.get("name"), datos.get("cuit_dni"), datos.get("email"),
+            datos.get("phone"), bool(datos.get("activo", 1)),
+        )
+        _al_libro(conn, client_id)
+        _registrar_cambio(conn, auditoria.CREAR, client_id)
+        return client_id
+
+
+#: Columna de `clients` -> su columna en el `parties` espejo.
+_ESPEJO = {"name": "display_name", "cuit_dni": "tax_id", "email": "email", "phone": "phone"}
+
+
+def actualizar_cliente(client_id: int, cambios: dict) -> bool:
+    """Edita un cliente con **exactamente** las columnas de `cambios` (`None` = NULL).
+
+    La contraparte de `crear_cliente`; `update_client` conserva su semántica de «`None`
+    es no tocar». Lo que no está en `cambios` no se toca. Una columna desconocida levanta
+    `ValueError` antes de escribir. Devuelve `False` si no hay un cliente con ese id (no
+    escribe ni avisa nada), `True` si lo editó.
+
+    En la misma transacción mantiene el espejo en `parties` (sólo las columnas que
+    cambiaron), reasienta el libro si cambió el CUIT y avisa a `libracore.auditoria`.
+    """
+    with get_connection() as conn:
+        columnas = _columnas_a_escribir(conn, cambios, "actualizar_cliente")
+        antes = _fila_cliente(conn, client_id) if (auditoria.auditando() or "cuit_dni" in cambios) else None
+        cur = conn.execute(
+            f"UPDATE clients SET {', '.join(c + '=?' for c in columnas)} WHERE id=?",
+            (*(cambios[c] for c in columnas), client_id),
+        )
+        if not cur.rowcount:
+            return False
+        if _hay_parties(conn):
+            sets = [f"{_ESPEJO[c]}=?" for c in columnas if c in _ESPEJO]
+            valores = [cambios[c] if c == "name" else (cambios[c] or None) for c in columnas if c in _ESPEJO]
+            if "activo" in cambios:
+                sets.append("active=?")
+                valores.append(int(bool(cambios["activo"])))
+            if sets:
+                conn.execute(f"UPDATE parties SET {', '.join(sets)} WHERE id=?", (*valores, client_id))
+        if "cuit_dni" in cambios and (cambios["cuit_dni"] or "") != ((antes or {}).get("cuit_dni") or ""):
+            _al_libro(conn, client_id)
+        _registrar_cambio(conn, auditoria.EDITAR, client_id, antes)
+        return True
 
 
 def resolver_cliente_externo(external_ref: str, name: str, cuit_dni: str = "",
@@ -189,7 +318,9 @@ def resolver_cliente_externo(external_ref: str, name: str, cuit_dni: str = "",
             "SELECT id FROM clients WHERE external_ref = ?", (external_ref,)
         ).fetchone()
         if row:
+            antes = _antes(conn, row["id"])
             conn.execute("UPDATE clients SET name = ? WHERE id = ?", (name, row["id"]))
+            _registrar_cambio(conn, auditoria.EDITAR, row["id"], antes)
             return row["id"]
         cur = conn.execute(
             """INSERT INTO clients (name, cuit_dni, email, phone, external_ref)
@@ -197,6 +328,7 @@ def resolver_cliente_externo(external_ref: str, name: str, cuit_dni: str = "",
             (name, cuit_dni or "", email or "", phone or "", external_ref),
         )
         _al_libro(conn, cur.lastrowid)
+        _registrar_cambio(conn, auditoria.CREAR, cur.lastrowid)
         return cur.lastrowid
 
 
@@ -229,18 +361,22 @@ def get_client(client_id):
 def desactivar_cliente(client_id: int) -> bool:
     """Marca un cliente como inactivo (soft delete)."""
     with get_connection() as conn:
+        antes = _antes(conn, client_id)
         conn.execute("UPDATE clients SET activo = 0 WHERE id = ?", (client_id,))
         if _hay_parties(conn):
             conn.execute("UPDATE parties SET active = 0 WHERE id = ?", (client_id,))
+        _registrar_cambio(conn, auditoria.EDITAR, client_id, antes)
         return True
 
 
 def activar_cliente(client_id: int) -> bool:
     """Reactiva un cliente previamente desactivado."""
     with get_connection() as conn:
+        antes = _antes(conn, client_id)
         conn.execute("UPDATE clients SET activo = 1 WHERE id = ?", (client_id,))
         if _hay_parties(conn):
             conn.execute("UPDATE parties SET active = 1 WHERE id = ?", (client_id,))
+        _registrar_cambio(conn, auditoria.EDITAR, client_id, antes)
         return True
 
 
@@ -320,6 +456,7 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
                 asignaciones.append(f"{col}=?")
                 valores.append(nuevas[col])
         valores.append(client_id)
+        antes = _antes(conn, client_id)
         conn.execute(
             f"UPDATE clients SET {', '.join(asignaciones)} WHERE id=?",
             tuple(valores),
@@ -336,16 +473,19 @@ def update_client(client_id, name=None, address=None, cuit_dni=None, email=None,
             )
         if (nuevo_cuit or "") != (client["cuit_dni"] or ""):
             _al_libro(conn, client_id)
+        _registrar_cambio(conn, auditoria.EDITAR, client_id, antes)
 
 
 def toggle_auto_facturar(client_id: int) -> bool:
     """Invierte el flag auto_facturar. Devuelve el nuevo valor."""
     with get_connection() as conn:
+        antes = _antes(conn, client_id)
         conn.execute(
             "UPDATE clients SET auto_facturar = 1 - auto_facturar WHERE id=?",
             (client_id,),
         )
         row = conn.execute("SELECT auto_facturar FROM clients WHERE id=?", (client_id,)).fetchone()
+        _registrar_cambio(conn, auditoria.EDITAR, client_id, antes)
         return bool(row["auto_facturar"]) if row else False
 
 
@@ -365,7 +505,10 @@ def delete_client(client_id):
             if presupuesto_count > 0:
                 msg_parts.append(f"{presupuesto_count} presupuesto(s)")
             raise ValueError(f"El cliente tiene {' y '.join(msg_parts)} asociado(s) y no puede eliminarse.")
+        # La fila se lee ANTES del DELETE: después ya no está, y la baja tiene que decir qué se borró.
+        antes = _antes(conn, client_id)
         conn.execute("DELETE FROM clients WHERE id=?", (client_id,))
+        _registrar_cambio(conn, auditoria.BORRAR, client_id, antes)
 
 
 def get_client_by_email(email: str):
