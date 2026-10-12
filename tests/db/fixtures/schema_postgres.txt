@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (419)
+## tablas (405)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -91,23 +91,9 @@ cc_pagos|medio_pago|text||'efectivo'::text
 cc_pagos|monto|numeric|NN|
 cc_pagos|referencia|text||''::text
 cc_pagos|usuario_id|integer||
-cc_resumenes_enviados|automatico|integer|NN|1
-cc_resumenes_enviados|cliente_id|integer|NN|
-cc_resumenes_enviados|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
-cc_resumenes_enviados|detalle|text||''::text
-cc_resumenes_enviados|email|text||''::text
-cc_resumenes_enviados|estado|text|NN|'ok'::text
-cc_resumenes_enviados|fecha|text|NN|
-cc_resumenes_enviados|id|bigint|NN|nextval('cc_resumenes_enviados_id_seq'::regclass)
-cc_resumenes_enviados|periodo_desde|text|NN|
-cc_resumenes_enviados|periodo_hasta|text|NN|
-cc_resumenes_enviados|saldo|numeric|NN|0
 clients|activo|integer||1
 clients|address|text||
 clients|auto_facturar|integer|NN|0
-clients|cc_resumen_auto|integer|NN|0
-clients|cc_resumen_frecuencia|text|NN|'mensual'::text
-clients|cc_resumen_ultimo_envio|text||''::text
 clients|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
 clients|cuit_dni|text||
 clients|email|text||
@@ -421,7 +407,7 @@ ventas|total|numeric|NN|0
 ventas|turno_id|integer||
 ventas|usuario_id|integer||
 
-## claves primarias (35)
+## claves primarias (34)
 arca_config|PRIMARY KEY (id)
 arca_credenciales_servicio|PRIMARY KEY (id)
 auth_log|PRIMARY KEY (id)
@@ -432,7 +418,6 @@ categorias_producto|PRIMARY KEY (id)
 cc_asientos|PRIMARY KEY (id)
 cc_debitos|PRIMARY KEY (id)
 cc_pagos|PRIMARY KEY (id)
-cc_resumenes_enviados|PRIMARY KEY (id)
 clients|PRIMARY KEY (id)
 comprobantes_pendientes|PRIMARY KEY (id)
 cuentas_tesoreria|PRIMARY KEY (id)
@@ -458,7 +443,7 @@ usuarios|PRIMARY KEY (id)
 ventas_pagos|PRIMARY KEY (id)
 ventas|PRIMARY KEY (id)
 
-## claves foráneas (48)
+## claves foráneas (47)
 caja_movimientos|caja_movimientos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
 caja_movimientos|caja_movimientos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 caja_movimientos|fk_caja_movimientos_turno|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
@@ -470,7 +455,6 @@ cc_debitos|cc_debitos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuari
 cc_pagos|cc_pagos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
 cc_pagos|cc_pagos_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
 cc_pagos|cc_pagos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
-cc_resumenes_enviados|cc_resumenes_enviados_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE CASCADE
 comprobantes_pendientes|comprobantes_pendientes_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE SET NULL
 comprobantes_pendientes|comprobantes_pendientes_emisor_id_fkey|FOREIGN KEY (emisor_id) REFERENCES arca_config(id) ON DELETE RESTRICT
 comprobantes_pendientes|comprobantes_pendientes_factura_id_fkey|FOREIGN KEY (factura_id) REFERENCES facturas(id) ON DELETE SET NULL
@@ -508,7 +492,7 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (70)
+## índices (68)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 arca_credenciales_servicio|arca_credenciales_servicio_empresa_servicio_ambiente_key|CREATE UNIQUE INDEX arca_credenciales_servicio_empresa_servicio_ambiente_key ON public.arca_credenciales_servicio USING btree (empresa, servicio, ambiente)
@@ -531,8 +515,6 @@ cc_debitos|idx_cc_debitos_cliente|CREATE INDEX idx_cc_debitos_cliente ON public.
 cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referencia ON public.cc_debitos USING btree (referencia) WHERE (referencia <> ''::text)
 cc_pagos|cc_pagos_pkey|CREATE UNIQUE INDEX cc_pagos_pkey ON public.cc_pagos USING btree (id)
 cc_pagos|idx_cc_pagos_cliente|CREATE INDEX idx_cc_pagos_cliente ON public.cc_pagos USING btree (cliente_id)
-cc_resumenes_enviados|cc_resumenes_enviados_pkey|CREATE UNIQUE INDEX cc_resumenes_enviados_pkey ON public.cc_resumenes_enviados USING btree (id)
-cc_resumenes_enviados|idx_cc_resumenes_cliente|CREATE INDEX idx_cc_resumenes_cliente ON public.cc_resumenes_enviados USING btree (cliente_id, fecha)
 clients|clients_pkey|CREATE UNIQUE INDEX clients_pkey ON public.clients USING btree (id)
 clients|idx_clients_cuit_norm|CREATE INDEX idx_clients_cuit_norm ON public.clients USING btree (replace(cuit_dni, '-'::text, ''::text))
 clients|idx_clients_external_ref|CREATE UNIQUE INDEX idx_clients_external_ref ON public.clients USING btree (external_ref) WHERE (external_ref IS NOT NULL)
@@ -580,13 +562,12 @@ ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON public.ventas USING btr
 ventas|ventas_numero_key|CREATE UNIQUE INDEX ventas_numero_key ON public.ventas USING btree (numero)
 ventas|ventas_pkey|CREATE UNIQUE INDEX ventas_pkey ON public.ventas USING btree (id)
 
-## checks (10)
+## checks (9)
 arca_credenciales_servicio|arca_credenciales_servicio_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
 arca_credenciales_servicio|arca_credenciales_servicio_servicio_check|CHECK ((servicio <> ''::text))
 cc_asientos|cc_asientos_check1|CHECK (((((debe)::double precision > (0)::double precision) AND ((haber)::double precision = (0)::double precision)) OR (((haber)::double precision > (0)::double precision) AND ((debe)::double precision = (0)::double precision)) OR (origen_legado IS NOT NULL)))
 cc_asientos|cc_asientos_check|CHECK ((((debe)::double precision >= (0)::double precision) AND ((haber)::double precision >= (0)::double precision)))
 cc_asientos|cc_asientos_rol_check|CHECK ((rol <> ''::text))
-clients|clients_cc_resumen_frecuencia_check|CHECK ((cc_resumen_frecuencia = ANY (ARRAY['semanal'::text, 'quincenal'::text, 'mensual'::text])))
 facturacion_alias|facturacion_alias_tipo_check|CHECK ((tipo = ANY (ARRAY['cuit'::text, 'email'::text])))
 facturas|facturas_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
 productos|productos_tipo_check|CHECK ((tipo = ANY (ARRAY['producto'::text, 'servicio'::text])))

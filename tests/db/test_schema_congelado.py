@@ -140,6 +140,9 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
+        # 406 desde el 2026-10-12 (era 420), cuando se retiraron `cc_resumenes_enviados` (11 columnas) y
+        # `clients.cc_resumen_auto`, `cc_resumen_frecuencia` y `cc_resumen_ultimo_envio` (ADR-042).
+        #
         # 420 desde el 2026-10-09 (era 418), cuando entraron `arca_config.fce_cbus` — la lista de CBU
         # (con alias y etiqueta) entre los que se elige en cuál cobrar una FCE — y
         # `comprobantes_pendientes.fce_cbu` — la cuenta elegida en la pre factura (ADR-040).
@@ -191,7 +194,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (420)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (406)"}
     finally:
         conn.close()
         _liberar()

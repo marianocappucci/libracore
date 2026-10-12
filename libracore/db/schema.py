@@ -715,20 +715,6 @@ def init_core_schema(conn: Conexion):
                    OR origen_legado IS NOT NULL)
         );
 
-        CREATE TABLE IF NOT EXISTS cc_resumenes_enviados (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            cliente_id   INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
-            fecha        TEXT NOT NULL,
-            periodo_desde TEXT NOT NULL,
-            periodo_hasta TEXT NOT NULL,
-            saldo        REAL NOT NULL DEFAULT 0,
-            email        TEXT DEFAULT '',
-            estado       TEXT NOT NULL DEFAULT 'ok',
-            detalle      TEXT DEFAULT '',
-            automatico   INTEGER NOT NULL DEFAULT 1,
-            created_at   TEXT DEFAULT (datetime('now','-3 hours'))
-        );
-
         -- El comprobante de que se recibió plata. Hasta acá el recibo era un
         -- PDF que `pdf_generator.generate_pdf_recibo()` armaba en el momento a
         -- partir de los cobros vigentes: sin número, sin registro y **distinto
@@ -1006,15 +992,6 @@ def init_core_schema(conn: Conexion):
         conn.execute("ALTER TABLE clients ADD COLUMN activo INTEGER DEFAULT 1")
     if "auto_facturar" not in cols:
         conn.execute("ALTER TABLE clients ADD COLUMN auto_facturar INTEGER NOT NULL DEFAULT 0")
-    if "cc_resumen_auto" not in cols:
-        conn.execute("ALTER TABLE clients ADD COLUMN cc_resumen_auto INTEGER NOT NULL DEFAULT 0")
-    if "cc_resumen_frecuencia" not in cols:
-        conn.execute(
-            "ALTER TABLE clients ADD COLUMN cc_resumen_frecuencia TEXT NOT NULL DEFAULT 'mensual' "
-            "CHECK (cc_resumen_frecuencia IN ('semanal', 'quincenal', 'mensual'))"
-        )
-    if "cc_resumen_ultimo_envio" not in cols:
-        conn.execute("ALTER TABLE clients ADD COLUMN cc_resumen_ultimo_envio TEXT DEFAULT ''")
     if "external_ref" not in cols:
         # Quién es este cliente en el producto que lo dio de alta (ej.
         # `party-7`). Lo necesita un producto cuyos clientes viven en otra
@@ -1261,7 +1238,6 @@ def init_core_schema(conn: Conexion):
             ON cc_debitos(referencia) WHERE referencia != '';
         CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_external_ref
             ON clients(external_ref) WHERE external_ref IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS idx_cc_resumenes_cliente ON cc_resumenes_enviados(cliente_id, fecha);
         CREATE INDEX IF NOT EXISTS idx_movimientos_stock_producto ON movimientos_stock(producto_id);
         CREATE INDEX IF NOT EXISTS idx_recibos_cliente ON recibos(cliente_id, fecha);
         -- Buscar por origen es la consulta caliente del módulo: es la que
@@ -1333,7 +1309,6 @@ COLUMNAS_DE_DINERO = (
     ("cc_asientos", "haber"),
     ("cc_debitos", "monto"),
     ("cc_pagos", "monto"),
-    ("cc_resumenes_enviados", "saldo"),
     ("comprobantes_pendientes", "total"),
     ("cuentas_tesoreria", "saldo_inicial"),
     ("egresos_pagos", "monto"),

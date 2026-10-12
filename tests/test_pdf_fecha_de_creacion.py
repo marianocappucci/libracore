@@ -206,21 +206,3 @@ def test_el_recibo_emitido_se_fecha_con_su_propia_fecha(pg2):
     primero = pg2.generate_pdf_recibo_doc(recibo)
     assert _creation_date(primero) == "D:20260720000000Z"
     assert pg2.generate_pdf_recibo_doc(recibo) == primero
-
-
-def test_el_resumen_de_cuenta_se_fecha_con_la_emision(pg2, tmp_path):
-    cliente = {"id": 1, "name": "Cliente Test", "cuit_dni": "20111111112",
-               "address": "", "email": "", "phone": ""}
-    periodo = {
-        "desde": "2026-07-01", "hasta": "2026-07-31", "emitido": "2026-08-01",
-        "saldo_anterior": 0.0, "saldo_final": 1000.0,
-        "total_debitos": 1000.0, "total_creditos": 0.0,
-        "movimientos": [{"fecha": "2026-07-14", "concepto": "Factura B 0001-00000001",
-                         "tipo": "debito", "monto": 1000.0, "referencia": ""}],
-    }
-    path = pg2.generate_pdf_resumen_cc(cliente, periodo, output_dir=str(tmp_path))
-    primero = _bytes_del_archivo(path)
-    assert _creation_date(primero) == "D:20260801000000Z"
-    os.remove(path)
-    assert _bytes_del_archivo(
-        pg2.generate_pdf_resumen_cc(cliente, periodo, output_dir=str(tmp_path))) == primero

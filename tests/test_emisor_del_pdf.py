@@ -260,9 +260,6 @@ RECIBO = {"punto_venta": 1, "numero": 1, "fecha": "2026-10-06", "cliente_razon":
           "pagos": [{"fecha": "2026-10-06", "medio_pago": "efectivo", "referencia": "", "monto": 1210.0}]}
 PRE_FACTURA = {"id": 1, "numero_interno": "PF-0001", "fecha_sugerida": "2026-10-06", "cliente_razon": "Juan Pérez",
                "cliente_cuit": "20-12345678-6", "tipo_comprobante": 1, "items": [ITEM], "total": 1210}
-CLIENTE = {"id": 3, "name": "Juan Pérez", "cuit_dni": "20-12345678-6", "address": "", "email": "", "phone": ""}
-PERIODO = {"desde": "2026-10-01", "hasta": "2026-10-31", "saldo_anterior": 0.0, "total_debitos": 0.0,
-           "total_creditos": 0.0, "saldo_final": 0.0, "movimientos": [], "emitido": "2026-10-31"}
 
 GENERADORES = {
     "factura": lambda r, d: pg.generate_pdf_factura(_comprobante(), output_dir=d, resolvedor=r),
@@ -272,7 +269,6 @@ GENERADORES = {
     "presupuesto": lambda r, d: pg.generate_pdf_presupuesto(PRESUPUESTO, output_dir=d, resolvedor=r),
     "remito": lambda r, d: pg.generate_pdf(REMITO, output_dir=d, resolvedor=r),
     "pre factura": lambda r, d: pg.generate_pdf_pre_factura(PRE_FACTURA, resolvedor=r),
-    "resumen de cuenta": lambda r, d: pg.generate_pdf_resumen_cc(CLIENTE, PERIODO, output_dir=d, resolvedor=r),
 }
 
 

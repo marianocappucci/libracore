@@ -38,8 +38,6 @@ TABLA_VIEJA = """
         iva_condition TEXT DEFAULT '',
         activo        INTEGER DEFAULT 1,
         auto_facturar INTEGER NOT NULL DEFAULT 0,
-        cc_resumen_auto INTEGER NOT NULL DEFAULT 0,
-        cc_resumen_frecuencia TEXT NOT NULL DEFAULT 'mensual',
         created_at    TEXT DEFAULT (datetime('now'))
     );
 """

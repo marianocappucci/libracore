@@ -257,50 +257,6 @@ def get_cc_movimientos_periodo(
     }
 
 
-def registrar_resumen_enviado(cliente_id: int, fecha: str, desde: str, hasta: str,
-                              saldo: float, email: str, estado: str = "ok",
-                              detalle: str = "", automatico: bool = True) -> int:
-    """Deja rastro de cada intento de envío (ok o error) y, si salió bien,
-    adelanta `cc_resumen_ultimo_envio` del cliente — que es lo que evita que
-    una segunda corrida del cron el mismo día reenvíe el mismo resumen."""
-    with get_connection() as conn:
-        cur = conn.execute(
-            """INSERT INTO cc_resumenes_enviados
-               (cliente_id, fecha, periodo_desde, periodo_hasta, saldo, email,
-                estado, detalle, automatico)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (cliente_id, fecha, desde, hasta, float(saldo), email or "",
-             estado, detalle or "", 1 if automatico else 0),
-        )
-        if estado == "ok":
-            conn.execute(
-                "UPDATE clients SET cc_resumen_ultimo_envio=? WHERE id=?",
-                (fecha, cliente_id),
-            )
-        return cur.lastrowid
-
-
-def get_resumenes_enviados(cliente_id: int | None = None, limit: int = 50) -> list[dict]:
-    with get_connection() as conn:
-        if cliente_id is None:
-            rows = conn.execute(
-                """SELECT r.*, c.name AS cliente_nombre
-                   FROM cc_resumenes_enviados r
-                   LEFT JOIN clients c ON c.id = r.cliente_id
-                   ORDER BY r.id DESC LIMIT ?""",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT r.*, c.name AS cliente_nombre
-                   FROM cc_resumenes_enviados r
-                   LEFT JOIN clients c ON c.id = r.cliente_id
-                   WHERE r.cliente_id = ? ORDER BY r.id DESC LIMIT ?""",
-                (cliente_id, limit),
-            ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:
     """Los clientes con movimientos y su saldo, del libro `cc_asientos` (ADR-029).
 
