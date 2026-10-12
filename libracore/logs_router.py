@@ -38,6 +38,8 @@ TIPO_META = {
     "turno": {"label": "Turno", "color": "#fd7e14"},
     "remito": {"label": "Remito", "color": "#6c757d"},
     "presupuesto": {"label": "Presupuesto", "color": "#20c997"},
+    # Las altas, ediciones y bajas de `actividad_log` (clientes, hoy). ADR-043.
+    "actividad": {"label": "Cambios", "color": "#d63384"},
 }
 
 
