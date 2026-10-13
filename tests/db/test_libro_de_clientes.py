@@ -294,7 +294,6 @@ def test_sin_la_tabla_del_libro_las_lecturas_dicen_que_falta(base):
     lecturas = (
         lambda: cuenta_corriente.get_cc_saldo(cid),
         lambda: cuenta_corriente.get_cc_movimientos(cid),
-        lambda: cuenta_corriente.get_cc_movimientos_periodo(cid, "2026-10-01", "2026-10-31"),
         lambda: cuenta_corriente.get_clientes_con_saldo_cc(),
     )
     for leer in lecturas:

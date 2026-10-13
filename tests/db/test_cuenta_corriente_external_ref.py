@@ -184,10 +184,6 @@ def test_el_saldo_combina_venta_debito_directo_y_pago_por_external_ref(conn):
     assert len(movs) == 3
     assert sum(1 for m in movs if m["tipo"] == "debito") == 2
 
-    periodo = cuenta_corriente.get_cc_movimientos_periodo(
-        ana, "2026-09-01", "2026-09-30", VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF
-    )
-    assert periodo["saldo_final"] == 950.0
 
 
 def test_el_listado_de_deudores_agrupa_por_cliente_no_por_party(conn):

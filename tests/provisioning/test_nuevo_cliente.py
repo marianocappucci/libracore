@@ -1741,3 +1741,104 @@ def test_un_archivo_de_oauth_que_no_se_puede_leer_no_tumba_el_alta(
 
     assert "env_file" not in _compose(cfg)
     assert any("[WARN]" in ln and "resguardo_oauth.env" in ln for ln in lineas), lineas
+
+
+# ── un alta sin casilla ya no es silenciosa (ADR-046) ─────────────────────────
+
+
+def test_sin_servidor_de_correo_el_alta_dice_por_que(cfg, fake_docker):
+    """🔴 `smtp_ok=None` era «no se intentó» y nadie se enteraba: ahora el motivo
+    viaja en la respuesta y queda en el log."""
+    lineas = []
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                            setup_npm=False, log=lineas.append)
+
+    assert info["smtp_ok"] is None
+    assert "LIBRA_MAIL_ADMIN_SSH" in info["smtp_motivo"]
+    assert any(l.startswith("[WARN] Sin casilla de correo") for l in lineas)
+
+
+def test_con_el_servidor_caido_el_motivo_es_el_del_servidor(cfg, correo_caido, fake_docker):
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                            setup_npm=False)
+    assert info["smtp_ok"] is False
+    assert "Connection refused" in info["smtp_motivo"]
+
+
+def test_con_casilla_no_hay_motivo(cfg, correo, fake_docker):
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                            setup_npm=False)
+    assert info["smtp_ok"] is True
+    assert info["smtp_motivo"] == ""
+
+
+def test_el_alta_del_host_crea_la_casilla_con_la_configuracion_del_archivo(
+        cfg, fake_docker, monkeypatch, tmp_path):
+    """🔴 El defecto de fondo: la CLI del host no tiene el `environment:` del
+    backoffice, así que `LIBRA_MAIL_*` no estaban y la instancia nacía sin SMTP.
+    Con el archivo `correo-<producto>.env` declarado, el alta del host crea la
+    casilla igual que la del backoffice y sin ninguna variable de entorno."""
+    declaracion = tmp_path / "correo-testprod.env"
+    declaracion.write_text(
+        "LIBRA_MAIL_ADMIN_SSH=libra-mail@mail.testprod.com.ar\n"
+        "LIBRA_MAIL_DOMINIO=testprod.com.ar\n", encoding="utf-8")
+    monkeypatch.setenv("LIBRA_MAIL_ENV_FILE", str(declaracion))
+    assert "LIBRA_MAIL_ADMIN_SSH" not in os.environ
+
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="La Grace", slug="lagrace",
+                            setup_npm=False)
+
+    assert info["smtp_ok"] is True
+    assert _env_de_la_app(cfg, "lagrace")["LIBRAAUTH_SMTP_USER"] == "lagrace@testprod.com.ar"
+    assert len(_ordenes_ssh(fake_docker)) == 1
+
+
+@pytest.fixture
+def alta_interactiva(cfg, fake_docker, monkeypatch):
+    """`main()` con las preguntas contestadas: nombre `La Grace`, CUIT válido, el resto por defecto."""
+    respuestas = {"Nombre del comercio": "La Grace", "CUIT": CUIT}
+
+    def ask(msg, default=""):
+        for prefijo, valor in respuestas.items():
+            if msg.startswith(prefijo):
+                return valor
+        return default
+
+    monkeypatch.setattr(nc, "ask", ask)
+    monkeypatch.setattr(nc, "used_ports", lambda: set())
+    monkeypatch.setattr(nc, "npm_available", lambda: False)
+    return cfg
+
+
+def test_la_cli_sin_servidor_de_correo_avisa_al_final_y_sale_con_3(alta_interactiva, capsys):
+    with pytest.raises(SystemExit) as salida:
+        nc.main()
+
+    assert salida.value.code == nc.SALIDA_SIN_CASILLA == 3
+    out = capsys.readouterr().out
+    # Las credenciales salieron antes del aviso, y el aviso es lo último.
+    assert out.index("CLIENTE DADO DE ALTA EXITOSAMENTE") < out.index("quedó sin casilla de correo")
+    final = out[out.index("[ADVERTENCIA]"):]
+    assert "LIBRA_MAIL_ADMIN_SSH" in final
+    assert (f"LIBRA_CLIENTES_DIR={alta_interactiva.clientes_dir} "
+            ".venv-scripts/bin/python3 scripts/panel_admin.py casilla la-grace") in final
+    assert "LIBRAAUTH_SMTP_PASSWORD" not in out
+
+
+def test_la_cli_con_el_servidor_caido_avisa_con_el_motivo(alta_interactiva, correo_caido, capsys):
+    with pytest.raises(SystemExit) as salida:
+        nc.main()
+
+    assert salida.value.code == 3
+    out = capsys.readouterr().out
+    assert "quedó sin casilla de correo: El servidor de correo rechazó la orden" in out
+    assert "casilla la-grace" in out
+
+
+def test_la_cli_con_casilla_sale_normal_y_sin_aviso(alta_interactiva, correo, capsys):
+    nc.main()  # sin SystemExit
+
+    out = capsys.readouterr().out
+    assert "CLIENTE DADO DE ALTA EXITOSAMENTE" in out
+    assert "[ADVERTENCIA]" not in out
+    assert "Casilla de correo: la-grace@testprod.com.ar" in out

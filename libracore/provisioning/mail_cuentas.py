@@ -23,15 +23,33 @@ correo ata el remitente al usuario autenticado (`smtpd_sender_login_maps`), así
 que `from_email` es la dirección de la cuenta y no un valor libre.
 
 **Opt-in por ausencia, y apaga exactamente una cosa.** Sin
-`LIBRA_MAIL_ADMIN_SSH` en el entorno del proceso que corre el alta, `configurado()`
-es `False`, no se crea ninguna casilla y el compose sale sin las variables —
-o sea, la instancia nace igual que antes de que esto existiera. No toca ningún
-otro camino del alta: ni el proxy, ni el plan, ni las migraciones.
+`LIBRA_MAIL_ADMIN_SSH` y `LIBRA_MAIL_DOMINIO` (en el entorno del proceso o en el
+archivo del host, ver abajo), `configurado()` es `False`, no se crea ninguna
+casilla y el compose sale sin las variables. No toca ningún otro camino del
+alta: ni el proxy, ni el plan, ni las migraciones. Pero **ya no es silencioso**
+(ADR-046): quien da de alta recibe el motivo en `estado()` y lo muestra.
+
+**De dónde lee la configuración (ADR-046).** El backoffice las recibe por el
+`environment:` de su compose; el host del VPS no tiene ese entorno, y un alta
+por la CLI (`scripts/nuevo_cliente.py`) nacía sin casilla sin avisar. Por eso
+cada variable se busca primero en el entorno del proceso (gana siempre) y, si
+falta, en un archivo del host `KEY=valor` por producto:
+`/root/secretos/correo-<container_prefix>.env`, o el que diga
+`LIBRA_MAIL_ENV_FILE`. El archivo no tiene secretos —un alias de SSH y dos
+nombres de dominio; la clave privada vive en `~/.ssh`— y de él sólo se leen las
+tres variables de abajo. Ejemplo (`/root/secretos/correo-libradesk.env`):
+
+    LIBRA_MAIL_ADMIN_SSH=vps-mail
+    LIBRA_MAIL_DOMINIO=libradesk.com.ar
+    LIBRA_MAIL_SMTP_HOST=mail.libradesk.com.ar
+
+`LIBRA_MAIL_SMTP_PORT` sigue siendo sólo de entorno.
 """
 import os
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 # Segundos. El alta entera tiene presupuesto de minuto y medio y esto es una
 # sola orden remota: si el servidor de correo no contesta en 20 s, no contesta.
@@ -54,6 +72,17 @@ class MailError(Exception):
     """
 
 
+class CasillaYaExiste(MailError):
+    """El servidor de correo ya tiene esa casilla.
+
+    Es un caso aparte porque pide otra respuesta que el resto de los fallos: la
+    contraseña de una casilla no se puede leer de vuelta, así que si el compose
+    de la instancia no la tiene, la única salida es borrarla y crearla de nuevo
+    (`panel_admin.py casilla <slug> --recrear`), y eso **borra su buzón**: no se
+    decide solo.
+    """
+
+
 @dataclass(frozen=True)
 class CuentaDeCorreo:
     """Lo que hay que saber para que una instancia mande correo.
@@ -72,8 +101,73 @@ class CuentaDeCorreo:
     from_name: str
 
 
+#: Las únicas variables que se leen del archivo del host. Cualquier otra clave
+#: que alguien deje ahí se ignora: el archivo es una declaración, no un entorno.
+_CLAVES_DEL_ARCHIVO = ("LIBRA_MAIL_ADMIN_SSH", "LIBRA_MAIL_DOMINIO", "LIBRA_MAIL_SMTP_HOST")
+
+#: Carpeta de los archivos de configuración del host (la misma de
+#: `resguardo_oauth.env`, ver `nuevo_cliente.RESGUARDO_OAUTH_ENV`).
+_CARPETA_DEL_HOST = Path("/root/secretos")
+
+
+def archivo_del_host() -> Path | None:
+    """El archivo de declaración de este producto, o `None` si no se puede saber.
+
+    `LIBRA_MAIL_ENV_FILE` lo fija a mano (los tests lo usan para no leer el del
+    host real). Si no, `correo-<container_prefix>.env` en `/root/secretos`: el
+    dominio de correo es **del producto**, así que el archivo también. Sin
+    producto configurado (`configure()` todavía no corrió) no hay a cuál mirar.
+    """
+    explicito = os.environ.get("LIBRA_MAIL_ENV_FILE", "").strip()
+    if explicito:
+        return Path(explicito)
+    from . import get_config
+
+    try:
+        prefijo = get_config().container_prefix
+    except RuntimeError:
+        return None
+    return _CARPETA_DEL_HOST / f"correo-{prefijo}.env"
+
+
+def _leer_archivo() -> dict[str, str]:
+    """Las variables declaradas en el archivo del host; `{}` si no existe o no se puede leer.
+
+    Formato `CLAVE=valor`, una por línea, `#` comenta, comillas simples o dobles
+    opcionales alrededor del valor. No se ejecuta ni se expande nada.
+    """
+    ruta = archivo_del_host()
+    if ruta is None:
+        return {}
+    try:
+        texto = ruta.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    valores: dict[str, str] = {}
+    for linea in texto.splitlines():
+        linea = linea.strip()
+        if not linea or linea.startswith("#") or "=" not in linea:
+            continue
+        clave, _, valor = linea.partition("=")
+        clave = clave.strip().removeprefix("export ").strip()
+        valor = valor.strip()
+        if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in "\"'":
+            valor = valor[1:-1]
+        if clave in _CLAVES_DEL_ARCHIVO and valor:
+            valores[clave] = valor
+    return valores
+
+
 def _entorno(nombre: str, default: str = "") -> str:
-    return os.environ.get(nombre, default).strip()
+    """El entorno del proceso primero; si falta, el archivo del host (ADR-046)."""
+    del_proceso = os.environ.get(nombre, "").strip()
+    if del_proceso:
+        return del_proceso
+    if nombre in _CLAVES_DEL_ARCHIVO:
+        del_archivo = _leer_archivo().get(nombre, "")
+        if del_archivo:
+            return del_archivo
+    return default
 
 
 def configurado() -> bool:
@@ -85,6 +179,22 @@ def configurado() -> bool:
     en vez de comportarse como el parque de hoy.
     """
     return bool(_entorno("LIBRA_MAIL_ADMIN_SSH") and _entorno("LIBRA_MAIL_DOMINIO"))
+
+
+def motivo_sin_configurar() -> str:
+    """Por qué `configurado()` da `False`, en una frase para el operador; `""` si está configurado.
+
+    Nombra qué falta y dónde se declara, sin imprimir ningún valor.
+    """
+    faltan = [v for v in ("LIBRA_MAIL_ADMIN_SSH", "LIBRA_MAIL_DOMINIO") if not _entorno(v)]
+    if not faltan:
+        return ""
+    ruta = archivo_del_host()
+    donde = f"ni en {ruta}" if ruta else "ni en el archivo del host"
+    return (
+        f"este proceso no tiene {' ni '.join(faltan)} (ni en el entorno {donde}), "
+        "así que no sabe a qué servidor de correo pedirle la casilla"
+    )
 
 
 def direccion_de(slug: str) -> str:
@@ -186,7 +296,13 @@ def crear_cuenta(slug: str, nombre: str, password: str) -> CuentaDeCorreo:
     if not password:
         raise MailError("No se puede crear una casilla sin contraseña.")
 
-    _ssh(["crear", direccion], entrada=password)
+    try:
+        _ssh(["crear", direccion], entrada=password)
+    except MailError as e:
+        # El wrapper contesta «La casilla ya existe: <dirección>».
+        if "ya existe" in str(e).lower():
+            raise CasillaYaExiste(str(e)) from None
+        raise
     return CuentaDeCorreo(
         direccion=direccion,
         password=password,
@@ -275,7 +391,7 @@ def _from_name(nombre: str) -> str:
     return " ".join((nombre or "").split())
 
 
-def env_para_compose(cuenta: CuentaDeCorreo) -> str:
+def env_para_compose(cuenta: CuentaDeCorreo, sangria: str = "      ") -> str:
     """Las líneas de `environment:` del compose de la instancia.
 
     Seis variables y no menos: `LIBRAAUTH_SMTP_FROM_EMAIL` cae a
@@ -301,13 +417,18 @@ def env_para_compose(cuenta: CuentaDeCorreo) -> str:
     son alfabetos controlados (slug, dominio, `token_urlsafe`). Se cita igual
     las seis: una regla que aplica a todas no se puede aplicar mal a una.
     """
+    return "".join(f'{sangria}- "{clave}={valor}"\n' for clave, valor in _pares_escapados(cuenta))
+
+
+def _pares_escapados(cuenta: CuentaDeCorreo) -> list[tuple[str, str]]:
+    """`(variable, valor)` de las seis, con el valor ya escapado para YAML entre comillas dobles."""
     def v(valor) -> str:
         # Escapado de escalar YAML entre comillas dobles: la barra primero, si
         # no se re-escaparía la que introduce la comilla.
         return str(valor).replace("\\", "\\\\").replace('"', '\\"')
 
-    return "".join(
-        f'      - "{clave}={v(valor)}"\n'
+    return [
+        (clave, v(valor))
         for clave, valor in [
             ("LIBRAAUTH_SMTP_HOST", cuenta.host),
             ("LIBRAAUTH_SMTP_PORT", cuenta.port),
@@ -316,4 +437,60 @@ def env_para_compose(cuenta: CuentaDeCorreo) -> str:
             ("LIBRAAUTH_SMTP_FROM_EMAIL", cuenta.direccion),
             ("LIBRAAUTH_SMTP_FROM_NAME", cuenta.from_name),
         ]
-    )
+    ]
+
+
+# ── el compose de una instancia que ya existe (ADR-046) ──────────────────────
+
+def smtp_en_el_compose(contenido: str) -> bool:
+    """Si el compose ya trae la contraseña SMTP de la instancia.
+
+    Es la señal de «esta instancia ya tiene casilla»: la contraseña es la única
+    variable que no se puede reconstruir sin crear la casilla de nuevo.
+    """
+    return re.search(r"^[ \t]*-[ \t]*[\"']?LIBRAAUTH_SMTP_PASSWORD=", contenido, re.MULTILINE) is not None
+
+
+def con_cuenta_en_compose(contenido: str, indice_imagen_de_la_app: int,
+                          cuenta: CuentaDeCorreo) -> str | None:
+    """El compose con las seis variables SMTP en el `environment:` de la app.
+
+    Misma regla que `errores_env.con_variables`: `None` si el servicio no tiene
+    un `environment:` en forma de lista —no se adivina un formato que no se
+    conoce— y **idempotente** (las que ya estaban se reemplazan en su lugar, las
+    que faltan se agregan al final de la lista). `indice_imagen_de_la_app` es la
+    línea (base 0) de la `image:` del servicio de la app.
+    """
+    from . import errores_env as ee
+
+    lineas = contenido.split("\n")
+    inicio, fin = ee._bloque_del_servicio(lineas, indice_imagen_de_la_app)
+    env = next((i for i in range(inicio, fin) if re.match(r"^    environment:[ \t]*$", lineas[i])), None)
+    if env is None:
+        return None
+    ultimo, sangria, presentes = env, "      ", {}
+    i = env + 1
+    while i < fin:
+        linea = lineas[i]
+        if not linea.strip() or linea.lstrip().startswith("#"):
+            i += 1
+            continue
+        m = ee._ITEM_ENV.match(linea)
+        if not m:
+            break
+        sangria = m.group("sangria")
+        presentes[m.group("clave")] = i
+        ultimo = i
+        i += 1
+    if not presentes and i < fin and re.match(r"^\s+[A-Za-z_][A-Za-z0-9_]*:", lineas[i]):
+        return None  # `environment:` en formato de mapa
+    # Insertar después de `ultimo` no corre ninguna de las líneas ya halladas
+    # (todas están en o antes de `ultimo`), así que `presentes` sigue valiendo.
+    for clave, valor in _pares_escapados(cuenta):
+        linea_nueva = f'{sangria}- "{clave}={valor}"'
+        if clave in presentes:
+            lineas[presentes[clave]] = linea_nueva
+            continue
+        lineas.insert(ultimo + 1, linea_nueva)
+        ultimo += 1
+    return "\n".join(lineas)

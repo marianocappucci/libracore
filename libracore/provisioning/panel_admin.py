@@ -10,6 +10,7 @@ ejecución vía import diferido — ver `libracore.provisioning._npm_api()`.
 """
 import json
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -27,6 +28,7 @@ from . import (
     deploy_version,
     errores_env,
     get_config,
+    mail_cuentas,
     migraciones_declaradas,
 )
 
@@ -1527,6 +1529,114 @@ def cmd_eliminar(slug: str):
     print(f"[OK] Cliente '{slug}' eliminado.")
 
 
+# ── casilla de correo saliente de una instancia que ya existe (ADR-046) ──────
+
+def cmd_casilla(slug: str, recrear: bool = False) -> bool:
+    """Crea —o repara— la casilla de correo saliente de una instancia existente.
+
+    Lo que hace el alta por el backoffice, para una instancia que ya está: pide
+    la casilla al servidor de correo, escribe las seis `LIBRAAUTH_SMTP_*` en el
+    `environment:` de la app y la recrea (`up -d`) para que las tome. Un alta
+    por la CLI del host que quedó sin casilla se arregla con esto.
+
+    **Idempotente.** Si el compose ya trae la contraseña, no toca nada. Si el
+    servidor de correo ya tiene la casilla pero el compose no (la contraseña no
+    se puede leer de vuelta), **se detiene y lo dice**: recrearla borra su
+    buzón, y eso sólo con `--recrear`.
+
+    Devuelve `True` si la instancia quedó con casilla; `False` si no (la CLI
+    sale 1). La contraseña no se imprime en ningún caso.
+    """
+    c = find_client(slug)
+    if not c:
+        print(f"[ERROR] Cliente '{slug}' no encontrado.")
+        return False
+    if not mail_cuentas.configurado():
+        print(f"[ERROR] No se puede operar sobre el correo: {mail_cuentas.motivo_sin_configurar()}.")
+        return False
+
+    path = _compose_path(slug)
+    try:
+        contenido = path.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"[ERROR] No se pudo leer {path}: {e}")
+        return False
+    img = _image_de_la_app(contenido, slug)
+    if not img:
+        print(f"[ERROR] No se pudo identificar el servicio de la app en {path}; no se toca nada.")
+        return False
+
+    if mail_cuentas.smtp_en_el_compose(contenido) and not recrear:
+        print(f"[OK] '{slug}' ya tiene su casilla configurada ({mail_cuentas.direccion_de(slug)}); "
+              "nada que hacer.")
+        return True
+
+    nombre = c.get("nombre") or slug
+    password = secrets.token_urlsafe(24)
+    direccion = mail_cuentas.direccion_de(slug)
+    try:
+        try:
+            cuenta = mail_cuentas.crear_cuenta(slug, nombre, password)
+        except mail_cuentas.CasillaYaExiste:
+            if not recrear:
+                print(f"[ERROR] La casilla {direccion} ya existe en el servidor de correo, pero el "
+                      f"compose de '{slug}' no tiene su contraseña y no se puede leer de vuelta.")
+                print(f"        Para recrearla (BORRA su buzón y los mensajes que tenga): "
+                      f"panel_admin.py casilla {slug} --recrear")
+                return False
+            print(f"[*] Recreando {direccion} (se borra la casilla y se crea de nuevo) ...")
+            mail_cuentas.borrar_cuenta(direccion)
+            try:
+                cuenta = mail_cuentas.crear_cuenta(slug, nombre, password)
+            except mail_cuentas.MailError:
+                # Ya no hay casilla pero el compose todavía trae la contraseña
+                # vieja: un `casilla <slug>` sin `--recrear` diría «nada que
+                # hacer». Se avisa cómo seguir.
+                print(f"[ERROR] Se borró {direccion} y no se pudo crear de nuevo; la instancia "
+                      f"sigue con la contraseña vieja. Repetí: panel_admin.py casilla {slug} --recrear")
+                raise
+    except mail_cuentas.MailError as e:
+        print(f"[ERROR] Correo saliente: {e}")
+        return False
+
+    # A partir de acá la casilla existe con una contraseña que sólo está en
+    # memoria: si el compose no se puede escribir, se la borra para no dejar una
+    # credencial viva que nadie conoce.
+    nuevo = mail_cuentas.con_cuenta_en_compose(
+        contenido, contenido.count("\n", 0, img[0]), cuenta)
+    if nuevo is None:
+        _borrar_casilla_recien_creada(cuenta)
+        print(f"[ERROR] El compose de '{slug}' no tiene un `environment:` en lista: no se sabe "
+              "dónde poner las variables. Se borró la casilla recién creada; no se tocó nada.")
+        return False
+    try:
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(nuevo, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as e:
+        _borrar_casilla_recien_creada(cuenta)
+        print(f"[ERROR] No se pudo escribir {path}: {e}. Se borró la casilla recién creada.")
+        return False
+    print(f"[OK] Casilla {cuenta.direccion} creada y cargada en el compose de '{slug}'.")
+
+    print(f"[*] Recreando {c['container']} para que tome el correo ...")
+    r = compose(slug, "up", "-d")
+    if r.returncode != 0:
+        print(f"[ERROR] El compose quedó escrito pero `up -d` falló: la instancia sigue sin "
+              f"mandar correo hasta que se recree (panel_admin.py restart {slug}).")
+        return False
+    print(f"[OK] '{slug}' manda correo desde {cuenta.direccion}.")
+    return True
+
+
+def _borrar_casilla_recien_creada(cuenta) -> None:
+    """Borra una casilla recién creada; si no puede, lo dice con la dirección. Nunca levanta."""
+    try:
+        mail_cuentas.borrar_cuenta(cuenta.direccion)
+    except Exception as e:  # noqa: BLE001
+        print(f"[ERROR] Quedó la casilla {cuenta.direccion} sin borrar: {e}")
+
+
 # ── NPM proxy ─────────────────────────────────────────────────────────────────
 
 def _npm_client():
@@ -1842,6 +1952,7 @@ def cli():
         "pausar":      lambda: cmd_pausar(slug) if slug else print("Uso: panel_admin.py pausar <slug>"),
         "suspender":   lambda: cmd_suspender(slug) if slug else print("Uso: panel_admin.py suspender <slug>"),
         "estado":      lambda: cmd_estado_servicio(slug) if slug else print("Uso: panel_admin.py estado <slug>"),
+        "casilla":     lambda: cmd_casilla(slug, recrear="--recrear" in args[2:]) if slug else print("Uso: panel_admin.py casilla <slug> [--recrear]"),
     }
 
     fn = dispatch.get(cmd)
@@ -1865,5 +1976,6 @@ def cli():
         print("DB:       list-backups <slug> | restore-db <slug> [archivo.zip]")
         print("Externo:  resguardo-externo [slug] | estado-externo [slug]")
         print("Servicio: activar <slug> | pausar <slug> | suspender <slug> | estado <slug>")
+        print("Correo:   casilla <slug> [--recrear]   crea o repara la casilla de correo saliente (idempotente)")
         print("NPM:      npm-listar | npm-crear <slug> | npm-eliminar <slug>")
         sys.exit(1)

@@ -8,8 +8,7 @@ wiki/entities/libracore.md).
 
 ## El libro es la única lectura
 
-`get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` y
-`get_clientes_con_saldo_cc` leen SIEMPRE del libro (ADR-029). Hasta v1.138.0 se
+`get_cc_saldo`, `get_cc_movimientos` y `get_clientes_con_saldo_cc` leen SIEMPRE del libro (ADR-029). Hasta v1.138.0 se
 calculaban desde los documentos y la instancia podía encender
 `LIBRACORE_CC_DESDE_EL_LIBRO`; el interruptor, el cálculo y `libro_de_clientes.comparar`
 se retiraron cuando el libro dio cero diferencias en todas las instancias.
@@ -218,43 +217,6 @@ def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
         d["pendiente"] = pendiente
         resultado.append(d)
     return resultado
-
-
-def get_cc_movimientos_periodo(
-    cliente_id: int, desde: str, hasta: str, origen: OrigenVentas = VENTAS_LIBRACORE
-) -> dict:
-    """Movimientos de un rango de fechas más el saldo con el que se entra al rango.
-
-    `desde`/`hasta` son fechas ISO (YYYY-MM-DD) inclusive. Se resuelve sobre
-    `get_cc_movimientos()` en vez de repetir las tres consultas: la cuenta
-    corriente es chica por cliente y así no hay riesgo de que el resumen que se
-    manda por mail se calcule distinto que la pantalla. Por eso también sale del
-    libro (ADR-029): no tiene lectura propia.
-    """
-    movs = get_cc_movimientos(cliente_id, origen)
-
-    def _signo(m):
-        return float(m["monto"]) if m["tipo"] == "debito" else -float(m["monto"])
-
-    anteriores = [m for m in movs if m["fecha"] and m["fecha"] < desde]
-    del_periodo = [m for m in movs if desde <= (m["fecha"] or "") <= hasta]
-    # Un movimiento sin fecha no se puede ubicar en el tiempo: entra en el
-    # saldo anterior para que el saldo final siga cerrando con get_cc_saldo().
-    sin_fecha = [m for m in movs if not m["fecha"]]
-
-    saldo_anterior = sum(_signo(m) for m in anteriores + sin_fecha)
-    total_debitos = sum(float(m["monto"]) for m in del_periodo if m["tipo"] == "debito")
-    total_creditos = sum(float(m["monto"]) for m in del_periodo if m["tipo"] == "credito")
-
-    return {
-        "desde": desde,
-        "hasta": hasta,
-        "saldo_anterior": saldo_anterior,
-        "movimientos": del_periodo,
-        "total_debitos": total_debitos,
-        "total_creditos": total_creditos,
-        "saldo_final": saldo_anterior + total_debitos - total_creditos,
-    }
 
 
 def get_clientes_con_saldo_cc(origen: OrigenVentas = VENTAS_LIBRACORE) -> list[dict]:

@@ -7,6 +7,22 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Un alta sin casilla de correo lo dice, y `panel_admin.py casilla` la crea o la repara; se retira `get_cc_movimientos_periodo` (propuesta: v1.161.0)
+
+ADR-046. **Sin migración y sin cambio de schema.** El alta por la CLI del host (`scripts/nuevo_cliente.py`) llama a la misma `crear_cliente` que el backoffice, pero el host no tiene `LIBRA_MAIL_ADMIN_SSH` ni `LIBRA_MAIL_DOMINIO` (los backoffices las reciben por su compose): `configurado()` daba `False`, `smtp_ok` salía `None` y la instancia nacía sin SMTP sin que nadie se enterara.
+
+- **`mail_cuentas` lee su configuración de un archivo del host cuando el entorno no la tiene**: `/root/secretos/correo-<container_prefix>.env` (o `LIBRA_MAIL_ENV_FILE`), `CLAVE=valor` con `LIBRA_MAIL_ADMIN_SSH`, `LIBRA_MAIL_DOMINIO` y `LIBRA_MAIL_SMTP_HOST`. **El entorno del proceso gana** (el backoffice no cambia) y sólo esas tres claves se leen. Nuevos: `archivo_del_host()`, `motivo_sin_configurar()`.
+- **El alta ya no es silenciosa.** `crear_cliente` devuelve `smtp_motivo` (por qué no hay casilla; `""` si la hay) y loguea `[WARN] Sin casilla de correo: …` cuando no se intentó. La CLI cierra, después de las credenciales, con `[ADVERTENCIA] La instancia quedó sin casilla de correo: <motivo>` y el comando para crearla, y **sale con código 3** (`nuevo_cliente.SALIDA_SIN_CASILLA`; el alta salió bien, por eso no es 1).
+- **`panel_admin.py casilla <slug> [--recrear]` (nuevo, idempotente)**: crea la casilla de una instancia existente, escribe las seis `LIBRAAUTH_SMTP_*` en el `environment:` de la app y la recrea (`up -d`). Con el compose ya cargado, no hace nada. Si el servidor ya tiene la casilla y el compose no, se detiene y avisa (la contraseña no se lee de vuelta; recrear borra el buzón): `--recrear` la borra y la crea de nuevo, también para rotar la contraseña. Si algo falla después de crearla, la borra. Nunca imprime la contraseña. Nuevos en `mail_cuentas`: `CasillaYaExiste`, `smtp_en_el_compose`, `con_cuenta_en_compose`; `env_para_compose(cuenta, sangria=…)`.
+- **Se retira `libracore.db.cuenta_corriente.get_cc_movimientos_periodo`** (lo usaba el resumen por mail que salió en v1.155.0). Sin llamadores en `origin/develop` ni `origin/main` de los doce repos de la familia; no deja helpers huérfanos. Se sacaron sólo las líneas que lo ejercitaban en `tests/db/test_cc_desde_el_libro.py`, `test_cuenta_corriente_origenes.py`, `test_cuenta_corriente_external_ref.py` y `test_libro_de_clientes.py`.
+- Tests: `tests/provisioning/test_casilla_de_correo.py` (archivo del host, edición del compose, el comando contra un servidor de correo simulado que contesta «ya existe» como el wrapper) y casos en `tests/provisioning/test_nuevo_cliente.py` (`smtp_motivo`, alta con el archivo sin variables de entorno, aviso y código de salida de la CLI). `tests/conftest.py` aísla toda la suite de `LIBRA_MAIL_*` y del archivo del host.
+
+### Para los productos
+
+- 🔴 **Contalibra y LibraDesk**: antes de subir el pin, borrar `get_cc_movimientos_periodo = partial(…)` (`app/db_cuenta_corriente.py`) y `movimientos_periodo = partial(…)` (`app/services/cuenta_corriente.py`). Nadie las llama, pero apuntan a una función que ya no existe y el import falla.
+- Host del VPS: un `/root/secretos/correo-<producto>.env` (600) por producto con las tres variables de su backoffice; `~/.ssh/config` de `root` tiene que resolver el alias de `LIBRA_MAIL_ADMIN_SSH`. Sin eso, el alta por CLI sigue naciendo sin casilla, pero ahora lo dice.
+- Un backoffice que quiera mostrar el motivo lee `smtp_motivo` de la respuesta del alta (campo nuevo; si su `response_model` filtra, hay que agregarlo).
+
 ## [Unreleased] — El concepto de la factura a cuenta corriente deja de decir «Factura» dos veces (propuesta: v1.160.0)
 
 ADR-047. **Migración de datos `0025_concepto_sin_factura_doble`; sin cambio de schema.** La emisión a crédito escribía `Factura Factura C 0001-00000001 — Juan` (la etiqueta del tipo ya trae «Factura»). Ahora escribe `Factura C 0001-00000001 — Juan`, y la migración corrige las filas viejas.
