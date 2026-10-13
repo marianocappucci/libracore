@@ -61,6 +61,7 @@ class NotaNoPermitida(Exception):
     RECEPTOR = "receptor"            # el CUIT del receptor no sirve para ARCA
     IMPORTE = "importe"              # el importe pedido no es un monto válido (cero, negativo, más de 2 decimales)
     SUPERA_SALDO = "supera_saldo"    # lo acreditado más este importe superaría el total de la factura
+    ORIGINAL_SIN_CAE = "original_sin_cae"  # el comprobante no tiene CAE: ARCA no lo conoce (la nota de débito lo exige)
 
     def __init__(self, mensaje: str, codigo: str):
         super().__init__(mensaje)
@@ -104,7 +105,7 @@ def _nombre_del_candado(clave: Any) -> str:
 
 
 @contextlib.contextmanager
-def una_nota_a_la_vez(clave: Any, conn: Any = None):
+def una_nota_a_la_vez(clave: Any, conn: Any = None, *, clase: str = "crédito"):
     """Un solo pedido de nota de crédito por comprobante a la vez.
 
     🔴 **Sin esto la consulta «¿ya tiene una nota?» no alcanza**: dos pedidos que llegan juntos —un doble
@@ -130,11 +131,12 @@ def una_nota_a_la_vez(clave: Any, conn: Any = None):
     esta guarda no puede fallar el arranque de un producto en producción.
 
     `clave` es lo que identifica al comprobante **en ese producto** (su id, o una tupla si hace falta distinguir
-    tablas); el motor no le da otro significado.
+    tablas); el motor no le da otro significado. `clase` sólo cambia el texto del rechazo (`crédito` o `débito`): la
+    nota de débito usa su propia `clave`, así que una nota de crédito en camino no frena a una de débito.
     """
     with _EN_CURSO_LOCK:
         if clave in _EN_CURSO:
-            raise _en_curso_error()
+            raise _en_curso_error(clase)
         _EN_CURSO.add(clave)
     try:
         if conn is None:
@@ -142,16 +144,16 @@ def una_nota_a_la_vez(clave: Any, conn: Any = None):
             return
         with candado_de_base(conn, _nombre_del_candado(clave)) as obtenido:
             if not obtenido:
-                raise _en_curso_error()
+                raise _en_curso_error(clase)
             yield
     finally:
         with _EN_CURSO_LOCK:
             _EN_CURSO.discard(clave)
 
 
-def _en_curso_error() -> NotaNoPermitida:
+def _en_curso_error(clase: str = "crédito") -> NotaNoPermitida:
     return NotaNoPermitida(
-        "Ya hay una nota de crédito en curso para esta factura: esperá a que termine antes de pedir otra.",
+        f"Ya hay una nota de {clase} en curso para esta factura: esperá a que termine antes de pedir otra.",
         NotaNoPermitida.EN_CURSO,
     )
 
@@ -206,6 +208,21 @@ def repartir_importe(original: dict, importe: Any) -> tuple[Decimal, Decimal]:
     return neto, importe - neto
 
 
+def importe_valido(importe: Any) -> Decimal:
+    """El importe de una nota como `Decimal`, o `NotaNoPermitida` (`IMPORTE`) si no es un monto: un número finito,
+    mayor que cero y con hasta dos decimales. Lo comparten la nota de crédito y la de débito."""
+    try:
+        valor = Decimal(str(importe))
+    except InvalidOperation:
+        raise NotaNoPermitida(f"El importe {importe!r} no es un número.", NotaNoPermitida.IMPORTE) from None
+    if not valor.is_finite() or valor <= 0 or valor != valor.quantize(_CENTAVO):
+        raise NotaNoPermitida(
+            "El importe de la nota tiene que ser mayor que cero y con hasta dos decimales.",
+            NotaNoPermitida.IMPORTE,
+        )
+    return valor
+
+
 # ── Las guardas ────────────────────────────────────────────────────────────
 
 def validar_nota_de_credito(original: dict, previas: Sequence[dict], importe: Any = None) -> int:
@@ -229,15 +246,7 @@ def validar_nota_de_credito(original: dict, previas: Sequence[dict], importe: An
     tipo_nota = tipo_de_nota_de_credito(original["tipo"])
     total = _dec(original["total"])
     if importe is not None:
-        try:
-            importe = Decimal(str(importe))
-        except InvalidOperation:
-            raise NotaNoPermitida(f"El importe {importe!r} no es un número.", NotaNoPermitida.IMPORTE) from None
-        if not importe.is_finite() or importe <= 0 or importe != importe.quantize(_CENTAVO):
-            raise NotaNoPermitida(
-                "El importe de la nota tiene que ser mayor que cero y con hasta dos decimales.",
-                NotaNoPermitida.IMPORTE,
-            )
+        importe = importe_valido(importe)
     for nota in previas:
         if not _es_cae(nota.get("cae")):
             raise NotaNoPermitida(
@@ -300,6 +309,7 @@ def validar_nota_de_credito(original: dict, previas: Sequence[dict], importe: An
 def armar_nota(
     original: dict, tipo_nota: int, *, hoy: datetime.date | None = None,
     prefijo: str = "Anula", motivo: str = "", importe: Any = None,
+    leyenda: str | None = None, por_importe: bool = False,
 ) -> dict:
     """El diccionario de la nota (sin número todavía), con las claves que usa toda la familia.
 
@@ -317,16 +327,22 @@ def armar_nota(
     `cbte_asoc_*` es lo que ata la nota a su factura ante ARCA; sin eso es un comprobante suelto. Una nota de FCE
     exige además la fecha del asociado (`10158`) y decir si anula la factura (opcional 22): `N` siempre, porque `S`
     sólo la acepta ARCA si el comprador rechazó la factura (`10154`), y eso no lo decide quien emite.
+
+    `leyenda` pisa el texto que la nota lleva como observación y como descripción de su ítem, y `por_importe` hace que
+    la nota vaya siempre por `importe` y no copie la factura aunque coincidan: los dos los usa la nota de débito
+    (`libracore.notas_de_debito`). Sin ellos, la nota de crédito se arma exactamente como siempre.
     """
     fecha = (hoy or datetime.date.today()).isoformat()
-    parcial = importe is not None and _dec(importe) != _dec(original["total"])
+    # `por_importe` (la nota de débito, ADR-049): la nota va SIEMPRE por el importe pedido, aunque coincida con el total
+    # de la factura. Una de débito no copia el comprobante: cobra un monto nuevo (intereses, un gasto, una diferencia).
+    parcial = importe is not None and (por_importe or _dec(importe) != _dec(original["total"]))
     if parcial:
         neto, iva = repartir_importe(original, importe)
         subtotal, iva_amount, total = float(neto), float(iva), float(_dec(importe))
-        leyenda = f"Acredita {_dec(importe)} de {etiqueta(original)}"
+        leyenda = leyenda or f"Acredita {_dec(importe)} de {etiqueta(original)}"
     else:
         subtotal, iva_amount, total = original["subtotal"], original["iva_amount"], original["total"]
-        leyenda = f"{prefijo} {etiqueta(original)}"
+        leyenda = leyenda or f"{prefijo} {etiqueta(original)}"
     nota = {
         "tipo": tipo_nota,
         "punto_venta": original["punto_venta"],

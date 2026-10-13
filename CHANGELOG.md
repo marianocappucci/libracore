@@ -7,6 +7,19 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La nota de débito por importe, del motor: `libracore.notas_de_debito` (propuesta: v1.163.0)
+
+ADR-049. **Sin migración y sin cambio de schema.** La nota de débito vivía en `facturas_router._crear_nota`: metida en un router, atada a la tabla `facturas` y **copiando la factura entera** (`POST /api/facturas/{id}/nota-debito` no recibe importe ni motivo). Lo que se necesita en la práctica —cobrar un monto nuevo sobre una factura ya emitida: intereses, un gasto, una diferencia— no se podía pedir. LibraCargo (facturación directa, 2026-10-13) es el primer consumidor.
+
+- **`libracore.notas_de_debito` (nuevo)**: `tipo_de_nota_de_debito` (`TIPO_ND`: la letra y la FCE se heredan), `validar_nota_de_debito(original, importe, previas=())`, `armar_nota_de_debito` y `emitir_nota_de_debito(original, *, clave, importe, numerar, registrar, pedir_cae, cargar_previas=None, hoy=None, motivo="", conn=None) -> NotaEmitida`, con las mismas costuras y el mismo orden *previas → numerar → registrar → pedir CAE* que la nota de crédito. Va **siempre por un importe** (con IVA, hasta dos decimales; el IVA sale con la alícuota de la factura y `neto + iva == importe`), **sin tope** (una factura admite varias y puede superar su total), exige que **el original tenga CAE** (`NotaNoPermitida.ORIGINAL_SIN_CAE`, 409 sugerido) y frena si una nota de débito previa quedó sin CAE. El receptor se valida como en la nota de crédito. Guía: `docs/notas-de-debito.md`.
+- **`notas_de_credito`, aditivo**: `importe_valido(importe)` (extraído de `validar_nota_de_credito`, mismos rechazos), `armar_nota(..., leyenda=None, por_importe=False)` (la de débito no copia la factura aunque el importe coincida) y `una_nota_a_la_vez(clave, conn, *, clase="crédito")` (sólo cambia el texto del 409). Sin los parámetros nuevos, la nota de crédito sale exactamente igual.
+- **No cambia** `POST /api/facturas/{id}/nota-debito` del router de facturas (Contalibra, Restolibra, LibraClub): sigue copiando la factura. Pasarlo a este núcleo es una decisión aparte, porque cambia lo que esos tres productos emiten.
+- Tests: `tests/test_notas_de_debito.py` (tipos, guardas, armado, candado —incluido el de la base con dos conexiones—, producto de prueba con otro modelo y la nota de crédito sin cambios).
+
+### Para los productos
+
+- Un producto que quiera nota de débito por importe: `emitir_nota_de_debito` con su `clave` (distinta de la de la nota de crédito del mismo comprobante, así una no frena a la otra), sus tres costuras y `conn=` con la conexión de la transacción donde escribe. Traducir `codigo` a HTTP como la nota de crédito (`original_sin_cae` 409).
+
 ## [Unreleased] — Adicionales fuera de la escalera de planes: `libracore.adicionales` y su router (propuesta: v1.162.0)
 
 ADR-048. **Sin migración y sin cambio de schema** (la `0026` queda libre). El motor de planes no podía expresar un módulo que se vende aparte y se cuenta por unidades (el offline de RestoLibra, por sucursal con offline). Ahora hay un catálogo, el dato vive en la instancia y el abono se arma por líneas. Guía: `docs/adicionales.md`.
