@@ -436,6 +436,64 @@ def _aplicar_plan_en_contenedor(container: str, variable: str, plan: str) -> boo
     return r.returncode == 0
 
 
+def _aplicar_adicionales_en_contenedor(container: str, variable: str, modulos: dict) -> bool:
+    """Prende los módulos de los adicionales contratados (`{módulo: bool}`) corriendo `provisioning.aplicar_modulos_de_adicionales` DENTRO del
+    contenedor, igual que el plan y por el mismo motivo: desde el host la URL de la base no resuelve, y no se pasa por línea de comando."""
+    codigo = (
+        "import os; from libracore.provisioning import aplicar_modulos_de_adicionales; "
+        f"aplicar_modulos_de_adicionales(os.environ[{variable!r}], {modulos!r})"
+    )
+    r = subprocess.run(["docker", "exec", container, "python3", "-c", codigo], capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def _validar_adicionales(plans, plan: str, adicionales) -> dict:
+    """Los adicionales del alta, normalizados a `{clave: True | cantidad}` (un `False`/`None` es «no contratado» y se descarta). `ClienteError` ante
+    uno desconocido, con un valor inválido o que el plan no admite: se valida con lo demás, antes de tocar Docker."""
+    from libracore import adicionales as ad
+
+    if not adicionales:
+        return {}
+    if not isinstance(adicionales, dict):
+        raise ClienteError("Los adicionales tienen que ser un diccionario {clave: valor}.")
+    cat = ad.catalogo(plans)
+    resultado: dict = {}
+    for clave, valor in adicionales.items():
+        if clave not in cat:
+            raise ClienteError(f"Adicional desconocido: {clave!r}. Los del producto: {sorted(cat)}.")
+        a = cat[clave]
+        if valor is None or valor is False:
+            continue
+        if a.por_unidades:
+            if isinstance(valor, bool) or not isinstance(valor, int) or not 1 <= valor <= ad.MAXIMO:
+                raise ClienteError(f"«{a.label}» se cuenta por {a.unidad}: tiene que ser un entero entre 1 y {ad.MAXIMO}.")
+        elif valor is not True:
+            raise ClienteError(f"«{a.label}» es un sí/no: tiene que ser true o false.")
+        if not a.en_plan(plan):
+            raise ClienteError(f"«{a.label}» no se puede contratar con el plan {plan!r}.")
+        resultado[clave] = valor
+    return resultado
+
+
+def _prender_adicionales(adicionales: dict, plans, slug: str, aplicar, log) -> None:
+    """Prende en la base los módulos de los adicionales contratados, ya aplicado el plan. Si no se puede, `AltaIncompleta`: la instancia existe pero
+    el cliente no recibiría lo que contrató (la cantidad ya está en el `config.json`, el módulo no)."""
+    from libracore import adicionales as ad
+
+    if not adicionales:
+        return
+    cat = ad.catalogo(plans)
+    prendidos = {m: True for clave in adicionales for m in cat[clave].modulos}
+    if not prendidos:
+        return
+    if not aplicar(prendidos):
+        raise AltaIncompleta(
+            f"La instancia '{slug}' se creó y su plan quedó aplicado, pero no se pudieron prender los módulos de los adicionales contratados "
+            f"({', '.join(sorted(prendidos))}). Cargalos desde el backoffice antes de entregarla."
+        )
+    log(f"[OK] Adicionales prendidos: {', '.join(sorted(adicionales))}.")
+
+
 def _esperar_db_lista(db_path, timeout: int = 25) -> bool:
     """Espera a que la instancia recién levantada cree su DB y la tabla `modulos`.
 
@@ -602,7 +660,8 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
                   empresa_cuit: str = "", empresa_nombre: str = "",
                   sin_identidad: bool = False,
                   setup_npm: bool = True, rebuild: bool = False, log=lambda *a: None,
-                  sucursales_contratadas: int | None = None) -> dict:
+                  sucursales_contratadas: int | None = None,
+                  adicionales: dict | None = None) -> dict:
     """Da de alta un cliente de forma NO interactiva: crea el directorio, config,
     docker-compose y cliente.json, buildea la imagen si falta, levanta el contenedor,
     aplica el plan inicial y (si hay dominio + NPM) crea el proxy con SSL.
@@ -616,6 +675,11 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
     `sucursales_contratadas` (ADR-041) es lo que el cliente contrató, un entero >= 1:
     nace en el `config.json` de la instancia como `limite_sucursales` y de ahí lo lee
     `libracore.limites`. `None` (el default) no escribe nada: la instancia nace sin límite.
+
+    `adicionales` (ADR-048) es lo que el cliente contrató fuera de la escalera, `{clave: True | cantidad}` según el catálogo del `plans.py`
+    (`libracore.adicionales`): las cantidades nacen en el `config.json` (`adicionales`, o `limite_sucursales` para `sucursal`) antes de levantar el
+    contenedor, y los módulos se prenden en la base justo después de aplicar el plan. Un adicional desconocido, incompatible con el plan o con un
+    valor inválido es `ClienteError` y no deja nada atrás. `adicionales={"sucursal": n}` equivale a `sucursales_contratadas=n`.
 
     Devuelve un dict con los datos del cliente (incluida la contraseña generada).
     Lanza ClienteError ante validaciones o fallos de infraestructura.
@@ -688,6 +752,13 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
             raise ClienteError(
                 f"Las sucursales contratadas tienen que ser un entero entre 1 y {limites.MAXIMO}."
             )
+
+    adicionales = _validar_adicionales(plans, plan, adicionales)
+    if "sucursal" in adicionales:
+        if sucursales_contratadas not in (None, adicionales["sucursal"]):
+            raise ClienteError("Las sucursales contratadas se pasaron dos veces con valores distintos "
+                               f"({sucursales_contratadas} y {adicionales['sucursal']}).")
+        sucursales_contratadas = adicionales["sucursal"]
 
     _used = used_ports()
     port = int(port) if port else next_port(_used)
@@ -767,6 +838,9 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         }
         if sucursales_contratadas is not None:
             config["limite_sucursales"] = sucursales_contratadas  # `libracore.limites.CLAVE_CONFIG`
+        cantidades = {c: n for c, n in adicionales.items() if n is not True and c != "sucursal"}
+        if cantidades:
+            config["adicionales"] = cantidades  # `libracore.adicionales.CLAVE_CONFIG`
         (data_dir / "config.json").write_text(
             json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
         )
@@ -1004,6 +1078,8 @@ services:
                 "port": port, "container": container,
                 "admin_user": admin_user, "admin_password": admin_password,
                 "plan": plan, "version_desplegada": version,
+                # La copia informativa de lo contratado (ADR-048); la fuente de verdad es la instancia.
+                **({"adicionales": adicionales} if adicionales else {}),
             }, indent=2, ensure_ascii=False)
         )
 
@@ -1086,6 +1162,7 @@ services:
             )
             if listo and _aplicar_plan_en_contenedor(container, variable, plan):
                 log(f"[OK] Plan '{plan}' aplicado.")
+                _prender_adicionales(adicionales, plans, slug, lambda m: _aplicar_adicionales_en_contenedor(container, variable, m), log)
             elif listo:
                 raise AltaIncompleta(
                     f"La instancia '{slug}' se creó y su base está lista, pero no se "
@@ -1104,6 +1181,9 @@ services:
             if _esperar_db_lista(db_path):
                 plans.aplicar_plan_en_db(str(db_path), plan)
                 log(f"[OK] Plan '{plan}' aplicado.")
+                from .. import provisioning
+                _prender_adicionales(adicionales, plans, slug,
+                                     lambda m: provisioning.aplicar_modulos_de_adicionales(db_path, m) or True, log)
             else:
                 raise AltaIncompleta(
                     f"La instancia '{slug}' se creó pero su base nunca se armó: "
@@ -1128,6 +1208,7 @@ services:
             "nombre": nombre, "slug": slug, "domain": domain, "port": port,
             "container": container, "admin_user": admin_user,
             "admin_password": admin_password, "plan": plan, "proxy_ok": proxy_ok,
+            "adicionales": adicionales,
             "dir": str(client_dir),
             "empresa_nombre": empresa_nombre, "empresa_cuit": empresa_cuit,
             # Misma semántica que `proxy_ok`: `None` = no se intentó (no hay

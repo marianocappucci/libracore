@@ -593,3 +593,164 @@ def test_addons_de_instancia_apagado_de_verdad_es_false(fake_scripts, monkeypatc
     assert estado == {"mayorista": False}
     assert estado["mayorista"] is False          # y no `None`
     assert estado["mayorista"] is not None
+
+
+# ── adicionales fuera de la escalera (ADR-048) ───────────────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def con_adicionales(fake_scripts):
+    """El producto de juguete con un sí/no (`mayorista`), offline por sucursal (sólo en `pro`) y sucursales con precio."""
+    p = fake_scripts["plans"]
+    p.PLAN_MODULOS = {"basico": {"clientes"}, "pro": {"clientes", "reportes"}}
+    p.ADDONS = {"mayorista"}
+    p.ADICIONALES = {
+        "offline": {"label": "Modo offline", "modulos": {"offline"}, "unidad": "sucursal", "limite": "sucursales_offline", "planes": {"pro"}},
+        "sucursal": {"label": "Sucursales", "precio": 19950, "unidad": "sucursal", "incluidas": {"basico": 1, "pro": 2}, "limite": "sucursales"},
+    }
+    return fake_scripts
+
+
+def test_planes_info_trae_los_adicionales_de_cada_plan_con_sus_incluidas(con_adicionales):
+    info = {p["key"]: p for p in services.planes_info()}
+    basico = {a["clave"]: a for a in info["basico"]["adicionales"]}
+    pro = {a["clave"]: a for a in info["pro"]["adicionales"]}
+    assert sorted(basico) == ["mayorista", "sucursal"]          # offline es sólo de `pro`
+    assert sorted(pro) == ["mayorista", "offline", "sucursal"]
+    assert (basico["sucursal"]["incluidas"], pro["sucursal"]["incluidas"]) == (1, 2)
+    assert basico["sucursal"]["precio"] == 19950 and pro["offline"]["precio"] is None
+    assert pro["offline"]["modulos"] == ["offline"] and "planes" not in pro["offline"]
+
+
+def test_planes_info_sin_adicionales_da_lista_vacia(fake_scripts):
+    assert all(p["adicionales"] == [] for p in services.planes_info())
+
+
+def test_adicionales_info_es_el_catalogo_para_la_pantalla(con_adicionales):
+    assert [a["clave"] for a in services.adicionales_info()] == ["mayorista", "offline", "sucursal"]
+    assert next(a for a in services.adicionales_info() if a["clave"] == "offline")["planes"] == ["pro"]
+
+
+def test_set_plan_conserva_la_copia_de_adicionales_del_cliente_json(con_adicionales):
+    con_adicionales["mkclient"]("C", "c-1", plan="basico")
+    services.registrar_copia_de_adicionales("c-1", {"mayorista": True, "sucursal": 3})
+    services.set_plan("c-1", "pro")
+    meta = json.loads((con_adicionales["clientes_dir"] / "c-1" / "cliente.json").read_text(encoding="utf-8"))
+    assert meta["plan"] == "pro" and meta["adicionales"] == {"mayorista": True, "sucursal": 3}
+
+
+def test_set_plan_con_un_adicional_incompatible_es_409_con_la_lista_y_no_aplica_nada(con_adicionales):
+    con_adicionales["mkclient"]("C", "c-2", plan="pro")
+    with pytest.raises(services.AdicionalIncompatibleError) as e:
+        services.set_plan("c-2", "basico", contratados={"offline": 2, "mayorista": True})
+    assert e.value.incompatibles == ["offline"] and e.value.plan == "basico"
+    assert isinstance(e.value, services.ServiceError)
+    assert "offline" in str(e.value)
+    assert con_adicionales["plans"].aplicar_plan_calls == []
+    assert services.get_cliente("c-2")["plan"] == "pro"
+
+
+def test_set_plan_sin_contratados_usa_la_copia_del_cliente_json(con_adicionales):
+    con_adicionales["mkclient"]("C", "c-3", plan="pro")
+    services.registrar_copia_de_adicionales("c-3", {"offline": 1})
+    with pytest.raises(services.AdicionalIncompatibleError):
+        services.set_plan("c-3", "basico")
+
+
+def test_set_plan_con_el_incompatible_dado_de_baja_pasa(con_adicionales):
+    con_adicionales["mkclient"]("C", "c-4", plan="pro")
+    services.set_plan("c-4", "basico", contratados={"offline": None, "mayorista": True})
+    assert services.get_cliente("c-4")["plan"] == "basico"
+
+
+def test_la_copia_del_cliente_json_ilegible_no_rompe_el_cambio_de_plan(con_adicionales):
+    con_adicionales["mkclient"]("C", "c-5", plan="basico")
+    meta_path = con_adicionales["clientes_dir"] / "c-5" / "cliente.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["adicionales"] = "roto"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    services.set_plan("c-5", "pro")
+    assert services.get_cliente("c-5")["plan"] == "pro"
+
+
+def test_set_adicional_prende_el_modulo_por_docker_y_anota_la_copia(con_adicionales, monkeypatch):
+    con_adicionales["mkclient"]("C", "c-6")
+    llamadas = []
+    monkeypatch.setattr(services.subprocess, "run", lambda cmd, **kw: llamadas.append(cmd[-1]) or _R())
+    services.set_adicional("c-6", "mayorista", True)
+    assert "set_addon('mayorista', True)" in llamadas[0]
+    meta = json.loads((con_adicionales["clientes_dir"] / "c-6" / "cliente.json").read_text(encoding="utf-8"))
+    assert meta["adicionales"] == {"mayorista": True}
+    services.set_adicional("c-6", "mayorista", False)
+    assert "set_addon('mayorista', False)" in llamadas[1]
+    assert "adicionales" not in json.loads((con_adicionales["clientes_dir"] / "c-6" / "cliente.json").read_text(encoding="utf-8"))
+
+
+def test_set_adicional_por_unidades_no_se_carga_por_docker(con_adicionales, monkeypatch):
+    con_adicionales["mkclient"]("C", "c-7")
+    monkeypatch.setattr(services.subprocess, "run", lambda *a, **k: pytest.fail("no debería tocar Docker"))
+    with pytest.raises(services.ServiceError, match="/api/adicionales"):
+        services.set_adicional("c-7", "offline", True)
+
+
+def test_set_adicional_desconocido_y_error_de_docker(con_adicionales, monkeypatch):
+    con_adicionales["mkclient"]("C", "c-8")
+    with pytest.raises(services.ServiceError, match="desconocido"):
+        services.set_adicional("c-8", "cohetes", True)
+    monkeypatch.setattr(services.subprocess, "run", lambda *a, **k: _R(returncode=1, stderr="boom"))
+    with pytest.raises(services.ServiceError, match="boom"):
+        services.set_adicional("c-8", "mayorista", True)
+
+
+def test_adicionales_de_instancia_lee_los_modulos_y_distingue_el_no_se(con_adicionales, monkeypatch):
+    con_adicionales["mkclient"]("C", "c-9")
+    monkeypatch.setattr(services.subprocess, "run", lambda *a, **k: _R(stdout=json.dumps({"mayorista": True, "offline": False})))
+    assert services.adicionales_de_instancia("c-9") == {"mayorista": True, "offline": False}
+    monkeypatch.setattr(services.subprocess, "run", lambda *a, **k: _R(returncode=1, stderr="x"))
+    assert services.adicionales_de_instancia("c-9") == {"mayorista": None, "offline": None}
+    monkeypatch.setattr(services.subprocess, "run", lambda *a, **k: _R(stdout="<html>"))
+    assert services.adicionales_de_instancia("c-9") == {"mayorista": None, "offline": None}
+
+
+def test_adicionales_de_instancia_sin_adicionales_da_vacio(fake_scripts):
+    assert services.adicionales_de_instancia("lo-que-sea") == {}
+
+
+def test_la_copia_del_cliente_json_se_alinea_con_la_instancia_que_gana(con_adicionales):
+    con_adicionales["mkclient"]("C", "c-10")
+    path = con_adicionales["clientes_dir"] / "c-10" / "cliente.json"
+    services.registrar_copia_de_adicionales("c-10", {"mayorista": True, "offline": 5})
+    services.sincronizar_copia_de_adicionales("c-10", {"mayorista": None, "offline": 2, "sucursal": 3})
+    assert json.loads(path.read_text(encoding="utf-8"))["adicionales"] == {"offline": 2, "sucursal": 3}
+    antes = path.stat().st_mtime_ns
+    services.sincronizar_copia_de_adicionales("c-10", {"offline": 2, "sucursal": 3})   # igual: no reescribe
+    assert path.stat().st_mtime_ns == antes
+    services.sincronizar_copia_de_adicionales("c-10", {})
+    assert "adicionales" not in json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_crear_cliente_pasa_los_adicionales_al_motor_solo_si_hay(con_adicionales):
+    services.crear_cliente(nombre="Con Extras", slug="con-extras", adicionales={"mayorista": True})
+    import nuevo_cliente
+    assert nuevo_cliente.ultima_alta["extra"] == {"adicionales": {"mayorista": True}}
+    services.crear_cliente(nombre="Sin Extras", slug="sin-extras")
+    assert nuevo_cliente.ultima_alta["extra"] == {}
+
+
+def test_abono_por_lineas_es_el_anexo_i_del_plan_con_sus_adicionales(con_adicionales):
+    """El plan más una línea por adicional contratado; el que no tiene precio sale «a cotizar» y no suma."""
+    r = services.abono_por_lineas("pro", {"sucursal": 4, "offline": 2, "mayorista": True})
+    assert r["plan"] == "pro" and r["base"] == 2000
+    assert [ln["clave"] for ln in r["lineas"]] == ["mayorista", "offline", "sucursal"]
+    assert r["extra"] == 2 * 19950 and r["total"] == 2000 + 2 * 19950  # 4 contratadas, 2 incluidas en `pro`
+    assert r["a_cotizar"] == ["mayorista", "offline"] and r["incompatibles"] == []
+
+
+def test_abono_por_lineas_resuelve_un_plan_retirado_y_marca_los_incompatibles(con_adicionales):
+    con_adicionales["plans"].PLANES_RETIRADOS = {"viejo": "basico"}
+    r = services.abono_por_lineas("viejo", {"offline": 1})
+    assert r["plan"] == "basico" and r["incompatibles"] == ["offline"]
+
+
+def test_abono_por_lineas_con_una_clave_que_no_se_vende_es_value_error(con_adicionales):
+    with pytest.raises(ValueError, match="desconocido"):
+        services.abono_por_lineas("pro", {"cohetes": True})
