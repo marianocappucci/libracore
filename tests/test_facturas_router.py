@@ -22,6 +22,7 @@ from libracore import config_manager, notas_de_credito
 from libracore import facturas_router as fr
 from libracore import pdf_generator as pdf_gen
 from libracore.db import core
+from libracore.db.clients import create_client
 from libracore.db.schema import init_core_schema
 
 USUARIO = {"id": 1, "username": "admin", "nombre": "Administrador"}
@@ -548,10 +549,10 @@ def test_un_hook_que_explota_NO_deshace_la_emision(tmp_path, monkeypatch):
 def test_a_credito_se_escribe_el_movimiento_de_cuenta_corriente(client):
     """A crédito la plata no entró: la deuda tiene que quedar registrada.
 
-    ⚠️ El `concepto` dice "Factura" dos veces y **así tiene que quedar**: es el
-    texto que hoy tienen los movimientos de Contalibra y Restolibra, y esta
-    extracción no puede cambiar lo que se escribe en la base. Si algún día se
-    arregla, este test es el que avisa que cambió.
+    🔑 El `concepto` es el nombre del comprobante, que ya dice qué es: `Factura C 0001-...`.
+    Hasta la v1.161.0 le anteponía «Factura» otra vez (`Factura Factura C ...`, ADR-047); la
+    migración `0025` corrigió las filas viejas. Este test fija el formato bueno, y el siguiente
+    impide que vuelva la palabra doble.
     """
     _emitir(client, condicion_venta="Cuenta Corriente")
 
@@ -563,9 +564,35 @@ def test_a_credito_se_escribe_el_movimiento_de_cuenta_corriente(client):
 
     assert len(filas) == 1
     concepto, monto, medio = filas[0][0], filas[0][1], filas[0][2]
-    assert concepto == "Factura Factura C 0001-00000001 — Juan Perez"
+    assert concepto == "Factura C 0001-00000001 — Juan Perez"
     assert monto == 14000.0
     assert medio == "Cuenta Corriente"
+
+
+@pytest.mark.parametrize("tipo, condicion, letra", [
+    (11, "Monotributista", "C"), (1, "Responsable Inscripto", "A"), (6, "Responsable Inscripto", "B"),
+])
+def test_el_concepto_a_credito_no_repite_la_palabra_factura(client, tipo, condicion, letra):
+    """La caja y el libro de clientes no dicen «Factura Factura», sea cual sea la letra.
+
+    El nombre del tipo (`tipos_cbte.NOMBRE`) ya trae «Factura»; el concepto no se la antepone. El
+    libro de clientes (`cc_asientos`) copia ese texto al asentar, así que se mide en las dos tablas.
+    """
+    config_manager.save({"empresa_iva_condition": condicion})
+    # El libro asienta sólo si el CUIT de la factura resuelve a un cliente.
+    create_client("Juan Perez", cuit_dni="20304050607")
+    _emitir(client, tipo=tipo, condicion_venta="Cuenta Corriente",
+            client_iva="Responsable Inscripto" if tipo == 1 else "Consumidor Final")
+
+    conn = core.get_connection()
+    caja = [r[0] for r in conn.execute("SELECT concepto FROM caja_movimientos").fetchall()]
+    libro = [r[0] for r in conn.execute("SELECT concepto FROM cc_asientos").fetchall()]
+    conn.close()
+
+    esperado = f"Factura {letra} 0001-00000001 — Juan Perez"
+    assert caja == [esperado]
+    assert libro == [esperado]
+    assert "Factura Factura" not in caja[0] + libro[0]
 
 
 def test_al_contado_NO_se_escribe_movimiento_de_cuenta_corriente(client):

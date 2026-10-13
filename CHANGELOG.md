@@ -7,6 +7,19 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El concepto de la factura a cuenta corriente deja de decir «Factura» dos veces (propuesta: v1.160.0)
+
+ADR-047. **Migración de datos `0025_concepto_sin_factura_doble`; sin cambio de schema.** La emisión a crédito escribía `Factura Factura C 0001-00000001 — Juan` (la etiqueta del tipo ya trae «Factura»). Ahora escribe `Factura C 0001-00000001 — Juan`, y la migración corrige las filas viejas.
+
+- **`facturas_router`**: el concepto del movimiento de caja es `f"{tipo_label} {pv}-{num} — {cliente}"`. El libro de clientes lo copia al asentar, así que también sale bien.
+- **`0025`**: `substr(concepto, 9)` en `caja_movimientos` y en `cc_asientos`, sólo en las filas que empiezan exactamente con `Factura Factura ` (no usa `LIKE`: en SQLite no distingue mayúsculas). No toca montos, fechas ni vínculos; idempotente; una base sin alguna de las dos tablas la saltea; escribe a stderr cuántas filas tocó por tabla. **No se baja** (restaurar el backup).
+- 🔴 **Backup antes de correrla**, como toda migración de datos. El saldo de ningún cliente cambia.
+- Tests: `tests/db/test_concepto_factura_sin_duplicar.py` (base en la `0024` con filas viejas y filas que no se tocan, en las dos tablas, columna por columna; idempotencia; SQLite y PostgreSQL) y, en `tests/test_facturas_router.py`, el formato nuevo en la caja y en el libro para las letras A, B y C.
+
+### Para los productos
+
+- Nada que cambiar en el código. Al subir el pin, correr la migración (`libracore-migrar upgrade`) con backup. Quien tenga un test que fije `Factura Factura …` (se buscó con `git grep` en los diez repos: ninguno) lo actualiza.
+
 ## [Unreleased] — Registro de errores propio: `libracore.errores` y las variables que identifican a cada instancia (propuesta: v1.159.0)
 
 ADR-045. **Sin migración y sin cambio de schema.** Un 500 iba al stdout de uvicorn y se perdía en cada recreate del contenedor. Ahora cada error queda como una línea JSON en `DATA_DIR/errores/errores.jsonl`, con un `ref` que el usuario puede dictar, sin datos personales ni secretos. Guía completa: `docs/errores.md`.

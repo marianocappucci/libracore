@@ -1058,19 +1058,19 @@ def build_comprobantes_router(
         if payload.condicion_venta == "Cuenta Corriente":
             pv_str = str(payload.punto_venta).zfill(4)
             num_str = str(numero).zfill(8)
-            # ⚠️ **El `concepto` dice "Factura" dos veces** —queda
-            # `"Factura Factura C 0001-00000001 — Juan"`— porque la etiqueta ya
-            # trae la palabra. Está **preservado a propósito**: es el texto que
-            # hoy tienen los movimientos de cuenta corriente de Contalibra y
-            # Restolibra, y la extracción no puede cambiar lo que se escribe en
-            # la base. Arreglarlo es una decisión aparte, y hay que decidir
-            # también qué pasa con las filas viejas: si se corrige sólo de acá
-            # en adelante, el extracto de un cliente muestra los dos formatos.
+            # 🔑 **La etiqueta ya dice qué es** (`TIPO_LABEL` = `tipos_cbte.NOMBRE`:
+            # «Factura C»), así que el concepto no le antepone «Factura»: queda
+            # `"Factura C 0001-00000001 — Juan"`. Antes de la v1.161.0 decía
+            # «Factura Factura C …» (venía de las copias de Contalibra y Restolibra y se
+            # preservó tal cual al extraer el módulo); la migración `0025` corrigió las
+            # filas viejas de `caja_movimientos` y de `cc_asientos` (ADR-047). El libro
+            # copia este texto al asentar (`_esperado` de `libro_de_clientes`), así que
+            # sale bien sin tocarlo.
             tipo_label = TIPO_LABEL.get(payload.tipo, "Factura")
             db_caja.create_caja_movimiento(
                 fecha=payload.fecha, tipo="ingreso",
                 concepto=(
-                    f"Factura {tipo_label} {pv_str}-{num_str} — "
+                    f"{tipo_label} {pv_str}-{num_str} — "
                     f"{cliente['client_name']}"
                 ),
                 monto=totales["total"], referencia="", factura_id=factura_id,

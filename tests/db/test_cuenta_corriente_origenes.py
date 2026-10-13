@@ -207,7 +207,7 @@ def test_el_cuit_con_guiones_del_cliente_matchea_la_factura_sin_guiones(conn):
     )
     conn.execute(
         """INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago, factura_id)
-           VALUES ('2026-08-28', 'ingreso', 'Factura Factura C 0005-00000074', 920000.0,
+           VALUES ('2026-08-28', 'ingreso', 'Factura C 0005-00000074', 920000.0,
                    'Cuenta Corriente', 1)"""
     )
     conn.commit()
