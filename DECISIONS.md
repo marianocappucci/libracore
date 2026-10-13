@@ -1045,3 +1045,18 @@ Detalle en `docs/fce.md`.
   - Una instancia vieja (libracore anterior) no expone `/api/adicionales`: el backoffice cae a `docker exec` para los sí/no y marca las cantidades como «hay que actualizar la instancia».
   - Un módulo no puede estar a la vez en un plan y en un adicional (`ValueError` al primer uso del catálogo): un plan lo prendería o apagaría solo.
   - Fuera de alcance: facturar el abono, fijar precios (todo `None` = a cotizar salvo la sucursal de VentaLibra), y los avisos al cliente al acercarse al tope.
+
+
+## ADR-049 — La nota de débito por importe es del motor (`libracore.notas_de_debito`), igual que la de crédito
+
+- Estado: aceptada
+- Fecha: 2026-10-13
+- Contexto: LibraCargo pasa a facturar directo por ARCA y suma la nota de débito desde una factura, con motivo e importe (decisión del humano, 2026-10-13). El motor ya tenía una nota de débito, pero dentro de `facturas_router._crear_nota`: privada, atada a la tabla `facturas` y **sin importe** —copia la factura entera con el prefijo «Referencia»—, mientras que la nota de crédito tiene un núcleo reutilizable (`notas_de_credito`, ADR-014) con costuras para cualquier modelo de datos. Regla del 2026-10-03: el arreglo de fondo vive en el motor; el producto no escribe su propia versión.
+- Qué ya existía (se miró antes): `TIPO_ND` y `ND` en `tipos_comprobante`, `armar_nota` / `repartir_importe` / el candado `una_nota_a_la_vez` / `NotaEmitida` en `notas_de_credito`, `arca_wsfe.problema_del_receptor` (ya conoce `tipos.ND`) y `_opcionales_fce` (ya manda la marca de anulación a toda nota de FCE, ND incluida), `POST /{id}/nota-debito` del router (copia total), `libra-ui` `FacturaDetalle` (llama a esa ruta sin cuerpo). No existía una emisión de débito por importe ni con costuras.
+- Decisión:
+  1. **`libracore.notas_de_debito`** reutiliza el núcleo de la de crédito: mismas costuras (`numerar`, `registrar`, `pedir_cae`, `cargar_previas`), mismo orden, mismo candado con `conn`.
+  2. **Va siempre por un importe, sin tope.** Una nota de crédito acredita parte de una factura y por eso tiene saldo; una de débito agrega plata y no está acotada por la factura. Por eso no hay «nota total», ni `SUPERA_SALDO`, ni «una sola vez».
+  3. **El original tiene que tener CAE** (`ORIGINAL_SIN_CAE`): ARCA exige el comprobante asociado, y asociar uno que no conoce se descubre después de tomar el número. La de crédito no lo chequea en el motor (cada producto lo hace); la de débito lo trae adentro.
+  4. **Aditivo en `notas_de_credito`**: `importe_valido` (extraído), `armar_nota(leyenda=, por_importe=)` y `una_nota_a_la_vez(clase=)`. La nota de crédito no cambia.
+  5. **No se toca la ruta del router de facturas.** Sigue copiando la factura entera para Contalibra, Restolibra y LibraClub; migrarla es otra decisión (cambia lo que emiten tres productos).
+- Consecuencias: MINOR (propuesta v1.163.0), **sin migración**. Sin medir contra ARCA de homologación: el armado es el de la nota de crédito parcial (medida) con los tipos `2/7/12` y `202/207/212`; falta confirmar con un ensayo que ARCA acepta la marca `N` en la nota de débito de una FCE. Un producto que la consuma pasa una `clave` propia y traduce `NotaNoPermitida.codigo` a HTTP.
