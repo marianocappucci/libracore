@@ -13,6 +13,8 @@ un test verde podría estar verde porque los pedidos no se repartieron entre los
 
 Se saltea sin `LIBRACORE_POSTGRES_URL`. Tarda unos 10 s (cada servidor son ~2 s de arranque).
 """
+import time
+
 import pytest
 
 from libracore.testing import app_varios_procesos as banco
@@ -82,10 +84,20 @@ def test_contraprueba_sin_conn_cada_proceso_emite_la_suya(url):
 
 def test_el_arranque_con_una_vez_al_arrancar_deja_una_sola_fila_y_los_dos_workers_vivos(url):
     with servidor(APP, workers=2, env={"PROCESOS_DB": url}) as base:
-        assert pedir(f"{base}/semilla")[1]["filas"] == 1
+        # Primero que los dos workers contesten (o sea, que los dos terminaron su arranque) y recién ahí contar: si
+        # no, la cuenta podría leerse antes de que el segundo corra su hook y el 1 saldría por la razón equivocada.
         assert len(pids_vistos(base)) == 2
+        assert pedir(f"{base}/semilla")[1]["filas"] == 1
 
 
 def test_contraprueba_el_mismo_arranque_sin_candado_siembra_dos_veces(url):
     with servidor(APP, workers=2, env={"PROCESOS_DB": url, "PROCESOS_SIN_CANDADOS": "2"}) as base:
-        assert pedir(f"{base}/semilla")[1]["filas"] == 2
+        # `servidor` vuelve cuando contesta el PRIMER worker, y el segundo puede estar todavía escribiendo su fila
+        # (los dos pasaron la cita, pero el commit del otro llega un instante después). Se espera a que aparezca,
+        # con tope: si nunca llega a 2, el duplicado no ocurrió y la contraprueba falla igual.
+        limite = time.monotonic() + 10
+        filas = pedir(f"{base}/semilla")[1]["filas"]
+        while filas < 2 and time.monotonic() < limite:
+            time.sleep(0.1)
+            filas = pedir(f"{base}/semilla")[1]["filas"]
+        assert filas == 2
