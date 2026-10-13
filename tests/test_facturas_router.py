@@ -28,9 +28,9 @@ USUARIO = {"id": 1, "username": "admin", "nombre": "Administrador"}
 
 
 def _montar(tmp_path, monkeypatch, *, al_emitir=None, registrar_cobro=None, dev=True,
-            smtp_config=None):
-    """Una app con el router montado, como lo haría un producto."""
-    core.configure(db_path=str(tmp_path / "comprobantes.db"))
+            smtp_config=None, db_path=None):
+    """Una app con el router montado, como lo haría un producto. `db_path`: otra base (una URL PostgreSQL)."""
+    core.configure(db_path=db_path or str(tmp_path / "comprobantes.db"))
     conn = core.get_connection()
     init_core_schema(conn)
     # 🔑 `facturas.usuario_id` es una FK **real** y la base la hace cumplir, así
@@ -406,6 +406,59 @@ def test_dos_pedidos_simultaneos_emiten_una_sola_nota(client, monkeypatch):
     assert "en curso" in next(r for r in resultados if r.status_code == 409).json()["detail"]
     detalle = client.get(f"{API}/{original['id']}").json()
     assert len(detalle["notas_credito"]) == 1
+
+
+def test_con_postgres_el_segundo_pedido_lo_frena_la_base_aunque_no_se_vea_en_memoria(
+        tmp_path, monkeypatch, bases):
+    """🔴 Varios workers: el segundo pedido cae en **otro proceso**, que no tiene nada en `_EN_CURSO`.
+
+    Se simula dejando la guarda en memoria ciega (no ve nada, no anota nada): lo único que queda para frenar al
+    segundo es el candado de la base, que el router toma en una conexión aparte durante toda la emisión.
+    """
+    import asyncio
+    import threading
+
+    class Ciega(set):
+        def __contains__(self, _):
+            return False
+
+        def add(self, _):
+            pass
+
+        def discard(self, _):
+            pass
+
+    client = _montar(tmp_path, monkeypatch, db_path=bases.nueva())
+    original = _emitir(client)
+    real = fr.get_next_numero_with_arca
+    entro = threading.Event()
+
+    async def lenta(*args, **kwargs):
+        entro.set()
+        await asyncio.sleep(0.5)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(fr, "get_next_numero_with_arca", lenta)
+    monkeypatch.setattr(notas_de_credito, "_EN_CURSO", Ciega())
+    resultados = []
+
+    def pedir():
+        resultados.append(client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN))
+
+    primero = threading.Thread(target=pedir)
+    primero.start()
+    assert entro.wait(5), "el primer pedido nunca llegó a emitir"
+    segundo = threading.Thread(target=pedir)
+    segundo.start()
+    primero.join()
+    segundo.join()
+
+    assert sorted(r.status_code for r in resultados) == [200, 409]
+    assert "en curso" in next(r for r in resultados if r.status_code == 409).json()["detail"]
+    assert len(client.get(f"{API}/{original['id']}").json()["notas_credito"]) == 1
+    # Terminada la emisión, la base soltó el candado: la factura ya tiene su nota y el rechazo ahora es otro.
+    otra = client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
+    assert otra.status_code == 409 and "en curso" not in otra.json()["detail"]
 
 
 def test_si_la_emision_de_la_nota_falla_el_candado_se_libera(client, monkeypatch):

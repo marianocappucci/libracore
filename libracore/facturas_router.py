@@ -49,6 +49,7 @@ tolerable.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import logging
 import os
@@ -77,6 +78,7 @@ from libracore.cuit import solo_digitos
 from libracore.db import arca_config as db_arca
 from libracore.db import caja as db_caja
 from libracore.db import clients as db_clients
+from libracore.db import core as db_core
 from libracore.db import cuenta_corriente as db_cc
 from libracore.db import facturas as db_facturas
 from libracore.emisor_del_pdf import emisor_para
@@ -639,14 +641,21 @@ async def _emitir_nota_de_credito(
         db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db, resolvedor=emisor_del_pdf))
         return nota_id
 
-    emitida = await notas_de_credito.emitir_nota_de_credito(
-        orig,
-        clave=("facturas", orig["id"]),
-        cargar_previas=lambda: db_facturas.get_nc_de_factura(
-            orig["tipo"], orig["punto_venta"], orig["numero"],
-            emisor_id=emisor_id, ambiente=orig.get("ambiente")),
-        numerar=numerar, registrar=registrar, pedir_cae=pedir_cae, importe=importe,
-    )
+    # 🔴 Con varios procesos por instancia la guarda «una nota a la vez» tiene que verse entre procesos: el candado
+    # de la base va en una conexión **aparte**, abierta durante toda la emisión y sin escribir nada (los `db_facturas`
+    # abren y cierran la suya en cada llamada, y el candado de transacción muere con ella). Se cierra al terminar,
+    # con la nota ya confirmada. SQLite (tests, nodos sueltos): sólo el candado del proceso, como antes.
+    candado = contextlib.closing(db_core.get_connection()) if db_core.is_postgres() else contextlib.nullcontext()
+    with candado as conn_del_candado:
+        emitida = await notas_de_credito.emitir_nota_de_credito(
+            orig,
+            clave=("facturas", orig["id"]),
+            cargar_previas=lambda: db_facturas.get_nc_de_factura(
+                orig["tipo"], orig["punto_venta"], orig["numero"],
+                emisor_id=emisor_id, ambiente=orig.get("ambiente")),
+            numerar=numerar, registrar=registrar, pedir_cae=pedir_cae, importe=importe,
+            conn=conn_del_candado,
+        )
     return emitida.registro
 
 

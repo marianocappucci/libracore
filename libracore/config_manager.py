@@ -36,6 +36,8 @@ devolviendo el secreto en claro bajo la misma clave; lo unico que cambia es de
 donde sale. Ver `CLAVES_SECRETAS` y `migrar_secretos_al_almacen()`."""
 import json
 import os
+import stat
+import tempfile
 
 _DATA_DIR   = os.environ.get("DATA_DIR", os.getcwd())
 CONFIG_PATH = os.path.join(_DATA_DIR, "config.json")
@@ -246,6 +248,36 @@ def load(extra_defaults: dict | None = None):
     return _aplicar_empresa_demo(cfg)
 
 
+def _escribir_atomico(ruta: str, datos: dict) -> None:
+    """Escribe `datos` como JSON en `ruta` **sin que nadie vea el archivo a medio escribir**.
+
+    🔴 Antes era `open(ruta, "w")` + `json.dump`: el `open` trunca el archivo, y entre ese instante y el último byte
+    cualquier `load()` lo lee vacío o cortado —`load()` atrapa el `JSONDecodeError` y devuelve los **defaults**, o sea que
+    otro proceso trabajaba un rato con la config de fábrica sin avisar—. Con un solo proceso el hueco existía igual (el
+    threadpool), pero con varios workers de uvicorn es un lector real. Se escribe un temporal **en el mismo directorio**
+    (el `os.replace` sólo es atómico dentro de un mismo filesystem), se hace `fsync` y se lo pone en su lugar. Conserva
+    los permisos del archivo que reemplaza (`mkstemp` crea `0600`).
+    """
+    try:
+        modo = stat.S_IMODE(os.stat(ruta).st_mode)
+    except OSError:
+        modo = 0o644
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ruta) or ".", prefix=f".{os.path.basename(ruta)}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(datos, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, modo)
+        os.replace(tmp, ruta)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save(data, extra_defaults: dict | None = None):
     """Persiste la config. Los secretos van al almacen y **vacios al JSON**.
 
@@ -274,8 +306,7 @@ def save(data, extra_defaults: dict | None = None):
             if valor != _almacen.get(clave):
                 _almacen.set(clave, valor)
             merged[clave] = ""
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
+    _escribir_atomico(CONFIG_PATH, merged)
 
 
 def migrar_secretos_al_almacen() -> dict:
@@ -342,8 +373,7 @@ def migrar_secretos_al_almacen() -> dict:
         # contra DEFAULTS, y toda clave propia del producto que no este ahi
         # volveria a su valor por defecto. Ese merge ya borro el token de
         # MercadoPago una vez (ver el docstring de `mp_config_router`).
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(crudo, f, ensure_ascii=False, indent=2)
+        _escribir_atomico(CONFIG_PATH, crudo)
 
     return informe
 

@@ -296,8 +296,21 @@ def vigilar_pools() -> None:
     que la request lo note. Las conexiones abiertas despues del restore no
     pagan nada: la comparacion es un entero.
 
-    Alcanza a **este proceso**. Con varios workers de uvicorn, los otros no se
-    enteran del restore; hoy los productos corren con uno.
+    🔴 Alcanza a **este proceso** (`_generacion` es una variable del modulo). Con
+    varios workers de uvicorn (`--workers N`), los otros no se enteran del
+    restore: sus pools siguen con conexiones que el intercambio mato. Dos reglas,
+    y ninguna es una senal (SIGHUP no sirve: uvicorn no recarga el codigo ni
+    reabre nada con ella):
+
+    1. **Con mas de un worker, despues de un restore en caliente se reinicia el
+       contenedor** (`docker compose restart <servicio>`). Es lo que cierra el
+       hueco de verdad: los workers nuevos arrancan con pools y caches limpios.
+    2. **Los engines del producto llevan `pool_pre_ping=True`.** Es la red de
+       abajo: el pool prueba la conexion al sacarla y descarta la muerta en
+       lugar de entregarla, de modo que el worker que no se entero se recupera
+       solo en vez de dar 500 hasta el reinicio. (El motor no crea engines de
+       aplicacion; el unico que arma, `migrations/env.py`, usa `NullPool`, que no
+       retiene conexiones.) Ver `docs/varios-procesos.md`.
 
     Si SQLAlchemy no esta instalado no hay pools que cuidar.
     """

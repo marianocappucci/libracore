@@ -550,6 +550,11 @@ def restaurar(
     con conexiones a una base que cambio de nombre. El producto pasa lo que
     corresponda a su capa de datos — `engine.dispose` en los que usan
     SQLAlchemy.
+
+    🔴 **Con varios workers de uvicorn eso alcanza sólo al proceso que atendió el
+    restore.** Los otros siguen con sus pools y sus caches: hay que reiniciar el
+    contenedor después de un restore en caliente. Ver `respaldo_postgres.vigilar_pools`
+    y `docs/varios-procesos.md`.
     """
     contenido = origen if isinstance(origen, (bytes, bytearray)) else Path(origen).read_bytes()
     z = _validar(bytes(contenido), instancia)
