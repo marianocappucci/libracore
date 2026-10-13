@@ -171,3 +171,30 @@ def test_api_clientes_publicos_con_secret_devuelve_clientes(templates_dir, fake_
     r = client.get("/api/clientes-publicos", headers={"x-internal-auth": "shared-secret"})
     assert r.status_code == 200
     assert r.json()["clientes"] == [{"slug": "demo1", "nombre": "Demo Uno", "domain": "demo1.test"}]
+
+
+# ── Registro de errores (ADR-045) ────────────────────────────────────────────
+
+def test_un_500_del_backoffice_queda_registrado(app, tmp_path, monkeypatch):
+    """Los 8 backoffices salen de `create_admin_app`: instalar el registro acá los cubre a todos."""
+    import json
+
+    from libracore import errores
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(errores, "_manejadores", {})
+
+    @app.get("/boom")
+    def boom():
+        raise RuntimeError("se rompió")
+
+    r = TestClient(app, raise_server_exceptions=False).get("/boom")
+
+    assert r.status_code == 500 and r.json()["detail"] == "Error interno"
+    (ev,) = [json.loads(x) for x in (tmp_path / "errores" / "errores.jsonl").read_text().splitlines()]
+    assert ev["producto"] == "testproduct-admin"
+    assert ev["ref"] == r.json()["ref"]
+
+
+def test_el_backoffice_no_expone_el_endpoint_del_navegador(client):
+    assert client.post("/api/errores-cliente", json={"mensaje": "x"}).status_code in (404, 405)

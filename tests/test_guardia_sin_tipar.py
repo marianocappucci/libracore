@@ -368,6 +368,9 @@ CONOCIDOS_DEL_MOTOR = [
     ("POST /webhooks/mercadopago", "request", "request-sin-cuerpo-tipado"),
     # Declara `Request` sólo para armar la URL de vuelta del enlace OAuth (`_redirect_uri`): no lee ningún cuerpo. Falso positivo conocido.
     ("POST /api/config/resguardo-externo/enlace/{proveedor}", "request", "request-sin-cuerpo-tipado"),
+    # El reporte de errores del navegador (ADR-045) lee el cuerpo a mano y a propósito: es público, y lo único que lo defiende es poder rechazar por tamaño (4 KB) y por forma ANTES de que
+    # nadie lo interprete. Con un modelo tipado FastAPI lo parsearía entero primero. Nunca 500; de lo recibido se guardan campos fijos, limpios, no el JSON.
+    ("POST /api/errores-cliente", "request", "request-sin-cuerpo-tipado"),
 ]
 
 
@@ -378,8 +381,8 @@ def test_los_cuerpos_sin_tipar_del_motor_son_los_conocidos(tmp_path):
 
 
 def test_ignorar_los_conocidos_deja_la_app_del_motor_en_blanco(tmp_path):
-    """La otra forma de usarla: `ignorar` con los conocidos y un `== []`. Las dos mitades: sin `ignorar` hay siete, con él ninguno."""
+    """La otra forma de usarla: `ignorar` con los conocidos y un `== []`. Las dos mitades: sin `ignorar` hay ocho, con él ninguno."""
     app = _app_del_motor(tmp_path)
-    assert len(cuerpos_sin_tipar(app)) == len(CONOCIDOS_DEL_MOTOR) == 7
+    assert len(cuerpos_sin_tipar(app)) == len(CONOCIDOS_DEL_MOTOR) == 8
     assert cuerpos_sin_tipar(app, ignorar={(sitio, campo) for sitio, campo, _ in CONOCIDOS_DEL_MOTOR}) == []
 

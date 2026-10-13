@@ -7,6 +7,26 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Registro de errores propio: `libracore.errores` y las variables que identifican a cada instancia (propuesta: v1.159.0)
+
+ADR-045. **Sin migración y sin cambio de schema.** Un 500 iba al stdout de uvicorn y se perdía en cada recreate del contenedor. Ahora cada error queda como una línea JSON en `DATA_DIR/errores/errores.jsonl`, con un `ref` que el usuario puede dictar, sin datos personales ni secretos. Guía completa: `docs/errores.md`.
+
+- **`libracore.errores` (nuevo)**: `instalar_registro_de_errores(app, producto, *, usuario_id=None, endpoint_cliente=True)` (una línea por producto), `capturar(exc, *, request=None, status=None, usuario_id=None, tags=None, **contexto) -> ref` (fallas manejadas; nunca lanza), `build_errores_cliente_router(producto=None)` (`POST /api/errores-cliente`, se monta solo con la línea de arriba), y `limpiar_texto` / `limpiar_query`.
+- **El handler de `Exception`** responde `500 {"detail": "Error interno", "ref": "<8 hex>"}` y registra. **No** registra `HTTPException`, `RequestValidationError` ni `ClientDisconnect`. Uvicorn sigue escribiendo el traceback en su stdout.
+- **Evento**: `ts` (UTC-3), `producto`, `instancia`, `entorno`, `release`, `metodo`, `ruta` (la plantilla `/api/clientes/{cid}`, no la URL), `status`, `tipo`, `mensaje`, `traceback`, `donde` (`archivo:función`), `firma` (sha1 de tipo + ruta + `archivo:función` del frame propio más profundo, sin números de línea), `ref`, `usuario_id`, `query`, `user_agent`. Rotación 5 MB × 3. Si no puede escribir, la línea va al stdout y la respuesta sale igual.
+- 🔴 **Limpieza por lista negra, en el origen**: nunca body, cookies, `Authorization` ni cabeceras salvo `user-agent`; query con `token|password|clave|secret|cuit|cert|key|dni|cbu…` en `***`; CUIT/DNI (7 a 11 dígitos), mails, PEM, `usuario:clave@`, JWT, el `DETAIL: Key (…)=(…)` de psycopg y los `[parameters: …]` de SQLAlchemy enmascarados; sin variables locales; 8 KB. Lo que no está en la lista pasa.
+- **`POST /api/errores-cliente`** (público a propósito): mismo origen, ≤ 4 KB, 20 pedidos / 10 min por IP y 300 / hora global en memoria, la misma limpieza, `origen: "cliente"`.
+- **`create_admin_app` lo instala** (sin el endpoint del navegador): los 8 backoffices registran sus 500 como `<producto>-admin`.
+- **`provisioning.errores_env` (nuevo)**: el alta escribe `LIBRA_INSTANCIA`, `LIBRA_ENTORNO` (`demo` para el slug `demo`, `cliente` para el resto) y `LIBRA_VERSION` en el compose, y `pinear_image` las mantiene en cada `actualizar`, `rollback` y repineo, de forma idempotente y sin pisar un `LIBRA_ENTORNO` fijado a mano. **La versión es el tag pineado**: ningún producto toca su Dockerfile. Un compose sin `environment:` en lista sólo cambia la imagen.
+- **`respaldo.CARPETAS_FUERA_DEL_ZIP`** (`backups`, `errores`): `data/errores/` no entra al ZIP del respaldo.
+- Tests: `tests/test_errores.py` (500 + ref + línea, 4xx sin registrar, limpieza, firma estable ante un cambio de línea, disco que no escribe, rotación, topes del endpoint), `tests/provisioning/test_errores_env.py` (alta, pin idempotente, sidecar primero, compose irreconocible) y casos en `tests/admin/test_app.py` y `tests/test_respaldo.py`.
+
+### Para los productos
+
+- Backend: `instalar_registro_de_errores(app, "<producto>")` junto al `SecurityHeadersMiddleware`. Un test de humo: una ruta que lanza ⇒ 500 con `ref` y una línea en `DATA_DIR/errores/errores.jsonl`.
+- Compose de `-dev`: `LIBRA_ENTORNO=dev`, `LIBRA_INSTANCIA=<producto>-dev`, `LIBRA_VERSION=${LIBRA_VERSION:-dev}`. Las instancias de cliente y demo las reciben del panel en su próximo `actualizar`.
+- Frontend (con el `libra-ui` que traiga `ErrorBoundary` e `instalarReporteDeErrores`): el wrap en `main.tsx`.
+
 ## [Unreleased] — El motor queda listo para varios procesos por instancia (propuesta: v1.158.0)
 
 ADR-044. **Sin migración y sin cambio de schema; todo opt-in.** Ningún producto corre con más de un worker todavía, pero el motor ya no se rompe cuando lo haga.

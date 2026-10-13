@@ -331,3 +331,13 @@ def test_los_sidecar_del_wal_viejo_no_sobreviven_al_restore(instancia, tmp_path)
     restaurar_backup(instancia, contenido, tmp_path / "backups")
 
     assert not wal.exists()
+
+
+def test_la_carpeta_de_errores_no_entra_al_zip(tmp_path):
+    """`errores/` (ADR-045) es un registro de operación de hasta 20 MB: no son datos del cliente."""
+    from libracore.respaldo import directorios_de_datos
+
+    datos = tmp_path / "data"
+    for nombre in ("logos", "arca_certs", "backups", "errores"):
+        (datos / nombre).mkdir(parents=True)
+    assert [d.name for d in directorios_de_datos(datos)] == ["arca_certs", "logos"]
