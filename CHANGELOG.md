@@ -7,6 +7,21 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El motor queda listo para varios procesos por instancia (propuesta: v1.158.0)
+
+ADR-044. **Sin migración y sin cambio de schema; todo opt-in.** Ningún producto corre con más de un worker todavía, pero el motor ya no se rompe cuando lo haga.
+
+- **`libracore.candados` (nuevo)**: `candado_de_base(conn, nombre)` (no bloqueante, entrega `True`/`False`; PostgreSQL `pg_try_advisory_xact_lock`, SQLite `flock` en `DATA_DIR`, sin `conn` un candado del proceso) y `una_vez_al_arrancar(nombre, *, destino=None, espera=120)` (bloqueante, conexión propia, `pg_try_advisory_lock`; serializa un hook de arranque entre workers: el segundo espera y ve lo que dejó el primero). 🔴 El candado de PostgreSQL dura **hasta que termina la transacción de `conn`**.
+- **`notas_de_credito.una_nota_a_la_vez(clave, conn=None)` y `emitir_nota_de_credito(..., conn=None)`**: con `conn`, además del candado en memoria, un candado de la base. Con N workers, 20 pedidos simultáneos de nota para la misma factura emiten **1**, no una por proceso. Sin `conn` no cambia nada. El router de facturas del motor lo pasa solo (conexión aparte, sólo en PostgreSQL). Los docstrings que decían «alcanza porque un solo proceso» se corrigieron.
+- **`config_manager`**: `save()` y la limpieza de `migrar_secretos_al_almacen()` escriben de forma atómica (temporal + `fsync` + `os.replace`, con los permisos del archivo). Antes un lector veía el `config.json` vacío mientras otro lo escribía, y `load()` devolvía los defaults sin avisar.
+- **Restore en caliente**: `respaldo_postgres.vigilar_pools` y `respaldo.restaurar` documentan que con más de un worker hay que reiniciar el contenedor tras el restore; los engines del producto llevan `pool_pre_ping=True`. El motor no crea engines de aplicación.
+- **`libracore.testing.varios_procesos` y `libracore.testing.app_varios_procesos`**: levantan `uvicorn --workers 2` de verdad contra PostgreSQL; los usa `tests/test_varios_procesos.py` (marca `varios_procesos`, ~15 s) y los puede usar el test de un producto. `uvicorn>=0.30` entra al extra `dev`.
+- Docs: `docs/varios-procesos.md`.
+
+### Para los productos
+
+- Envolver los hooks de arranque («si no existe, crear») en `una_vez_al_arrancar("<nombre>")`; pasar `conn=` a la nota de crédito con la conexión de su transacción (y no hacer `commit`/`rollback` hasta terminar); `UsadosEnBase` del captcha de `libraauth` (v0.50.0, migración `0003`); `pool_pre_ping=True` en sus engines; `--workers ${WEB_CONCURRENCY:-1}` en el compose, con `uvicorn>=0.30`.
+
 ## [Unreleased] — La auditoría de escrituras vive en el motor: `libracore.auditoria` y el CRUD de clientes que la emite (propuesta: v1.156.0)
 
 ADR-043. **Sin migración y sin cambio de schema.** El motor no dejaba rastro de quién creaba, editaba o borraba un cliente, y LibraDesk no podía adoptar `db/clients.py` sin perder el log de `libraauth`. Ahora hay una costura y las escrituras de `clients` la usan.

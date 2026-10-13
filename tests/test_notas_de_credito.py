@@ -148,6 +148,53 @@ def test_el_candado_es_por_comprobante():
         assert e.value.codigo == NotaNoPermitida.EN_CURSO
 
 
+def test_con_sqlite_el_candado_de_la_base_no_cambia_lo_de_siempre(tmp_path, monkeypatch):
+    """`conn` de SQLite: la guarda de proceso de antes, más un `flock` en `DATA_DIR` que no se nota."""
+    import sqlite3
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    conn = sqlite3.connect(":memory:")
+    with nc.una_nota_a_la_vez("k1", conn):
+        with pytest.raises(NotaNoPermitida) as e, nc.una_nota_a_la_vez("k1", conn):
+            pass
+        assert e.value.codigo == NotaNoPermitida.EN_CURSO
+    assert not nc.en_curso("k1")
+    with nc.una_nota_a_la_vez("k1", conn):
+        pass
+
+
+def test_con_postgres_dos_procesos_no_emiten_la_misma_nota(bases):
+    """Lo que la guarda en memoria no ve: el otro pedido llega a **otro proceso**.
+
+    Se simula con dos conexiones y vaciando el conjunto en memoria entre un pedido y el otro, que es exactamente
+    lo que ve un segundo worker: su `_EN_CURSO` está vacío. Sólo el candado de la base lo frena, y lo frena
+    mientras la transacción del primero siga abierta (hasta el `commit`).
+    """
+    from libracore.db import core
+
+    url = bases.nueva()
+    primero, segundo = core.conectar(url), core.conectar(url)
+    try:
+        with nc.una_nota_a_la_vez("k1", primero):
+            nc._EN_CURSO.clear()                      # «el otro worker»: no tiene nada en memoria
+            with pytest.raises(NotaNoPermitida) as e, nc.una_nota_a_la_vez("k1", segundo):
+                pass
+            assert e.value.codigo == NotaNoPermitida.EN_CURSO
+        assert not nc.en_curso("k1")
+        # Salió el `with`, pero el primero todavía no hizo `commit`: sigue en curso para el otro proceso.
+        with pytest.raises(NotaNoPermitida), nc.una_nota_a_la_vez("k1", segundo):
+            pass
+        primero.commit()
+        with nc.una_nota_a_la_vez("k1", segundo):
+            pass
+        # Otro comprobante no se entera.
+        with nc.una_nota_a_la_vez("k2", primero), nc.una_nota_a_la_vez("k3", segundo):
+            pass
+    finally:
+        primero.close()
+        segundo.close()
+
+
 # ── El orden de las operaciones, con un producto que NO es el router del motor ──
 
 class ProductoDePrueba:

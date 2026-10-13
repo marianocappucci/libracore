@@ -40,6 +40,7 @@ from typing import Any
 
 from libracore import arca_wsfe
 from libracore import tipos_comprobante as tipos
+from libracore.candados import candado_de_base
 
 #: De qué factura sale qué nota de crédito. La letra se conserva y también si es FCE.
 TIPO_NC = tipos.TIPO_NC
@@ -93,38 +94,66 @@ _EN_CURSO_LOCK = threading.Lock()
 
 
 def en_curso(clave: Any) -> bool:
-    """¿Hay una nota en camino para esta clave? (Lo usan los tests.)"""
+    """¿Hay una nota en camino para esta clave **en este proceso**? (Lo usan los tests.)"""
     with _EN_CURSO_LOCK:
         return clave in _EN_CURSO
 
 
+def _nombre_del_candado(clave: Any) -> str:
+    return f"nota-de-credito:{clave!r}"
+
+
 @contextlib.contextmanager
-def una_nota_a_la_vez(clave: Any):
+def una_nota_a_la_vez(clave: Any, conn: Any = None):
     """Un solo pedido de nota de crédito por comprobante a la vez.
 
     🔴 **Sin esto la consulta «¿ya tiene una nota?» no alcanza**: dos pedidos que llegan juntos —un doble
     clic, o dos admins— la contestan los dos antes de que ninguno haya creado la nota, y los dos emiten. La nota
     tarda: pide número a ARCA, crea la fila y pide el CAE.
 
-    Alcanza con un candado **en memoria** porque el motor corre con un solo proceso por instancia (`uvicorn` sin
-    `--workers`). Una restricción única en la base sería más fuerte, pero una base con duplicados históricos no
-    podría crearla, y esta guarda no puede fallar el arranque de un producto en producción.
+    **Dos capas, porque el motor puede correr con varios procesos por instancia (`uvicorn --workers N`):**
+
+    1. Un candado **en memoria**, siempre: frena a los pedidos del mismo proceso sin ir a la base.
+    2. Con `conn`, un **candado de la base** (`libracore.candados.candado_de_base`): frena a los de los otros
+       procesos. Sin esta capa, con N workers un doble clic cae en dos procesos distintos y **emite dos notas ante
+       ARCA** —la guarda en memoria no los ve—. Sin `conn` (o con SQLite) queda sólo la primera capa, que es lo
+       que había con un solo proceso.
+
+    `conn` es la conexión **de la transacción donde el producto escribe la nota** (la de `libracore.db`, `psycopg` o
+    una `Session` de SQLAlchemy). 🔴 En PostgreSQL el candado dura **hasta que esa transacción termina**: el
+    producto no hace `commit` ni `rollback` de `conn` hasta que la nota esté emitida, y como el candado se suelta
+    con el `commit`, el pedido siguiente ya encuentra la nota que dejó este. Si el producto escribe con otras
+    conexiones (los `db_*` del motor abren y cierran la suya en cada llamada), le pasa **una conexión aparte, abierta
+    durante toda la emisión** y sin escribir nada: el candado es su única función.
+
+    Una restricción única en la base sería más fuerte, pero una base con duplicados históricos no podría crearla, y
+    esta guarda no puede fallar el arranque de un producto en producción.
 
     `clave` es lo que identifica al comprobante **en ese producto** (su id, o una tupla si hace falta distinguir
     tablas); el motor no le da otro significado.
     """
     with _EN_CURSO_LOCK:
         if clave in _EN_CURSO:
-            raise NotaNoPermitida(
-                "Ya hay una nota de crédito en curso para esta factura: esperá a que termine antes de pedir otra.",
-                NotaNoPermitida.EN_CURSO,
-            )
+            raise _en_curso_error()
         _EN_CURSO.add(clave)
     try:
-        yield
+        if conn is None:
+            yield
+            return
+        with candado_de_base(conn, _nombre_del_candado(clave)) as obtenido:
+            if not obtenido:
+                raise _en_curso_error()
+            yield
     finally:
         with _EN_CURSO_LOCK:
             _EN_CURSO.discard(clave)
+
+
+def _en_curso_error() -> NotaNoPermitida:
+    return NotaNoPermitida(
+        "Ya hay una nota de crédito en curso para esta factura: esperá a que termine antes de pedir otra.",
+        NotaNoPermitida.EN_CURSO,
+    )
 
 
 # ── El dinero de una nota ──────────────────────────────────────────────────
@@ -355,6 +384,7 @@ async def emitir_nota_de_credito(
     prefijo: str = "Anula",
     motivo: str = "",
     importe: Any = None,
+    conn: Any = None,
 ) -> NotaEmitida:
     """Emite la nota de crédito de un comprobante: **total** (sin `importe`) o **parcial** (`importe`, con IVA). El orden
     y las guardas son los mismos en todos los productos.
@@ -372,9 +402,12 @@ async def emitir_nota_de_credito(
     Lo que pasa con lo suyo (las órdenes, la venta, la cuenta corriente) lo hace el producto **con el resultado**,
     después de que esto vuelva.
 
+    `conn` (opcional) es la conexión con la que se toma el candado de la base; sin ella, con varios procesos por
+    instancia, dos pedidos simultáneos pueden emitir dos notas. Ver `una_nota_a_la_vez`.
+
     Levanta `NotaNoPermitida` si la nota no corresponde, sin haberle pedido nada a ARCA.
     """
-    with una_nota_a_la_vez(clave):
+    with una_nota_a_la_vez(clave, conn):
         tipo_nota = validar_nota_de_credito(original, cargar_previas(), importe)
         nota = armar_nota(original, tipo_nota, hoy=hoy, prefijo=prefijo, motivo=motivo, importe=importe)
         numero, contexto = await _esperar(numerar(tipo_nota, original["punto_venta"]))

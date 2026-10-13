@@ -47,6 +47,10 @@ dev = [
     "ruff>=0.13",
     "pytest>=8.0",
     "httpx>=0.27",
+    # Solo para tests: `libracore.testing.varios_procesos` levanta `uvicorn --workers 2` de verdad para probar los
+    # candados entre procesos (tests/test_varios_procesos.py). El piso es el que se les pide a los productos para
+    # correr con `--workers` (0.30 reescribio el supervisor de workers).
+    "uvicorn>=0.30",
     # Solo para tests: asertar sobre el compose que genera el provisioning por
     # ESTRUCTURA y no por substring. `- datos` aparece en los dos servicios, asi
     # que un `assert "- datos" in texto` pasa igual con el sidecar colgado de la
@@ -102,6 +106,9 @@ markers = [
     # pytest la reporta como desconocida — y bajo `--strict-markers` el test se
     # caería: una marca que no existe no filtra nada.
     "las_cuatro: la base ya tiene las cuatro columnas de clients de la 0002",
+    # Levanta `uvicorn --workers 2` como subproceso contra PostgreSQL (unos 10 s). Se saltea sin
+    # LIBRACORE_POSTGRES_URL; en CI corre con el resto de la suite.
+    "varios_procesos: prueba contra uvicorn con varios workers y PostgreSQL de verdad",
 ]
 
 # === lint + coverage (agregado 2026-07-31) ===
