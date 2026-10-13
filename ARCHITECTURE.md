@@ -172,6 +172,8 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
 - **`respaldo.py`** / **`resguardo_estado.py`**: backup de la instancia.
 - **`config_manager.py`** + **`config_router.py`**, **`smtp_router.py`**:
   configuración de la instancia y SMTP, expuestos como router.
+- **`errores.py`**: registro de errores propio (ADR-045, `docs/errores.md`): handler de
+  `Exception`, `capturar`, `POST /api/errores-cliente`, limpieza de datos personales.
 - **`security_headers.py`**, **`modules_gate.py`** (gating de módulos por
   instancia, `db/modulos`), **`feriados.py`**, **`geografia.py`**,
   **`medios_pago.py`**, **`registro_de_clientes.py`**,

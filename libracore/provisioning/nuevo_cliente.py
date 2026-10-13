@@ -26,6 +26,7 @@ from . import (
     check_venv_sync,
     client_from_config,
     deploy_version,
+    errores_env,
     forward_host_from_config,
     get_config,
     le_email_from_config,
@@ -952,6 +953,10 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         # busca. `isinstance(..., dict)` y no una clave concreta porque el
         # cuerpo difiere entre productos: `{"status": "ok"}` en Contalibra y
         # Restolibra, `{"ok": true, "product": …}` en el resto.
+        # Con qué se identifica la instancia en su registro de errores (ADR-045). La versión es el
+        # tag pineado: `pinear_image` la mantiene en cada deploy y rollback.
+        errores_vars = errores_env.env_para_compose(slug, container, version)
+
         compose = f"""\
 name: {cfg.container_prefix}-{slug}
 
@@ -981,7 +986,7 @@ services:
       - ADMIN_PASSWORD={admin_password}
 {admin_env}      - ADMIN_NOMBRE={admin_nombre}
       - DOCS_AUTH_SECRET={cfg.docs_auth_secret}
-{token_env}{smtp_env}{pg_env}{service_net}{pg_service}{top_net}{pg_volume}"""
+{errores_vars}{token_env}{smtp_env}{pg_env}{service_net}{pg_service}{top_net}{pg_volume}"""
         (client_dir / "docker-compose.yml").write_text(compose)
 
         # — metadata del cliente —

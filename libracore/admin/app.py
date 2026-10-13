@@ -22,13 +22,22 @@ from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from libracore.errores import instalar_registro_de_errores
 from libracore.security_headers import SecurityHeadersMiddleware
+
+
+def _slug_del_producto(nombre: str) -> str:
+    """`"LibraCargo"` → `libracargo`, `"Libra Desk"` → `libra-desk`: el nombre con que se agrupan sus errores."""
+    return "-".join((nombre or "").lower().split()) or "producto"
 
 
 def create_admin_app(product_name: str, auth, services, templates, clientes_router,
                      static_dir: str | None = None) -> FastAPI:
     app = FastAPI(title=f"{product_name} Backoffice", docs_url=None, redoc_url=None)
     app.add_middleware(SecurityHeadersMiddleware)
+    # Los 8 backoffices salen de acá: un 500 de cualquiera queda en `DATA_DIR/errores/` (ADR-045).
+    # Sin endpoint del navegador: estas apps son Jinja2, no tienen `libra-ui`.
+    instalar_registro_de_errores(app, f"{_slug_del_producto(product_name)}-admin", endpoint_cliente=False)
 
     if static_dir:
         app.mount("/static", StaticFiles(directory=static_dir), name="static")

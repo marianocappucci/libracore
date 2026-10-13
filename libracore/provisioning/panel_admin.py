@@ -25,6 +25,7 @@ from . import (
     check_venv_sync,
     contexto_de_build,
     deploy_version,
+    errores_env,
     get_config,
     migraciones_declaradas,
 )
@@ -197,8 +198,18 @@ def pinear_image(slug: str, ref: str) -> str | None:
     if not img:
         return None
     inicio, fin, pre, anterior = img
-    if anterior != ref:
-        path.write_text(contenido[:inicio] + pre + ref + contenido[fin:], encoding="utf-8")
+    nuevo = contenido[:inicio] + pre + ref + contenido[fin:] if anterior != ref else contenido
+    # LIBRA_INSTANCIA / LIBRA_VERSION viajan con el pin (ADR-045): si el compose no tiene un
+    # `environment:` en lista, queda como estaba.
+    cliente = find_client(slug) or {}
+    con_env = errores_env.con_variables(
+        nuevo, contenido.count("\n", 0, inicio),
+        errores_env.valores(slug, cliente.get("container") or f"{get_config().container_prefix}-{slug}",
+                            errores_env.version_de(ref)))
+    if con_env is not None:
+        nuevo = con_env
+    if nuevo != contenido:
+        path.write_text(nuevo, encoding="utf-8")
     return anterior
 
 

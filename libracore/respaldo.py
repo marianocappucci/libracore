@@ -831,8 +831,14 @@ def principal_primero(urls: list[str], nombre: str) -> list[str]:
     return exactas + [u for u in urls if _base(u) != nombre]
 
 
+#: Las carpetas de `data/` que NO entran al ZIP. `backups/` porque es donde queda el propio ZIP;
+#: `errores/` (ADR-045) porque es un registro de operación: hasta 20 MB que no son datos del cliente,
+#: que crecen sin parar y que no hay que reponer en una instancia restaurada.
+CARPETAS_FUERA_DEL_ZIP = frozenset({"backups", "errores"})
+
+
 def directorios_de_datos(data_dir: Path) -> list[Path]:
-    """Las carpetas de `data/` que entran al ZIP: todas menos `backups/`.
+    """Las carpetas de `data/` que entran al ZIP: todas menos `CARPETAS_FUERA_DEL_ZIP`.
 
     Todas y no una lista fija porque cada producto guarda cosas distintas ahi.
     `backups/` afuera porque es donde queda el propio ZIP: incluirla haria que
@@ -841,7 +847,7 @@ def directorios_de_datos(data_dir: Path) -> list[Path]:
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
         return []
-    return sorted(d for d in data_dir.iterdir() if d.is_dir() and d.name != "backups")
+    return sorted(d for d in data_dir.iterdir() if d.is_dir() and d.name not in CARPETAS_FUERA_DEL_ZIP)
 
 
 def instancia_desde_entorno(nombre: str, datos, entorno: dict | None = None) -> Instancia:
