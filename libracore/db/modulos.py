@@ -95,24 +95,30 @@ def apply_plan(plan: str):
     esté llamando esta función porque cada uno agrega su propia raíz de
     repo a `sys.path` al arrancar.
 
-    **Add-ons opcionales (`plans.ADDONS`) quedan afuera de todo plan.** Un
+    **Los adicionales (`plans.ADDONS` y `plans.ADICIONALES`, ADR-048) quedan afuera de todo plan.** Un
     add-on es un módulo pago que se habilita/deshabilita por instancia y
     NO pertenece a ningún plan; si esta función lo tocara, subir o bajar
     de plan lo apagaría solo (un adicional que se desactiva en silencio).
-    Por eso las claves de `plans.ADDONS` se saltean: ni su `habilitado` ni
-    su `plan` se tocan acá. Se lee con `getattr` y default `set()` para no
-    exigirle a cada producto declarar el atributo: un `plans.py` sin
-    `ADDONS` (Restolibra, etc.) se comporta exactamente como antes.
+    Por eso los módulos de `libracore.adicionales.modulos_de_adicionales` se
+    saltean: ni su `habilitado` ni su `plan` se tocan acá. Se lee con `getattr`
+    y default vacío para no exigirle a cada producto declarar nada: un
+    `plans.py` sin `ADDONS` ni `ADICIONALES` se comporta exactamente como antes.
     """
     import plans
+
+    from libracore.adicionales import modulos_de_adicionales
     activos = plans.modulos_de_plan(plan)
-    addons = getattr(plans, "ADDONS", set())
+    # Los módulos de TODOS los adicionales (ADR-048), no sólo `ADDONS`: un adicional por unidades con módulo (offline) también es un sí/no por
+    # instancia que un cambio de plan no puede apagar. `modulos_de_adicionales` es un superconjunto de `ADDONS`.
+    addons = modulos_de_adicionales(plans)
     with get_connection() as conn:
         rows = conn.execute("SELECT modulo FROM modulos").fetchall()
+        # 🔴 El tipo REAL de la columna (`_valor_habilitado`), no `1`/`0`: contra la `modulos` BOOLEAN (libradesk, gestiolibra, medlibra) un entero
+        # muere con «is of type boolean but expression is of type smallint». Lo destapó el test de adicionales del ADR-048 sobre las dos formas.
         for r in rows:
             if r["modulo"] in addons:
                 continue
             conn.execute(
                 "UPDATE modulos SET habilitado=?, plan=? WHERE modulo=?",
-                (1 if r["modulo"] in activos else 0, plan, r["modulo"]),
+                (_valor_habilitado(conn, r["modulo"] in activos), plan, r["modulo"]),
             )

@@ -14,6 +14,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import types
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
@@ -24,6 +25,7 @@ from fastapi import APIRouter, Depends, FastAPI, Query
 from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator
 
 from libracore import (
+    adicionales_router,
     arca_router,
     caja_router,
     clientes_router,
@@ -131,6 +133,7 @@ def _routers_del_motor(carpeta: pathlib.Path):
         errores.build_errores_cliente_router(),
         facturas_router.build_comprobantes_router(usuario_actual=_usuario, solo_admin=_sin_gate),
         facturas_router.build_comprobantes_pdf_router(usuario_actual=_usuario),
+        adicionales_router.build_adicionales_router(_sin_gate, _sin_gate, plans=types.ModuleType("plans")),
         libros_iva_router.build_libros_iva_router(),
         libros_iva_router.build_libros_iva_export_router(solo_admin=_sin_gate),
         limites.build_limites_router(guard_lectura=_sin_gate, guard_escritura=_sin_gate, medir_activas=lambda: 1),

@@ -1101,6 +1101,17 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
     """
     from ..db.core import conectar
 
+    # Un plan nunca toca un adicional (ADR-048): se restan los módulos de TODOS los adicionales del producto, aunque el `plans.py` los haya
+    # dejado en `all_modules`. Va por `import plans` y no por `_plans()`: esto también corre DENTRO del contenedor de la instancia, donde
+    # `configure()` no se llamó. Sin `plans` importable (el doble de un test del motor) no hay adicionales que restar.
+    try:
+        import plans as _plans_del_producto
+    except ImportError:
+        _plans_del_producto = None
+    if _plans_del_producto is not None:
+        from ..adicionales import modulos_de_adicionales
+        all_modules = set(all_modules) - modulos_de_adicionales(_plans_del_producto)
+
     con = conectar(str(db_path))
     try:
         convertir = _como_se_escribe_habilitado(con)
@@ -1120,6 +1131,27 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
                 "UPDATE modulos SET habilitado=?, plan=? WHERE modulo=?",
                 (on, plan, m),
             )
+        con.commit()
+    finally:
+        con.close()
+
+
+def aplicar_modulos_de_adicionales(db_path, modulos: dict) -> None:
+    """Prende o apaga los módulos de los adicionales contratados (`{módulo: bool}`) en la base de una instancia (ADR-048).
+
+    Lo usa el alta (`nuevo_cliente`) corriendo esto DENTRO del contenedor, igual que `plans.aplicar_plan_en_db` y por el mismo motivo: desde el
+    host la URL de la base no resuelve. Va por `conectar()` (SQLite o PostgreSQL, sin tocar el estado global) y respeta el tipo real de
+    `modulos.habilitado`. Idempotente: crea la fila con `plan="addon"` si falta y **sólo cambia `habilitado`**; nunca toca la etiqueta de plan de
+    una fila que ya existe."""
+    from ..db.core import conectar
+
+    con = conectar(str(db_path))
+    try:
+        convertir = _como_se_escribe_habilitado(con)
+        for m, prendido in sorted(modulos.items()):
+            on = convertir(bool(prendido))
+            con.execute("INSERT OR IGNORE INTO modulos (modulo, habilitado, plan) VALUES (?,?,?)", (m, on, "addon"))
+            con.execute("UPDATE modulos SET habilitado=? WHERE modulo=?", (on, m))
         con.commit()
     finally:
         con.close()

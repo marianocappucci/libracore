@@ -282,6 +282,88 @@ def test_el_alta_rechaza_sucursales_contratadas_invalidas_sin_dejar_nada(cfg, ma
     assert not (cfg.clientes_dir / "cliente-malo").exists()
 
 
+# ── adicionales (ADR-048) ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def con_adicionales(cfg, fake_plans, monkeypatch):
+    """Un producto con offline (unidades + módulo), un sí/no y las sucursales; y un doble de «prender los módulos en la base»."""
+    fake_plans.PLANES = ["basico", "pro"]
+    fake_plans.PLAN_MODULOS = {"basico": {"ventas"}, "pro": {"ventas", "stock"}}
+    fake_plans.ADDONS = {"resguardo_externo"}
+    fake_plans.ADICIONALES = {
+        "offline": {"modulos": {"offline"}, "unidad": "sucursal", "limite": "sucursales_offline", "planes": {"pro"}},
+        "sucursal": {"precio": 19950, "unidad": "sucursal", "incluidas": {"basico": 1, "pro": 1}, "limite": "sucursales"},
+    }
+    prendidos = []
+    monkeypatch.setattr(provisioning, "aplicar_modulos_de_adicionales", lambda db_path, m: prendidos.append(dict(m)))
+    return prendidos
+
+
+def _config(cfg, slug):
+    return json.loads((cfg.clientes_dir / slug / "data" / "config.json").read_text(encoding="utf-8"))
+
+
+def test_el_alta_siembra_las_cantidades_de_los_adicionales_y_prende_sus_modulos(cfg, con_adicionales):
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Con Offline", slug="con-offline", plan="pro", setup_npm=False,
+                            adicionales={"offline": 2, "sucursal": 3, "resguardo_externo": True})
+    config = _config(cfg, "con-offline")
+    assert config["adicionales"] == {"offline": 2}
+    assert config["limite_sucursales"] == 3  # la sucursal sigue en su clave de siempre
+    assert con_adicionales == [{"offline": True, "resguardo_externo": True}]
+    meta = json.loads((cfg.clientes_dir / "con-offline" / "cliente.json").read_text(encoding="utf-8"))
+    assert meta["adicionales"] == {"offline": 2, "sucursal": 3, "resguardo_externo": True}
+    assert info["adicionales"] == meta["adicionales"]
+
+
+def test_el_alta_sin_adicionales_no_escribe_nada_ni_prende_nada(cfg, con_adicionales):
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Sin Nada", slug="sin-nada", setup_npm=False)
+    assert "adicionales" not in _config(cfg, "sin-nada")
+    assert con_adicionales == []
+    assert "adicionales" not in json.loads((cfg.clientes_dir / "sin-nada" / "cliente.json").read_text(encoding="utf-8"))
+
+
+def test_un_false_es_no_contratar(cfg, con_adicionales):
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Falso", slug="falso", setup_npm=False, adicionales={"resguardo_externo": False, "offline": None})
+    assert con_adicionales == [] and "adicionales" not in _config(cfg, "falso")
+
+
+@pytest.mark.parametrize("adicionales, texto", [
+    ({"cohetes": True}, "desconocido"),
+    ({"offline": 0}, "entero entre 1 y"),
+    ({"offline": True}, "entero entre 1 y"),
+    ({"offline": 1001}, "entero entre 1 y"),
+    ({"resguardo_externo": 2}, "sí/no"),
+    ({"offline": 1}, "no se puede contratar con el plan 'basico'"),  # offline sólo en pro, y el plan por defecto es basico
+    (["offline"], "diccionario"),
+])
+def test_el_alta_rechaza_adicionales_invalidos_sin_dejar_nada(cfg, con_adicionales, adicionales, texto):
+    with pytest.raises(nc.ClienteError, match=texto):
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Malo", slug="malo", setup_npm=False, adicionales=adicionales)
+    assert not (cfg.clientes_dir / "malo").exists()
+
+
+def test_sucursales_dos_veces_con_valores_distintos_es_error(cfg, con_adicionales):
+    with pytest.raises(nc.ClienteError, match="dos veces"):
+        nc.crear_cliente(empresa_cuit=CUIT, nombre="Doble", slug="doble", setup_npm=False, sucursales_contratadas=2, adicionales={"sucursal": 3})
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Igual", slug="igual", setup_npm=False, sucursales_contratadas=2, adicionales={"sucursal": 2})
+    assert _config(cfg, "igual")["limite_sucursales"] == 2
+
+
+def test_prender_adicionales_que_falla_levanta_alta_incompleta(con_adicionales, fake_plans):
+    with pytest.raises(nc.AltaIncompleta, match="offline"):
+        nc._prender_adicionales({"offline": 1}, fake_plans, "x", lambda m: False, lambda *a: None)
+    nc._prender_adicionales({}, fake_plans, "x", lambda m: False, lambda *a: None)  # sin adicionales no hay nada que fallar
+    nc._prender_adicionales({"sucursal": 2}, fake_plans, "x", lambda m: False, lambda *a: None)  # sin módulos tampoco
+
+
+def test_el_aplicador_del_contenedor_pasa_el_nombre_de_la_variable_y_no_la_url(monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(nc.subprocess, "run", lambda cmd, **kw: llamadas.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    assert nc._aplicar_adicionales_en_contenedor("c1", "TESTPROD_DATABASE_URL", {"offline": True}) is True
+    assert llamadas[0][:4] == ["docker", "exec", "c1", "python3"]
+    assert "os.environ['TESTPROD_DATABASE_URL']" in llamadas[0][-1] and "{'offline': True}" in llamadas[0][-1]
+
+
 def test_crear_cliente_sin_dominio_no_configura_proxy(cfg):
     info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Tres", slug="cliente-tres", setup_npm=True)
     assert info["proxy_ok"] is None

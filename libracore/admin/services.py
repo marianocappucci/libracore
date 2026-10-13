@@ -189,10 +189,13 @@ def get_cliente(slug: str) -> dict | None:
 def crear_cliente(nombre, slug="", domain="", port=0, admin_user="admin",
                   admin_password="", plan="basico", empresa_cuit="",
                   empresa_nombre="", sin_identidad=False, setup_npm=True,
-                  sucursales_contratadas=None) -> dict:
+                  sucursales_contratadas=None, adicionales=None) -> dict:
     nc = _nc()
-    # `sucursales_contratadas` (ADR-041) sólo viaja si hay un número: un `nuevo_cliente` que no lo conozca no tiene por qué recibirlo.
+    # `sucursales_contratadas` (ADR-041) y `adicionales` (ADR-048) sólo viajan si hay algo que pasar: un `nuevo_cliente` que no los conozca no
+    # tiene por qué recibirlos.
     extra = {} if sucursales_contratadas is None else {"sucursales_contratadas": sucursales_contratadas}
+    if adicionales:
+        extra["adicionales"] = dict(adicionales)
     try:
         return nc.crear_cliente(
             nombre=nombre, slug=slug, domain=domain, port=int(port or 0),
@@ -245,7 +248,29 @@ def editar_cliente(slug: str, nombre: str, domain: str) -> dict:
 
 # ── planes ──────────────────────────────────────────────────────────────────────
 
-def set_plan(slug: str, plan: str) -> None:
+class AdicionalIncompatibleError(ServiceError):
+    """Un adicional contratado no se puede tener con el plan al que se quiere pasar. `incompatibles` son las claves; el backoffice responde 409
+    con la lista (y no 422: el pedido está bien formado, es el estado de la instancia el que lo impide)."""
+
+    def __init__(self, plan: str, incompatibles: list[str]):
+        self.plan = plan
+        self.incompatibles = list(incompatibles)
+        super().__init__(
+            f"No se puede pasar al plan {plan!r}: los adicionales contratados {self.incompatibles} no son compatibles con él. "
+            "Dalos de baja primero.")
+
+
+def _copia_de_adicionales(meta: dict) -> dict:
+    """La copia informativa de lo contratado en el `cliente.json` (`{clave: True | cantidad}`). Ilegible = vacía: nunca lanza."""
+    copia = meta.get("adicionales")
+    return dict(copia) if isinstance(copia, dict) else {}
+
+
+def set_plan(slug: str, plan: str, contratados: dict | None = None) -> None:
+    """Cambia el plan de la instancia. **Conserva los adicionales** (ADR-048): `apply_plan` no toca sus módulos ni la cantidad.
+
+    Si alguno de los `contratados` no es compatible con el plan nuevo, levanta `AdicionalIncompatibleError` antes de aplicar nada. `contratados`
+    es `{clave: True | cantidad}` y lo pasa quien lo leyó de la instancia (el backoffice); sin pasarlo se usa la copia del `cliente.json`."""
     plans = _plans()
     from libracore.provisioning import resolver_plan
     try:
@@ -258,10 +283,14 @@ def set_plan(slug: str, plan: str) -> None:
     db_path = c["dir"] / "data" / _db_filename
     if not db_path.exists():
         raise ServiceError("La instancia todavía no inicializó su base de datos.")
-    plans.aplicar_plan_en_db(str(db_path), plan)
-    # Persistir el plan en cliente.json (metadato).
     meta_path = c["dir"] / "cliente.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    from libracore import adicionales as ad
+    fuera = ad.incompatibles(plans, plan, contratados if contratados is not None else _copia_de_adicionales(meta))
+    if fuera:
+        raise AdicionalIncompatibleError(plan, fuera)
+    plans.aplicar_plan_en_db(str(db_path), plan)
+    # Persistir el plan en cliente.json (metadato).
     meta["plan"] = plan
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -369,6 +398,126 @@ def addons_de_instancia(slug: str) -> dict[str, bool | None]:
         )
         return {a: None for a in addons}
     return {a: bool(mods.get(a, False)) for a in addons}
+
+
+# ── adicionales (ADR-048): el catálogo, y el respaldo por `docker exec` para los sí/no ────────────────────────────────────────────────
+#
+# El camino normal para leer y cargar un adicional es HTTP contra la instancia (`GET/PUT /api/adicionales`, `libracore.adicionales_router`), y vive
+# en el backoffice, que es quien tiene el cliente HTTP y el token de servicio. Acá queda lo que no depende de ellos: el catálogo para la UI y el
+# **respaldo** para una instancia vieja (libracore anterior al router) que sólo sabe prender y apagar módulos por `docker exec`. Ese respaldo
+# alcanza para los sí/no; una cantidad (sucursales, offline) no se puede cargar así y el backoffice lo dice como `sin_soporte`.
+
+def adicionales_info() -> list[dict]:
+    """El catálogo de adicionales del producto para la UI (`libracore.adicionales.catalogo`): clave, label, precio (`None` = a cotizar), unidad,
+    incluidas por plan, límite, planes y módulos. Vacío si el producto no tiene ninguno."""
+    from libracore import adicionales as ad
+    return [a.como_dict() for _, a in sorted(ad.catalogo(_plans()).items())]
+
+
+def abono_por_lineas(plan: str, contratados: dict) -> dict:
+    """El abono de una instancia en el plan `plan` con lo `contratados` (`{clave: True | cantidad}`): el precio del plan más una línea por adicional
+    que cobra algo. Es el Anexo I: `{plan, base, lineas, extra, total, a_cotizar, incompatibles}` (`libracore.adicionales.calcular_abono_total`);
+    una línea con `precio: None` es «a cotizar» y no suma. `ValueError` si `contratados` trae una clave que el producto no vende."""
+    plans = _plans()
+    from libracore import adicionales as ad
+    vigente = plan_vigente(plan)
+    r = ad.resolver(plans, vigente, contratados)
+    abono = ad.calcular_abono_total(plans.PLAN_PRECIOS.get(vigente), r["lineas_abono"])
+    return {"plan": vigente, **abono, "incompatibles": r["incompatibles"]}
+
+
+def set_adicional(slug: str, clave: str, habilitado: bool) -> None:
+    """Prende/apaga un adicional **sí/no** por `docker exec` (el respaldo de una instancia sin el router). Efecto inmediato; deja la copia del
+    `cliente.json` al día. Un adicional por unidades no se carga así: `ServiceError`."""
+    plans = _plans()
+    from libracore import adicionales as ad
+    cat = ad.catalogo(plans)
+    if clave not in cat:
+        raise ServiceError(f"Adicional desconocido: {clave!r}.")
+    a = cat[clave]
+    if a.por_unidades:
+        raise ServiceError(
+            f"«{a.label}» se cuenta por {a.unidad}: la instancia tiene que exponer /api/adicionales (libracore v1.162.0 o posterior) para cargarlo.")
+    c = _pa().find_client(slug)
+    if not c:
+        raise ServiceError(f"Cliente '{slug}' no encontrado.")
+    on = "True" if habilitado else "False"
+    for modulo in sorted(a.modulos):
+        codigo = (
+            "import sys; sys.path.insert(0, '/app'); "
+            f"from app.database import set_addon; set_addon({modulo!r}, {on})"
+        )
+        r = subprocess.run(["docker", "exec", c["container"], "python3", "-c", codigo], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise ServiceError(f"No se pudo aplicar el adicional en '{slug}': {(r.stderr or r.stdout).strip()[:200]}")
+    registrar_copia_de_adicionales(slug, {clave: True if habilitado else None})
+
+
+def adicionales_de_instancia(slug: str) -> dict[str, bool | None]:
+    """Estado `{clave: habilitado}` de los adicionales con módulo, leído de la base viva por `docker exec` (respaldo de una instancia sin el
+    router). `None` es «no se pudo leer», igual que en `addons_de_instancia`: un «no sé» no se disfraza de «no». Las cantidades no se leen así."""
+    plans = _plans()
+    from libracore import adicionales as ad
+    con_modulo = {c: a for c, a in ad.catalogo(plans).items() if a.modulos}
+    if not con_modulo:
+        return {}
+    c = _pa().find_client(slug)
+    if not c:
+        raise ServiceError(f"Cliente '{slug}' no encontrado.")
+    codigo = (
+        "import sys, json; sys.path.insert(0, '/app'); "
+        "from app.database import get_modulos; print(json.dumps(get_modulos()))"
+    )
+    r = subprocess.run(["docker", "exec", c["container"], "python3", "-c", codigo], capture_output=True, text=True)
+    if r.returncode != 0:
+        _log.warning("No se pudo leer los adicionales de %r (%s): %s", slug, c["container"], (r.stderr or r.stdout).strip()[:300])
+        return {k: None for k in con_modulo}
+    try:
+        mods = json.loads(r.stdout.strip() or "{}")
+    except json.JSONDecodeError:
+        _log.warning("Los adicionales de %r (%s) llegaron sin JSON parseable: %r", slug, c["container"], r.stdout.strip()[:300])
+        return {k: None for k in con_modulo}
+    return {k: all(bool(mods.get(m, False)) for m in a.modulos) for k, a in con_modulo.items()}
+
+
+def registrar_copia_de_adicionales(slug: str, cambios: dict) -> None:
+    """Deja en el `cliente.json` del host la **copia informativa** de lo contratado (`meta["adicionales"]`): `{clave: True | cantidad}`; un valor
+    `None` quita la clave. La fuente de verdad es la instancia: si la copia difiere, gana ella (`sincronizar_copia_de_adicionales`). Mejor
+    esfuerzo: una instancia sin `cliente.json` no rompe la operación."""
+    c = _pa().find_client(slug)
+    if not c:
+        return
+    meta_path = c["dir"] / "cliente.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    copia = _copia_de_adicionales(meta)
+    for clave, valor in cambios.items():
+        if valor in (None, False):
+            copia.pop(clave, None)
+        else:
+            copia[clave] = valor
+    if copia:
+        meta["adicionales"] = copia
+    else:
+        meta.pop("adicionales", None)
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def sincronizar_copia_de_adicionales(slug: str, contratados: dict) -> None:
+    """Alinea la copia del `cliente.json` con lo que la instancia dice (`{clave: True | cantidad | None}`): **gana la instancia**. Sólo escribe si
+    difiere, para no tocar el archivo en cada lectura."""
+    c = _pa().find_client(slug)
+    if not c:
+        return
+    try:
+        meta = json.loads((c["dir"] / "cliente.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    real = {k: v for k, v in contratados.items() if v not in (None, False)}
+    if _copia_de_adicionales(meta) != real:
+        registrar_copia_de_adicionales(slug, {**{k: None for k in _copia_de_adicionales(meta)}, **real})
 
 
 # ── estado / ciclo de vida del contenedor ───────────────────────────────────────
@@ -547,8 +696,12 @@ def plan_vigente(plan: str) -> str:
 def planes_info() -> list[dict]:
     """Los planes del producto para la UI. `adicional` (ADR-041) es `{"unidad", "incluidas", "precio"}` cuando el plan cobra unidades de más
     (VentaLibra: sucursales) y `None` si no. 🔴 `getattr` y no `plans.PLAN_UNIDADES_ADICIONALES`: es una costura OPCIONAL del `plans.py` del
-    producto y los otros productos no la declaran."""
+    producto y los otros productos no la declaran.
+
+    `adicionales` (ADR-048) son los adicionales que se pueden contratar con ese plan, cada uno con el `incluidas` **de ese plan** (un entero):
+    `[{clave, label, precio, unidad, incluidas, limite, modulos}]`, con `precio: None` = a cotizar. `adicional` queda por compatibilidad."""
     plans = _plans()
+    from libracore import adicionales as ad
     adicionales = getattr(plans, "PLAN_UNIDADES_ADICIONALES", {}) or {}
     return [
         {
@@ -556,6 +709,10 @@ def planes_info() -> list[dict]:
             "label": plans.PLAN_LABELS.get(p, p.title()),
             "precio": plans.PLAN_PRECIOS.get(p),
             "adicional": dict(adicionales[p]) if adicionales.get(p) else None,
+            "adicionales": [
+                {**{k: v for k, v in a.como_dict().items() if k not in ("incluidas", "planes")}, "incluidas": a.incluidas_en(p)}
+                for a in ad.adicionales_del_plan(plans, p)
+            ],
             "modulos": sorted(plans.modulos_de_plan(p)),
         }
         for p in plans.PLANES

@@ -61,3 +61,20 @@ def test_raises_if_modulos_table_missing(tmp_path):
     sqlite3.connect(path).close()
     with pytest.raises(sqlite3.OperationalError):
         apply_plan_modules(path, active_modules=set(), all_modules={"a"}, plan="basico")
+
+
+def test_un_plan_no_toca_los_modulos_de_los_adicionales(db_path, monkeypatch):
+    """ADR-048: aunque el `plans.py` los deje en `all_modules`, `apply_plan_modules` resta los de TODOS los adicionales."""
+    import sys
+    import types
+
+    plans = types.ModuleType("plans")
+    plans.ADDONS = {"resguardo_externo"}
+    plans.ADICIONALES = {"offline": {"modulos": {"offline"}, "unidad": "sucursal"}}
+    monkeypatch.setitem(sys.modules, "plans", plans)
+    con = sqlite3.connect(db_path)
+    con.execute("INSERT INTO modulos VALUES ('offline', 1, 'addon'), ('resguardo_externo', 1, 'addon')")
+    con.commit()
+    con.close()
+    apply_plan_modules(db_path, active_modules={"a"}, all_modules={"a", "b", "offline", "resguardo_externo"}, plan="basico")
+    assert _read_modulos(db_path) == {"a": (True, "basico"), "b": (False, "basico"), "offline": (True, "addon"), "resguardo_externo": (True, "addon")}
