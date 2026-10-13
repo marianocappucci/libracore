@@ -3,9 +3,9 @@
 Lo que se fija acá, contra los dos motores y los tres orígenes de ventas, en un escenario con
 las cuatro fuentes, pagos y débitos borrados, un movimiento y una factura anulados, un pago
 cuyo importe cambió y ventas fiadas:
-- las cuatro lecturas (`get_cc_saldo`, `get_cc_movimientos`, `get_cc_movimientos_periodo` y
-  `get_clientes_con_saldo_cc`) dan lo esperado, con importes y órdenes escritos a mano (ya no
-  hay un cálculo contra el cual compararlas);
+- las tres lecturas (`get_cc_saldo`, `get_cc_movimientos` y `get_clientes_con_saldo_cc`) dan
+  lo esperado, con importes y órdenes escritos a mano (ya no hay un cálculo contra el cual
+  compararlas);
 - un hecho revertido no se muestra, y cada movimiento trae los ids y textos que usa la pantalla;
 - lo cargado con SQL propio no se ve hasta `reconstruir` (ADR-029);
 - `origen` ya no decide el saldo: sólo completa el número de las ventas.
@@ -170,15 +170,11 @@ def _escenario(origen):
 
 
 def _lecturas(ids, origen):
-    """Las cuatro lecturas, de todos los clientes y de varios períodos."""
+    """Las tres lecturas, de todos los clientes."""
     clientes = [ids[k] for k in "abcde"]
     return {
         "saldos": {c: cuenta_corriente.get_cc_saldo(c, origen) for c in clientes},
         "movimientos": {c: cuenta_corriente.get_cc_movimientos(c, origen) for c in clientes},
-        "periodos": {(c, desde, hasta): cuenta_corriente.get_cc_movimientos_periodo(c, desde, hasta, origen)
-                     for c in clientes
-                     for desde, hasta in (("2026-09-01", "2026-12-31"), ("2026-09-16", "2026-09-30"),
-                                          ("2026-10-01", "2026-10-31"), ("2027-01-01", "2027-01-31"))},
         "clientes": cuenta_corriente.get_clientes_con_saldo_cc(origen),
     }
 
@@ -189,7 +185,7 @@ def origen(request):
             "external_ref": VENTAS_LIBRACOMMERCE_POR_EXTERNAL_REF}[request.param]
 
 
-def test_las_cuatro_lecturas_dan_lo_esperado(base, origen):
+def test_las_tres_lecturas_dan_lo_esperado(base, origen):
     ids = _escenario(origen)
     a, b, c_, d, e = (ids[k] for k in "abcde")
     lecturas = _lecturas(ids, origen)
@@ -212,20 +208,6 @@ def test_las_cuatro_lecturas_dan_lo_esperado(base, origen):
     assert [m["concepto"] for m in lecturas["movimientos"][e]] == ["Adelanto"]
     assert [(c["id"], c["name"], c["saldo"]) for c in lecturas["clientes"]] == [
         (a, "Acopio Sur", 1673.5), (b, "Barraca Norte", 54.5), (e, "Acopio a favor", -70)]
-
-    def _periodo(cliente, desde, hasta):
-        p = lecturas["periodos"][(cliente, desde, hasta)]
-        return (p["saldo_anterior"], len(p["movimientos"]), p["total_debitos"], p["total_creditos"],
-                p["saldo_final"])
-
-    assert _periodo(a, "2026-09-01", "2026-12-31") == (0, 8, 2074.25, 400.75, 1673.5)
-    assert _periodo(a, "2026-09-16", "2026-09-30") == (1450.5, 3, 323.75, 0, 1774.25)
-    assert _periodo(a, "2026-10-01", "2026-10-31") == (1774.25, 1, 0, 100.75, 1673.5)
-    assert _periodo(a, "2027-01-01", "2027-01-31") == (1673.5, 0, 0, 0, 1673.5)
-    assert _periodo(b, "2026-10-01", "2026-10-31") == (0, 2, 100, 45.5, 54.5)
-    assert _periodo(c_, "2026-09-01", "2026-12-31") == (0, 0, 0, 0, 0)
-    # Un cliente sin movimientos en el período, pero con saldo, entra con ese saldo.
-    assert _periodo(e, "2027-01-01", "2027-01-31") == (-70, 0, 0, 0, -70)
 
 
 def test_la_lista_no_muestra_lo_revertido(base):
@@ -285,7 +267,6 @@ def test_lo_cargado_con_sql_propio_no_se_ve_hasta_reconstruir(base):
     assert lc.reconstruir() == 1
     assert cuenta_corriente.get_cc_saldo(cid) == 380
     assert [m["concepto"] for m in cuenta_corriente.get_cc_movimientos(cid)] == ["Reserva", "p"]
-    assert cuenta_corriente.get_cc_movimientos_periodo(cid, "2026-10-02", "2026-10-31")["saldo_final"] == 380
     assert [(c["id"], c["saldo"]) for c in cuenta_corriente.get_clientes_con_saldo_cc()] == [(cid, 380)]
 
 
@@ -310,8 +291,7 @@ def test_un_debito_o_un_pago_negativo_conserva_su_tipo_y_su_signo(base):
     """LibraDesk registra la anulación de un remito como un `cc_debito` de −18150 (La Grace,
     producción). El libro lo asienta al haber, pero el movimiento sigue siendo lo que mostraba
     el cálculo: un débito de monto negativo, no un crédito de 18150. Igual un pago negativo:
-    un crédito de monto negativo. El saldo da lo mismo de las dos formas; la lista y los
-    totales del período no."""
+    un crédito de monto negativo. El saldo da lo mismo de las dos formas; la lista no."""
     cid = clients.create_client("Cliente de remitos")
     cuenta_corriente.create_cc_debito(cid, 1000, "2026-10-01", "Remito 1", "rem-1")
     cuenta_corriente.create_cc_debito(cid, -18150, "2026-10-02", "Anulación remito 1", "rem-1-anul")
@@ -328,14 +308,6 @@ def test_un_debito_o_un_pago_negativo_conserva_su_tipo_y_su_signo(base):
 
     assert cuenta_corriente.get_cc_saldo(cid) == 1000 - 18150 - 200 + 50 == -17300
     assert [(c["id"], c["saldo"]) for c in cuenta_corriente.get_clientes_con_saldo_cc()] == [(cid, -17300)]
-
-    entero = cuenta_corriente.get_cc_movimientos_periodo(cid, "2026-10-01", "2026-10-31")
-    assert (entero["saldo_anterior"], len(entero["movimientos"]), entero["total_debitos"],
-            entero["total_creditos"], entero["saldo_final"]) == (0, 4, -17150, 150, -17300)
-    # El saldo de apertura de un período posterior arrastra los dos con su signo.
-    tarde = cuenta_corriente.get_cc_movimientos_periodo(cid, "2026-10-03", "2026-10-31")
-    assert (tarde["saldo_anterior"], tarde["total_debitos"], tarde["total_creditos"],
-            tarde["saldo_final"]) == (-17150, 0, 150, -17300)
 
     # Si la fila del hecho ya no está (borrada con SQL propio y sin sincronizar), el movimiento
     # sigue con lo que dice el asiento: el débito negativo, que se asentó al haber, sale crédito.

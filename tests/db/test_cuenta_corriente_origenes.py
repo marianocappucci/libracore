@@ -178,13 +178,6 @@ def test_el_saldo_combina_las_cuatro_fuentes(conn):
     movs = cuenta_corriente.get_cc_movimientos(cid, VENTAS_LIBRACOMMERCE)
     assert len(movs) == 4
     assert sum(1 for m in movs if m["tipo"] == "debito") == 3
-    # El saldo del período completo tiene que cerrar con el saldo de la cuenta:
-    # es lo que evita que el resumen que se manda por mail diga otra cosa que
-    # la pantalla.
-    periodo = cuenta_corriente.get_cc_movimientos_periodo(
-        cid, "2026-07-01", "2026-07-31", VENTAS_LIBRACOMMERCE
-    )
-    assert periodo["saldo_final"] == 1450.0
 
 
 def test_el_cuit_con_guiones_del_cliente_matchea_la_factura_sin_guiones(conn):

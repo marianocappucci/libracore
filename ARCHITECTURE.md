@@ -114,7 +114,10 @@ dijiste contra qué base" de "no hay cadena que aplicar".
   imagen (`build_image`/`version_para_cliente_nuevo`), red Docker, y el alta del
   proxy en NPM (`_setup_npm_proxy`). Valida el CUIT (`cuit_valido`).
 - **`provisioning/mail_cuentas.py`**, **`resguardo_externo.py`**: cuentas de
-  correo y respaldo externo de la instancia.
+  correo y respaldo externo de la instancia. `mail_cuentas` toma su configuración
+  del entorno o, si falta, de `/root/secretos/correo-<producto>.env`; el comando
+  `panel_admin.py casilla <slug>` crea o repara la casilla de una instancia
+  existente (ADR-046).
 
 **Dónde viven las instancias: `ProductConfig.clientes_dir`.** Es la **única**
 fuente de verdad de esa carpeta (`<dir>/<slug>/{cliente.json, docker-compose.yml,

@@ -1,7 +1,7 @@
 """La cuenta corriente de clientes, llevada como libro (opción B, etapas B1 a B4).
 
 El saldo de un cliente se **lee siempre de este libro** (ADR-029): `cuenta_corriente.get_cc_saldo`,
-`get_cc_movimientos`, `get_cc_movimientos_periodo` y `get_clientes_con_saldo_cc` responden
+`get_cc_movimientos` y `get_clientes_con_saldo_cc` responden
 con `saldo_de`, `movimientos_de` y `clientes_con_saldo`. Hasta v1.138.0 se calculaban desde
 los documentos (ventas fiadas, facturas cobradas a cuenta, débitos y pagos) y una variable
 de entorno decidía; el cálculo, el interruptor y `comparar()` se retiraron cuando el libro

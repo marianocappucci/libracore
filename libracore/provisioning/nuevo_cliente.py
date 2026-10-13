@@ -868,7 +868,14 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
         # mostrar en vez de que se descubra el día que un cliente pide un reset.
         smtp_env = ""
         smtp_ok = None
-        if mail_cuentas.configurado():
+        # Por qué la instancia no tiene casilla, en una frase y sin secretos.
+        # Viaja en la respuesta (`smtp_motivo`) para que quien da de alta lo
+        # muestre: `None` ya no es un silencio (ADR-046).
+        smtp_motivo = ""
+        if not mail_cuentas.configurado():
+            smtp_motivo = mail_cuentas.motivo_sin_configurar()
+            log(f"[WARN] Sin casilla de correo: {smtp_motivo}")
+        else:
             try:
                 cuenta_de_correo = mail_cuentas.crear_cuenta(
                     slug, nombre, smtp_password
@@ -881,6 +888,7 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
             except mail_cuentas.MailError as e:
                 log(f"[ERROR] Correo saliente: {e}")
                 smtp_ok = False
+                smtp_motivo = str(e)
 
         # — versión de imagen — el compose nace pineado a una versión concreta,
         # nunca a `:latest` (ver panel_admin, sección "versión de imagen").
@@ -1128,6 +1136,10 @@ services:
             # intentó y falló, así que la instancia existe pero no manda hasta
             # que alguien le cargue el SMTP por la pantalla del backoffice.
             "smtp_ok": smtp_ok,
+            # Por qué no hay casilla cuando `smtp_ok` no es `True` (ADR-046);
+            # `""` si la hay. Nunca trae la contraseña: el único dato que sale
+            # de `MailError` es el último renglón del `stderr` del wrapper.
+            "smtp_motivo": smtp_motivo,
             # La dirección no es secreta —es el remitente que va a ver todo el
             # que reciba un correo de esta instancia— y saberla es lo que
             # permite ir a buscar la casilla al servidor de correo. La
@@ -1165,6 +1177,28 @@ services:
         # peor. `_rollback_casilla` no levanta nada por su cuenta.
         _rollback_casilla(cuenta_de_correo, log)
         raise
+
+
+#: Código de salida del alta por la CLI cuando la instancia se creó **bien** pero
+#: sin casilla de correo. No es 1 a propósito: 1 quiere decir «el alta falló».
+SALIDA_SIN_CASILLA = 3
+
+
+def aviso_sin_casilla(slug: str, motivo: str, clientes_dir) -> str:
+    """El texto que cierra un alta que quedó sin casilla de correo (ADR-046).
+
+    Incluye el comando exacto para crearla; `LIBRA_CLIENTES_DIR` va siempre,
+    porque sin él `panel_admin.py` busca la instancia en otro directorio
+    (`reglas/deploy.md`). No imprime ningún secreto: el motivo sale de
+    `mail_cuentas`, que no los trae.
+    """
+    return (
+        f"[ADVERTENCIA] La instancia quedó sin casilla de correo: "
+        f"{motivo or 'no se intentó crearla'}.\n"
+        f"              Sin casilla no manda correo (ni recuperación de contraseña).\n"
+        f"              Para crearla: LIBRA_CLIENTES_DIR={clientes_dir} "
+        f".venv-scripts/bin/python3 scripts/panel_admin.py casilla {slug}"
+    )
 
 
 def main():
@@ -1249,3 +1283,13 @@ def main():
     print("=" * 60)
     print("\n[!] Guardá las credenciales — no se volverán a mostrar.")
     print("[!] El panel token es el que va en el alta de esta sucursal en LibraPanel.")
+
+    # 🔴 La instancia existe y anda, pero sin casilla no manda correo: ni
+    # recuperación de contraseña ni envíos. Hasta el ADR-046 esto no se decía
+    # (`smtp_ok=None`), y un alta por la CLI del host quedaba sin SMTP sin que
+    # nadie se enterara. Va al final, donde se mira, y sale con un código
+    # propio para que un script que envuelva la CLI también lo vea.
+    if info.get("smtp_ok") is not True:
+        print()
+        print(aviso_sin_casilla(info["slug"], info.get("smtp_motivo", ""), cfg.clientes_dir))
+        sys.exit(SALIDA_SIN_CASILLA)

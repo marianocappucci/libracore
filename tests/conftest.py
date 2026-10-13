@@ -24,6 +24,21 @@ def _sin_clientes_dir_del_entorno(monkeypatch):
     monkeypatch.delenv("LIBRA_CLIENTES_DIR", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _sin_correo_del_host(monkeypatch, tmp_path):
+    """Ningún test lee la configuración de correo del host ni la del shell de quien corre la suite.
+
+    `mail_cuentas` busca `LIBRA_MAIL_*` en el entorno y, si faltan, en
+    `/root/secretos/correo-<producto>.env` (ADR-046). En el VPS —o en una PC con
+    esas variables exportadas— los tests que esperan «sin servidor de correo»
+    fallarían por algo que no es del código. Los que prueban el correo setean
+    lo que necesitan.
+    """
+    for var in ("LIBRA_MAIL_ADMIN_SSH", "LIBRA_MAIL_DOMINIO", "LIBRA_MAIL_SMTP_HOST", "LIBRA_MAIL_SMTP_PORT"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("LIBRA_MAIL_ENV_FILE", str(tmp_path / "_sin_correo.env"))
+
+
 @pytest.fixture
 def crear_schema():
     """Devuelve el helper que arma el schema de una instancia REAL.
