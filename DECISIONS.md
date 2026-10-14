@@ -1060,3 +1060,15 @@ Detalle en `docs/fce.md`.
   4. **Aditivo en `notas_de_credito`**: `importe_valido` (extraído), `armar_nota(leyenda=, por_importe=)` y `una_nota_a_la_vez(clase=)`. La nota de crédito no cambia.
   5. **No se toca la ruta del router de facturas.** Sigue copiando la factura entera para Contalibra, Restolibra y LibraClub; migrarla es otra decisión (cambia lo que emiten tres productos).
 - Consecuencias: MINOR (propuesta v1.163.0), **sin migración**. Sin medir contra ARCA de homologación: el armado es el de la nota de crédito parcial (medida) con los tipos `2/7/12` y `202/207/212`; falta confirmar con un ensayo que ARCA acepta la marca `N` en la nota de débito de una FCE. Un producto que la consuma pasa una `clave` propia y traduce `NotaNoPermitida.codigo` a HTTP.
+
+## ADR-050 — Cada envío por mail de un comprobante o un presupuesto deja rastro (`envios_email`)
+
+**Estado:** aceptada (2026-10-14). Pedido del humano: en ContaLibra un cliente reclamaba facturas y no había forma de saber si se habían mandado.
+
+**El hueco.** `POST …/enviar-email` (facturas y presupuestos) mandaba el PDF por SMTP y devolvía `ok` o un 502, sin guardar nada. Ni la fecha, ni el destinatario, ni el error. El único rastro posible era la carpeta de enviados de la casilla SMTP, fuera del sistema.
+
+**Qué se hizo.** Tabla `envios_email` (`libracore.db.envios_email`, migración `0026`): una fila por **intento**, con `documento_tipo` (`factura` | `presupuesto`), `documento_id`, `documento_label`, `destinatario`, `estado` (`enviado` | `error`), `error`, `usuario` y `created_at`. Sin FK a propósito: apunta a dos tablas y el rastro sobrevive a un borrado (por eso guarda la etiqueta). `registrar` traga sus propios errores: si falla escribir el rastro, el mail ya salió y el usuario no tiene que ver un error por eso. Lectura: `GET {prefix}/{id}/envios`, `envios_email` en el detalle, y `envio_email` en cada fila del listado (resumen en **una** consulta por página, no N+1).
+
+**Qué no.** Ni Bcc al remitente ni reintentos automáticos. Los envíos anteriores no se reconstruyen. El listado no filtra por envío (el resumen va por fila; filtrar pediría tocar `get_facturas_filtradas`): queda para cuando se pida.
+
+**Tests.** `test_el_envio_por_mail_deja_rastro_enviado_o_con_error` (facturas) y `test_cada_envio_deja_rastro_y_el_listado_lo_marca` (presupuestos): un fallo y un éxito, orden, motivo, usuario y resumen del listado. El del router chico suma `GET …/envios` a sus rutas.

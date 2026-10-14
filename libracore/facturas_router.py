@@ -80,7 +80,9 @@ from libracore.db import caja as db_caja
 from libracore.db import clients as db_clients
 from libracore.db import core as db_core
 from libracore.db import cuenta_corriente as db_cc
+from libracore.db import envios_email
 from libracore.db import facturas as db_facturas
+from libracore.db.envios_email import TIPO_FACTURA
 from libracore.emisor_del_pdf import emisor_para
 from libracore.facturas_borrador import armar_borrador
 from libracore.validacion import rechazar_booleanos, sin_booleanos
@@ -486,15 +488,18 @@ def _pdf_del_comprobante(factura: dict, resolvedor: Callable[[dict], dict | None
 def _registrar_enviar_email(
     router: APIRouter, *, exigir: Callable[[int], dict],
     emisor_del_pdf: Callable[[dict], dict | None] | None, smtp_config: Callable[[], Any] | None,
-    donde_configurar_smtp: str,
+    donde_configurar_smtp: str, usuario_actual: Callable[..., Any] | None = None,
 ) -> None:
-    """Registra `POST /{factura_id}/enviar-email` en `router`. **Una sola implementación**, la usan los dos factories.
+    """Registra `POST /{factura_id}/enviar-email` y `GET /{factura_id}/envios` en `router`. **Una sola implementación**, la usan los dos factories.
 
     `exigir(factura_id)` devuelve el comprobante o levanta el 404: es lo único que cambia entre el router de
     comprobantes y el de sólo-PDF (que además filtra qué comprobantes se ven).
     """
+    # El usuario de la sesión queda en el rastro; sin factory que lo dé, el rastro no lleva usuario.
+    dep_usuario = usuario_actual or (lambda: None)
+
     @router.post("/{factura_id}/enviar-email")
-    def enviar_email(factura_id: int, payload: EmailPayload):
+    def enviar_email(factura_id: int, payload: EmailPayload, usuario: dict | None = Depends(dep_usuario)):
         factura = exigir(factura_id)
         if not smtp_configurado(smtp_config):
             raise HTTPException(
@@ -509,6 +514,7 @@ def _registrar_enviar_email(
             f"{pdf_gen._TIPO_LABELS.get(factura['tipo'], 'Comprobante')} "
             f"{_numero(factura)}"
         )
+        quien = (usuario or {}).get("username") or (usuario or {}).get("nombre") or ""
         try:
             enviar_comprobante_por_mail(
                 to_email=payload.email.strip(), to_name=factura["cliente_razon"],
@@ -518,8 +524,18 @@ def _registrar_enviar_email(
                 empresa_nombre=emisor_para(factura, resolvedor=emisor_del_pdf).get("nombre") or "",
             )
         except Exception as e:
+            envios_email.registrar(TIPO_FACTURA, factura["id"], label=etiqueta,
+                                   destinatario=payload.email.strip(), error=str(e), usuario=quien)
             raise HTTPException(502, f"Error al enviar: {e}") from e
+        envios_email.registrar(TIPO_FACTURA, factura["id"], label=etiqueta,
+                               destinatario=payload.email.strip(), usuario=quien)
         return {"ok": True}
+
+    @router.get("/{factura_id}/envios")
+    def envios(factura_id: int):
+        """Los intentos de envío por mail de este comprobante, el más reciente primero."""
+        exigir(factura_id)
+        return envios_email.de_documento(TIPO_FACTURA, factura_id)
 
 
 def _detalle(factura: dict) -> dict:
@@ -567,6 +583,7 @@ def _detalle(factura: dict) -> dict:
         "total_cobrado": total_cobrado,
         "pendiente": pendiente,
         "cliente_email": cliente.get("email", "") if cliente else "",
+        "envios_email": envios_email.de_documento(TIPO_FACTURA, factura["id"]),
     }
 
 
@@ -789,7 +806,7 @@ def build_comprobantes_pdf_router(
 
     _registrar_enviar_email(
         router, exigir=_exigir, emisor_del_pdf=emisor_del_pdf, smtp_config=smtp_config,
-        donde_configurar_smtp=donde_configurar_smtp,
+        donde_configurar_smtp=donde_configurar_smtp, usuario_actual=usuario_actual,
     )
     return router
 
@@ -908,6 +925,10 @@ def build_comprobantes_router(
             desde, hasta, q, vista, PAGE_SIZE, (page - 1) * PAGE_SIZE
         )
         total = resultado["total"]
+        # Una sola consulta para toda la página: ¿se mandó por mail? ¿cuándo y a quién?
+        resumen = envios_email.resumen_de(TIPO_FACTURA, [f["id"] for f in resultado["items"]])
+        for f in resultado["items"]:
+            f["envio_email"] = resumen.get(f["id"])
         return {
             "items": resultado["items"],
             "total": total,
@@ -1194,7 +1215,7 @@ def build_comprobantes_router(
 
     _registrar_enviar_email(
         router, exigir=_exigir, emisor_del_pdf=emisor_del_pdf, smtp_config=smtp_config,
-        donde_configurar_smtp=donde_configurar_smtp,
+        donde_configurar_smtp=donde_configurar_smtp, usuario_actual=usuario_actual,
     )
 
     @router.delete("/{factura_id}", dependencies=admin)

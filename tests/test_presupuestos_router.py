@@ -139,3 +139,28 @@ def test_si_el_envio_falla_el_presupuesto_se_queda_en_borrador(app_client):
 
     assert resp.status_code == 502
     assert app_client.get(f"/api/presupuestos/{pid}").json()["status"] == "borrador"
+
+
+def test_cada_envio_deja_rastro_y_el_listado_lo_marca(app_client):
+    """Un reclamo de «no me llegó» se contesta mirando el rastro (ADR-050)."""
+    pid = _crear(app_client).json()["id"]
+    assert app_client.get(f"/api/presupuestos/{pid}/envios").json() == []
+    assert app_client.get("/api/presupuestos").json()["items"][0]["envio_email"] is None
+
+    def _explota(**kw):
+        raise RuntimeError("conexion rechazada")
+
+    otro = _app_con_envio(_explota, app_client.uid)
+    assert otro.post(f"/api/presupuestos/{pid}/enviar-email", json={"email": "a@b.com"}).status_code == 502
+    assert app_client.post(f"/api/presupuestos/{pid}/enviar-email", json={"email": "c@d.com"}).status_code == 200
+
+    envios = app_client.get(f"/api/presupuestos/{pid}/envios").json()
+    assert [(e["destinatario"], e["estado"]) for e in envios] == [("c@d.com", "enviado"), ("a@b.com", "error")]
+    assert "conexion rechazada" in envios[1]["error"]
+    assert envios[0]["documento_label"].startswith("Presupuesto ")
+
+    resumen = app_client.get("/api/presupuestos").json()["items"][0]["envio_email"]
+    assert resumen["cantidad"] == 2 and resumen["enviados"] == 1
+    assert resumen["ultimo_estado"] == "enviado" and resumen["ultimo_destino"] == "c@d.com"
+    assert len(app_client.get(f"/api/presupuestos/{pid}").json()["envios_email"]) == 2
+    assert app_client.get("/api/presupuestos/99999/envios").status_code == 404

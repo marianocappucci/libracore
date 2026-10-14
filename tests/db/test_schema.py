@@ -15,7 +15,7 @@ CORE_TABLES = {
     "ventas_pagos", "cuentas_tesoreria", "movimientos_tesoreria",
     "auth_log", "listas_precio", "lista_precio_items", "cc_pagos",
     "cc_debitos", "recibos", "cc_asientos",
-    "comprobantes_pendientes", "arca_credenciales_servicio",
+    "comprobantes_pendientes", "arca_credenciales_servicio", "envios_email",
 }
 
 

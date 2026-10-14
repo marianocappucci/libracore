@@ -7,6 +7,10 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El rastro de los envíos por mail: `envios_email` (propuesta: v1.164.0)
+
+ADR-050. **Migración `0026_envios_email`** (tabla nueva, idempotente, sin tocar filas): corre sola con `libracore-migrar upgrade` al arrancar el contenedor. Cada `POST …/enviar-email` de comprobantes (los dos factories de `facturas_router`) y de presupuestos (`presupuestos_router`) anota el intento, logrado o fallido, con destinatario, usuario y motivo. Lectura: `GET …/{id}/envios`, `envios_email` en el detalle y `envio_email` (resumen o `null`) en cada fila del listado. `_registrar_enviar_email` recibe `usuario_actual` (opcional). Los envíos anteriores no dejaron rastro y no se reconstruyen.
+
 ## [Unreleased] — La nota de débito por importe, del motor: `libracore.notas_de_debito` (propuesta: v1.163.0)
 
 ADR-049. **Sin migración y sin cambio de schema.** La nota de débito vivía en `facturas_router._crear_nota`: metida en un router, atada a la tabla `facturas` y **copiando la factura entera** (`POST /api/facturas/{id}/nota-debito` no recibe importe ni motivo). Lo que se necesita en la práctica —cobrar un monto nuevo sobre una factura ya emitida: intereses, un gasto, una diferencia— no se podía pedir. LibraCargo (facturación directa, 2026-10-13) es el primer consumidor.
