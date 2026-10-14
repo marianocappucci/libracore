@@ -918,11 +918,11 @@ def build_comprobantes_router(
     @router.get("")
     def listar(
         q: str = "", vista: str = "facturas", desde: str = "", hasta: str = "",
-        page: int = 1,
+        page: int = 1, envio: str = "",
     ):
         page = max(1, page)
         resultado = db_facturas.get_facturas_filtradas(
-            desde, hasta, q, vista, PAGE_SIZE, (page - 1) * PAGE_SIZE
+            desde, hasta, q, vista, PAGE_SIZE, (page - 1) * PAGE_SIZE, envio=envio,
         )
         total = resultado["total"]
         # Una sola consulta para toda la página: ¿se mandó por mail? ¿cuándo y a quién?

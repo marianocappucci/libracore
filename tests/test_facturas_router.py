@@ -1549,3 +1549,40 @@ def test_el_envio_por_mail_deja_rastro_enviado_o_con_error(client, monkeypatch):
     item = client.get(API).json()["items"][0]
     assert item["envio_email"]["cantidad"] == 2 and item["envio_email"]["ultimo_estado"] == "enviado"
     assert len(client.get(f"{API}/{factura['id']}").json()["envios_email"]) == 2
+
+
+def test_el_listado_filtra_por_enviada_y_sin_enviar(client, monkeypatch):
+    """ADR-051: «sin enviar» incluye el envío fallido (el cliente no lo recibió)."""
+    _probar_filtro_de_envio(client, monkeypatch)
+
+
+def test_el_filtro_de_envio_en_postgres(tmp_path, monkeypatch, bases):
+    """La misma prueba contra PostgreSQL: el `EXISTS` corre en los dos motores."""
+    _probar_filtro_de_envio(_montar(tmp_path, monkeypatch, db_path=bases.nueva()), monkeypatch)
+
+
+def _probar_filtro_de_envio(client, monkeypatch):
+    from libracore import config_manager as cm
+
+    cm.save({"email_smtp_host": "smtp.example.com", "email_smtp_user": "yo@example.com",
+             "email_smtp_password": "x"})
+    enviada, fallida, nunca = _emitir(client), _emitir(client), _emitir(client)
+
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", lambda **kw: None)
+    assert client.post(f"{API}/{enviada['id']}/enviar-email", json={"email": "a@b.com"}).status_code == 200
+
+    def falla(**kw):
+        raise RuntimeError("smtp caído")
+
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", falla)
+    assert client.post(f"{API}/{fallida['id']}/enviar-email", json={"email": "a@b.com"}).status_code == 502
+
+    def ids(**params):
+        r = client.get(API, params=params)
+        assert r.status_code == 200, r.text
+        return {f["id"] for f in r.json()["items"]}, r.json()["total"]
+
+    assert ids(envio="enviada") == ({enviada["id"]}, 1)
+    assert ids(envio="sin_enviar") == ({fallida["id"], nunca["id"]}, 2)
+    assert ids() == ({enviada["id"], fallida["id"], nunca["id"]}, 3)
+    assert ids(envio="cualquiera")[1] == 3
