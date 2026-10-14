@@ -1282,6 +1282,22 @@ def aviso_sin_casilla(slug: str, motivo: str, clientes_dir) -> str:
     )
 
 
+def preguntar_plan(plans, preguntar=None) -> str:
+    """El plan del alta interactiva, resuelto como el resto de las altas (`resolver_plan`).
+
+    Con un solo plan vigente no se pregunta: hasta v1.166.0 el asistente ofrecía «basico» por
+    defecto y un producto de plan único (VentaLibra, LibraCargo) cortaba con «Plan inválido» al
+    apretar Enter. Con varios, el default es el primero de `plans.PLANES` y un plan retirado se
+    acepta con su reemplazo. Uno desconocido levanta `ValueError`.
+    """
+    vigentes = list(plans.PLANES)
+    if len(vigentes) == 1:
+        print(f"Plan: {vigentes[0]} (el único del producto)")
+        return vigentes[0]
+    respuesta = (preguntar or ask)(f"Plan ({'/'.join(vigentes)})", vigentes[0])
+    return resolver_plan(plans, respuesta)
+
+
 def main():
     cfg = get_config()
     plans = _plans()
@@ -1319,9 +1335,10 @@ def main():
     admin_password = ask("Contraseña admin (Enter = generar)", "")
     admin_nombre   = ask("Nombre completo del admin", nombre)
 
-    plan = ask(f"Plan ({'/'.join(plans.PLANES)})", "basico")
-    if plan not in plans.PLANES:
-        sys.exit(f"[ERROR] Plan inválido: {plan}")
+    try:
+        plan = preguntar_plan(plans)
+    except ValueError as e:
+        sys.exit(f"[ERROR] {e}")
 
     print("\n" + "-" * 60)
     print(f"  Comercio:  {nombre}   Slug: {slug}   Puerto: {port}   Plan: {plan}")
