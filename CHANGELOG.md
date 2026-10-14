@@ -7,7 +7,7 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Unreleased] — El listado de comprobantes filtra por envío por mail (propuesta: v1.165.0)
+## v1.166.0 — El listado de comprobantes filtra por envío por mail
 
 ADR-051. **Sin migración.** `GET /api/facturas?envio=enviada|sin_enviar` (y `get_facturas_filtradas(..., envio=)`): `enviada` = salió al menos un mail; `sin_enviar` = ningún mail salió (un intento fallido cuenta como no enviado) y sólo comprobantes con CAE. Otro valor, o vacío, no filtra. Se combina con la vista, las fechas y la búsqueda, y el total y la paginación lo respetan.
 ## [Unreleased] — Un proceso sin el almacén de secretos dice la causa: `secretos_fuera_de_alcance()` (propuesta: v1.165.0)
