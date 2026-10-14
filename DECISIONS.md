@@ -1072,3 +1072,17 @@ Detalle en `docs/fce.md`.
 **Qué no.** Ni Bcc al remitente ni reintentos automáticos. Los envíos anteriores no se reconstruyen. El listado no filtra por envío (el resumen va por fila; filtrar pediría tocar `get_facturas_filtradas`): queda para cuando se pida.
 
 **Tests.** `test_el_envio_por_mail_deja_rastro_enviado_o_con_error` (facturas) y `test_cada_envio_deja_rastro_y_el_listado_lo_marca` (presupuestos): un fallo y un éxito, orden, motivo, usuario y resumen del listado. El del router chico suma `GET …/envios` a sus rutas.
+
+## ADR-051 — El listado de comprobantes filtra por «enviada» y «sin enviar»
+
+**Estado:** aceptada (2026-10-14). Pedido del humano, a continuación del ADR-050: con el rastro de `envios_email`, poder listar de una vez qué se mandó y qué no.
+
+**Qué se hizo.** `get_facturas_filtradas` y `GET /api/facturas` reciben `envio`. Es una condición más del `WHERE` (un `EXISTS` sobre `envios_email`), así que el total y la paginación la respetan y se combina con la vista, las fechas y la búsqueda.
+
+- `enviada`: salió al menos un mail (`estado = 'enviado'`).
+- `sin_enviar`: no salió ninguno. **Un intento fallido cuenta como no enviado**, porque el cliente no lo recibió. Se limita a los comprobantes con CAE (la misma condición de la vista `sin_cobrar`), porque un borrador sin autorizar no es algo que se le reclame a nadie.
+- Otro valor o vacío no filtra, como el `estado` de presupuestos.
+
+**Qué no.** Un comprobante enviado **antes del 2026-10-14** aparece como «sin enviar»: el rastro empieza con el ADR-050. Presupuestos no tiene este filtro: su listado ya filtra por estado, y mandarlo lo pasa a `enviado`.
+
+**Tests.** `test_el_listado_filtra_por_enviada_y_sin_enviar` (SQLite) y `test_el_filtro_de_envio_en_postgres`: una enviada, una con envío fallido y una sin envío.

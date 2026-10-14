@@ -369,8 +369,18 @@ def get_all_facturas(limit=100, vista="facturas"):
         return result
 
 
-def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50, offset=0):
-    """Listado de facturas con filtros de fecha, búsqueda y paginación."""
+#: Valores de `envio` en `get_facturas_filtradas` (ADR-051). Otro valor no filtra.
+ENVIO_ENVIADA = "enviada"
+ENVIO_SIN_ENVIAR = "sin_enviar"
+
+
+def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50, offset=0, envio=""):
+    """Listado de facturas con filtros de fecha, búsqueda, envío por mail y paginación.
+
+    `envio` (ADR-051) mira el rastro de `envios_email`: `enviada` es «salió al menos un mail»;
+    `sin_enviar` es «no salió ninguno» —un intento fallido cuenta como no enviado, porque el
+    cliente no lo recibió— y se limita a los comprobantes con CAE, que son los que se mandan.
+    """
     solo_sin_cobrar = (vista == "sin_cobrar")
     tipos = _VISTA_TIPOS.get("facturas" if solo_sin_cobrar else vista, _TIPOS_FACTURA)
     ph = ",".join("?" * len(tipos))
@@ -394,6 +404,13 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
             COALESCE((SELECT SUM(cm.monto) FROM caja_movimientos cm
                       WHERE cm.factura_id=f.id AND cm.tipo='ingreso' {_cc_excl}), 0) < f.total
         """)
+    salio_un_mail = ("EXISTS (SELECT 1 FROM envios_email e WHERE e.documento_tipo = 'factura'"
+                     " AND e.documento_id = f.id AND e.estado = 'enviado')")
+    if envio == ENVIO_ENVIADA:
+        conds.append(salio_un_mail)
+    elif envio == ENVIO_SIN_ENVIAR:
+        conds.append("f.cae != '' AND f.cae IS NOT NULL AND f.cae != 'PENDIENTE'")
+        conds.append(f"NOT {salio_un_mail}")
     where = " AND ".join(conds)
     cobrada_col = f"""
         COALESCE((SELECT SUM(cm.monto) FROM caja_movimientos cm
