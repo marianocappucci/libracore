@@ -112,6 +112,18 @@ DEFAULTS = {
 #: el `SECRET_KEY` sin ninguna ganancia de seguridad.
 CLAVES_SECRETAS = ("mp_access_token", "mp_webhook_secret", "email_smtp_password")
 
+#: Marca en `config.json` de que la instancia guarda sus secretos en el almacen.
+#: La escriben `migrar_secretos_al_almacen()` y `save()` con almacen enchufado.
+#:
+#: 🔴 **Existe por el cron.** El almacen lo enchufa el producto al arrancar la
+#: app, y un script que corre por `docker exec` no pasa por ese arranque: lee el
+#: JSON pelado, ve el token vacio y no puede distinguir "no hay token" de "el
+#: token esta en un lugar que este proceso no abrio". Del 2026-09-18 al
+#: 2026-10-14 el cron de Contalibra no facturo ningun abono de MercadoPago y el
+#: log decia "No hay Access Token" todas las noches. Con la marca, el que lee
+#: puede decir la causa verdadera. Ver `secretos_fuera_de_alcance()`.
+MARCA_SECRETOS_EN_ALMACEN = "secretos_en_almacen"
+
 #: El almacen cifrado, o `None`. Estado del proceso, igual que el destino de
 #: `libracore.db.core.configure()`.
 _almacen = None
@@ -135,6 +147,25 @@ def almacen_de_secretos():
     """El almacen enchufado, o `None`. Para que un producto pueda contestar
     "¿esta instancia guarda sus secretos cifrados?" sin adivinar."""
     return _almacen
+
+
+def secretos_fuera_de_alcance() -> bool:
+    """¿Este proceso lee la config de una instancia que guarda sus secretos
+    cifrados **sin haber enchufado el almacen**?
+
+    Si es asi, `load()` devuelve los secretos vacios aunque la instancia los
+    tenga. `load()` no lo trata como error a proposito —`panel_admin` y el
+    provisioning leen configs ajenas sin base al lado—, asi que lo pregunta
+    quien necesita el secreto para trabajar: el cron de MercadoPago, antes de
+    concluir que no hay token.
+    """
+    if _almacen is not None or not os.path.exists(CONFIG_PATH):
+        return False
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return bool(json.load(f).get(MARCA_SECRETOS_EN_ALMACEN))
+    except Exception:
+        return False
 
 
 # ── Empresa ficticia de las demos (ADR-038) ─────────────────────────────────
@@ -306,6 +337,7 @@ def save(data, extra_defaults: dict | None = None):
             if valor != _almacen.get(clave):
                 _almacen.set(clave, valor)
             merged[clave] = ""
+        merged[MARCA_SECRETOS_EN_ALMACEN] = True
     _escribir_atomico(CONFIG_PATH, merged)
 
 
@@ -366,9 +398,16 @@ def migrar_secretos_al_almacen() -> dict:
         informe["migradas"].append(clave)
         a_limpiar.append(clave)
 
-    if a_limpiar:
+    # La marca va aunque no haya nada que limpiar: una instancia migrada antes
+    # de que existiera la marca la recibe en el proximo arranque. Pero no si
+    # algo fallo: ese secreto sigue en claro en el JSON y un proceso sin
+    # almacen todavia puede usarlo, asi que no hay que decirle que no lo tiene.
+    marcar = not informe["fallaron"] and not crudo.get(MARCA_SECRETOS_EN_ALMACEN)
+    if a_limpiar or marcar:
         for clave in a_limpiar:
             crudo[clave] = ""
+        if not informe["fallaron"]:
+            crudo[MARCA_SECRETOS_EN_ALMACEN] = True
         # Se reescribe el JSON **crudo**, sin pasar por `save()`: `save` mergea
         # contra DEFAULTS, y toda clave propia del producto que no este ahi
         # volveria a su valor por defecto. Ese merge ya borro el token de

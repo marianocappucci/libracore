@@ -234,3 +234,20 @@ def test_no_ingiere_cobros_de_otra_cuenta_ni_referencias_omitidas(sync, entorno)
         sync.ingerir(entorno.load(), dias=7, referencias_a_omitir=("venta-",))
     )
     assert [n.payment_id for n in nuevos] == ["800012"]
+
+
+def test_sin_almacen_enchufado_dice_la_causa_y_no_que_falta_el_token(sync, entorno, caplog):
+    """🔴 Del 2026-09-18 al 2026-10-14 el cron de Contalibra no facturó ningún
+    abono: corría por `docker exec` sin el arranque de la app que enchufa el
+    almacén, leía el token vacío y el log decía «no hay token»."""
+    import json
+    with open(entorno.CONFIG_PATH, encoding="utf-8") as f:
+        crudo = json.load(f)
+    crudo["mp_access_token"] = ""
+    crudo[entorno.MARCA_SECRETOS_EN_ALMACEN] = True
+    with open(entorno.CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(crudo, f)
+
+    with caplog.at_level("ERROR"):
+        assert _correr(sync) == {"error": "sin_almacen_de_secretos"}
+    assert "usar_almacen_de_secretos" in caplog.text

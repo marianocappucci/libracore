@@ -7,6 +7,18 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Un proceso sin el almacén de secretos dice la causa: `secretos_fuera_de_alcance()` (propuesta: v1.165.0)
+
+**Sin migración y sin cambio de schema.** Del 2026-09-18 al 2026-10-14 el cron de MercadoPago de Contalibra (`docker exec … scripts/sync_mp_auto.py`) no facturó ningún abono: el almacén cifrado lo enchufa el arranque de la app, el script no pasa por ahí, `load()` devolvía el token vacío y el log decía «No hay Access Token» todas las noches.
+
+- **`config_manager.MARCA_SECRETOS_EN_ALMACEN`** (`"secretos_en_almacen"` en `config.json`): la escriben `migrar_secretos_al_almacen()` —también cuando no hay nada que limpiar, así las instancias ya migradas la reciben en el próximo arranque, y no si cifrar falló— y `save()` con almacén enchufado.
+- **`config_manager.secretos_fuera_de_alcance() -> bool`**: hay marca y este proceso no enchufó el almacén. `load()` no cambia: sigue sin tratarlo como error, por `panel_admin` y el provisioning.
+- **`mp_sync.sincronizar_y_facturar`**: con los secretos fuera de alcance devuelve `{"error": "sin_almacen_de_secretos"}` y loguea que falta `usar_almacen_de_secretos()`, en lugar de `sin_token`.
+
+### Para los productos
+
+- **Todo script que corra fuera de la app y lea un secreto** (el cron de MP, el envío de correo) tiene que enchufar el almacén igual que el arranque, antes de llamar al motor. Con el pin nuevo, el cron que no lo haga lo dice en su log en vez de fallar callado.
+
 ## [Unreleased] — El rastro de los envíos por mail: `envios_email` (propuesta: v1.164.0)
 
 ADR-050. **Migración `0026_envios_email`** (tabla nueva, idempotente, sin tocar filas): corre sola con `libracore-migrar upgrade` al arrancar el contenedor. Cada `POST …/enviar-email` de comprobantes (los dos factories de `facturas_router`) y de presupuestos (`presupuestos_router`) anota el intento, logrado o fallido, con destinatario, usuario y motivo. Lectura: `GET …/{id}/envios`, `envios_email` en el detalle y `envio_email` (resumen o `null`) en cada fila del listado. `_registrar_enviar_email` recibe `usuario_actual` (opcional). Los envíos anteriores no dejaron rastro y no se reconstruyen.

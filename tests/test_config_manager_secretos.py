@@ -340,3 +340,54 @@ def test_el_repositorio_de_libraauth_sirve_como_almacen(cm, tmp_path, monkeypatc
     crudo_db = db.read_bytes()
     assert TOKEN.encode() not in crudo_db
     assert b"mp_access_token" in crudo_db      # control positivo del barrido
+
+
+# ── La marca: un proceso sin almacén sabe que le faltan los secretos ────────
+#
+# 🔴 Del 2026-09-18 al 2026-10-14 el cron de Contalibra corrió sin almacén: leía
+# el token vacío y logueaba «no hay token» cada noche, sin facturar un abono.
+
+def test_sin_marca_nadie_reclama_el_almacen(cm):
+    """Control: una instancia que nunca migró sigue con su JSON y nada cambia."""
+    cm.save({"mp_access_token": TOKEN})
+    assert cm.secretos_fuera_de_alcance() is False
+
+
+def test_migrar_deja_la_marca_y_un_proceso_sin_almacen_la_ve(cm):
+    cm.save({"mp_access_token": TOKEN})
+    cm.usar_almacen_de_secretos(AlmacenFalso())
+    cm.migrar_secretos_al_almacen()
+    assert _json_crudo(cm)[cm.MARCA_SECRETOS_EN_ALMACEN] is True
+    assert cm.secretos_fuera_de_alcance() is False   # éste sí lo tiene
+
+    cm.usar_almacen_de_secretos(None)                # el cron, sin el arranque
+    assert cm.load()["mp_access_token"] == ""
+    assert cm.secretos_fuera_de_alcance() is True
+
+
+def test_una_instancia_ya_migrada_recibe_la_marca_en_el_arranque(cm):
+    """Las vivas migraron antes de que existiera la marca: el JSON ya no tiene
+    nada que limpiar, y la marca igual tiene que llegar con el deploy."""
+    cm.save({"mp_access_token": ""})
+    assert cm.MARCA_SECRETOS_EN_ALMACEN not in _json_crudo(cm)
+    cm.usar_almacen_de_secretos(AlmacenFalso({"mp_access_token": TOKEN}))
+
+    informe = cm.migrar_secretos_al_almacen()
+
+    assert informe == {"migradas": [], "ya_estaban": [], "fallaron": {}}
+    assert _json_crudo(cm)[cm.MARCA_SECRETOS_EN_ALMACEN] is True
+
+
+def test_save_con_almacen_deja_la_marca(cm):
+    cm.usar_almacen_de_secretos(AlmacenFalso())
+    cm.save({"mp_access_token": TOKEN})
+    assert _json_crudo(cm)[cm.MARCA_SECRETOS_EN_ALMACEN] is True
+
+
+def test_si_cifrar_falla_no_se_marca(cm):
+    """El que falló sigue en claro en el JSON y un proceso sin almacén todavía
+    puede usarlo: decirle que no lo tiene lo dejaría sin cobrar."""
+    cm.save({"mp_access_token": TOKEN})
+    cm.usar_almacen_de_secretos(AlmacenFalso(rompe_con="mp_access_token"))
+    cm.migrar_secretos_al_almacen()
+    assert cm.MARCA_SECRETOS_EN_ALMACEN not in _json_crudo(cm)

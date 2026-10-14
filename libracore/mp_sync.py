@@ -174,7 +174,19 @@ async def sincronizar_y_facturar(
 
     Devuelve el resumen para el log del cron: cuántos entraron, cuántos se
     facturaron solos y cuántos quedaron esperando a una persona.
+
+    > 🔴 **El proceso tiene que haber enchufado el almacén de secretos.** Sin él
+    > el token se lee vacío aunque la instancia lo tenga, y el cron de
+    > Contalibra pasó así del 2026-09-18 al 2026-10-14 sin facturar un solo
+    > abono, con un log que decía «no hay token». Ahora lo dice por su nombre.
     """
+    if config_manager.secretos_fuera_de_alcance():
+        logger.error(
+            "Esta instancia guarda sus secretos en el almacén cifrado y este "
+            "proceso no lo enchufó: el script tiene que llamar a "
+            "config_manager.usar_almacen_de_secretos() antes de sincronizar."
+        )
+        return {"error": "sin_almacen_de_secretos"}
     cfg = config_manager.load()
     try:
         nuevos = await ingerir(cfg, dias=dias, referencias_a_omitir=referencias_a_omitir)
