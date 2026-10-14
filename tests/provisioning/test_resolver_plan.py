@@ -42,3 +42,41 @@ def test_un_reemplazo_que_no_es_vigente_no_se_acepta():
 def test_un_plan_desconocido_falla_aunque_el_producto_no_declare_retirados():
     with pytest.raises(ValueError, match="no-existe"):
         resolver_plan(_plans(["basico", "pro"]), "no-existe")
+
+
+# --- El asistente interactivo (`nuevo_cliente.py`, `preguntar_plan`) ------------------------
+# Hasta v1.166.0 ofrecía «basico» por defecto: en un producto de plan único, Enter daba
+# «Plan inválido» y el alta no seguía.
+
+from libracore.provisioning.nuevo_cliente import preguntar_plan  # noqa: E402
+
+
+def _no_preguntar(*_):
+    raise AssertionError("con un solo plan no se pregunta")
+
+
+def test_el_asistente_con_un_solo_plan_no_pregunta_y_lo_usa(capsys):
+    plans = _plans(["unico"], {"basico": "unico"})
+    assert preguntar_plan(plans, _no_preguntar) == "unico"
+    assert "unico" in capsys.readouterr().out
+
+
+def test_el_asistente_con_varios_planes_ofrece_el_primero_y_enter_lo_acepta():
+    ofrecido = {}
+
+    def enter(msg, default):
+        ofrecido["default"] = default
+        return default
+
+    assert preguntar_plan(_plans(["estandar", "premium"]), enter) == "estandar"
+    assert ofrecido["default"] == "estandar"
+
+
+def test_el_asistente_acepta_un_plan_retirado_con_su_reemplazo():
+    plans = _plans(["estandar", "premium"], {"basico": "estandar"})
+    assert preguntar_plan(plans, lambda *_: "basico") == "estandar"
+
+
+def test_el_asistente_rechaza_un_plan_desconocido():
+    with pytest.raises(ValueError, match="no-existe"):
+        preguntar_plan(_plans(["estandar", "premium"]), lambda *_: "no-existe")

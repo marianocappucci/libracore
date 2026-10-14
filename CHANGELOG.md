@@ -7,6 +7,10 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## v1.166.1 — El asistente de alta no corta con un solo plan
+
+**Sin migración.** `nuevo_cliente.py` (alta interactiva) preguntaba el plan con «basico» por defecto y salía con «Plan inválido» si no estaba en `plans.PLANES`: en un producto de plan único (VentaLibra, LibraCargo) Enter cortaba el alta. Ahora `preguntar_plan(plans)`: con un solo plan vigente lo usa sin preguntar; con varios, ofrece el primero y resuelve la respuesta con `resolver_plan` (un plan retirado entra con su reemplazo; uno desconocido, error). El alta no interactiva (`crear_cliente`) ya resolvía así.
+
 ## v1.166.0 — El listado de comprobantes filtra por envío por mail
 
 ADR-051. **Sin migración.** `GET /api/facturas?envio=enviada|sin_enviar` (y `get_facturas_filtradas(..., envio=)`): `enviada` = salió al menos un mail; `sin_enviar` = ningún mail salió (un intento fallido cuenta como no enviado) y sólo comprobantes con CAE. Otro valor, o vacío, no filtra. Se combina con la vista, las fechas y la búsqueda, y el total y la paginación lo respetan.
