@@ -24,7 +24,9 @@ from pydantic import BaseModel
 
 from libracore import config_manager
 from libracore.db import clients as _clients
+from libracore.db import envios_email
 from libracore.db import remitos_presupuestos as _rp
+from libracore.db.envios_email import TIPO_PRESUPUESTO
 from libracore.facturas_router import calcular_totales
 from libracore.validacion import sin_booleanos
 
@@ -125,6 +127,9 @@ def build_presupuestos_router(
     def listar(q: str = "", estado: str = ""):
         estado_f = estado if estado in _ESTADOS_VALIDOS else None
         items = _rp.search_presupuestos(q, estado_f) if q else _rp.get_all_presupuestos(200, estado_f)
+        resumen = envios_email.resumen_de(TIPO_PRESUPUESTO, [p["id"] for p in items])
+        for p in items:
+            p["envio_email"] = resumen.get(p["id"])
         return {"items": items, "counts": _rp.get_presupuestos_count_by_estado()}
 
     @router.post("")
@@ -150,12 +155,19 @@ def build_presupuestos_router(
         _rp.update_presupuesto_pdf_path(pres_id, pdf_path)
         return _rp.get_presupuesto(pres_id)
 
+    @router.get("/{pres_id}/envios")
+    def envios(pres_id: int):
+        """Los intentos de envío por mail de este presupuesto, el más reciente primero."""
+        if not _rp.get_presupuesto(pres_id):
+            raise HTTPException(404, "Presupuesto no encontrado")
+        return envios_email.de_documento(TIPO_PRESUPUESTO, pres_id)
+
     @router.get("/{pres_id}")
     def detalle(pres_id: int):
         pres = _rp.get_presupuesto(pres_id)
         if not pres:
             raise HTTPException(404, "Presupuesto no encontrado")
-        return pres
+        return pres | {"envios_email": envios_email.de_documento(TIPO_PRESUPUESTO, pres_id)}
 
     @router.put("/{pres_id}")
     def actualizar(pres_id: int, payload: _PresupuestoPayload):
@@ -197,7 +209,7 @@ def build_presupuestos_router(
         return _rp.get_presupuesto(pres_id)
 
     @router.post("/{pres_id}/enviar-email")
-    def enviar_email(pres_id: int, payload: _EmailPayload):
+    def enviar_email(pres_id: int, payload: _EmailPayload, user: dict = Depends(usuario_actual)):
         pres = _rp.get_presupuesto(pres_id)
         if not pres:
             raise HTTPException(404, "Presupuesto no encontrado")
@@ -210,6 +222,7 @@ def build_presupuestos_router(
         if not pdf_path or not os.path.exists(pdf_path):
             pdf_path = generar_pdf(pres)
         doc_label = f"Presupuesto {pres['number']}"
+        quien = (user or {}).get("username") or (user or {}).get("nombre") or ""
         try:
             enviar_comprobante(
                 to_email=payload.email.strip(), to_name=pres["client_name"], pdf_path=pdf_path,
@@ -222,7 +235,11 @@ def build_presupuestos_router(
                 ),
             )
         except Exception as e:
+            envios_email.registrar(TIPO_PRESUPUESTO, pres_id, label=doc_label,
+                                   destinatario=payload.email.strip(), error=str(e), usuario=quien)
             raise HTTPException(502, f"Error al enviar: {e}")
+        envios_email.registrar(TIPO_PRESUPUESTO, pres_id, label=doc_label,
+                               destinatario=payload.email.strip(), usuario=quien)
         # 🔑 Mandarlo ES enviarlo: el estado sigue al hecho, sin que el usuario
         # tenga que apretar despues "Marcar como enviado". Va DESPUES del envio
         # a proposito: si el SMTP falla sale el 502 y el presupuesto se queda en

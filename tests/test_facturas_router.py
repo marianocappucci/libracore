@@ -1520,3 +1520,32 @@ def test_el_aviso_valida_lo_que_le_preguntan(client, monkeypatch, params):
     assert client.get(f"{API}/fce/corresponde", params=params).status_code == 422
     assert pedidos == [], "no se le pregunta nada a ARCA"
 
+
+
+def test_el_envio_por_mail_deja_rastro_enviado_o_con_error(client, monkeypatch):
+    """«¿Se mandó la factura?» se contesta mirando el rastro (ADR-050), también si falló."""
+    from libracore import config_manager as cm
+
+    cm.save({"email_smtp_host": "smtp.example.com", "email_smtp_user": "yo@example.com",
+             "email_smtp_password": "x"})
+    factura = _emitir(client)
+    assert client.get(f"{API}/{factura['id']}/envios").json() == []
+    assert client.get(API).json()["items"][0]["envio_email"] is None
+
+    def falla(**kw):
+        raise RuntimeError("smtp caído")
+
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", falla)
+    assert client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "a@b.com"}).status_code == 502
+    monkeypatch.setattr(fr.email_sender, "enviar_comprobante", lambda **kw: None)
+    assert client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "c@d.com"}).status_code == 200
+
+    envios = client.get(f"{API}/{factura['id']}/envios").json()
+    assert [(e["destinatario"], e["estado"]) for e in envios] == [("c@d.com", "enviado"), ("a@b.com", "error")]
+    assert "smtp caído" in envios[1]["error"]
+    assert envios[0]["documento_label"] == "FACTURA C 0001-00000001"
+    assert envios[0]["usuario"] == "admin"
+
+    item = client.get(API).json()["items"][0]
+    assert item["envio_email"]["cantidad"] == 2 and item["envio_email"]["ultimo_estado"] == "enviado"
+    assert len(client.get(f"{API}/{factura['id']}").json()["envios_email"]) == 2

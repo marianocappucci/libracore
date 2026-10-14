@@ -820,6 +820,27 @@ def init_core_schema(conn: Conexion):
         -- La consulta caliente: la bandeja abre en los pendientes.
         CREATE INDEX IF NOT EXISTS idx_comprobantes_pendientes_estado
             ON comprobantes_pendientes(estado, created_at);
+
+        -- El rastro de cada envío por mail de un comprobante o un presupuesto (ADR-050): una fila
+        -- por INTENTO, enviado o fallido. Antes el mail salía y no quedaba nada: un reclamo de
+        -- «no me llegó la factura» no se podía contestar. `documento_id` apunta a `facturas` o a
+        -- `presupuestos` según `documento_tipo`, sin FK a propósito (son dos tablas): el rastro
+        -- sobrevive a un borrado y `documento_label` guarda cómo se llamaba.
+        CREATE TABLE IF NOT EXISTS envios_email (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            -- 'factura' | 'presupuesto'
+            documento_tipo  TEXT NOT NULL,
+            documento_id    INTEGER NOT NULL,
+            documento_label TEXT NOT NULL DEFAULT '',
+            destinatario    TEXT NOT NULL,
+            -- 'enviado' | 'error'
+            estado          TEXT NOT NULL,
+            error           TEXT NOT NULL DEFAULT '',
+            usuario         TEXT NOT NULL DEFAULT '',
+            created_at      TEXT DEFAULT (datetime('now','-3 hours'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_envios_email_documento
+            ON envios_email(documento_tipo, documento_id);
     """)
 
     if is_postgres():

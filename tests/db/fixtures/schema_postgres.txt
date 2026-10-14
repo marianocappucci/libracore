@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (405)
+## tablas (414)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -175,6 +175,15 @@ egresos|proveedor_nombre|text|NN|''::text
 egresos|tipo_comprobante|text|NN|'otro'::text
 egresos|total|numeric|NN|
 egresos|usuario_id|integer||
+envios_email|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+envios_email|destinatario|text|NN|
+envios_email|documento_id|integer|NN|
+envios_email|documento_label|text|NN|''::text
+envios_email|documento_tipo|text|NN|
+envios_email|error|text|NN|''::text
+envios_email|estado|text|NN|
+envios_email|id|bigint|NN|nextval('envios_email_id_seq'::regclass)
+envios_email|usuario|text|NN|''::text
 facturacion_alias|activo|integer|NN|1
 facturacion_alias|cliente_id|integer|NN|
 facturacion_alias|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
@@ -407,7 +416,7 @@ ventas|total|numeric|NN|0
 ventas|turno_id|integer||
 ventas|usuario_id|integer||
 
-## claves primarias (34)
+## claves primarias (35)
 arca_config|PRIMARY KEY (id)
 arca_credenciales_servicio|PRIMARY KEY (id)
 auth_log|PRIMARY KEY (id)
@@ -424,6 +433,7 @@ cuentas_tesoreria|PRIMARY KEY (id)
 depositos|PRIMARY KEY (id)
 egresos_pagos|PRIMARY KEY (id)
 egresos|PRIMARY KEY (id)
+envios_email|PRIMARY KEY (id)
 facturacion_alias|PRIMARY KEY (id)
 facturas|PRIMARY KEY (id)
 lista_precio_items|PRIMARY KEY (lista_id, producto_id)
@@ -492,7 +502,7 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (68)
+## índices (70)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 arca_credenciales_servicio|arca_credenciales_servicio_empresa_servicio_ambiente_key|CREATE UNIQUE INDEX arca_credenciales_servicio_empresa_servicio_ambiente_key ON public.arca_credenciales_servicio USING btree (empresa, servicio, ambiente)
@@ -526,6 +536,8 @@ cuentas_tesoreria|cuentas_tesoreria_pkey|CREATE UNIQUE INDEX cuentas_tesoreria_p
 depositos|depositos_pkey|CREATE UNIQUE INDEX depositos_pkey ON public.depositos USING btree (id)
 egresos_pagos|egresos_pagos_pkey|CREATE UNIQUE INDEX egresos_pagos_pkey ON public.egresos_pagos USING btree (id)
 egresos|egresos_pkey|CREATE UNIQUE INDEX egresos_pkey ON public.egresos USING btree (id)
+envios_email|envios_email_pkey|CREATE UNIQUE INDEX envios_email_pkey ON public.envios_email USING btree (id)
+envios_email|idx_envios_email_documento|CREATE INDEX idx_envios_email_documento ON public.envios_email USING btree (documento_tipo, documento_id)
 facturacion_alias|facturacion_alias_pkey|CREATE UNIQUE INDEX facturacion_alias_pkey ON public.facturacion_alias USING btree (id)
 facturacion_alias|facturacion_alias_tipo_valor_key|CREATE UNIQUE INDEX facturacion_alias_tipo_valor_key ON public.facturacion_alias USING btree (tipo, valor)
 facturas|facturas_pkey|CREATE UNIQUE INDEX facturas_pkey ON public.facturas USING btree (id)

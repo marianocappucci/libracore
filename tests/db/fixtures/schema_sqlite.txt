@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (405)
+## tablas (414)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -175,6 +175,15 @@ egresos|proveedor_nombre|TEXT|NN|''
 egresos|tipo_comprobante|TEXT|NN|'otro'
 egresos|total|REAL|NN|
 egresos|usuario_id|INTEGER||
+envios_email|created_at|TEXT||datetime('now','-3 hours')
+envios_email|destinatario|TEXT|NN|
+envios_email|documento_id|INTEGER|NN|
+envios_email|documento_label|TEXT|NN|''
+envios_email|documento_tipo|TEXT|NN|
+envios_email|error|TEXT|NN|''
+envios_email|estado|TEXT|NN|
+envios_email|id|INTEGER||
+envios_email|usuario|TEXT|NN|''
 facturacion_alias|activo|INTEGER|NN|1
 facturacion_alias|cliente_id|INTEGER|NN|
 facturacion_alias|created_at|TEXT||datetime('now','-3 hours')
@@ -407,7 +416,7 @@ ventas|total|REAL|NN|0
 ventas|turno_id|INTEGER||
 ventas|usuario_id|INTEGER||
 
-## claves primarias (34)
+## claves primarias (35)
 arca_config|id
 arca_credenciales_servicio|id
 auth_log|id
@@ -424,6 +433,7 @@ cuentas_tesoreria|id
 depositos|id
 egresos_pagos|id
 egresos|id
+envios_email|id
 facturacion_alias|id
 facturas|id
 lista_precio_items|lista_id,producto_id
@@ -492,7 +502,7 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (35)
+## índices (36)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
 arca_credenciales_servicio|sqlite_autoindex_arca_credenciales_servicio_1|UNIQUE implícito (empresa,servicio,ambiente)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
@@ -510,6 +520,7 @@ clients|idx_clients_external_ref|CREATE UNIQUE INDEX idx_clients_external_ref ON
 comprobantes_pendientes|idx_comprobantes_pendientes_estado|CREATE INDEX idx_comprobantes_pendientes_estado ON comprobantes_pendientes(estado, created_at)
 comprobantes_pendientes|idx_comprobantes_pendientes_numero_interno|CREATE UNIQUE INDEX idx_comprobantes_pendientes_numero_interno ON comprobantes_pendientes(origen_producto, origen_instancia, numero_interno) WHERE numero_interno IS NOT NULL
 comprobantes_pendientes|idx_comprobantes_pendientes_origen|CREATE UNIQUE INDEX idx_comprobantes_pendientes_origen ON comprobantes_pendientes(origen_producto, origen_instancia, origen_tipo, origen_id)
+envios_email|idx_envios_email_documento|CREATE INDEX idx_envios_email_documento ON envios_email(documento_tipo, documento_id)
 facturacion_alias|sqlite_autoindex_facturacion_alias_1|UNIQUE implícito (tipo,valor)
 facturas|idx_facturas_cliente_cuit|CREATE INDEX idx_facturas_cliente_cuit ON facturas(cliente_cuit)
 facturas|idx_facturas_fecha|CREATE INDEX idx_facturas_fecha ON facturas(fecha)

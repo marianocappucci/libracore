@@ -307,10 +307,11 @@ def _app(**opciones) -> TestClient:
     return TestClient(app)
 
 
-def test_el_router_chico_solo_tiene_el_pdf_y_el_mail():
+def test_el_router_chico_solo_tiene_el_pdf_el_mail_y_su_rastro():
     rutas = sorted((m, r.path) for r in fr.build_comprobantes_pdf_router(usuario_actual=lambda: None).routes
                    for m in r.methods)
-    assert rutas == [("GET", "/api/facturas/{factura_id}/pdf"),
+    assert rutas == [("GET", "/api/facturas/{factura_id}/envios"),
+                     ("GET", "/api/facturas/{factura_id}/pdf"),
                      ("POST", "/api/facturas/{factura_id}/enviar-email")]
 
 
