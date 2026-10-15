@@ -20,6 +20,18 @@ ADR-053. **Sin migración y sin cambio de schema** (el gate `test_schema_congela
 - **Subir el pin** de libracore a v1.168.0 en los seis que llaman a `init_core_schema()` al arrancar (MedLibra, Gestiolibra, VentaLibra, LibraClub, Contalibra, Restolibra). No hay que tocar código: el `configure()` queda seguro con N workers.
 - **No lo cubre** el DDL propio del producto: el `Base.metadata.create_all(get_engine())` de LibraGenda de MedLibra y Gestiolibra (`app/main.py`), que sobre una base vacía puede dar la clave duplicada del catálogo, y el `init_schema()` de LibraCommerce (VentaLibra, Contalibra, Restolibra). Si corren al arrancar, van dentro de `una_vez_al_arrancar(...)`.
 
+## [Unreleased] — El Swagger de la API sólo se sirve en desarrollo: `cerrar_docs_de_la_api` (propuesta: v1.168.0)
+
+ADR-054. **Sin migración.** `libracore/docs_api.py`: `/docs`, `/redoc`, `/openapi.json` y `/docs/oauth2-redirect` dan 404 salvo con `ENV=development` o `LIBRA_DOCS_API=1`. Medido el 2026-10-15: daban 200 sin sesión en clientes reales, demos, backoffices y panel. La demo también queda cerrada. Se decide en cada pedido y no al armar la app. `create_admin_app` suma `openapi_url=None` (los backoffices Jinja2 de Contalibra y Restolibra publicaban `/openapi.json`).
+
+### Para los productos
+
+- **Una línea**, justo después de crear la app y antes de montar la SPA: `from libracore.docs_api import cerrar_docs_de_la_api` y `cerrar_docs_de_la_api(app)` tras `app = FastAPI(...)`. Y un `tests/test_docs_cerrados.py` que mida contra la app de verdad (los dos casos: producción 404, desarrollo 200).
+- `libra-backoffice` y `libra-panel`: igual, y sacan `docs_url=None, redoc_url=None` (la guarda ya los cierra, y en `ENV=development` los deja ver).
+- Contalibra y Restolibra: además del producto, su backoffice (`admin/app.py`) queda cerrado sólo con subir el pin.
+- La suite de un producto ya corre con `ENV=development`, así que los tests que leen `/openapi.json` (VentaLibra, LibraCommerce) siguen andando.
+- Quien necesite ver el Swagger de una instancia real o demo: `LIBRA_DOCS_API=1` en su compose (el panel no la escribe).
+
 ## [Unreleased] — La lectura del tope de sucursales trae su texto: `mensaje_de_limite` (propuesta: v1.167.0)
 
 ADR-052. **Sin migración.** `GET`/`PUT /api/limites/sucursales` devuelven una clave más: `{contratadas, activas, mensaje_de_limite}`, con el texto del 409 del alta («Tu plan incluye N sucursal(es). Para sumar otra, comunicate con nosotros.») cuando hay tope y `null` cuando no. Aditivo: las claves de antes no cambian y `libra-backoffice` (que lee `contratadas` y `activas` con `.get`) no se entera.

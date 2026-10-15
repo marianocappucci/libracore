@@ -33,7 +33,8 @@ def _slug_del_producto(nombre: str) -> str:
 
 def create_admin_app(product_name: str, auth, services, templates, clientes_router,
                      static_dir: str | None = None) -> FastAPI:
-    app = FastAPI(title=f"{product_name} Backoffice", docs_url=None, redoc_url=None)
+    # Sin Swagger ni `openapi.json` nunca (ADR-054): un backoffice no tiene API pública que documentar.
+    app = FastAPI(title=f"{product_name} Backoffice", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(SecurityHeadersMiddleware)
     # Los 8 backoffices salen de acá: un 500 de cualquiera queda en `DATA_DIR/errores/` (ADR-045).
     # Sin endpoint del navegador: estas apps son Jinja2, no tienen `libra-ui`.
