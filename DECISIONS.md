@@ -1086,3 +1086,20 @@ Detalle en `docs/fce.md`.
 **Qué no.** Un comprobante enviado **antes del 2026-10-14** aparece como «sin enviar»: el rastro empieza con el ADR-050. Presupuestos no tiene este filtro: su listado ya filtra por estado, y mandarlo lo pasa a `enviado`.
 
 **Tests.** `test_el_listado_filtra_por_enviada_y_sin_enviar` (SQLite) y `test_el_filtro_de_envio_en_postgres`: una enviada, una con envío fallido y una sin envío.
+
+## ADR-052 — La lectura de `/api/limites/sucursales` trae el texto del tope (`mensaje_de_limite`), para que la pantalla no lo copie
+
+**Estado:** aceptada (2026-10-14). Pendiente del humano en VentaLibra («`mensajeDeLimite` desde libracore»), que dejó el ADR de `libra-ui` 0.136.0 en «lo que no cubre».
+
+**Contexto.** El 409 del alta de una sucursal que pasa lo contratado dice `mensaje_de_limite(contratadas)` (ADR-041). La pantalla `Sucursales` del kit (`libra-ui` 0.136.0) frena el botón «Nueva sucursal» al llegar al tope y muestra el motivo **antes** de que haya un 409, así que necesitaba el mismo texto: lo escribió a mano en `mensajeDeLimite` (`Sucursales.tsx`), «copia del motor; si cambia allá, cambia acá». Dos frases que tienen que ser una sola se desfasan en silencio; el endpoint no la devolvía.
+
+**Qué ya existe** (se miró antes): `mensaje_de_limite` y `LimiteExcedido` (este módulo), `LimiteOut` (`{contratadas, activas}`), un único consumidor de la lectura además del kit —`libra-backoffice` (`routers/instancias.py`), que lee `respuesta.get("contratadas")` y `respuesta.get("activas")`, así que una clave más no le cambia nada—.
+
+**Decisión.** `LimiteOut` suma `mensaje_de_limite: str | None`: el texto de `mensaje_de_limite(contratadas)` cuando hay tope y `null` cuando no (la instancia sin dato no limita). Lo traen el `GET` y el `PUT` (comparten modelo). Es **aditivo**: ninguna clave existente cambia.
+
+**Consecuencias.**
+- MINOR (propuesta **v1.167.0**), **sin migración**. Los productos no tocan nada: el router ya está montado.
+- El kit lo lee de la respuesta (`libra-ui` 0.152.0, ADR-064) y deja de tener la frase. Un motor anterior a esta versión no manda la clave: el kit usa entonces la copia que conserva como respaldo hasta que los productos suban el pin (ver ese ADR).
+- Si la frase cambia, cambia en `mensaje_de_limite` y las dos puntas (el 409 y la pantalla) la siguen.
+
+**Tests.** `tests/test_limites.py`: el `GET` y el `PUT` traen el texto (1 y 3 sucursales, singular y plural), es idéntico al de `LimiteExcedido`, y sin tope es `null`. Cinco de los 41 fallan contra `develop` (los que comparan el cuerpo exacto y el nuevo).

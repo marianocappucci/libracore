@@ -7,6 +7,14 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La lectura del tope de sucursales trae su texto: `mensaje_de_limite` (propuesta: v1.167.0)
+
+ADR-052. **Sin migración.** `GET`/`PUT /api/limites/sucursales` devuelven una clave más: `{contratadas, activas, mensaje_de_limite}`, con el texto del 409 del alta («Tu plan incluye N sucursal(es). Para sumar otra, comunicate con nosotros.») cuando hay tope y `null` cuando no. Aditivo: las claves de antes no cambian y `libra-backoffice` (que lee `contratadas` y `activas` con `.get`) no se entera.
+
+### Para los productos
+
+- Nada que hacer: el router ya está montado. La pantalla de Sucursales del kit (`libra-ui` 0.152.0) muestra ese texto al llegar al tope en lugar de tener su copia.
+
 ## v1.166.1 — El asistente de alta no corta con un solo plan
 
 **Sin migración.** `nuevo_cliente.py` (alta interactiva) preguntaba el plan con «basico» por defecto y salía con «Plan inválido» si no estaba en `plans.PLANES`: en un producto de plan único (VentaLibra, LibraCargo) Enter cortaba el alta. Ahora `preguntar_plan(plans)`: con un solo plan vigente lo usa sin preguntar; con varios, ofrece el primero y resuelve la respuesta con `resolver_plan` (un plan retirado entra con su reemplazo; uno desconocido, error). El alta no interactiva (`crear_cliente`) ya resolvía así.
