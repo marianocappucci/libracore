@@ -1203,3 +1203,17 @@ cerrar_docs_de_la_api(app)
 - **Lo que queda abierto, y no es de este ADR**: los otros siete productos conservan `cc_debitos`/`cc_pagos` con `ON DELETE CASCADE` hacia `clients`, y `libracore.db.clients.delete_client` sólo bloquea la baja si hay remitos o presupuestos —no mira la cuenta corriente—. Borrar un cliente con movimientos de cuenta corriente (`cc_pagos`/`cc_debitos`) en esos productos se los lleva. El libro de clientes (`cc_asientos`, ADR-027) es la fuente del saldo y no tiene FK a `clients`, pero los dos legados sí desaparecen. Decidir si `delete_client` debe bloquear por ellos (o si la baseline debe cambiar por una revisión) queda para el humano.
 
 **Tests.** `tests/db/test_fk_de_producto.py` (11): la baseline deja las seis, `soltar_fk` las suelta con el nombre que devuelve, borrar el cliente ya no se lleva su cuenta corriente, es idempotente, no toca otra FK de la misma tabla ni la misma columna hacia otra tabla, una tabla inexistente no es error, rechaza identificadores que no son simples y en SQLite no hace nada. Cuatro fallan si el cuerpo del `for` que suelta no hace nada.
+
+## ADR-057 — Un cliente con cuenta corriente no se puede borrar: `delete_client` la mira
+
+**Estado:** aceptada (2026-10-15; el humano: «sí, que bloquee el borrado con cuenta corriente», sobre lo que el ADR-056 dejó abierto).
+
+**Contexto.** En la baseline `cc_pagos.cliente_id` y `cc_debitos.cliente_id` tienen `ON DELETE CASCADE` hacia `clients`, `recibos.cliente_id` tiene `SET NULL` y el libro de clientes (`cc_asientos`, ADR-026/027) guarda `tercero_id` sin FK. `delete_client` sólo bloqueaba la baja por remitos y presupuestos: borrar un cliente con cuenta corriente en ContaLibra, RestoLibra, VentaLibra, GestioLibra, MedLibra, LibraCargo o LibraClub se llevaba sus pagos y débitos, dejaba los recibos sin cliente y el libro con asientos de un tercero que ya no existe.
+
+**Decisión.** `delete_client` cuenta también los movimientos de `cc_pagos`, `cc_debitos`, `recibos` y `cc_asientos` con `rol='cliente'` del cliente, y si hay alguno levanta `ValueError` («… N movimiento(s) de cuenta corriente asociado(s) y no puede eliminarse. Se puede desactivar.»), en la misma consulta y con el mismo contrato que remitos y presupuestos. Un cliente con historia se desactiva.
+
+**Alternativas descartadas.**
+- **Cambiar el `CASCADE` por `RESTRICT` con una revisión de Alembic:** también protege a quien escriba SQL directo, pero el error sería de integridad y no un mensaje para el usuario, y toca el schema de los siete productos. La regla en `delete_client` alcanza: es la única baja de clientes del motor.
+- **Bloquear sólo con saldo distinto de cero:** un cliente con la cuenta saldada sigue teniendo historia (recibos, comprobantes) que la baja destruiría.
+
+**Consecuencias.** MINOR (propuesta **v1.170.0**), sin migración. Los asientos del libro de otros roles (proveedor, fletero) con el mismo número no bloquean. **Tests:** `tests/db/test_auditoria_de_clientes.py` (SQLite y PostgreSQL): uno por tabla, que la baja falla, el cliente y el movimiento quedan y no se audita nada; el mensaje suma remitos y cuenta corriente; un asiento de otro rol no bloquea. Sin el cambio fallan 10 de los 11 nuevos (el de otro rol es control).

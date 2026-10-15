@@ -7,6 +7,13 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Un cliente con cuenta corriente no se puede borrar: `delete_client` la mira (propuesta: v1.170.0)
+
+ADR-057. **Sin migración y sin cambio de schema.** `libracore.db.clients.delete_client` bloqueaba la baja sólo por remitos y presupuestos; ahora también por movimientos de cuenta corriente: `cc_pagos`, `cc_debitos`, `recibos` y asientos del libro de clientes (`cc_asientos` con `rol='cliente'`). El `ValueError` dice cuántos hay y que el cliente se puede desactivar.
+
+### Para los productos
+- Un producto que borre clientes en sus tests o semillas con movimientos de cuenta corriente ahora recibe `ValueError`: desactivarlo en vez de borrarlo.
+
 ## [Unreleased] — Un producto suelta una FK de la baseline que declara sin ella: `fk_de_producto.soltar_fk` (propuesta: v1.169.0)
 
 ADR-056. **Sin migración y sin cambio de schema** (`test_schema_congelado` no se mueve). `libracore/db/fk_de_producto.py`: `soltar_fk(conn, tabla, columna, *, hacia) -> list[str]` quita la FK de una columna hacia una tabla (`DROP CONSTRAINT IF EXISTS`, idempotente, sin tocar filas; devuelve los nombres soltados). En SQLite no hace nada. Es la costura que LibraDesk necesita desde que `libracore-migrar` corre antes de su arranque: la baseline crea `cc_debitos`, `cc_pagos`, `recibos`, `remitos`, `presupuestos` y `egresos` con FK hacia `clients`/`proveedores` (dos con `ON DELETE CASCADE`) que LibraDesk declara sin ellas, y una base nueva (la demo cada noche, un alta, un restore) quedaba distinta de una migrada. La baseline no cambia: los demás productos conservan esas FK.

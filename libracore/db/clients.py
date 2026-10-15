@@ -21,6 +21,10 @@ from libracore.db.core import get_connection
 _TABLA = "clients"
 
 
+#: El rol de los clientes en el libro de terceros (`libro_de_clientes.ROL`; no se importa para no crear un ciclo).
+_ROL_CLIENTE = "cliente"
+
+
 def _hay_parties(conn) -> bool:
     """`parties` es una tabla de LibraCommerce, no de LibraCore.
 
@@ -490,21 +494,35 @@ def toggle_auto_facturar(client_id: int) -> bool:
 
 
 def delete_client(client_id):
+    """Borra un cliente sólo si no tiene nada asociado: remitos, presupuestos ni cuenta corriente.
+
+    La cuenta corriente bloquea la baja (ADR-057): en la baseline `cc_pagos` y `cc_debitos` tienen
+    `ON DELETE CASCADE` hacia `clients`, los recibos quedan sin cliente (`SET NULL`) y el libro
+    (`cc_asientos`) guarda el id sin FK: borrar el cliente se llevaba sus movimientos o los dejaba huérfanos.
+    Un cliente con historia se desactiva, no se borra."""
     with get_connection() as conn:
-        remito_count = conn.execute(
-            "SELECT COUNT(*) FROM remitos WHERE client_id=?", (client_id,)
-        ).fetchone()[0]
-        presupuesto_count = conn.execute(
-            "SELECT COUNT(*) FROM presupuestos WHERE client_id=?", (client_id,)
-        ).fetchone()[0]
-        total_count = remito_count + presupuesto_count
-        if total_count > 0:
+        def contar(sql, *antes):
+            return conn.execute(sql, (*antes, client_id)).fetchone()[0]
+
+        remito_count = contar("SELECT COUNT(*) FROM remitos WHERE client_id=?")
+        presupuesto_count = contar("SELECT COUNT(*) FROM presupuestos WHERE client_id=?")
+        cuenta_count = (
+            contar("SELECT COUNT(*) FROM cc_pagos WHERE cliente_id=?")
+            + contar("SELECT COUNT(*) FROM cc_debitos WHERE cliente_id=?")
+            + contar("SELECT COUNT(*) FROM recibos WHERE cliente_id=?")
+            + contar("SELECT COUNT(*) FROM cc_asientos WHERE rol=? AND tercero_id=?", _ROL_CLIENTE)
+        )
+        if remito_count or presupuesto_count or cuenta_count:
             msg_parts = []
             if remito_count > 0:
                 msg_parts.append(f"{remito_count} remito(s)")
             if presupuesto_count > 0:
                 msg_parts.append(f"{presupuesto_count} presupuesto(s)")
-            raise ValueError(f"El cliente tiene {' y '.join(msg_parts)} asociado(s) y no puede eliminarse.")
+            if cuenta_count > 0:
+                msg_parts.append(f"{cuenta_count} movimiento(s) de cuenta corriente")
+            raise ValueError(
+                f"El cliente tiene {' y '.join(msg_parts)} asociado(s) y no puede eliminarse. "
+                "Se puede desactivar.")
         # La fila se lee ANTES del DELETE: después ya no está, y la baja tiene que decir qué se borró.
         antes = _antes(conn, client_id)
         conn.execute("DELETE FROM clients WHERE id=?", (client_id,))
