@@ -173,8 +173,12 @@ def test_no_toca_el_sidecar_ni_el_resto_del_archivo(instancia):
     assert _env_del_compose(despues, "testprod-cliente-postgres") == {"POSTGRES_DB": "testprod"}
     assert "image: postgres:16-alpine" in despues
     quitadas = [ln for ln in despues.splitlines() if ln not in antes.splitlines()]
+    # Además de la imagen y de las tres variables, el pin trae `no-new-privileges` (`sin_root`):
+    # dos líneas más, y sólo en el servicio de la app (`test_sin_root.py` mide dónde).
     assert sorted(quitadas) == sorted(["    image: testprod:v2", "      - LIBRA_ENTORNO=cliente",
-                                       "      - LIBRA_INSTANCIA=testprod-cliente", "      - LIBRA_VERSION=v2"])
+                                       "      - LIBRA_INSTANCIA=testprod-cliente", "      - LIBRA_VERSION=v2",
+                                       "    security_opt:", "      - no-new-privileges:true"])
+    assert despues.count("security_opt:") == 1
 
 
 @pytest.mark.parametrize("instancia", [SIDECAR_PRIMERO], indirect=True)

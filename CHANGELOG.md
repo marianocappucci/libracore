@@ -7,6 +7,13 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La app de cada instancia puede correr sin root: `provisioning.sin_root` (propuesta: v1.168.0)
+
+ADR-055. **Sin migración.** `panel_admin actualizar` (y `rollback`) entrega `data/` a `10001:10001` antes de migrar y otra vez pegado al `up -d`, **sólo si la imagen nueva no corre como root** (`imagen_sin_root`); con una imagen root no cambia nada. El alta (`nuevo_cliente`) entrega `data/` antes de arrancar. `pinear_image` y la plantilla del alta suman `security_opt: [no-new-privileges:true]` al servicio de la app (no al sidecar de PostgreSQL). `data/backups` nace con el dueño de `data/`.
+
+### Para los productos
+- Pasar el Dockerfile a `USER` 10001 (modelo de LibraCargo) **después** de que el `.venv-scripts` del VPS tenga este motor: el `chown` lo hace el motor que corre el deploy, no el de la imagen.
+
 ## [Unreleased] — El esquema se crea de a un proceso por vez: `esperar_candado_de_transaccion` (propuesta: v1.168.0)
 
 ADR-053. **Sin migración y sin cambio de schema** (el gate `test_schema_congelado` no se mueve). Con `uvicorn --workers 2`, `init_core_schema()` —que cada producto corre al arrancar— daba `deadlock detected` sobre una base ya armada y `duplicate key value violates unique constraint "pg_class_relname_nsp_index"` / `"pg_type_typname_nsp_index"` sobre una vacía (visto en el CI de medlibra#373 y gestiolibra: `test_dos_workers_arrancan_y_el_seed_queda_una_sola_vez`, intermitente). El deadlock: los dos procesos corren el `UPDATE caja_movimientos … WHERE caja_id IS NULL` (`ROW EXCLUSIVE` hasta el `commit`) y después `CREATE INDEX IF NOT EXISTS idx_caja_movimientos_fecha` (`SHARE`), y cada uno espera al otro.
