@@ -21,6 +21,8 @@ wiki/entities/libracore.md.
 import re
 import sqlite3
 
+from libracore.candados import esperar_candado_de_transaccion
+
 from .core import Conexion, is_postgres
 
 #: El "ahora" que estampan los `created_at`/`updated_at` de este schema.
@@ -214,7 +216,20 @@ def _tipo_de_columna(conn, tabla: str, columna: str) -> str | None:
     return None
 
 
+#: El candado (`libracore.candados.esperar_candado_de_transaccion`) con el que `init_core_schema()` se serializa entre
+#: procesos. Es por base: dos productos con bases distintas no se esperan.
+CANDADO_DEL_ESQUEMA = "init_core_schema"
+
+
 def init_core_schema(conn: Conexion):
+    # 🔴 **De a un proceso por vez (ADR-053).** Todo lo de abajo es UNA transacción de DDL y escrituras que cada
+    # proceso corre en su arranque. Con dos juntos PostgreSQL contesta `deadlock detected` (el `UPDATE
+    # caja_movimientos ... WHERE caja_id IS NULL` deja un `ROW EXCLUSIVE` hasta el `commit` y el `CREATE INDEX IF NOT
+    # EXISTS idx_caja_movimientos_fecha` de más abajo pide `SHARE`: cada uno espera al otro) o una clave duplicada del
+    # catálogo (dos `CREATE TABLE IF NOT EXISTS` de la misma tabla). El candado dura hasta el `commit` de `conn`: el
+    # segundo espera y corre sobre lo que dejó el primero, que es lo que esta función, idempotente, está hecha para ver.
+    # No cambia el schema: el gate de `tests/db/test_schema_congelado.py` no se entera. En SQLite no hace nada.
+    esperar_candado_de_transaccion(conn, CANDADO_DEL_ESQUEMA)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS clients (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,

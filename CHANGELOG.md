@@ -7,6 +7,19 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El esquema se crea de a un proceso por vez: `esperar_candado_de_transaccion` (propuesta: v1.168.0)
+
+ADR-053. **Sin migración y sin cambio de schema** (el gate `test_schema_congelado` no se mueve). Con `uvicorn --workers 2`, `init_core_schema()` —que cada producto corre al arrancar— daba `deadlock detected` sobre una base ya armada y `duplicate key value violates unique constraint "pg_class_relname_nsp_index"` / `"pg_type_typname_nsp_index"` sobre una vacía (visto en el CI de medlibra#373 y gestiolibra: `test_dos_workers_arrancan_y_el_seed_queda_una_sola_vez`, intermitente). El deadlock: los dos procesos corren el `UPDATE caja_movimientos … WHERE caja_id IS NULL` (`ROW EXCLUSIVE` hasta el `commit`) y después `CREATE INDEX IF NOT EXISTS idx_caja_movimientos_fecha` (`SHARE`), y cada uno espera al otro.
+
+- **`candados.esperar_candado_de_transaccion(conn, nombre, *, espera=120) -> bool`**: API nueva (por eso minor). El candado bloqueante, atado a la transacción de `conn`: `pg_try_advisory_xact_lock` reintentado; `TimeoutError` si pasan `espera` s; `False` (no hace nada) fuera de PostgreSQL.
+- **`db.schema.init_core_schema`** la llama como **primera sentencia** (`CANDADO_DEL_ESQUEMA`): el segundo proceso espera al `commit` del primero y corre sobre lo que dejó. Cubre a todos los que la llaman: el `configure()` de cada producto y las revisiones de Alembic que la usan.
+- **`libracore.testing.esquema_en_paralelo`** y `tests/test_esquema_en_paralelo.py`: N procesos de verdad arrancando el esquema a la vez (base armada y base vacía).
+
+### Para los productos
+
+- **Subir el pin** de libracore a v1.168.0 en los seis que llaman a `init_core_schema()` al arrancar (MedLibra, Gestiolibra, VentaLibra, LibraClub, Contalibra, Restolibra). No hay que tocar código: el `configure()` queda seguro con N workers.
+- **No lo cubre** el DDL propio del producto: el `Base.metadata.create_all(get_engine())` de LibraGenda de MedLibra y Gestiolibra (`app/main.py`), que sobre una base vacía puede dar la clave duplicada del catálogo, y el `init_schema()` de LibraCommerce (VentaLibra, Contalibra, Restolibra). Si corren al arrancar, van dentro de `una_vez_al_arrancar(...)`.
+
 ## [Unreleased] — La lectura del tope de sucursales trae su texto: `mensaje_de_limite` (propuesta: v1.167.0)
 
 ADR-052. **Sin migración.** `GET`/`PUT /api/limites/sucursales` devuelven una clave más: `{contratadas, activas, mensaje_de_limite}`, con el texto del 409 del alta («Tu plan incluye N sucursal(es). Para sumar otra, comunicate con nosotros.») cuando hay tope y `null` cuando no. Aditivo: las claves de antes no cambian y `libra-backoffice` (que lee `contratadas` y `activas` con `.get`) no se entera.

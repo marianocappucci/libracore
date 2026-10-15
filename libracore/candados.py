@@ -3,7 +3,7 @@
 Hasta ahora el motor suponía **un solo proceso por instancia** (`uvicorn` sin `--workers`), y tres cosas se apoyaban en
 eso: la nota de crédito («una a la vez», un `set` en memoria), los hooks de arranque (sembrar el admin, `ensure_seeded`:
 un «si no existe, crear» que con dos procesos arrancando juntos crea dos) y el `config.json`. Este módulo es la mitad de
-la respuesta —la otra es escribir los archivos de forma atómica—, y tiene dos herramientas con propósitos distintos:
+la respuesta —la otra es escribir los archivos de forma atómica—, y tiene tres herramientas con propósitos distintos:
 
 - **`candado_de_base(conn, nombre)`**: un candado **no bloqueante** y **atado a una transacción**. Dice «¿soy yo el que
   está haciendo esto ahora?» y, si no, el que llama decide (la nota de crédito contesta 409). Es para secciones
@@ -11,6 +11,10 @@ la respuesta —la otra es escribir los archivos de forma atómica—, y tiene d
 - **`una_vez_al_arrancar(nombre)`**: un candado **bloqueante** con conexión propia, para **serializar** un hook de
   arranque: el segundo worker espera a que el primero termine y recién entonces corre el suyo, que tiene que ser
   idempotente («si no existe, crear») y por lo tanto ve lo que dejó el primero.
+- **`esperar_candado_de_transaccion(conn, nombre)`**: un candado **bloqueante** sobre la **conexión de quien llama**, que
+  dura hasta el fin de **su** transacción. Es para una transacción larga que no se puede partir y que dos procesos no
+  pueden correr a la vez: la creación del esquema (`init_core_schema`, ADR-053). Con otra conexión (como
+  `una_vez_al_arrancar`) no sirve: el DDL que importa vive en la transacción de quien llama.
 
 **Cómo se elige el candado, por motor:**
 
@@ -18,6 +22,7 @@ la respuesta —la otra es escribir los archivos de forma atómica—, y tiene d
 |---|---|---|
 | `candado_de_base` | `pg_try_advisory_xact_lock`, dura hasta el fin de la transacción de `conn` | `flock` sobre un archivo de `DATA_DIR` (con `conn`), o un candado del proceso (sin `conn`); dura lo que el `with` |
 | `una_vez_al_arrancar` | `pg_try_advisory_lock` en un bucle, con una conexión propia | `flock` sobre un archivo de `DATA_DIR` |
+| `esperar_candado_de_transaccion` | `pg_try_advisory_xact_lock` en un bucle, en la conexión de quien llama | no hace nada (SQLite serializa a sus escritores solo) |
 
 La clave de un candado asesor de PostgreSQL es un entero de 64 bits; se deriva del nombre con SHA-256 (56 bits),
 igual que `libracommerce` (`erp/compras.py`, `erp/reposicion_ordenes.py`), y no con `hashtext()`: es la misma en cualquier
@@ -179,6 +184,44 @@ def candado_de_base(conn: Any, nombre: str) -> Iterator[bool]:
             return
         with _candado_de_archivo(nombre) as en_archivo:
             yield en_archivo
+
+
+def esperar_candado_de_transaccion(conn: Any, nombre: str, *, espera: float = ESPERA_AL_ARRANCAR) -> bool:
+    """Toma el candado `nombre` en la conexión `conn`, **esperando** a quien lo tenga, hasta el fin de **su** transacción.
+
+    ```python
+    esperar_candado_de_transaccion(conn, "mi-esquema")      # lo primero de la transacción
+    ...DDL, seeds...
+    conn.commit()                                           # acá se suelta, y entra el que esperaba
+    ```
+
+    Es la cara bloqueante de `candado_de_base`: la misma clave y el mismo `pg_try_advisory_xact_lock`, pero reintentado
+    cada 0,1 s en lugar de contestar «ocupado». No hay `with` porque PostgreSQL no suelta un candado de transacción antes
+    del `commit` o el `rollback` de `conn`. Sirve para **una transacción larga que dos procesos no pueden correr a la
+    vez**: `init_core_schema()` mezcla DDL y escrituras en una sola transacción y, corrida por dos workers juntos, da
+    `deadlock detected` (cada uno se queda con un `ROW EXCLUSIVE` de la tabla que el otro quiere indexar) o una clave
+    duplicada del catálogo (dos `CREATE TABLE IF NOT EXISTS` de la misma tabla).
+
+    - Devuelve `True` si lo tomó (PostgreSQL) y `False` si `conn` no es PostgreSQL: SQLite serializa a sus escritores
+      con el bloqueo de la base y no tiene este problema, así que **no se inventa un `flock`**.
+    - 🔴 **Va antes de cualquier otra cosa de la transacción**: un candado tomado a mitad de camino no protege lo que ya
+      se tocó. Y la conexión tiene que estar en una transacción (no `autocommit`): con `autocommit` PostgreSQL lo suelta
+      al terminar el `SELECT` que lo pidió y no excluye nada.
+    - Tomarlo dos veces con la misma conexión no espera (los candados asesores son reentrantes por sesión).
+    - Si pasan `espera` segundos sin conseguirlo levanta `TimeoutError`: quien lo tiene está colgado, y un arranque que
+      se queda esperando en silencio es peor que uno que falla diciendo por qué.
+    """
+    limite = time.monotonic() + espera
+    while True:
+        obtenido = _en_postgres(conn, "pg_try_advisory_xact_lock", nombre)
+        if obtenido is None:
+            return False
+        if obtenido:
+            return True
+        if time.monotonic() >= limite:
+            raise TimeoutError(f"{nombre!r}: no se pudo tomar el candado en {espera:.0f} s: "
+                               "otra conexión lo tiene y no termina su transacción.")
+        time.sleep(_PASO)
 
 
 @contextlib.contextmanager
