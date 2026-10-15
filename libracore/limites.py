@@ -98,11 +98,14 @@ class LimiteIn(BaseModel):
 class LimiteOut(BaseModel):
     contratadas: int | None
     activas: int
+    #: El texto para el cliente cuando el alta se frena (`mensaje_de_limite`, el mismo del 409), o `None` sin tope. Va en la lectura para que la
+    #: pantalla del kit lo muestre al llegar al tope SIN tener su propia copia del texto (ADR-052): si la frase cambia, cambia acá y nada más.
+    mensaje_de_limite: str | None = None
 
 
 def build_limites_router(*, guard_lectura: Callable, guard_escritura: Callable, medir_activas: Callable[[], int],
                          prefix: str = "/api/limites") -> APIRouter:
-    """`GET`/`PUT {prefix}/sucursales`: lo contratado y lo activo, y la carga de lo contratado.
+    """`GET`/`PUT {prefix}/sucursales`: lo contratado y lo activo (`{contratadas, activas, mensaje_de_limite}`), y la carga de lo contratado.
 
     Las guardas vienen **inyectadas a propósito** (como en `resumen_router`): LibraCore no depende del motor de auth. Son DOS porque
     quien mira el contrato y quien lo cambia no son los mismos:
@@ -115,7 +118,9 @@ def build_limites_router(*, guard_lectura: Callable, guard_escritura: Callable, 
     router = APIRouter(prefix=prefix, tags=["limites"])
 
     def _estado() -> LimiteOut:
-        return LimiteOut(contratadas=sucursales_contratadas(), activas=int(medir_activas()))
+        contratadas = sucursales_contratadas()
+        return LimiteOut(contratadas=contratadas, activas=int(medir_activas()),
+                         mensaje_de_limite=None if contratadas is None else mensaje_de_limite(contratadas))
 
     @router.get("/sucursales", response_model=LimiteOut, dependencies=[Depends(guard_lectura)])
     def obtener() -> LimiteOut:

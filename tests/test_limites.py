@@ -78,23 +78,33 @@ def test_el_admin_de_la_instancia_lee_pero_no_puede_subirse_el_tope(client):
 
 def test_sin_dato_cargado_dice_null_y_cuenta_las_activas(client, activas):
     activas["n"] = 3
-    assert client.get("/api/limites/sucursales", headers=SERVICIO).json() == {"contratadas": None, "activas": 3}
+    assert client.get("/api/limites/sucursales", headers=SERVICIO).json() == {"contratadas": None, "activas": 3, "mensaje_de_limite": None}
 
 
 def test_put_guarda_y_get_lo_devuelve(client, activas, limites):
     r = client.put("/api/limites/sucursales", headers=SERVICIO, json={"contratadas": 2})
     assert r.status_code == 200
-    assert r.json() == {"contratadas": 2, "activas": 1}
-    assert client.get("/api/limites/sucursales", headers=SERVICIO).json() == {"contratadas": 2, "activas": 1}
+    MENSAJE = "Tu plan incluye 2 sucursales. Para sumar otra, comunicate con nosotros."
+    assert r.json() == {"contratadas": 2, "activas": 1, "mensaje_de_limite": MENSAJE}
+    assert client.get("/api/limites/sucursales", headers=SERVICIO).json() == {"contratadas": 2, "activas": 1, "mensaje_de_limite": MENSAJE}
     with open(limites.config_manager.CONFIG_PATH, encoding="utf-8") as f:
         assert json.load(f)["limite_sucursales"] == 2
+
+
+def test_la_lectura_trae_el_mismo_texto_que_el_409_para_que_la_pantalla_no_lo_copie(client, limites):
+    """ADR-052: la pantalla de Sucursales del kit muestra este texto al llegar al tope. Es `mensaje_de_limite` (el de `LimiteExcedido`), no una frase aparte."""
+    for n, plural in ((1, "sucursal"), (3, "sucursales")):
+        cuerpo = client.put("/api/limites/sucursales", headers=SERVICIO, json={"contratadas": n}).json()
+        assert cuerpo["mensaje_de_limite"] == limites.mensaje_de_limite(n) == f"Tu plan incluye {n} {plural}. Para sumar otra, comunicate con nosotros."
+        assert cuerpo["mensaje_de_limite"] == str(limites.LimiteExcedido(n, n))
+        assert client.get("/api/limites/sucursales", headers=ADMIN).json()["mensaje_de_limite"] == cuerpo["mensaje_de_limite"]
 
 
 def test_put_null_quita_el_dato(client, limites):
     client.put("/api/limites/sucursales", headers=SERVICIO, json={"contratadas": 2})
     r = client.put("/api/limites/sucursales", headers=SERVICIO, json={"contratadas": None})
     assert r.status_code == 200
-    assert r.json()["contratadas"] is None
+    assert r.json()["contratadas"] is None and r.json()["mensaje_de_limite"] is None
     with open(limites.config_manager.CONFIG_PATH, encoding="utf-8") as f:
         assert "limite_sucursales" not in json.load(f)
 
@@ -102,7 +112,8 @@ def test_put_null_quita_el_dato(client, limites):
 def test_put_por_debajo_de_las_activas_se_acepta_y_el_get_lo_muestra(client, activas):
     """El cliente achicó el contrato con 3 locales abiertos: no se da de baja nada, sólo se frena el alta (y el backoffice lo marca)."""
     activas["n"] = 3
-    assert client.put("/api/limites/sucursales", headers=SERVICIO, json={"contratadas": 1}).json() == {"contratadas": 1, "activas": 3}
+    assert client.put("/api/limites/sucursales", headers=SERVICIO, json={"contratadas": 1}).json() == {
+        "contratadas": 1, "activas": 3, "mensaje_de_limite": "Tu plan incluye 1 sucursal. Para sumar otra, comunicate con nosotros."}
 
 
 @pytest.mark.parametrize("malo", [0, -1, 1001, "mucho", 1.5, True, False, [], {}])
