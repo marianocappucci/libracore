@@ -30,6 +30,7 @@ from . import (
     get_config,
     mail_cuentas,
     migraciones_declaradas,
+    sin_root,
 )
 
 BACKUP_RETENTION_DIAS = 14
@@ -210,6 +211,14 @@ def pinear_image(slug: str, ref: str) -> str | None:
                             errores_env.version_de(ref)))
     if con_env is not None:
         nuevo = con_env
+    # `no-new-privileges` viaja con el pin, igual que las variables de arriba: un compose
+    # anterior a esa regla lo recibe en su primer deploy. El índice de la `image:` se vuelve a
+    # medir porque `con_variables` pudo haber metido líneas antes de ella.
+    img_nueva = _image_de_la_app(nuevo, slug)
+    if img_nueva:
+        con_opt = sin_root.con_security_opt(nuevo, nuevo.count("\n", 0, img_nueva[0]))
+        if con_opt is not None:
+            nuevo = con_opt
     if nuevo != contenido:
         path.write_text(nuevo, encoding="utf-8")
     return anterior
@@ -629,6 +638,10 @@ def _backup_zip(c: dict, cfg, urls_postgres: list[str], _p) -> None:
 
     instancia = _instancia_del_cliente(c, cfg, urls_postgres)
     destino_dir = c["dir"] / "data" / "backups"
+    # 🔴 Si `backups/` no existe, la crea el HOST (root). Con la imagen sin root esa carpeta tiene
+    # que nacer con el dueño de `data/` o la pantalla de Backup de la app falla con
+    # `Permission denied` (pasó con la demo de LibraCargo el 2026-08-22).
+    sin_root.asegurar_directorio(destino_dir)
     destino = crear_backup(
         instancia, destino_dir, motivo="automatico",
         # Desde el host `pg_dump` no llega al sidecar: no publica puerto y su
@@ -1042,7 +1055,7 @@ def cmd_restore_db(slug: str, backup_file: str | None = None):
     # El ZIP tiene que estar a la vista del contenedor efimero: si vino de
     # afuera (lo bajaron de Drive, por ejemplo), se copia a `data/backups/`.
     zdir = _zips_dir(c)
-    zdir.mkdir(parents=True, exist_ok=True)
+    sin_root.asegurar_directorio(zdir)
     if backup_path.resolve().parent != zdir.resolve():
         copia = zdir / backup_path.name
         shutil.copy2(backup_path, copia)
@@ -1095,6 +1108,50 @@ def _respaldo_previo(slug: str) -> bool:
         print(f"[ERROR] Falló el respaldo previo de '{slug}': {e}")
         return False
     return ok is not False
+
+
+def _entregar_datos_a_la_app(c: dict, ref: str) -> bool:
+    """Deja `data/` de la instancia con el dueño con el que corre la imagen `ref`.
+
+    🔴 **Sin esto, mover una instancia a una imagen sin root la rompe en silencio**: el contenedor
+    arranca y `/salud` da 200, pero la app no puede escribir PDF, `arca_ta`, `errores/` ni backups,
+    ni leer las claves de ARCA (modo 600, de root). Ver `provisioning/sin_root.py`.
+
+    Sólo actúa si la imagen corre sin root (`sin_root.imagen_sin_root`): con una imagen que todavía
+    corre como root no toca nada, así que este paso no cambia el deploy de un producto que no migró.
+    Va **justo antes del `up -d`**, cuando ya no queda nada por escribir desde el host. Con el
+    contenedor viejo todavía corriendo es inocuo (root escribe igual en una carpeta ajena), y con
+    un rollback a una imagen root también: root lee y escribe lo que es de 10001.
+
+    `True` si la carpeta quedó lista o no hacía falta; `False` si hacía falta y no se pudo
+    (el proceso no es root, la ruta no es una carpeta de datos): quien llama NO mueve la instancia.
+    """
+    data_dir = c["dir"] / "data"
+    if not data_dir.is_dir():
+        return True  # nada que entregar (instancia sin carpeta de datos)
+    if not sin_root.imagen_sin_root(ref):
+        return True
+    try:
+        cambios = sin_root.entregar_datos(data_dir)
+    except (OSError, ValueError) as e:
+        print(f"[ERROR] No se pudo entregar {data_dir} al uid {sin_root.UID_APP}: {e}. "
+              "Con una imagen sin root la app no podría escribir sus datos.")
+        return False
+    print(f"    datos de '{c['slug']}': uid {sin_root.UID_APP} ({cambios} entradas cambiadas)")
+    return True
+
+
+def _datos_o_repinear(c: dict, ref: str, anterior: str | None) -> bool:
+    """`_entregar_datos_a_la_app` y, si no se pudo, deja la instancia como estaba: repinea."""
+    if _entregar_datos_a_la_app(c, ref):
+        return True
+    if anterior:
+        pinear_image(c["slug"], anterior)
+        print(f"[ERROR] {c['container']} no se mueve: datos sin entregar. "
+              f"Compose repineado a {anterior} (no se aplicó el cambio).")
+    else:
+        print(f"[ERROR] {c['container']} no se mueve: datos sin entregar.")
+    return False
 
 
 def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
@@ -1275,6 +1332,15 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
         # propia— y las revisiones del producto tienen FK contra tablas de
         # LibraGenda. Seguir con la segunda después de que falló la primera es
         # garantía de un error que no nombra la causa.
+        #
+        # 🔴 Con una imagen sin root, el contenedor efímero de cada migración corre como uid
+        # 10001: si hay migraciones, `data/` se entrega ANTES de correrlas (una instancia con
+        # SQLite escribiría ahí) y otra vez pegada al `up -d`, abajo, para recoger lo que el
+        # contenedor viejo —que todavía corre como root— haya escrito mientras tanto.
+        if migraciones and not _datos_o_repinear(c, ref, anterior):
+            fallidos.append(slug)
+            continue
+
         migracion_fallida = None
         for comando in migraciones:
             print(f"    migraciones: {' '.join(comando)}")
@@ -1296,6 +1362,17 @@ def cmd_actualizar(slugs: list[str] | None = None, version: str | None = None,
                       f"Compose repineado a {anterior} (no se aplicó el cambio).")
             else:
                 print(f"[ERROR] Falló `{migracion_fallida}` en {c['container']}.")
+            fallidos.append(slug)
+            continue
+
+        # ── Los datos, justo antes de mover la instancia ─────────────────────
+        #
+        # Después del respaldo y de las migraciones: lo último que el host le hace a `data/`. Si
+        # no se puede entregar, la instancia NO se mueve —se repinea y sigue como estaba—: una
+        # imagen sin root sobre una carpeta de root arranca sana y no puede escribir. Es idempotente:
+        # cuando ya se entregó antes de migrar, sólo toca lo que haya aparecido de root desde
+        # entonces.
+        if not _datos_o_repinear(c, ref, anterior):
             fallidos.append(slug)
             continue
 
@@ -1446,6 +1523,12 @@ def cmd_rollback(slug: str, version: str | None = None):
     anterior = pinear_image(slug, ref)
     if anterior is None:
         print(f"[ERROR] No se pudo reescribir el compose de '{slug}'.")
+        return
+    # Un rollback hacia una imagen sin root también necesita la carpeta entregada (hacia una que
+    # corre como root, no hace nada). Ver `_entregar_datos_a_la_app`.
+    if not _entregar_datos_a_la_app(c, ref):
+        pinear_image(slug, anterior)
+        print(f"[ERROR] No se vuelve a {ref}: datos sin entregar. Compose repineado a {anterior}.")
         return
     r = compose(slug, "up", "-d")
     if r.returncode != 0:

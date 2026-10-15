@@ -6,6 +6,11 @@ no tienen: sin este doble abortarían todos en el respaldo y dejarían de medir
 lo que miden. El respaldo previo tiene sus propios tests en
 `test_respaldo_antes_de_actualizar.py`, que lo vuelven a parchear o usan el
 original.
+
+Con la entrega de `data/` al uid de la app (`sin_root`) pasa lo mismo: le pregunta
+a Docker con qué `USER` corre la imagen y hace `chown` a 10001, que sólo puede
+hacer root. Sin este doble, los tests del deploy fallarían en un paso que no miden.
+`test_sin_root.py` usa el original.
 """
 import pytest
 
@@ -22,4 +27,17 @@ def _respaldo_previo_falso(monkeypatch):
         return True
 
     monkeypatch.setattr(pa, "_respaldo_previo", _falso)
+    return llamadas
+
+
+@pytest.fixture(autouse=True)
+def _entrega_de_datos_falsa(monkeypatch):
+    """Devuelve la lista de `(slug, ref)` a los que se les entregó `data/`."""
+    llamadas: list[tuple[str, str]] = []
+
+    def _falso(c, ref):
+        llamadas.append((c["slug"], ref))
+        return True
+
+    monkeypatch.setattr(pa, "_entregar_datos_a_la_app", _falso)
     return llamadas

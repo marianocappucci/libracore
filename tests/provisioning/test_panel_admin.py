@@ -480,6 +480,38 @@ def test_cmd_rollback_sin_version_usa_la_anterior_del_cliente(cfg, fake_docker, 
     assert ("cliente-uno", ("up", "-d")) in fake_docker["compose_calls"]
 
 
+def test_cmd_rollback_entrega_los_datos_antes_del_up(cfg, fake_docker, monkeypatch):
+    """Un rollback hacia una imagen sin root necesita la carpeta entregada igual que un deploy
+    (`sin_root`); hacia una imagen root, `_entregar_datos_a_la_app` no hace nada."""
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200",
+              version_anterior="testprod:v2026.01.01-0900")
+    monkeypatch.setattr(pa, "versiones_disponibles",
+                        lambda: ["v2026.05.05-1200", "v2026.01.01-0900"])
+    monkeypatch.setattr("builtins.input", lambda *_: "s")
+    eventos = []
+    monkeypatch.setattr(pa, "_entregar_datos_a_la_app", lambda c, ref: eventos.append(("entrega", ref)) or True)
+    monkeypatch.setattr(pa, "compose", lambda slug, *a: eventos.append(("compose", a))
+                        or __import__("subprocess").CompletedProcess(a, 0))
+
+    pa.cmd_rollback("cliente-uno")
+
+    assert eventos == [("entrega", "testprod:v2026.01.01-0900"), ("compose", ("up", "-d"))]
+
+
+def test_cmd_rollback_no_mueve_la_instancia_si_no_pudo_entregar_los_datos(cfg, fake_docker, monkeypatch):
+    _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200",
+              version_anterior="testprod:v2026.01.01-0900")
+    monkeypatch.setattr(pa, "versiones_disponibles",
+                        lambda: ["v2026.05.05-1200", "v2026.01.01-0900"])
+    monkeypatch.setattr("builtins.input", lambda *_: "s")
+    monkeypatch.setattr(pa, "_entregar_datos_a_la_app", lambda c, ref: False)
+
+    pa.cmd_rollback("cliente-uno")
+
+    assert pa.leer_image_pineada("cliente-uno") == "testprod:v2026.05.05-1200"  # repineado
+    assert ("cliente-uno", ("up", "-d")) not in fake_docker["compose_calls"]
+
+
 def test_cmd_rollback_rechaza_una_version_inexistente(cfg, monkeypatch, capsys):
     _mkclient(cfg, "cliente-uno", image="testprod:v2026.05.05-1200")
     monkeypatch.setattr(pa, "versiones_disponibles", lambda: ["v2026.05.05-1200"])

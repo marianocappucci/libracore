@@ -34,6 +34,7 @@ from . import (
     migraciones_de_la_imagen,
     npm_available,
     resolver_plan,
+    sin_root,
 )
 
 # Huso horario del ecosistema: Argentina, UTC-3 fijo, sin horario de verano
@@ -1050,6 +1051,8 @@ services:
     mem_limit: 768m
     mem_reservation: 256m
     cpus: 1.0
+    security_opt:
+      - {sin_root.SECURITY_OPT}
     healthcheck:
       test: ["CMD", "python3", "-c", "import json,urllib.request; assert isinstance(json.load(urllib.request.urlopen('http://localhost:8000{cfg.health_path}', timeout=3)), dict)"]
       interval: 30s
@@ -1082,6 +1085,26 @@ services:
                 **({"adicionales": adicionales} if adicionales else {}),
             }, indent=2, ensure_ascii=False)
         )
+
+        # — dueño de data/ —
+        #
+        # 🔴 `data/` nace de root (lo crea el panel o el backoffice) y la imagen de la app corre
+        # como uid 10001 desde el 2026-10-15: sin esta entrega la instancia nueva arranca y no
+        # puede escribir un PDF, el `arca_ta`, `errores/` ni un backup, y el síntoma es mudo
+        # (`/salud` da 200). Se entrega siempre, también si la imagen de este producto todavía
+        # corre como root: para root es inocuo, y el producto que migre su imagen después no
+        # hereda altas con la carpeta equivocada. Ver `provisioning/sin_root.py`.
+        #
+        # Va DESPUÉS de todo lo que el host escribe en `data/` (`config.json`) y ANTES de las
+        # migraciones y del primer arranque.
+        try:
+            entregadas = sin_root.entregar_datos(data_dir)
+            log(f"[OK] data/ entregada al uid {sin_root.UID_APP} ({entregadas} entradas)")
+        except PermissionError:
+            # No es root (una prueba, un checkout de desarrollo): no hay a quién entregarle nada.
+            log(f"[AVISO] No se pudo entregar data/ al uid {sin_root.UID_APP} (el proceso no es root). "
+                "Si la imagen corre sin root, hay que hacerlo a mano: "
+                f"chown -R {sin_root.UID_APP}:{sin_root.GID_APP} {data_dir}")
 
         # — migraciones, ANTES del primer arranque —
         #
