@@ -12,7 +12,7 @@ import time
 import pytest
 
 from libracore import candados
-from libracore.candados import candado_de_base, una_vez_al_arrancar
+from libracore.candados import candado_de_base, esperar_candado_de_transaccion, una_vez_al_arrancar
 from libracore.db import core
 from libracore.db._postgres import ConnectionWrapper
 
@@ -105,6 +105,13 @@ def test_sin_configurar_y_sin_destino_avisa():
             pass
     finally:
         core._db_path = estaba
+
+
+def test_esperar_candado_de_transaccion_en_sqlite_no_hace_nada():
+    """SQLite serializa a sus escritores solo: no se inventa un `flock`, y quien llama sigue sin esperar a nadie."""
+    conn = sqlite3.connect(":memory:")
+    assert esperar_candado_de_transaccion(conn, "esquema") is False
+    assert esperar_candado_de_transaccion(conn, "esquema") is False
 
 
 def test_una_conexion_desconocida_no_se_adivina():
@@ -219,3 +226,46 @@ def test_postgres_si_la_conexion_del_arranque_muere_el_candado_se_suelta(url_pg)
     muerta.close()
     with una_vez_al_arrancar("sembrar", destino=url_pg, espera=5):
         pass
+
+
+def test_postgres_esperar_candado_de_transaccion_espera_al_commit_del_otro(url_pg):
+    a, b = _wrapper(url_pg), _wrapper(url_pg)
+    try:
+        assert esperar_candado_de_transaccion(a, "esquema") is True
+        # Reentrante en la misma conexión: no se espera a sí mismo.
+        assert esperar_candado_de_transaccion(a, "esquema", espera=0.2) is True
+        # Otra conexión no lo consigue mientras `a` no termine su transacción...
+        with pytest.raises(TimeoutError, match="esquema"):
+            esperar_candado_de_transaccion(b, "esquema", espera=0.3)
+        # ...pero un nombre distinto no se pisa.
+        assert esperar_candado_de_transaccion(b, "otro", espera=0.2) is True
+        # Y espera de verdad: lo toma apenas `a` hace commit, sin que nadie reintente a mano.
+        b.rollback()
+        liberar = threading.Timer(0.5, a.commit)
+        liberar.start()
+        t0 = time.monotonic()
+        assert esperar_candado_de_transaccion(b, "esquema", espera=10) is True
+        assert 0.3 < time.monotonic() - t0 < 5, "no esperó a que el otro terminara (o no se enteró de que terminó)"
+        liberar.join()
+    finally:
+        a.close()
+        b.close()
+
+
+def test_postgres_esperar_candado_de_transaccion_lo_suelta_el_rollback_y_acepta_sqlalchemy(url_pg):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    motor = create_engine(url_pg.replace("postgresql://", "postgresql+psycopg://", 1))
+    a = _wrapper(url_pg)
+    try:
+        with Session(motor) as sesion:
+            assert esperar_candado_de_transaccion(a, "esquema") is True
+            with pytest.raises(TimeoutError):
+                esperar_candado_de_transaccion(sesion, "esquema", espera=0.3)
+            sesion.rollback()
+            a.rollback()
+            assert esperar_candado_de_transaccion(sesion, "esquema", espera=2) is True
+    finally:
+        a.close()
+        motor.dispose()
