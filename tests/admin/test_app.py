@@ -198,3 +198,14 @@ def test_un_500_del_backoffice_queda_registrado(app, tmp_path, monkeypatch):
 
 def test_el_backoffice_no_expone_el_endpoint_del_navegador(client):
     assert client.post("/api/errores-cliente", json={"mensaje": "x"}).status_code in (404, 405)
+
+
+@pytest.mark.parametrize("ruta", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+def test_el_backoffice_no_publica_swagger_ni_openapi_ni_en_desarrollo(client, monkeypatch, ruta):
+    """ADR-054: un backoffice no tiene API pública que documentar; ni sin sesión ni con `ENV=development`.
+
+    Le faltaba `openapi_url=None`: `/openapi.json` daba 200 con la lista de rutas de cada backoffice.
+    """
+    assert client.get(ruta).status_code == 404
+    monkeypatch.setenv("ENV", "development")
+    assert client.get(ruta).status_code == 404

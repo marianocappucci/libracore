@@ -1120,3 +1120,38 @@ Detalle en `docs/fce.md`.
   - Qué hace cada producto: **subir el pin**. No hay código que tocar para `init_core_schema()`.
   - Fuera de alcance, y dicho: el DDL **propio** de cada producto no pasa por esta función. `Base.metadata.create_all(get_engine())` de LibraGenda en MedLibra y Gestiolibra corre antes de cualquier candado y sobre una base **vacía** puede dar la clave duplicada del catálogo (sobre una armada no hace nada: sólo inspecciona); el `init_schema()` de LibraCommerce (VentaLibra, Contalibra, Restolibra) tiene el mismo patrón de DDL idempotente y **no se midió** acá. Ambos van dentro de `una_vez_al_arrancar` o se serializan por dentro en su propio motor.
 - Tests: `tests/test_esquema_en_paralelo.py` (3 procesos arrancando el esquema a la vez sobre una base armada —3 vueltas— y sobre una vacía, más el mecanismo sin carreras: con el candado tomado por otra conexión `init_core_schema()` no crea ni una tabla hasta que ésta termina) y los de `esperar_candado_de_transaccion` en `tests/test_candados.py` (espera de verdad, tope, reentrante, `rollback`, SQLAlchemy, SQLite). Los tres de `test_esquema_en_paralelo.py` fallan sin la llamada de `init_core_schema()`.
+
+
+## ADR-054 — El Swagger de la API (`/docs`, `/redoc`, `/openapi.json`) sólo se sirve en desarrollo: `libracore.docs_api`
+
+**Estado:** propuesta (2026-10-15). Punto 6 del relevamiento de seguridad del VPS (2026-10-10), medido de nuevo el 2026-10-15: las tres rutas daban 200 sin sesión en clientes reales, demos, backoffices y panel.
+
+**Contexto.** FastAPI publica por defecto `/openapi.json` (cada ruta, cada parámetro, cada esquema), `/docs` y `/redoc`. No filtra datos: es un mapa, y le ahorra a quien busca una falla el trabajo de descubrir qué hay. El esquema de la demo pública es el mismo que el de un cliente real. Lo medido en el código:
+- Los ocho productos crean la app con `FastAPI(title=...)` sin tocar las URL del Swagger: las tres rutas, abiertas.
+- `libracore.admin.create_admin_app` (los backoffices Jinja2 de Contalibra y Restolibra) y `libra-backoffice`/`libra-panel` ya pasaban `docs_url=None, redoc_url=None` pero **no** `openapi_url`: `/openapi.json` publicaba el esquema. Y `/docs` y `/redoc` ahí no eran Swagger sino el `index.html` de la SPA con 200 (el catch-all contesta 200 a lo que no existe, ver `libracore.spa`).
+- `DOCS_AUTH_SECRET` **no** es un mecanismo para esto: protege `/auth/verify` y `/api/clientes-publicos`, que usa el login del sitio de manuales `/docs/` de la landing (ADR-018 de VentaLibra y equivalentes). No hay en el motor nada que autentique el Swagger.
+
+**Qué ya existe** (se miró antes): `ENV == "development"` es la marca de «entorno de desarrollo» de toda la familia (CAE simulado en `arca_facturacion`, `pdf_generator`, admin por defecto y secreto de la cookie en libraauth). Ninguna instancia real ni demo la lleva: con ella la app emitiría comprobantes falsos. `LIBRA_ENTORNO` (`cliente`/`demo`/`dev`, ADR-045) la escribe el panel al dar de alta y `actualizar` no la pisa; una instancia vieja o una corrida local no la tiene.
+
+**Decisión.** Un módulo del motor, `libracore/docs_api.py`, y una línea por producto justo después de crear la app:
+
+```python
+app = FastAPI(title="Contalibra")
+cerrar_docs_de_la_api(app)
+```
+
+1. **Quién lo ve.** `docs_abiertos()`: sólo `ENV=development`, o `LIBRA_DOCS_API=1` puesto a mano en una instancia (un dev en el VPS, un diagnóstico). Todo lo demás —cliente, **demo**, variable ausente— da 404. Se decidió **cerrar también la demo**: es pública, su esquema es el de producción, y quien la quiera ver Swagger lo tiene en local (`ENV=development`) o con el interruptor. Se eligió abrir por una marca explícita y no cerrar por `LIBRA_ENTORNO=cliente|demo`: un criterio que se abre ante el «no sé» (variable ausente) deja abierto justo donde nadie miró.
+2. **404 y no 401.** No hay sesión que dé acceso: el Swagger no es una pantalla de usuario. Un 401 además confirmaría que la ruta existe.
+3. **Rutas que existen y contestan 404.** `cerrar_docs_de_la_api` reemplaza, en su lugar de la tabla, las rutas que FastAPI creó por las mismas detrás de la guarda. Con `docs_url=None` la ruta desaparecería y la atendería el catch-all de la SPA, que contesta `index.html` con **200**: un escáner seguiría viendo 200. La ruta propia, registrada antes que el catch-all, le gana, y el 404 tiene la forma del de FastAPI (`{"detail": "Not Found"}`).
+4. **Se decide en cada pedido, no al armar la app.** Los productos arman la app al importar el módulo; decidirlo ahí haría depender la prueba del orden de import y del shell. Así la prueba de cada producto cambia la variable y pide.
+5. **`create_admin_app` pasa `openapi_url=None`** sin condición: un backoffice no tiene API pública que documentar, ni siquiera en desarrollo.
+6. **`app.openapi()` no cambia.** Lo usan los tests de rutas de los productos y `libracore.testing`; lo que se cierra es sólo la publicación por HTTP.
+
+**Qué no.** No autentica el Swagger (descartado: hace falta un mecanismo de sesión de administrador para algo que sólo usa el desarrollo, y `DOCS_AUTH_SECRET` es server-to-server, no sirve a un navegador). No toca `/docs/` (con barra), que es el sitio de manuales y lo sirve el proxy desde la landing. No cierra ninguna otra ruta.
+
+**Consecuencias.**
+- MINOR (propuesta **v1.168.0**), **sin migración**. Hace falta **una línea por producto** (`cerrar_docs_de_la_api(app)` tras `FastAPI(...)` y su `import`) y subir el pin; `libra-backoffice` y `libra-panel` la usan también (y dejan de pasar `docs_url=None, redoc_url=None`). Contalibra y Restolibra obtienen el cierre de su backoffice (`create_admin_app`) sólo con el pin.
+- Un producto que olvide la llamada sigue con el Swagger abierto y nada se lo avisa en el motor: cada producto trae su `tests/test_docs_cerrados.py`, que mide contra su app de verdad.
+- Quien consulte `/docs` en un entorno que no es de desarrollo recibe 404: se pone `LIBRA_DOCS_API=1` en el compose de esa instancia (el panel no la escribe nunca).
+
+**Tests.** `tests/test_docs_cerrados.py` (32, 18 caen con la función anulada): las cuatro rutas dan 404 en `cliente`, `demo`, vacío y sin variable; con el catch-all de la SPA montado dan 404 y no el `index.html` (más el control que muestra que `docs_url=None` daría 200); en `ENV=development` y con `LIBRA_DOCS_API=1` se ven; cualquier otro valor del interruptor o de `ENV` no abre; se decide por pedido; llamarla dos veces no rompe; `app.openapi()` sigue andando. `tests/admin/test_app.py`: `create_admin_app` no publica `/openapi.json` ni con `ENV=development` (falla sin `openapi_url=None`).
