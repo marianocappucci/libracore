@@ -434,6 +434,53 @@ def test_la_baja_sigue_bloqueada_con_presupuestos(base, registrados):
     assert registrados == []
 
 
+_MOVIMIENTOS_DE_CUENTA = {
+    "cc_pagos": "INSERT INTO cc_pagos (cliente_id, monto, fecha) VALUES (?, 100, '2026-10-15')",
+    "cc_debitos": "INSERT INTO cc_debitos (cliente_id, monto, fecha) VALUES (?, 100, '2026-10-15')",
+    "recibos": "INSERT INTO recibos (numero, fecha, cliente_id, cliente_razon, origen_tipo, total) "
+               "VALUES (1, '2026-10-15', ?, 'x', 'cc_pago', 100)",
+    "cc_asientos": "INSERT INTO cc_asientos (fecha, tercero_id, rol, concepto, debe) "
+                   "VALUES ('2026-10-15', ?, 'cliente', 'Saldo', 100)",
+}
+
+
+@pytest.mark.parametrize("tabla", sorted(_MOVIMIENTOS_DE_CUENTA))
+def test_la_baja_se_bloquea_con_cuenta_corriente_y_no_se_lleva_los_movimientos(base, registrados, tabla):
+    cid = clients.create_client("Ana")
+    with core.get_connection() as conn:
+        conn.execute(_MOVIMIENTOS_DE_CUENTA[tabla], (cid,))
+    registrados.clear()
+
+    with pytest.raises(ValueError, match=r"1 movimiento\(s\) de cuenta corriente.*desactivar"):
+        clients.delete_client(cid)
+
+    assert clients.get_client(cid) is not None
+    assert _contar(tabla) == 1
+    assert registrados == []
+
+
+def test_un_asiento_de_otro_rol_con_el_mismo_id_no_bloquea_la_baja(base):
+    """El libro de terceros es de varios roles: un proveedor con el mismo número no es el cliente."""
+    cid = clients.create_client("Ana")
+    with core.get_connection() as conn:
+        conn.execute(_MOVIMIENTOS_DE_CUENTA["cc_asientos"].replace("'cliente'", "'proveedor'"), (cid,))
+
+    clients.delete_client(cid)
+
+    assert clients.get_client(cid) is None
+
+
+def test_la_baja_suma_remitos_y_cuenta_corriente_en_el_mensaje(base):
+    cid = clients.create_client("Ana")
+    _remito(cid)
+    with core.get_connection() as conn:
+        for tabla in ("cc_pagos", "cc_debitos"):
+            conn.execute(_MOVIMIENTOS_DE_CUENTA[tabla], (cid,))
+
+    with pytest.raises(ValueError, match=r"1 remito\(s\) y 2 movimiento\(s\) de cuenta corriente"):
+        clients.delete_client(cid)
+
+
 # ── 6. La línea de tiempo de Logs ────────────────────────────────────────────
 
 def test_logs_sin_la_tabla_no_se_rompe_y_no_muestra_nada(base):
