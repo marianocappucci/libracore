@@ -7,6 +7,15 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Un producto suelta una FK de la baseline que declara sin ella: `fk_de_producto.soltar_fk` (propuesta: v1.169.0)
+
+ADR-056. **Sin migración y sin cambio de schema** (`test_schema_congelado` no se mueve). `libracore/db/fk_de_producto.py`: `soltar_fk(conn, tabla, columna, *, hacia) -> list[str]` quita la FK de una columna hacia una tabla (`DROP CONSTRAINT IF EXISTS`, idempotente, sin tocar filas; devuelve los nombres soltados). En SQLite no hace nada. Es la costura que LibraDesk necesita desde que `libracore-migrar` corre antes de su arranque: la baseline crea `cc_debitos`, `cc_pagos`, `recibos`, `remitos`, `presupuestos` y `egresos` con FK hacia `clients`/`proveedores` (dos con `ON DELETE CASCADE`) que LibraDesk declara sin ellas, y una base nueva (la demo cada noche, un alta, un restore) quedaba distinta de una migrada. La baseline no cambia: los demás productos conservan esas FK.
+
+### Para los productos
+
+- **Sólo LibraDesk** la llama (`comercial.ensure_schema()`, una vez por columna). Los demás no declaran esas tablas por su cuenta y no tienen nada que alinear; subir el pin es la regla de la familia, no una necesidad.
+- Medido, y **abierto**: en los demás productos `cc_pagos`/`cc_debitos` siguen con `ON DELETE CASCADE` hacia `clients`, y `delete_client` no bloquea la baja por cuenta corriente (sí por remitos y presupuestos). Ver las consecuencias del ADR-056.
+
 ## [Unreleased] — La app de cada instancia puede correr sin root: `provisioning.sin_root` (propuesta: v1.168.0)
 
 ADR-055. **Sin migración.** `panel_admin actualizar` (y `rollback`) entrega `data/` a `10001:10001` antes de migrar y otra vez pegado al `up -d`, **sólo si la imagen nueva no corre como root** (`imagen_sin_root`); con una imagen root no cambia nada. El alta (`nuevo_cliente`) entrega `data/` antes de arrancar. `pinear_image` y la plantilla del alta suman `security_opt: [no-new-privileges:true]` al servicio de la app (no al sidecar de PostgreSQL). `data/backups` nace con el dueño de `data/`.
