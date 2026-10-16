@@ -7,6 +7,21 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Una demo no habla con ARCA ni muestra un emisor de la base, y `libracore.demo` audita lo que parece real (propuesta: v1.173.0)
+
+ADR-061 (renumerar). **Sin migración y sin cambio de schema.** Fuera de una demo (`DEMO_MODE` distinto de `1`/`true`) no cambia nada. Con `DEMO_MODE=1`:
+
+- **Una demo no tiene ARCA.** Los lectores de `arca_config` (`obtener_arca_config`, `obtener_todas_arca_configs`, `obtener_arca_config_por_id`, `config_del_emisor_en`, y por ellos `config_del_emisor` y `config_por_cuit`) devuelven `None`/`[]` aunque la tabla tenga filas; `arca_credenciales.paths_en_disco` y `paths_en_disco_de_servicio` devuelven `("", "")` (ni producción ni homologación: `get_next_numero_with_arca` numera local y no sale a la red); `build_arca_router` contesta 403 a todo lo que no sea lectura.
+- **El emisor del PDF es la empresa ficticia.** `emisor_del_pdf.emisor_para` no lee `arca_config`, el resolvedor ni `empresa=`: devuelve lo que `config_manager.load()` ya pisó (ADR-038).
+- **`usar_empresa_demo` rechaza un CUIT que no sea ficticio** (11 dígitos, verificador válido, cuerpo `99999xxx`).
+
+API nueva: **`libracore.demo`** — `clasificar_documento`, `es_cuit_ficticio`, `enmascarar`, `Hallazgo`, **`auditar_datos_fiscales(conn, config=None, *, terceros=(), empresa=(), ficticios=(), incluir_dudosos=False, conn_producto=None)`** (CUIT de empresa, ARCA en producción, certificados, MercadoPago que no es de prueba y CUIT de terceros en las columnas del motor y del producto; `[]` es una demo limpia), `auditar_literales(texto)` (los CUIT de forma real escritos en una semilla) y `python -m libracore.demo auditar --producto <prefijo>` (salida 0 limpia, 3 hallazgos, 4 no es una demo). `config_manager.load_sin_demo()` devuelve lo guardado sin el pisado de la demo.
+
+### Para los productos
+- **Sumar el test de la semilla**: correrla sobre una base vacía y exigir `auditar_datos_fiscales(conn) == []` más `auditar_literales(texto_de_la_semilla) == []`. Hoy darían rojo **RestoLibra** (`scripts/seed_demo.py:649`, el pagador de una transferencia) y **LibraCargo** (`scripts/seed_demo.py:172`, la empresa de la demo): un CUIT con verificador válido y fuera del rango reservado no se distingue de uno real. Se arregla con uno `99999xxx` (hay mil por prefijo).
+- **LibraCargo** registra su empresa ficticia con `usar_empresa_demo` si quiere que sus PDF de demo no digan «Empresa Demo SRL».
+- El reset nocturno de cada demo corre `python3 -m libracore.demo auditar --producto <p>` dentro del contenedor después de sembrar (`operaciones/scripts-demo/auditar_demo.sh` del wiki).
+
 ## [Unreleased] — Las notas de crédito restan de lo pendiente en todo el motor, y el cobro entra por el turno (propuesta: v1.172.0)
 
 ADR-059 y ADR-060. **Sin migración y sin cambio de schema.**
@@ -41,6 +56,7 @@ ADR-058. **Sin migración y sin cambio de schema.** `POST /api/facturas/{id}/cob
 - Quien pasa `registrar_cobro=` recibe el cobro ya validado, **sin candado**: para frenar la carrera, `exigir_cobro_posible(factura_id, monto, conn=conn)` en la transacción donde escribe el movimiento. Un producto con su propio cobro de factura (LibraClub, `POST /api/caja/cobros` con `factura_id`) tiene que llamarlo: el motor no lo ve.
 - Quien inyecte `crear_movimiento` / `crear_cc_pago` en `registrar_cobro_factura` (sólo tests, hoy) tiene que aceptar `conn=`.
 - **Abierto**: las notas de crédito no restan de lo pendiente en ningún cálculo del motor (ni en este tope), y una nota de débito no tiene tope. Ver ADR-058.
+
 
 ## [Unreleased] — Un cliente con cuenta corriente no se puede borrar: `delete_client` la mira (propuesta: v1.170.0)
 

@@ -47,6 +47,10 @@ def paths_en_disco(config: dict | None, ambiente: str = "") -> tuple[str, str]:
     # piezas que esto encadena, así que repetirla acá es código que ningún test
     # puede distinguir: una mutación que la sacaba sobrevivió a la batería, y la
     # conclusión correcta fue que sobraba, no que faltaba un test.
+    if config_manager.es_demo():
+        # Una demo no tiene credenciales de ARCA (ADR-061): ni de produccion ni de homologacion, aunque alguien las
+        # haya subido o la fila diga otra cosa. Sin par, quien emite numera local y no sale a la red.
+        return "", ""
     cfg = config or {}
     amb = ambiente or cfg.get("ambiente") or ""
     cert, clave = config_manager.resolve_cert_paths(
@@ -72,6 +76,8 @@ def paths_en_disco_de_servicio(empresa: str, servicio: str, ambiente: str) -> tu
     porque el volumen cambió de lugar: si el archivo no está donde dice la fila
     pero sí en `CERTS_DIR` con el mismo nombre, se usa ése.
     """
+    if config_manager.es_demo():
+        return "", ""   # ver `paths_en_disco`: una demo no tiene credenciales de ARCA (ADR-061)
     cert, clave = db_servicio.paths_de_servicio(empresa, servicio, ambiente)
 
     def _resolver(path: str) -> str:
