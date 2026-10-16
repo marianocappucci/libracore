@@ -36,11 +36,13 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from libracore import medios_pago, ticket_generator
+from libracore.cobros import CobroNoPermitido, es_medio_cuenta_corriente, exigir_cobro_posible
 from libracore.db import caja as db_caja
 from libracore.db import cierre_diario as db_cierre_diario
 from libracore.db import turnos as db_turnos
 from libracore.db.caja import ExternalIdMercadoPagoInvalido, PuntoDeVentaRepetido
 from libracore.db.cierre_diario import DiaCerradoError
+from libracore.db.core import get_connection
 from libracore.validacion import sin_booleanos
 
 # ── Caja: los movimientos ────────────────────────────────────────────────
@@ -85,6 +87,23 @@ def build_caja_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api
             raise HTTPException(422, "Tipo inválido.")
         if payload.monto <= 0:
             raise HTTPException(422, "El monto debe ser mayor a cero.")
+        if (payload.tipo == "ingreso" and payload.factura_id is not None
+                and not es_medio_cuenta_corriente(payload.medio_pago)):
+            # 🔴 Un ingreso ligado a una factura ES un cobro de esa factura (así lo cuenta
+            # `get_cobros_factura`): no puede superar lo que falta (ADR-058). Se mira y se escribe en la
+            # misma transacción, con la factura bloqueada. La marca de cuenta corriente no es un cobro:
+            # es la deuda, y pasa como siempre.
+            try:
+                with get_connection() as conn:
+                    exigir_cobro_posible(payload.factura_id, payload.monto, conn=conn)
+                    mov_id = db_caja.create_caja_movimiento(
+                        payload.fecha, payload.tipo, concepto, payload.monto, payload.referencia.strip(),
+                        payload.factura_id, user.get("id"), caja_id=payload.caja_id,
+                        medio_pago=payload.medio_pago, conn=conn,
+                    )
+            except CobroNoPermitido as exc:
+                raise HTTPException(404 if exc.codigo == CobroNoPermitido.NO_EXISTE else 409, str(exc)) from exc
+            return {"id": mov_id}
         mov_id = db_caja.create_caja_movimiento(
             payload.fecha, payload.tipo, concepto, payload.monto, payload.referencia.strip(),
             payload.factura_id, user.get("id"), caja_id=payload.caja_id,
