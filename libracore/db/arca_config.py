@@ -8,6 +8,7 @@ import contextlib
 import json
 import re
 
+from libracore import config_manager
 from libracore.cuit import solo_digitos
 from libracore.db.core import get_connection
 
@@ -132,6 +133,8 @@ def config_del_emisor_en(emisor_id, *, conn=None) -> dict | None:
     ya armado (la pre factura), que tiene que seguir imprimiéndose aunque se dé de baja
     la razón social. Con `conn` trabaja en la transacción de quien llama.
     """
+    if config_manager.es_demo():
+        return None   # una demo no tiene ARCA (ADR-061)
     with (contextlib.nullcontext(conn) if conn is not None else get_connection()) as c:
         if emisor_id is None:
             fila = c.execute(
@@ -187,8 +190,29 @@ def crear_arca_config(empresa, cuit, punto_venta, clave_path, certificado_path,
             raise ValueError(f"Error creando configuración ARCA: {str(e)}")
 
 
+# 🔴 **Una demo no tiene ARCA (ADR-061).** Con `DEMO_MODE=1` los lectores de esta tabla —`obtener_arca_config`,
+# `obtener_todas_arca_configs`, `obtener_arca_config_por_id`, `config_del_emisor_en` y, por ellos, `config_del_emisor` y
+# `config_por_cuit`— devuelven lo mismo que una instancia que todavía no facturó (`None` o `[]`) aunque la tabla tenga
+# filas. La razón social, el CUIT, el punto de venta y el ambiente de una fila cargada a mano no llegan a ninguna
+# pantalla ni a ningún PDF, y `get_next_numero_with_arca` no encuentra con qué autenticarse: numera local y no sale a la
+# red. Es lo que las semillas de los productos ya suponen («una demo no tiene certificado»), hecho garantía. Los
+# escritores no cambian (la pantalla de ARCA rechaza escribir en una demo: `arca_router`). Lo que hay guardado se ve con
+# `libracore.demo.auditar_datos_fiscales`.
+
+
+def _fila_por_empresa(empresa):
+    """La fila activa de esa empresa, **sin** el esconder de la demo: es lo que necesitan los escritores."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM arca_config WHERE empresa=? AND activo=1", (empresa,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def obtener_arca_config(empresa):
-    """Obtiene configuración ARCA por nombre de empresa."""
+    """Obtiene configuración ARCA por nombre de empresa. En una demo, `None` (ADR-061)."""
+    if config_manager.es_demo():
+        return None
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM arca_config WHERE empresa=? AND activo=1", (empresa,)
@@ -197,7 +221,9 @@ def obtener_arca_config(empresa):
 
 
 def obtener_todas_arca_configs():
-    """Obtiene todas las configuraciones ARCA activas."""
+    """Obtiene todas las configuraciones ARCA activas. En una demo, `[]` (ADR-061)."""
+    if config_manager.es_demo():
+        return []
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM arca_config WHERE activo=1 ORDER BY empresa"
@@ -214,7 +240,9 @@ class ArcaAmbiguo(ValueError):
 
 
 def obtener_arca_config_por_id(emisor_id):
-    """La configuración activa con ese id, o `None`."""
+    """La configuración activa con ese id, o `None`. En una demo siempre `None` (ADR-061)."""
+    if config_manager.es_demo():
+        return None
     with get_connection() as conn:
         row = conn.execute(
             "SELECT * FROM arca_config WHERE id=? AND activo=1", (emisor_id,)
@@ -271,7 +299,7 @@ def actualizar_arca_config(empresa, cuit=None, punto_venta=None, clave_path=None
     lista (incluso vacía) la reemplaza. Quien llama la valida; acá sólo se serializa.
     """
     with get_connection() as conn:
-        config = obtener_arca_config(empresa)
+        config = _fila_por_empresa(empresa)
         if not config:
             raise ValueError(f"Configuración ARCA no encontrada para: {empresa}")
 

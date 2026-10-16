@@ -61,7 +61,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from libracore import (
@@ -92,6 +92,18 @@ logger = logging.getLogger(__name__)
 #: clave pendiente pasa a vigente, quedan los asientos de siempre —`certificado` y `clave`—, con
 #: `desde_pedido` en el detalle.
 ACCIONES = ("configurar", "certificado", "clave", "borrar", "pedido", "descartar_pedido")
+
+
+def _sin_escrituras_en_demo(request: Request) -> None:
+    """Una demo no se conecta a ARCA (ADR-061): ni configurar, ni subir un certificado, ni probar.
+
+    Es una dependencia de **todo** el router y sólo mira el verbo: las lecturas siguen (y en una demo contestan como una
+    instancia sin ARCA, porque `db.arca_config` no la ve). Sin esto una demo pública aceptaría la clave privada de
+    quien pase, y la dejaría en el disco de un contenedor al que entra cualquiera con un código.
+    """
+    if request.method not in ("GET", "HEAD", "OPTIONS") and config_manager.es_demo():
+        raise HTTPException(
+            403, "Esto es una demo: no se conecta a ARCA, así que no se configura ni se cargan certificados.")
 
 
 def _sin_identidad() -> None:
@@ -607,7 +619,7 @@ def build_arca_router(
                 + ", ".join(arca_servicios.CATALOGO) + ".") from None
     #: Los que tienen rutas propias: todos menos la facturación, que no cambia.
     extras = tuple(dict.fromkeys(i for i in servicios if i != arca_servicios.SERVICIO_FACTURACION))
-    router = APIRouter(prefix=prefix, tags=["arca"])
+    router = APIRouter(prefix=prefix, tags=["arca"], dependencies=[Depends(_sin_escrituras_en_demo)])
     identidad = usuario_actual or _sin_identidad
 
     def _avisar(accion: str, detalle: dict, usuario: Any) -> None:

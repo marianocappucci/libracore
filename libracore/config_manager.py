@@ -231,6 +231,14 @@ def usar_empresa_demo(datos: dict | None = None, logo_path: str = "") -> None:
     ajenos = set(datos) - set(CAMPOS_EMPRESA)
     if ajenos:
         raise ValueError(f"usar_empresa_demo: campos que no son de la empresa: {sorted(ajenos)}")
+    if "empresa_cuit" in datos:
+        # Import tardio: `demo` importa este modulo.
+        from libracore.demo import es_cuit_ficticio
+
+        if not es_cuit_ficticio(datos["empresa_cuit"]):
+            raise ValueError(
+                "usar_empresa_demo: el CUIT de la empresa de una demo tiene que ser ficticio: 11 digitos con "
+                "verificador valido y cuerpo 99999xxx (p. ej. 30-99999900-6). ADR-061.")
     _empresa_demo = {**EMPRESA_DEMO_POR_DEFECTO, **datos}
     _logo_demo = logo_path or ""
 
@@ -247,8 +255,8 @@ def _aplicar_empresa_demo(cfg: dict) -> dict:
     return cfg
 
 
-def load(extra_defaults: dict | None = None):
-    """La config efectiva: el JSON, con los secretos traidos del almacen.
+def _cargar(extra_defaults: dict | None = None):
+    """El JSON con los secretos traidos del almacen, **sin** la capa de la demo (esa la pone `load()`).
 
     **Sin almacen enchufado se comporta exactamente como antes.** Eso no es
     tolerancia a un olvido: es lo que hace que `panel_admin`, el provisioning y
@@ -276,7 +284,21 @@ def load(extra_defaults: dict | None = None):
             guardado = _almacen.get(clave)
             if guardado:
                 cfg[clave] = guardado
-    return _aplicar_empresa_demo(cfg)
+    return cfg
+
+
+def load(extra_defaults: dict | None = None):
+    """La config efectiva (ver `_cargar`), y en una demo con la empresa ficticia encima (ADR-038)."""
+    return _aplicar_empresa_demo(_cargar(extra_defaults))
+
+
+def load_sin_demo(extra_defaults: dict | None = None):
+    """Lo que hay **guardado**, sin el pisado de la demo. Es para auditar (`libracore.demo`), nunca para mostrar.
+
+    `load()` en una demo esconde los datos de la empresa que haya en `config.json`: justo lo que una auditoria
+    quiere ver. Esto es lo mismo sin esa capa; los secretos vienen del almacen igual que en `load()`.
+    """
+    return _cargar(extra_defaults)
 
 
 def _escribir_atomico(ruta: str, datos: dict) -> None:

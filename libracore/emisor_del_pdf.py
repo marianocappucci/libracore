@@ -21,6 +21,9 @@ ADR-021) emitía con el CUIT de una y el membrete de otra.
 4. **`empresa=`**, lo que pasa quien llama a un generador puntual (la pre factura lo tiene desde su
    primera versión): gana sobre todo lo demás.
 
+🔴 **Excepto en una demo (`DEMO_MODE=1`, ADR-061):** el emisor es siempre el de la capa 1, que ahí es la empresa ficticia
+(ADR-038). Las capas 2 a 4 no se leen: son las que pueden traer la razón social y el CUIT de una empresa real.
+
 ## El resolvedor, de dos maneras
 
 - **Registrado** una vez al arrancar, `registrar_resolvedor(fn)`: lo usan todos los PDF del proceso,
@@ -47,6 +50,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from libracore import config_manager
 from libracore.db.arca_config import EmisorDesconocido
 from libracore.db.core import Conexion
 from libracore.db.facturas import _con
@@ -102,6 +106,12 @@ def emisor_para(
 
     documento = documento or {}
     emp = pdf_generator._empresa()
+    if config_manager.es_demo():
+        # 🔴 En una demo el emisor es la empresa ficticia y nada mas (ADR-061). `_empresa()` ya lo es (`load()` la pone,
+        # ADR-038); lo que se corta aca son las otras tres capas, que leen la base y el producto: `arca_config` y el
+        # resolvedor pueden tener la razon social, el CUIT, el domicilio y el logo de una empresa real, y `empresa=`
+        # puede traerlos de afuera. Ni se consultan.
+        return emp
     if documento.get("emisor_id") is not None:
         emp.update(datos_de_arca_config(documento["emisor_id"], conn=conn))
     resolver = resolvedor if resolvedor is not None else _resolvedor
