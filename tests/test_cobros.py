@@ -43,14 +43,14 @@ _SIN_ESPECIFICAR = object()
 class Escrituras:
     """Doble de las tres escrituras, que además registra el orden real."""
 
-    def __init__(self, cliente=_SIN_ESPECIFICAR, *, total=90000.0, cobrado=0.0, anulada=False):
+    def __init__(self, cliente=_SIN_ESPECIFICAR, *, total=90000.0, cobrado=0.0, acreditado=0.0, anulada=False):
         self.movimientos = []
         self.cc_pagos = []
         self.lecturas = 0
         # Lo que la base diría de la factura (ADR-058): por omisión, sin cobrar y de 90.000, que es
         # la de los ejemplos de abajo. Se arma con `saldo_de_cobro`, la misma cuenta que usa el motor.
         self.estado = {
-            **saldo_de_cobro({"total": total, "tipo": 11}, [{"monto": cobrado}] if cobrado else []),
+            **saldo_de_cobro({"total": total, "tipo": 11}, [{"monto": cobrado}] if cobrado else [], acreditado),
             "anulada": anulada, "con_tope": True,
         }
         # Centinela y no `None` como default: `Escrituras(cliente=None)` es el
@@ -342,3 +342,86 @@ def test_el_pendiente_no_baja_de_cero_aunque_la_base_ya_tenga_un_cobro_de_mas():
 ])
 def test_centavos(valor, esperado):
     assert centavos(valor) == esperado
+
+
+# ── Las notas de crédito restan de lo pendiente (ADR-059) ─────────────────
+
+
+def test_una_nota_parcial_baja_lo_que_se_puede_cobrar():
+    esc = Escrituras(total=1000.0, acreditado=400.0)
+
+    with pytest.raises(CobroNoPermitido) as exc:
+        registrar(FACTURA_CONTADO, [{"medio_id": "efectivo", "monto": 600.01}], esc=esc)
+    assert exc.value.codigo == CobroNoPermitido.EXCEDE
+    assert "$ 600,00" in str(exc.value) and "notas de crédito acreditan $ 400,00" in str(exc.value)
+
+    _, res = registrar(FACTURA_CONTADO, [{"medio_id": "efectivo", "monto": 600.0}], esc=esc)
+    assert res["total"] == 600.0
+
+
+def test_una_nota_total_deja_la_factura_sin_nada_por_cobrar():
+    esc = Escrituras(total=1000.0, acreditado=1000.0)
+
+    with pytest.raises(CobroNoPermitido) as exc:
+        registrar(FACTURA_CONTADO, [{"medio_id": "efectivo", "monto": 1.0}], esc=esc)
+
+    assert exc.value.codigo == CobroNoPermitido.SIN_SALDO
+    assert "acreditada por completo" in str(exc.value)
+    assert esc.movimientos == []
+
+
+def test_cobrada_y_acreditada_no_da_un_pendiente_negativo():
+    saldo = saldo_de_cobro({"total": 1000.0}, [{"monto": 1000.0}], acreditado=1000.0)
+
+    assert (saldo["pendiente"], saldo["pendiente_centavos"], saldo["acreditado"]) == (0.0, 0, 1000.0)
+
+
+def test_cobro_y_nota_que_juntos_completan_la_factura():
+    saldo = saldo_de_cobro({"total": 1000.0}, [{"monto": 600.0}], acreditado=400.0)
+
+    assert saldo["pendiente"] == 0.0
+
+
+# ── Caja por turno (ADR-060) ──────────────────────────────────────────────
+
+TURNO = {"id": 9, "caja_id": 3, "usuario_id": 4}
+
+
+def test_con_turno_el_movimiento_va_en_el_turno_y_el_abono_de_cuenta_corriente_no_lleva_turno():
+    esc = Escrituras()
+    pedidos = []
+
+    def turno_de(conn):
+        pedidos.append(conn)
+        return TURNO
+
+    _, res = registrar(FACTURA_CC, [{"medio_id": "efectivo", "monto": 500.0}], esc=esc, turno_de=turno_de,
+                       exigir_turno=True)
+
+    (mov,) = esc.movimientos
+    assert (mov["turno_id"], mov["caja_id"], mov["usuario_id"]) == (9, 3, 4)
+    assert mov["fecha"] != HOY, "la fecha es la de hoy, no la del pedido"
+    (abono,) = esc.cc_pagos
+    assert (abono["caja_id"], abono["usuario_id"]) == (3, 4) and "turno_id" not in abono
+    assert res["total"] == 500.0 and pedidos == [None], "sin base no hay conexión que pasar"
+
+
+def test_sin_turno_y_con_turno_exigido_se_rechaza_antes_de_escribir():
+    esc = Escrituras()
+
+    with pytest.raises(CobroNoPermitido) as exc:
+        registrar(FACTURA_CONTADO, [{"medio_id": "efectivo", "monto": 1.0}], esc=esc,
+                  turno_de=lambda conn: None, exigir_turno=True)
+
+    assert exc.value.codigo == CobroNoPermitido.SIN_TURNO
+    assert str(exc.value) == "No hay una caja abierta. Abrí el turno antes de cobrar."
+    assert esc.movimientos == [] and esc.cc_pagos == [] and esc.lecturas == 0
+
+
+def test_sin_turno_y_sin_exigirlo_el_cobro_entra_suelto_como_siempre():
+    esc = Escrituras()
+
+    registrar(FACTURA_CONTADO, [{"medio_id": "efectivo", "monto": 10.0}], esc=esc, turno_de=lambda conn: None)
+
+    (mov,) = esc.movimientos
+    assert "turno_id" not in mov and mov["fecha"] == HOY and mov["caja_id"] == 1

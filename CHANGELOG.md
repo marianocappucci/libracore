@@ -7,6 +7,26 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Las notas de crédito restan de lo pendiente en todo el motor, y el cobro entra por el turno (propuesta: v1.172.0)
+
+ADR-059 y ADR-060. **Sin migración y sin cambio de schema.**
+
+**ADR-059: `pendiente = total − cobrado − acreditado`, una sola definición.** `libracore.db.facturas.sql_cobrado`, `sql_acreditado` (notas de crédito **con CAE y vigentes**, mismo emisor y ambiente), `sql_pendiente`, `sql_con_pendiente` y `sql_pendiente_positivo`. Los usan: el tope del cobro (`cobros.estado_de_cobro`), el detalle del comprobante, la vista `sin_cobrar` del listado, `get_resumen_core`, `get_dashboard_data`, `get_facturas_pendientes_cc` (y con él `cuenta_corriente_router._repartir`) y el rótulo «Pago parcial»/«Cancelación» del recibo. Nunca es negativo (cobrada y después acreditada = 0; el saldo a favor sigue siendo sólo de la cuenta corriente, que no cambia: la nota abona la cuenta una vez y el `pendiente` no la descuenta otra).
+
+**Visible en los productos:**
+- La vista «sin cobrar» y los contadores **sacan** las facturas acreditadas por completo; una acreditada por completo **no se puede cobrar** (409).
+- `resumen.sin_cobrar` y el tablero (`facturas_sin_cobrar`) ahora **cuentan las cobradas a medias** (antes las sacaba cualquier cobro) y el monto es **lo que falta**, no el total. Tampoco cuentan ya como cobro un movimiento anulado.
+- `get_facturas_pendientes_cc`: una nota **parcial** deja la factura con lo que se debe (antes la sacaba entera).
+- Campos nuevos, aditivos: `total_acreditado` en el detalle; `total_acreditado` y `pendiente` por fila del listado; `pendiente` por fila del tablero.
+- `get_cobrado_y_acreditado` (nueva) acepta `conn=`; `saldo_de_cobro(…, acreditado=)`; `emitir_recibo_factura(…, get_acreditado=)`.
+
+**ADR-060: caja por turno sin reemplazar el cobro.** `build_comprobantes_router(exigir_turno=, usuario_del_turno=, validar_cobro=)`: con `exigir_turno=True` el cobro del motor —con su tope y su candado— entra por el turno abierto de quien cobra (`turno_id`, la caja del turno y su dueño; `fecha` y `caja_id` del pedido se ignoran); sin turno, **409** «No hay una caja abierta. Abrí el turno antes de cobrar.». `registrar_cobro_factura(…, turno_de=, exigir_turno=)` y `CobroNoPermitido.SIN_TURNO`. `cobros.transaccion_de_cobro(factura_id, monto, conn=None)`: el `with` con tope y candado para el cobro propio de un producto. `tests/pg_descartable.py` reintenta el `DROP DATABASE … FORCE` (permiso del autovacuum).
+
+### Para los productos
+- **`libra-ui` tiene que rotular la factura acreditada** (la API ya dice `total_acreditado` y `pendiente`): en `Facturas.tsx` (estado: «Acreditada» si `total_acreditado >= total`; «Cobrada» si `pendiente <= 0`; el botón de cobrar con `pendiente > 0`, no `cobrado < total`), en `FacturaDetalle.tsx` («Acreditada por nota de crédito» en vez de «Cobrado completo — $ 0,00» cuando `pendiente <= 0` y `total_acreditado > 0`), y en los tableros `comercio/Dashboard.tsx` y el de Contalibra (mostrar `f.pendiente` en vez de `f.total`). Sin eso, una factura acreditada figura «Sin cobrar» y su botón de cobrar da 409.
+- **LibraClub:** borrar `_cobrar_del_turno` y pasar `exigir_turno=True, usuario_del_turno=lambda u: u["id_dominio"], validar_cobro=…` (sus medios y la regla de cuenta corriente). Su `POST /api/caja/cobros` con `factura_id` tiene que escribir dentro de `cobros.transaccion_de_cobro(factura_id, monto)` (y `registrar_movimiento` aceptar `conn=`); el cobro con QR, no.
+- Un producto que inyecta `crear_movimiento`/`crear_cc_pago` en `registrar_cobro_factura` (sólo tests) tiene que aceptar `conn=`.
+
 ## [Unreleased] — Un cobro de factura no puede superar lo que falta: `cobros.exigir_cobro_posible` (propuesta: v1.171.0)
 
 ADR-058. **Sin migración y sin cambio de schema.** `POST /api/facturas/{id}/cobrar` aceptaba un cobro mayor que lo pendiente (9.999 sobre 3.500: 200, «Cobrado completo — $ 10.999,00» y un ingreso de 9.999 en la caja; medido en el e2e de Contalibra). Ahora es **409** con el mensaje en castellano que dice cuánto falta, y no se escribe nada.

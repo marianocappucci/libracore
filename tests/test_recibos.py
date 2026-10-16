@@ -56,7 +56,7 @@ def _emitir_factura(cobros, factura=None, **kwargs):
         (factura or FACTURA)["id"],
         get_factura=lambda _id: factura or FACTURA,
         get_cobros_factura=lambda _id: cobros,
-        **kwargs,
+        **{"get_acreditado": lambda _id: 0.0, **kwargs},
     )
 
 

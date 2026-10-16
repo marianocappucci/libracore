@@ -88,6 +88,7 @@ from libracore.db import core as db_core
 from libracore.db import cuenta_corriente as db_cc
 from libracore.db import envios_email
 from libracore.db import facturas as db_facturas
+from libracore.db import turnos as db_turnos
 from libracore.db.envios_email import TIPO_FACTURA
 from libracore.emisor_del_pdf import emisor_para
 from libracore.facturas_borrador import armar_borrador
@@ -567,12 +568,14 @@ def _detalle(factura: dict) -> dict:
 
     cobros = db_caja.get_cobros_factura(factura["id"]) if es_factura else []
     total_cobrado = sum(c["monto"] for c in cobros)
-    # 🔑 La misma cuenta que usa el tope del cobro (ADR-058): total − cobrado, sin bajar de cero (un cobro
-    # de más de antes del tope no se muestra como pendiente negativo).
-    pendiente = (
-        saldo_de_cobro(factura, cobros)["pendiente"]
-        if es_factura and not factura.get("anulada_en") else 0.0
-    )
+    # 🔑 La misma cuenta que usa el tope del cobro y todas las listas (ADR-058/059):
+    # total − cobrado − acreditado por notas de crédito con CAE, sin bajar de cero. Una factura acreditada por
+    # completo (o cobrada y después acreditada) queda en 0: `total_acreditado` es lo que la pantalla necesita
+    # para rotularla distinto de «Cobrada».
+    acreditado = (db_facturas.get_cobrado_y_acreditado(factura["id"]) or (0.0, 0.0))[1] if es_factura else 0.0
+    saldo = saldo_de_cobro(factura, cobros, acreditado)
+    total_acreditado = saldo["acreditado"]
+    pendiente = saldo["pendiente"] if es_factura and not factura.get("anulada_en") else 0.0
 
     cliente = db_clients.get_client_by_cuit(factura.get("cliente_cuit", ""))
 
@@ -588,6 +591,7 @@ def _detalle(factura: dict) -> dict:
         "factura_original": factura_original,
         "cobros": cobros,
         "total_cobrado": total_cobrado,
+        "total_acreditado": total_acreditado,
         "pendiente": pendiente,
         "cliente_email": cliente.get("email", "") if cliente else "",
         "envios_email": envios_email.de_documento(TIPO_FACTURA, factura["id"]),
@@ -828,6 +832,9 @@ def build_comprobantes_router(
     donde_configurar_smtp: str = "Configuración → Email",
     smtp_config: Callable[[], Any] | None = None,
     emisor_del_pdf: Callable[[dict], dict | None] | None = None,
+    exigir_turno: bool = False,
+    usuario_del_turno: Callable[[dict], int | None] | None = None,
+    validar_cobro: Callable[[dict, list[dict], dict], None] | None = None,
 ) -> APIRouter:
     """Los doce endpoints de comprobantes, con lo del producto inyectado.
 
@@ -841,6 +848,20 @@ def build_comprobantes_router(
     levante sale tal cual: un producto puede devolver un 409 si no hay caja
     abierta. Por omisión se usa `libracore.cobros.registrar_cobro_factura`, que
     es lo que hacen Contalibra y Restolibra.
+
+    **Caja por turno, sin reemplazar nada** (ADR-060). Un producto que lleva la caja por turno
+    (`turnos_caja`, con su arqueo al cerrar) no necesita `registrar_cobro`: pasa `exigir_turno=True` y el
+    cobro del motor —con su tope y su candado— entra por el **turno abierto de quien cobra**: `turno_id`,
+    la caja del turno y su dueño en el movimiento; `fecha` y `caja_id` del pedido se ignoran; sin turno,
+    **409** «No hay una caja abierta. Abrí el turno antes de cobrar.».
+    `usuario_del_turno(usuario) -> id | None` dice con qué id se abrió ese turno; por omisión, `usuario["id"]`
+    (un producto cuyo `id` ante el motor es `None` porque sus usuarios viven en otra base devuelve el suyo).
+    Pasando sólo `usuario_del_turno` (sin `exigir_turno`), el cobro va por el turno **si hay uno** y, si no,
+    entra suelto como siempre. Con `registrar_cobro` estas opciones no rigen: el reemplazo manda.
+
+    `validar_cobro(factura, pagos, usuario)` corre **antes** de todo, no escribe, y levanta `HTTPException` para
+    rechazar lo que es sólo de ese producto (un medio que su caja no ofrece, una condición de venta que no
+    cobra por acá). Rige también con `registrar_cobro`.
 
     🔴 **El reemplazo recibe el cobro ya validado contra lo que falta** (ADR-058: un cobro no puede
     superar lo pendiente de la factura; 409 si lo supera), pero **sin candado**: dos cobros
@@ -1208,15 +1229,16 @@ def build_comprobantes_router(
         # rechazo de "cuenta corriente" como medio de cobro. Estaba duplicada
         # byte a byte, que es como los dos productos terminaron con el mismo bug.
         #
-        # Un producto con caja por turno reemplaza esta escritura entera —ver
-        # `registrar_cobro` en el docstring del factory—, porque el default no
-        # sabe de turnos y dejaría la plata fuera del arqueo.
+        # Un producto con caja por turno ya no necesita reemplazar esta escritura entera: pasa
+        # `exigir_turno` (ADR-060) y el default entra por el turno abierto de quien cobra.
         #
         # 🔴 Un cobro no puede superar lo que falta de la factura (ADR-058). El default lo exige él
         # mismo, dentro de su transacción y con la factura bloqueada. Un producto que **reemplaza** la
         # escritura no pasa por ahí: se le mira acá, antes de llamarlo, para que ninguna entrada se
         # saltee la regla (sin el candado: el reemplazo que quiera frenar la carrera llama a
         # `libracore.cobros.exigir_cobro_posible(..., conn=)` en su propia transacción).
+        if validar_cobro is not None:
+            validar_cobro(factura, payload.pagos, usuario)
         try:
             if registrar_cobro is not None:
                 a_cobrar = sum(
@@ -1229,9 +1251,15 @@ def build_comprobantes_router(
                     caja_id=payload.caja_id, usuario=usuario,
                 )
             else:
+                turno_de = None
+                if exigir_turno or usuario_del_turno is not None:
+                    quien = usuario_del_turno(usuario) if usuario_del_turno is not None else usuario.get("id")
+                    turno_de = lambda c, quien=quien: (  # noqa: E731
+                        db_turnos.get_turno_activo(quien, conn=c) if quien is not None else None)
                 registrar_cobro_factura(
                     factura, payload.pagos, fecha=payload.fecha or None,
                     caja_id=payload.caja_id, usuario_id=usuario["id"],
+                    turno_de=turno_de, exigir_turno=exigir_turno,
                 )
         except MedioNoEsDeCobro as exc:
             raise HTTPException(400, str(exc)) from exc

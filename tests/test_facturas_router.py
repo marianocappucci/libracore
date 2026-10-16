@@ -492,6 +492,9 @@ def test_las_notas_son_de_admin(client):
 
 
 def test_el_detalle_muestra_las_notas_colgando_de_su_factura(client):
+    """La nota de crédito total resta de lo pendiente (ADR-059): la factura acreditada por completo ya no debe
+    nada, y `total_acreditado` dice por qué (la pantalla la rotula distinto de «Cobrada»). La nota de débito
+    no resta: cobra un monto nuevo."""
     original = _emitir(client)
     client.post(f"{API}/{original['id']}/nota-credito", headers=ADMIN)
     client.post(f"{API}/{original['id']}/nota-debito", headers=ADMIN)
@@ -499,7 +502,9 @@ def test_el_detalle_muestra_las_notas_colgando_de_su_factura(client):
     detalle = client.get(f"{API}/{original['id']}").json()
     assert len(detalle["notas_credito"]) == 1
     assert len(detalle["notas_debito"]) == 1
-    assert detalle["pendiente"] == original["total"], "nadie la cobró todavía"
+    assert detalle["total_cobrado"] == 0.0, "nadie la cobró"
+    assert detalle["total_acreditado"] == original["total"]
+    assert detalle["pendiente"] == 0.0, "la nota total la dejó sin deuda"
 
 
 # ── El hook del producto ──────────────────────────────────────────────────

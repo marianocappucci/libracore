@@ -92,6 +92,82 @@ def sql_vigente(alias: str = "") -> str:
     return f"{alias + '.' if alias else ''}anulada_en IS NULL"
 
 
+# ── «Cuánto falta de una factura»: UNA definición (ADR-059) ───────────────────
+#
+# `pendiente = total − cobrado − acreditado`, donde **cobrado** es lo que ingresó a la caja por esa factura
+# (sin anulados y sin la marca de cuenta corriente: es `get_cobros_factura`) y **acreditado** es lo que
+# restan sus notas de crédito **con CAE y vigentes**. Hasta el ADR-059 las notas no restaban en ningún
+# lado, salvo en `get_facturas_pendientes_cc`, que sacaba la factura entera con cualquier nota (incluso
+# una parcial). Estos fragmentos son la fuente: el tope del cobro (`libracore.cobros`), el detalle del
+# comprobante, la vista `sin_cobrar`, `resumen`, el tablero y la cuenta corriente los usan y no repiten el
+# criterio —tener dos listas del mismo criterio es cómo se llega a que una pantalla diga «cobrada» y otra
+# «pendiente»—.
+
+#: Lo que sobra o falta de un centavo no cuenta: la misma tolerancia que `libracore.cobros.centavos`.
+SQL_MEDIO_CENTAVO = "0.005"
+
+
+def sql_cobrado(alias: str = "f", *, con_cuenta_corriente: bool = False) -> str:
+    """Subconsulta: lo cobrado de la factura `alias` (ingresos de caja que cuentan, sin anulados).
+
+    `con_cuenta_corriente=True` cuenta también la marca de venta a crédito como cobro: es el criterio histórico
+    del tablero de los productos que no separan «fiar» de «cobrar» (`dashboard` sin `sin_fiado`)."""
+    cc = "" if con_cuenta_corriente else f" AND {sql_no_es_cuenta_corriente('cm.medio_pago')}"
+    return (
+        "COALESCE((SELECT SUM(cm.monto) FROM caja_movimientos cm"
+        f" WHERE cm.factura_id = {alias}.id AND cm.tipo = 'ingreso'{cc} AND {sql_no_anulado('cm')}), 0)"
+    )
+
+
+def sql_acreditado(alias: str = "f") -> str:
+    """Subconsulta: lo que acreditan a la factura `alias` sus notas de crédito **con CAE y vigentes**.
+
+    Una nota sin CAE (borrador, o `PENDIENTE`) todavía no acreditó nada y una anulada (ADR-022) nunca lo
+    hará. Es de la misma factura: mismo emisor y mismo ambiente (ADR-021), porque `(tipo, pv, número)` solo
+    no la identifica. Equivale a `notas_de_credito.acreditado` (un test lo fija)."""
+    return (
+        "COALESCE((SELECT SUM(n.total) FROM facturas n"
+        f" WHERE n.tipo IN ({tipos.en_sql(tipos.NC)})"
+        f" AND n.cbte_asoc_tipo = {alias}.tipo AND n.cbte_asoc_pv = {alias}.punto_venta"
+        f" AND n.cbte_asoc_nro = {alias}.numero"
+        f" AND COALESCE(n.emisor_id, 0) = COALESCE({alias}.emisor_id, 0)"
+        f" AND n.ambiente = {alias}.ambiente"
+        " AND COALESCE(n.cae, '') NOT IN ('', 'PENDIENTE')"
+        f" AND {sql_vigente('n')}), 0)"
+    )
+
+
+def sql_pendiente(alias: str = "f", *, con_cuenta_corriente: bool = False) -> str:
+    """Expresión: `total − cobrado − acreditado` de la factura `alias`, **sin** bajar de cero.
+
+    Para filtrar usar `sql_con_pendiente`; para sumar lo que falta, `sql_pendiente_positivo`: un cobro de
+    más (de antes del ADR-058) o una nota sobre una factura ya cobrada dan negativo, y restarían de la suma."""
+    return (f"({alias}.total - {sql_cobrado(alias, con_cuenta_corriente=con_cuenta_corriente)}"
+            f" - {sql_acreditado(alias)})")
+
+
+def sql_con_pendiente(alias: str = "f", *, con_cuenta_corriente: bool = False) -> str:
+    """Condición: a la factura `alias` todavía le falta cobrar algo (más de medio centavo)."""
+    return f"{sql_pendiente(alias, con_cuenta_corriente=con_cuenta_corriente)} > {SQL_MEDIO_CENTAVO}"
+
+
+def sql_pendiente_positivo(alias: str = "f", *, con_cuenta_corriente: bool = False) -> str:
+    """Expresión: lo que falta cobrar de `alias`, y 0 si no falta nada (para `SUM`)."""
+    pendiente = sql_pendiente(alias, con_cuenta_corriente=con_cuenta_corriente)
+    return f"(CASE WHEN {pendiente} > {SQL_MEDIO_CENTAVO} THEN {pendiente} ELSE 0 END)"
+
+
+def get_cobrado_y_acreditado(factura_id, *, conn: Conexion | None = None) -> tuple[float, float] | None:
+    """`(cobrado, acreditado)` de la factura, con los fragmentos de `sql_cobrado` y `sql_acreditado`; `None` si
+    no existe. Es la lectura que usa el tope del cobro (ADR-058/059): la misma definición que el listado,
+    el resumen y la cuenta corriente, no una cuenta aparte. Con `conn`, lo ve como lo ve esa transacción."""
+    with _con(conn) as c:
+        fila = c.execute(
+            f"SELECT {sql_cobrado('f')}, {sql_acreditado('f')} FROM facturas f WHERE f.id = ?", (factura_id,),
+        ).fetchone()
+    return None if fila is None else (float(fila[0]), float(fila[1]))
+
+
 class ComprobanteNoAnulable(Exception):
     """Por qué no se puede anular un comprobante. `codigo` es uno de los de abajo."""
 
@@ -342,6 +418,7 @@ def registrar_comprobante(tipo, punto_venta, numero, fecha, cliente_cuit, client
 
 
 _TIPOS_FACTURA = tipos.FACTURAS
+_EN_FACTURAS = tipos.en_sql(tipos.FACTURAS)
 _TIPOS_NC      = tipos.NC
 _TIPOS_ND      = tipos.ND
 
@@ -392,18 +469,12 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
         conds.append(sql_busqueda(
             "CAST(f.numero AS TEXT)", "f.cliente_razon", "f.observaciones"))
         params += [f"%{q}%", f"%{q}%", f"%{q}%"]
-    # 🔴 Los dos criterios juntos y en UNA variable: se usan en dos lugares de
-    # esta función —la columna `total_cobrado` y el filtro `solo_sin_cobrar`— y
-    # si divergieran, una factura podría listarse como impaga y a la vez mostrar
-    # el total cobrado completo.
-    _cc_excl = (f"AND {sql_no_es_cuenta_corriente('cm.medio_pago')}"
-                f" AND {sql_no_anulado('cm')}")
+    # 🔴 El criterio de «cobrada» sale de `sql_con_pendiente` (ADR-059) y no se reescribe: se usa en dos
+    # lugares de esta función —las columnas de abajo y el filtro `solo_sin_cobrar`— y si divergieran, una
+    # factura podría listarse como impaga y a la vez mostrar el total cobrado completo.
     if solo_sin_cobrar:
         conds.append("f.cae != '' AND f.cae IS NOT NULL AND f.cae != 'PENDIENTE'")
-        conds.append(f"""
-            COALESCE((SELECT SUM(cm.monto) FROM caja_movimientos cm
-                      WHERE cm.factura_id=f.id AND cm.tipo='ingreso' {_cc_excl}), 0) < f.total
-        """)
+        conds.append(sql_con_pendiente("f"))
     salio_un_mail = ("EXISTS (SELECT 1 FROM envios_email e WHERE e.documento_tipo = 'factura'"
                      " AND e.documento_id = f.id AND e.estado = 'enviado')")
     if envio == ENVIO_ENVIADA:
@@ -412,10 +483,12 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
         conds.append("f.cae != '' AND f.cae IS NOT NULL AND f.cae != 'PENDIENTE'")
         conds.append(f"NOT {salio_un_mail}")
     where = " AND ".join(conds)
-    cobrada_col = f"""
-        COALESCE((SELECT SUM(cm.monto) FROM caja_movimientos cm
-                  WHERE cm.factura_id=f.id AND cm.tipo='ingreso' {_cc_excl}), 0) AS total_cobrado
-    """
+    # `total_acreditado` y `pendiente` son nuevos (aditivos): con una nota de crédito, «cobrado < total» ya no
+    # alcanza para decir «sin cobrar» —la factura acreditada por completo no debe nada—.
+    # El `pendiente` es sólo de las facturas: una nota no tiene «lo que falta cobrar».
+    cobrada_col = (f"{sql_cobrado('f')} AS total_cobrado, {sql_acreditado('f')} AS total_acreditado,"
+                   f" (CASE WHEN f.tipo IN ({_EN_FACTURAS}) THEN {sql_pendiente_positivo('f')} ELSE 0 END)"
+                   " AS pendiente")
     with get_connection() as conn:
         total = conn.execute(f"SELECT COUNT(*) FROM facturas f WHERE {where}", params).fetchone()[0]
         rows = conn.execute(

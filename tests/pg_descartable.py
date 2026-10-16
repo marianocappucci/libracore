@@ -6,6 +6,7 @@ de la que reemplaza: hacerlo sobre la base compartida del CI la renombraria y le
 cortaria la sesion a cualquier otro test que la este usando.
 """
 import os
+import time
 import uuid
 
 import pytest
@@ -52,8 +53,20 @@ class Bases:
         return con_base(self.servidor, nombre)
 
     def limpiar(self):
+        # 🔴 El `DROP DATABASE … WITH (FORCE)` corta las conexiones que quedan, y sobre una base recién creada a
+        # veces le toca también al autovacuum del servidor (otro rol): "permission denied to terminate
+        # process". Es del entorno, no del test, y alcanza con esperar un momento y reintentar.
+        import psycopg
+
         with conectar(con_base(self.servidor, "postgres"), autocommit=True) as conn:
             for nombre in self.nombres:
                 for variante in (nombre, nombre + SUFIJO_TEMPORAL, nombre + SUFIJO_ANTERIOR,
                                  nombre + SUFIJO_ANTERIOR_NUEVA):
-                    conn.execute(f'DROP DATABASE IF EXISTS "{variante}" WITH (FORCE)')
+                    for intento in range(5):
+                        try:
+                            conn.execute(f'DROP DATABASE IF EXISTS "{variante}" WITH (FORCE)')
+                            break
+                        except psycopg.errors.InsufficientPrivilege:
+                            if intento == 4:
+                                raise
+                            time.sleep(0.5)

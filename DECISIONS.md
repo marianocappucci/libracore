@@ -1248,3 +1248,68 @@ cerrar_docs_de_la_api(app)
 - **Lo que queda abierto, y no es de este ADR:** (1) las notas de crédito no restan de lo pendiente en ningún cálculo; se puede cobrar una factura ya acreditada por una nota total. Hacerlo bien toca el `pendiente` de la pantalla, la vista `sin_cobrar`, el resumen y el tablero, y es una decisión de producto. (2) Los cobros de factura **propios de un producto** (LibraClub `POST /api/caja/cobros` con `factura_id`, que ya existe) no pasan por el motor: tienen que llamar `exigir_cobro_posible(…, conn=)`. (3) `cuenta_corriente_router.pagar` topa por factura pero sin candado: dos pagos a cuenta simultáneos sobre la misma factura pueden cubrirla dos veces. (4) Una nota de débito no tiene tope.
 
 **Tests.** `tests/test_cobro_no_supera_lo_pendiente.py` (35, **SQLite y PostgreSQL**, por HTTP): el caso medido (9.999 sobre 3.500), exacto, parcial, varios medios cuya suma supera (cada uno cabe solo), ya cobrada, dos cobros sucesivos, tolerancia de centavos y polvo de coma flotante, factura a crédito (sin abono suelto), anulada, `POST /api/caja` con y sin factura, el reemplazo del producto, el `pendiente` que ofrece la pantalla, y seis cobros simultáneos (HTTP y con la lectura lenta) de los que entra uno. `tests/test_cobros.py` (+24 casos, sin base). Sin el cambio fallan 19 de los 35; sin el candado, los cuatro de concurrencia.
+
+
+## ADR-059 — «Lo que falta cobrar» es una sola cuenta y las notas de crédito (con CAE) restan: `sql_pendiente`
+
+**Estado:** propuesta (2026-10-16; decisión del humano: «las notas de crédito restan de lo pendiente de su factura, en todo el motor y de forma coherente»).
+
+**Contexto.** El ADR-058 puso un tope al cobro de una factura y, para no partir la definición, dejó **fuera** a las notas de crédito: en todo el motor «pendiente» era `total − cobrado`, salvo en `get_facturas_pendientes_cc`, que sacaba de la lista a la factura entera si tenía **cualquier** nota vigente (también una parcial). Medido el 2026-10-16 contra el router, sobre una factura a crédito de 1.000 con una nota por 400: el saldo del libro `cc_asientos` baja a 600 (la nota abona la cuenta, `cc_pagos` con `referencia = nc:factura:…`), pero `pendientes_cc` devolvía `[]` (se debían 600), el detalle mostraba `pendiente` 1.000, la vista «sin cobrar» la listaba, y después de cobrar los 600 el detalle seguía diciendo «pendiente 400» con la cuenta del cliente en 0. Una factura acreditada por completo seguía figurando «Sin cobrar» y con el botón de cobrar.
+
+**Qué ya existe** (se miró antes). `notas_de_credito.acreditado`/`saldo_acreditable` (Python, sobre las notas ya cargadas, con la regla «CAE sí, `PENDIENTE` y vacío no»), `get_nc_de_factura` (emisor y ambiente, `sql_vigente`), `get_facturas_pendientes_cc` (el `NOT EXISTS` de la nota), y los fragmentos `sql_no_es_cuenta_corriente`/`sql_no_anulado`/`sql_vigente`, que ya eran el patrón: un criterio, una función, se puede grepear.
+
+**Decisión.** `pendiente = total − cobrado − acreditado`, con **tres fragmentos en `libracore.db.facturas`** que son la única definición:
+- `sql_cobrado(alias, con_cuenta_corriente=False)`: ingresos de caja de la factura, sin anulados y sin la marca de cuenta corriente (es `get_cobros_factura`). `con_cuenta_corriente=True` sólo para el tablero sin `sin_fiado`, que históricamente cuenta fiar como cobrar.
+- `sql_acreditado(alias)`: lo que restan las notas de crédito **con CAE** (ni vacío ni `PENDIENTE`) y **vigentes** (no anuladas, ADR-022) de esa factura: mismo emisor y mismo ambiente (ADR-021).
+- `sql_pendiente`, `sql_con_pendiente` (más de medio centavo) y `sql_pendiente_positivo` (para sumar).
+
+Todos los cálculos del motor que dicen «cuánto falta» los usan:
+1. `cobros.estado_de_cobro` / `exigir_cobro_posible` (el tope del ADR-058; `get_cobrado_y_acreditado` lee los mismos fragmentos).
+2. `facturas_router._detalle` (`pendiente`, y `total_acreditado`, nuevo).
+3. `db.facturas.get_facturas_filtradas`: el filtro `sin_cobrar` y las columnas por fila (`total_cobrado`, y `total_acreditado` y `pendiente`, nuevas; `pendiente` sólo en las facturas).
+4. `db.resumen.get_resumen_core` (`sin_cobrar`).
+5. `db.dashboard.get_dashboard_data` (`facturas_sin_cobrar`, con `pendiente` por fila).
+6. `db.cuenta_corriente.get_facturas_pendientes_cc` (y por lo tanto `cuenta_corriente_router._repartir`, que aplica un pago a cuenta hasta el `pendiente` de cada factura).
+7. `recibos.emitir_recibo_factura`: el rótulo «Pago parcial» / «Cancelación» descuenta lo acreditado.
+Un test cruza los siete, más la versión en Python de `notas_de_credito`, sobre 13 casos y en SQLite y PostgreSQL.
+
+**Cuando la nota supera lo pendiente.** El `pendiente` **nunca es negativo**: una factura cobrada y después acreditada, o con un cobro de más de antes del ADR-058, queda en 0. No hay «saldo a favor» de una factura puntual. **La cuenta corriente no cambia**, y se midió: la nota de una factura a crédito abona la cuenta una vez; cobrada 1.000 y acreditada 1.000 queda el saldo del cliente en −1.000 (a favor), igual que antes (hay un test que lo fija como lo que es). Para una factura al contado cobrada y después acreditada no se asienta nada (ni egreso de caja ni crédito): devolver la plata es una decisión de producto que sigue abierta. **Una nota no se descuenta dos veces de la cuenta del cliente**: estos cálculos leen las notas y **no escriben ni tocan el libro**; el saldo sale del libro, el `pendiente` es por factura. Medido: factura a crédito 1.000, nota 400, pago a cuenta de 1.000 aplicado a la factura → se aplican 600, el resto es pago a cuenta y el saldo queda −400 (el pago fue de más); cobrar los 600 por el router deja la cuenta en 0.
+
+**Lo que se ve distinto (hay que mirarlo en los productos).**
+- La vista «sin cobrar» y los contadores **sacan** a las facturas acreditadas por completo y a las cobradas-más-acreditadas.
+- `resumen.sin_cobrar` y el tablero ahora cuentan una factura **cobrada a medias** (antes la sacaba cualquier cobro) y el `monto` es **lo que falta** y no el total. Antes tampoco filtraba los cobros anulados: una factura con su único cobro anulado dejaba de figurar impaga.
+- `get_facturas_pendientes_cc`: una nota **parcial** deja la factura con lo que todavía se debe (antes la sacaba entera); una total la saca, como antes.
+- Una factura **acreditada por completo** ya no se puede cobrar (409 «ya está acreditada por completo por notas de crédito»), y el diálogo ya no la ofrece como pendiente.
+- Respuestas con campos nuevos (aditivos): `total_acreditado` en el detalle; `total_acreditado` y `pendiente` por fila del listado; `pendiente` por fila del tablero.
+
+**Alternativas descartadas.**
+- **Restar sólo en el tope** (ADR-058): la pantalla ofrecería un monto y el tope aceptaría otro.
+- **Un `pendiente` calculado en Python y copiado a cada consulta:** las listas son SQL con paginación y conteo; una función Python no las filtra. Por eso el SQL es la fuente y Python (`saldo_de_cobro`) sólo es la aritmética pura de lo que el SQL ya leyó.
+- **Contar las notas sin CAE o `PENDIENTE`:** todavía no acreditaron nada (ARCA puede rechazarlas); la regla es la de `notas_de_credito.acreditado`.
+- **Un asiento de «saldo a favor» para la factura al contado acreditada:** es una decisión de producto, fuera de este ADR.
+
+**Consecuencias.** MINOR (propuesta **v1.172.0**), **sin migración y sin cambio de schema**. API nueva: `sql_cobrado`, `sql_acreditado`, `sql_pendiente`, `sql_con_pendiente`, `sql_pendiente_positivo`, `get_cobrado_y_acreditado`, `saldo_de_cobro(…, acreditado=)`, `emitir_recibo_factura(…, get_acreditado=)`. **La pantalla compartida (`libra-ui`) tiene que rotular la factura acreditada** («Acreditada» en vez de «Cobrada»/«Sin cobrar» en la lista; «Acreditada por nota de crédito» en el detalle en vez de «Cobrado completo — $ 0,00») y mostrar `pendiente` en el tablero: ver el CHANGELOG. Sin eso la API es correcta y la pantalla dice «Sin cobrar» de una factura que no se puede cobrar. Queda por fuera `pdf_generator.generate_pdf_recibo` (la versión vieja, función pura de los cobros que le pasan; sólo la usan tests: `libracore.recibos` la reemplazó).
+
+**Tests.** `tests/test_pendiente_con_notas_de_credito.py` (64 casos, SQLite y PostgreSQL): 13 casos de la tabla (nota parcial, total, dos parciales, sin CAE, `PENDIENTE`, anulada, cobro y nota que completan y que no, cobrada y acreditada, cobro anulado, marca de cuenta corriente, cobro parcial) contra cada cálculo; nota de otro emisor, de otro ambiente y de débito; el router de punta a punta; la cuenta corriente del cliente (sin doble descuento, cobrada y acreditada). `tests/test_cobros.py` (+4), `tests/db/test_resumen.py` y `tests/test_facturas_router.py` (dos que fijaban la semántica vieja, actualizados). Sin el cambio fallan 56 de los 64 (los 8 que pasan son los casos sin notas).
+
+## ADR-060 — El cobro de una factura puede entrar por el turno abierto de quien cobra: `exigir_turno` y `usuario_del_turno`, sin reemplazar el cobro del motor
+
+**Estado:** propuesta (2026-10-16; pedido del humano para que LibraClub borre su `registrar_cobro=_cobrar_del_turno`).
+
+**Contexto.** LibraClub lleva la caja **por turno** (`turnos_caja`, con arqueo al cerrar) y el cobro por defecto escribe el movimiento sin `turno_id`: plata que ningún cierre cuenta. Por eso pasaba `registrar_cobro=` y reemplazaba el cobro entero (`app/routers/facturas.py`, `_cobrar_del_turno`), apoyándose en `servicios/caja.registrar_ingreso`. Con el ADR-058 ese reemplazo quedaba **sin tope y sin candado** (el router sólo podía validar antes, sin transacción). Lo que el reemplazo necesitaba, leído de su código: el turno abierto del usuario **del dominio** (el `id` que ve el motor es `None`: sus usuarios viven en otra base), 409 «No hay una caja abierta. Abrí el turno antes de cobrar.» sin turno, `turno_id` en el movimiento, la caja y el dueño del turno, la fecha de hoy (ignorando la del pedido), la `referencia` tal cual (la idempotencia es la de `create_caja_movimiento`), más dos reglas **propias del producto**: no cobrar una factura a cuenta corriente por ahí y aceptar sólo sus medios de pago.
+
+**Decisión.** Tres opciones del factory `build_comprobantes_router` y dos de `registrar_cobro_factura`, sin una línea de LibraClub:
+- `exigir_turno=True`: el cobro entra por el turno abierto (`db.turnos.get_turno_activo`, con la conexión de la transacción del cobro); sin turno, `CobroNoPermitido(SIN_TURNO)` → **409** con el mensaje de arriba, antes de escribir. `usuario_del_turno(usuario) -> id | None` dice con qué id se abrió el turno (por omisión `usuario["id"]`). Sin `exigir_turno`, pero con `usuario_del_turno`, va por el turno **si hay** y si no entra suelto como siempre. Sin ninguna de las dos, nada cambia (Contalibra, Restolibra).
+- Con turno, el movimiento lleva `turno_id`, `caja_id` del turno y su dueño como `usuario_id`; el abono de cuenta corriente, la caja y el dueño (no tiene turno); `fecha` y `caja_id` del pedido **se ignoran**: la caja y el día los define el turno, no lo que mande la pantalla.
+- `validar_cobro(factura, pagos, usuario)`: un hook que corre antes de todo y levanta `HTTPException` para lo que es sólo del producto (sus medios, su regla de cuenta corriente). No escribe. Rige también con `registrar_cobro`.
+- Todo dentro de la **misma transacción con candado** del ADR-058: el turno se lee, el tope se valida y el movimiento se escribe en una conexión, con la factura bloqueada.
+- `transaccion_de_cobro(factura_id, monto, *, conn=None)`: un `with` que abre la transacción, bloquea, valida y entrega la conexión, para el cobro **propio** de un producto que no pasa por `registrar_cobro_factura` (el `POST /api/caja/cobros` con `factura_id` de LibraClub). `caja_router.crear` ya la usa.
+
+**Alternativas descartadas.**
+- **`turno_de` por pedido en el factory:** el turno es un dato de la base y se lee **dentro** de la transacción (si no, se cierra entre que se mira y se escribe); por eso el factory recibe quién cobra y el motor arma la consulta.
+- **Que el motor sepa de medios o de cuenta corriente propia de un producto:** es lógica de LibraClub; para eso está `validar_cobro`.
+- **Tope en `create_caja_movimiento`:** ver el ADR-058 (el cobro con QR ya entró).
+
+**Consecuencias.** MINOR (v1.172.0), sin migración. `registrar_cobro=` sigue existiendo (nadie más lo usa). LibraClub puede borrar su reemplazo y quedarse con `validar_cobro`. Cada cobro simultáneo en el turno se hace cola igual que en el ADR-058.
+
+**Tests.** `tests/test_cobro_por_turno.py` (25, SQLite y PostgreSQL): el movimiento entra en el turno con su caja, su dueño y la fecha de hoy (y suma al arqueo); con el usuario del dominio; sin turno exigido (409, nada escrito) y con el turno de otro usuario o cerrado; el tope con turno; `usuario_del_turno` sin exigir; sin opciones el cobro es el de siempre con un turno abierto; factura a crédito con turno; `validar_cobro`; seis cobros simultáneos; `transaccion_de_cobro` (tope, commit, rollback). `tests/test_cobros.py` (+3, sin base).
