@@ -36,13 +36,12 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
 from libracore import medios_pago, ticket_generator
-from libracore.cobros import CobroNoPermitido, es_medio_cuenta_corriente, exigir_cobro_posible
+from libracore.cobros import CobroNoPermitido, es_medio_cuenta_corriente, transaccion_de_cobro
 from libracore.db import caja as db_caja
 from libracore.db import cierre_diario as db_cierre_diario
 from libracore.db import turnos as db_turnos
 from libracore.db.caja import ExternalIdMercadoPagoInvalido, PuntoDeVentaRepetido
 from libracore.db.cierre_diario import DiaCerradoError
-from libracore.db.core import get_connection
 from libracore.validacion import sin_booleanos
 
 # ── Caja: los movimientos ────────────────────────────────────────────────
@@ -94,8 +93,7 @@ def build_caja_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api
             # misma transacción, con la factura bloqueada. La marca de cuenta corriente no es un cobro:
             # es la deuda, y pasa como siempre.
             try:
-                with get_connection() as conn:
-                    exigir_cobro_posible(payload.factura_id, payload.monto, conn=conn)
+                with transaccion_de_cobro(payload.factura_id, payload.monto) as conn:
                     mov_id = db_caja.create_caja_movimiento(
                         payload.fecha, payload.tipo, concepto, payload.monto, payload.referencia.strip(),
                         payload.factura_id, user.get("id"), caja_id=payload.caja_id,

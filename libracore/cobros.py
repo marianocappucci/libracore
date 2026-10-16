@@ -40,8 +40,9 @@ daba 200. (Una **cuenta corriente** sí admite pagar de más —queda a favor—
 pero eso es `cuenta_corriente_router`, donde el resto se asienta como pago a
 cuenta; acá no hay a qué asentarlo.)
 
-Lo que falta es `total − lo cobrado` (`saldo_de_cobro`), todo en centavos: la misma
-cuenta de «pendiente» que hace el resto del motor (las notas de crédito no restan).
+Lo que falta es `total − lo cobrado − lo acreditado por notas de crédito con CAE`
+(`saldo_de_cobro`, ADR-059), todo en centavos: la misma cuenta de «pendiente» que hace el
+resto del motor.
 La regla vive acá, en el dominio, y no en el router, para que no la saltee otra
 entrada: el router
 `POST /api/facturas/{id}/cobrar`, el movimiento manual de `POST /api/caja` con
@@ -69,6 +70,8 @@ from libracore.db.caja import MEDIOS_CUENTA_CORRIENTE  # noqa: E402
 from libracore.validacion import rechazar_booleanos  # noqa: E402
 
 CONDICION_CUENTA_CORRIENTE = "Cuenta Corriente"
+
+MENSAJE_SIN_TURNO = "No hay una caja abierta. Abrí el turno antes de cobrar."
 
 MENSAJE_MEDIO_INVALIDO = (
     '"Cuenta corriente" no es un medio de cobro: es la marca de que el '
@@ -103,8 +106,9 @@ class CobroNoPermitido(ValueError):
 
     NO_EXISTE = "no_existe"      # el comprobante no está
     ANULADA = "anulada"          # está anulado (ADR-022): no se cobra
-    SIN_SALDO = "sin_saldo"      # no queda nada por cobrar (ya cobrada)
+    SIN_SALDO = "sin_saldo"      # no queda nada por cobrar (ya cobrada, o acreditada por notas de crédito)
     EXCEDE = "excede"            # el cobro supera lo que falta
+    SIN_TURNO = "sin_turno"      # el producto lleva la caja por turno y quien cobra no tiene uno abierto
 
     def __init__(self, mensaje: str, codigo: str, *, pendiente: float | None = None):
         super().__init__(mensaje)
@@ -133,29 +137,27 @@ def _pesos(en_centavos: int) -> str:
     return f"{'-' if en_centavos < 0 else ''}$ {entero:,}".replace(",", ".") + f",{resto:02d}"
 
 
-def saldo_de_cobro(factura, cobros: Sequence[dict]) -> dict:
-    """Lo que falta cobrar de una factura: `total − cobrado`, en centavos.
+def saldo_de_cobro(factura, cobros: Sequence[dict], acreditado: float = 0.0) -> dict:
+    """Lo que falta cobrar de una factura: `total − cobrado − acreditado`, en centavos (ADR-059).
 
     Puro: no toca la base. `cobros` son los movimientos de ingreso que cuentan (los de
-    `db.caja.get_cobros_factura`: sin anulados y sin la marca de cuenta corriente).
+    `db.caja.get_cobros_factura`: sin anulados y sin la marca de cuenta corriente) y `acreditado` lo
+    que restan sus notas de crédito **con CAE y vigentes** (`db.facturas.sql_acreditado`).
 
-    Devuelve `total`, `cobrado` y `pendiente` en pesos, y `pendiente_centavos` para comparar sin
-    error de coma flotante. Nunca es negativo: lo cobrado de más (que la base puede tener de antes
-    de este tope) no se muestra como pendiente negativo.
+    Devuelve `total`, `cobrado`, `acreditado` y `pendiente` en pesos, y `pendiente_centavos` para
+    comparar sin error de coma flotante. **Nunca es negativo**: una factura cobrada y después
+    acreditada, o con un cobro de más de antes del ADR-058, queda en 0 —no hay «saldo a favor» de una
+    factura puntual, sólo de una cuenta corriente—.
 
-    🔴 **Las notas de crédito no restan, y es a propósito**: en todo el motor «pendiente» es `total −
-    cobrado` (`facturas_router._detalle`, la vista `sin_cobrar`, `resumen`, el tablero), y un test
-    fija que una factura con su nota de crédito total sigue mostrando todo el total pendiente. Si
-    sólo el tope las restara, la pantalla ofrecería un monto y el tope rechazaría otro. Ver ADR-058.
-
-    🔑 **Una sola cuenta para la pantalla y para el tope.** `facturas_router._detalle` muestra el
-    `pendiente` con esta misma función: si el diálogo ofreciera una cifra y el tope aceptara otra,
-    el cobro sugerido por la propia pantalla saldría rechazado."""
+    🔑 **Es la misma cuenta que las consultas SQL** (`sql_pendiente`: listado `sin_cobrar`, resumen,
+    tablero, cuenta corriente): un test las cruza. Si la pantalla ofreciera una cifra y el tope aceptara
+    otra, el cobro sugerido por la propia pantalla saldría rechazado."""
     total = centavos(factura["total"])
     cobrado = sum(centavos(c["monto"]) for c in cobros)
-    pendiente = max(0, total - cobrado)
+    acreditado_c = centavos(acreditado)
+    pendiente = max(0, total - cobrado - acreditado_c)
     return {
-        "total": total / 100, "cobrado": cobrado / 100,
+        "total": total / 100, "cobrado": cobrado / 100, "acreditado": acreditado_c / 100,
         "pendiente": pendiente / 100, "pendiente_centavos": pendiente,
     }
 
@@ -166,16 +168,18 @@ def estado_de_cobro(factura_id, *, conn=None) -> dict | None:
     Es `saldo_de_cobro` más `anulada` (¿está dado de baja?) y `con_tope` (¿es una factura, de las que
     tienen un total que cobrar?). Un comprobante que no es factura (una nota) no tiene tope:
     quien cobra una nota de débito no está cobrando «lo que falta» de ningún total, y esa
-    definición no existe en el motor. Con `conn`, lo ve como lo ve esa transacción."""
-    from libracore.db import caja as db_caja
+    definición no existe en el motor. Con `conn`, lo ve como lo ve esa transacción.
+
+    Lo cobrado y lo acreditado salen de los fragmentos SQL de `db.facturas` (`sql_cobrado`,
+    `sql_acreditado`): una sola definición para esto y para todas las listas."""
     from libracore.db import facturas as db_facturas
 
     factura = db_facturas.get_factura(factura_id, conn=conn)
     if factura is None:
         return None
-    cobros = db_caja.get_cobros_factura(factura_id, conn=conn)
+    cobrado, acreditado = db_facturas.get_cobrado_y_acreditado(factura_id, conn=conn)
     return {
-        **saldo_de_cobro(factura, cobros),
+        **saldo_de_cobro(factura, [{"monto": cobrado}], acreditado),
         "anulada": bool(factura.get("anulada_en")),
         "con_tope": factura["tipo"] in tipos.FACTURAS,
     }
@@ -222,14 +226,45 @@ def exigir_cobro_posible(factura_id, monto, *, conn=None, leer_estado=None) -> N
         return
     detalle = f"su total es {_pesos(centavos(estado['total']))}"
     if estado["cobrado"]:
-        detalle += f" y ya se cobró {_pesos(centavos(estado['cobrado']))}"
+        detalle += f", ya se cobró {_pesos(centavos(estado['cobrado']))}"
+    if estado.get("acreditado"):
+        detalle += f" y las notas de crédito acreditan {_pesos(centavos(estado['acreditado']))}"
     if pendiente == 0:
+        if estado.get("acreditado") and centavos(estado["acreditado"]) >= centavos(estado["total"]):
+            quien = "ya está acreditada por completo por notas de crédito"
+        elif estado.get("acreditado"):
+            quien = "no tiene nada por cobrar"
+        else:
+            quien = "ya está cobrada por completo"
         raise CobroNoPermitido(
-            f"Esta factura ya está cobrada por completo ({detalle}): no se puede registrar un cobro de "
-            f"{_pesos(pedido)}.", CobroNoPermitido.SIN_SALDO, pendiente=0.0)
+            f"Esta factura {quien} ({detalle}): no se puede registrar un cobro de {_pesos(pedido)}.",
+            CobroNoPermitido.SIN_SALDO, pendiente=0.0)
     raise CobroNoPermitido(
         f"El cobro ({_pesos(pedido)}) supera lo que falta cobrar de la factura "
         f"({_pesos(pendiente)}): {detalle}.", CobroNoPermitido.EXCEDE, pendiente=pendiente / 100)
+
+
+@contextlib.contextmanager
+def transaccion_de_cobro(factura_id, monto, *, conn=None, leer_estado=None):
+    """La transacción donde un producto escribe **su propio** cobro de una factura, con el tope y el candado.
+
+    Abre una conexión (o usa la de `conn`), **bloquea la factura**, levanta `CobroNoPermitido` si `monto`
+    supera lo que falta, y entrega la conexión: el producto escribe su movimiento ahí
+    (`create_caja_movimiento(..., conn=c)`) y al salir del `with` se confirma todo junto. Es
+    `exigir_cobro_posible` con la transacción incluida, para el cobro que no pasa por
+    `registrar_cobro_factura` (el de la caja de un producto, la ruta manual de caja)::
+
+        with transaccion_de_cobro(factura_id, monto) as c:
+            create_caja_movimiento(..., factura_id=factura_id, conn=c)
+
+    🔴 Sólo para cobros que decide una persona. El cobro con QR o MercadoPago que **ya entró** se registra
+    siempre: rechazarlo sería perder plata real del cajón.
+
+    Con `conn`, el commit es de quien llama (como todo `libracore.db`)."""
+    cm = contextlib.nullcontext(conn) if conn is not None else _conexion()
+    with cm as c:
+        exigir_cobro_posible(factura_id, monto, conn=c, leer_estado=leer_estado)
+        yield c
 
 
 def concepto_de_cobro(factura, tipo_label, con_cliente=True) -> str:
@@ -259,6 +294,8 @@ def registrar_cobro_factura(
     tipo_label=None,
     leer_estado=None,
     conn=None,
+    turno_de=None,
+    exigir_turno=False,
 ):
     """Registra el cobro de `factura` y devuelve qué se escribió.
 
@@ -283,9 +320,19 @@ def registrar_cobro_factura(
     y escribir con esa conexión (la propia se quedaría esperando el candado). Si se inyectan
     las tres escrituras y la lectura (los tests sin base), no hay base ni transacción.
 
+    **Caja por turno** (ADR-060). `turno_de(conn)` devuelve el turno abierto de quien cobra (o `None`):
+    `libracore.db.turnos.get_turno_activo`, con la conexión de esta transacción. Con turno, el movimiento
+    y el abono de cuenta corriente entran **en ese turno** —`turno_id`, la caja del turno y su dueño como
+    usuario— y `fecha` y `caja_id` del pedido se ignoran: la caja y el día los define el turno abierto, no
+    lo que mande la pantalla (aceptarlos sería una segunda puerta para cargar plata en una caja o un día
+    que no son los del arqueo). Sin turno y con `exigir_turno`, levanta `CobroNoPermitido`
+    (`SIN_TURNO`) antes de escribir nada; sin `exigir_turno`, el cobro entra suelto, como siempre.
+
     Devuelve `{"total", "movimientos", "cc_pago_id"}`. No relee la factura: el
     caller decide si la vuelve a buscar para responder.
     """
+    if exigir_turno and turno_de is None:
+        raise ValueError("exigir_turno necesita turno_de: no hay de dónde sacar el turno")
     usa_base = any(f is None for f in (crear_movimiento, crear_cc_pago, leer_estado))
     if fecha is None:
         fecha = datetime.date.today().isoformat()
@@ -328,6 +375,16 @@ def registrar_cobro_factura(
     with cm as c:
         # `conn=` sólo viaja cuando hay transacción: los dobles de los tests no la conocen.
         en_tx = {"conn": c} if c is not None else {}
+        del_turno = {}
+        turno = turno_de(c) if turno_de is not None and a_registrar else None
+        if turno is None and exigir_turno and a_registrar:
+            raise CobroNoPermitido(MENSAJE_SIN_TURNO, CobroNoPermitido.SIN_TURNO)
+        if turno is not None:
+            # La caja, el día y el dueño del movimiento son los del turno (ver el docstring).
+            fecha = datetime.date.today().isoformat()
+            caja_id = turno.get("caja_id")
+            usuario_id = turno.get("usuario_id", usuario_id)
+            del_turno = {"turno_id": turno["id"]}   # el abono de cuenta corriente no tiene turno: sólo el movimiento
         # Se mira y se bloquea ANTES de escribir, y con lo que hay en la base ahora (no con el
         # `factura` que trajo el llamador, que pudo cobrarse o anularse mientras tanto).
         total_pedido = sum(centavos(p["monto"]) for p in a_registrar) / 100
@@ -350,6 +407,7 @@ def registrar_cobro_factura(
                     medio_pago=pago.get("medio_id", ""),
                     usuario_id=usuario_id,
                     **en_tx,
+                    **del_turno,
                 )
             )
             total += monto

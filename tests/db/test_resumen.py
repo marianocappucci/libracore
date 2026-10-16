@@ -128,12 +128,18 @@ def test_la_cuenta_corriente_NO_es_un_cobro():
     assert r["sin_cobrar"]["monto"] == 100.0
 
 
-def test_un_cobro_parcial_en_efectivo_la_saca_de_impagas():
-    """El control de que el test de arriba mide el MEDIO y no el monto."""
+def test_un_cobro_parcial_deja_la_factura_impaga_por_lo_que_falta():
+    """ADR-059: «sin cobrar» es lo que todavía se debe (`total − cobrado − acreditado`), no «no tiene ningún
+    cobro»: una factura cobrada a medias sigue figurando, y por los 60 que faltan y no por los 100 del total.
+
+    Antes de la 1.172.0 un cobro parcial en efectivo la sacaba de las impagas (y un cobro ya anulado la
+    sacaba también, porque nadie lo filtraba)."""
     fid = _factura(total=100.0, numero=1)
     _movimiento(40.0, factura_id=fid, medio="efectivo")
 
-    assert get_resumen_core(*PERIODO)["sin_cobrar"]["cantidad"] == 0
+    r = get_resumen_core(*PERIODO)
+
+    assert r["sin_cobrar"] == {"cantidad": 1, "monto": 60.0}
 
 
 def test_las_notas_no_cuentan_como_facturado():

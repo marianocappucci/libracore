@@ -69,9 +69,8 @@ import contextlib
 from dataclasses import dataclass
 
 from libracore import tipos_comprobante as tipos
-from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
-from libracore.db.facturas import sql_vigente
+from libracore.db.facturas import sql_acreditado, sql_cobrado, sql_vigente
 
 from .core import Conexion
 
@@ -168,11 +167,16 @@ def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
     para siempre, aunque el saldo del cliente ya la descuente. Incidente real:
     Municipalidad de Suipacha, FC 74 y 75, 2026-09-14.
 
-    Excluye las notas, las facturas sin CAE y las anuladas por una nota de
-    crédito (esas ya se cancelaron por `cc_pagos` sin ningún cobro, así que
-    aparecerían pendientes para siempre). Se cruza por CUIT normalizado, por
-    la misma razón que `_cuit_de`. Orden: la más vieja primero, que es el orden
-    en que se aplica un pago.
+    Excluye las notas, las facturas sin CAE y las anuladas. **El `pendiente` es
+    `total − cobrado − acreditado por notas de crédito`** (ADR-059, `sql_pendiente`): una
+    nota total la saca de la lista, como antes, y una **parcial** la deja con lo que
+    todavía se debe (antes la sacaba entera, aunque faltara cobrar el resto).
+
+    🔑 **No descuenta la nota dos veces de la cuenta del cliente.** La nota de una factura a
+    crédito ya abonó la cuenta corriente (`cc_pagos`, `referencia = nc:factura:…`) y de ahí
+    sale el saldo del libro; esto sólo dice cuánto de CADA factura queda por cobrar, y no
+    escribe nada. Se cruza por CUIT normalizado, por la misma razón que `_cuit_de`. Orden:
+    la más vieja primero, que es el orden en que se aplica un pago.
     """
     with get_connection() as conn:
         cuit = _cuit_de(conn, cliente_id)
@@ -180,33 +184,19 @@ def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
             return []
         rows = conn.execute(f"""
             SELECT f.id, f.tipo, f.punto_venta, f.numero, f.fecha, f.total,
-                   COALESCE((
-                       SELECT SUM(cm.monto) FROM caja_movimientos cm
-                       WHERE cm.factura_id = f.id AND cm.tipo = 'ingreso'
-                         AND {sql_no_es_cuenta_corriente('cm.medio_pago')}
-                         AND {sql_no_anulado('cm')}
-                   ), 0) AS cobrado
+                   {sql_cobrado('f')} AS cobrado,
+                   {sql_acreditado('f')} AS acreditado
             FROM facturas f
             WHERE REPLACE(f.cliente_cuit, '-', '') = ?
               AND f.tipo IN ({tipos.en_sql(tipos.FACTURAS)})
               AND f.condicion_venta = 'Cuenta Corriente'
               AND COALESCE(f.cae, '') NOT IN ('', 'PENDIENTE')
               AND {sql_vigente('f')}
-              AND NOT EXISTS (
-                  SELECT 1 FROM facturas n
-                  WHERE n.tipo IN ({tipos.en_sql(tipos.NC)}) AND n.cbte_asoc_tipo = f.tipo
-                    AND n.cbte_asoc_pv = f.punto_venta AND n.cbte_asoc_nro = f.numero
-                    -- Del mismo emisor: con dos razones sociales, las dos pueden
-                    -- tener la Factura A 0001-00000005 (ADR-021).
-                    AND COALESCE(n.emisor_id, 0) = COALESCE(f.emisor_id, 0)
-                    -- Una nota anulada (sin CAE) no cancela nada (ADR-022).
-                    AND {sql_vigente('n')}
-              )
             ORDER BY f.fecha, f.id
         """, (cuit,)).fetchall()
     resultado = []
     for r in rows:
-        pendiente = round(float(r["total"]) - float(r["cobrado"]), 2)
+        pendiente = round(float(r["total"]) - float(r["cobrado"]) - float(r["acreditado"]), 2)
         if pendiente <= 0:
             continue
         d = dict(r)

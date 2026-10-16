@@ -16,9 +16,9 @@ el numero real puede ser cualquiera — seria el tope, no el dato.
 Ver wiki/analyses/panel-del-dueno-multisucursal.md.
 """
 from libracore import tipos_comprobante as tipos
-from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
+from libracore.db.caja import sql_no_anulado
 from libracore.db.core import get_connection
-from libracore.db.facturas import sql_vigente
+from libracore.db.facturas import sql_con_pendiente, sql_pendiente_positivo, sql_vigente
 from libracore.fechas import rango_por_dia
 
 #: Los tipos que son factura. Las notas de credito y debito quedan afuera de
@@ -57,23 +57,19 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
             f"FROM caja_movimientos WHERE {sql_no_anulado()}"
         ).fetchone()[0]
 
-        # Sin cobrar: TODAS las que quedan impagas, no las del periodo. Una
+        # Sin cobrar: TODAS las que todavía deben algo, no las del periodo. Una
         # factura de marzo sin cobrar sigue siendo plata que falta en agosto.
         #
-        # 🔴 La condicion de "cobrada" sale de `sql_no_es_cuenta_corriente()` y
-        # no se reescribe: mirar solo `factura_id IS NULL` cuenta como cobrada
-        # una factura pagada a cuenta corriente —plata que NO entro— y ademas
-        # discrepa con `get_cobros_factura`, que es lo que muestra la pantalla
-        # de comprobantes. Dos definiciones de "cobrada" en el mismo sistema es
-        # exactamente lo que hay que evitar.
+        # 🔴 Lo que falta sale de `sql_pendiente` (ADR-059): `total − cobrado − acreditado por
+        # notas de crédito`, con la misma definición de «cobrado» que `get_cobros_factura`
+        # (sin anulados y sin la marca de cuenta corriente: fiar no es cobrar). Antes era «no tiene
+        # ningún cobro»: una factura cobrada a medias desaparecía de acá, una con un cobro ya anulado
+        # no figuraba, y la plata se sumaba por su total y no por lo que falta. Dos definiciones de
+        # «cobrada» en el mismo sistema es exactamente lo que hay que evitar.
         sin_cobrar_cant, sin_cobrar_monto = conn.execute(
-            f"""SELECT COUNT(*), COALESCE(SUM(f.total), 0)
+            f"""SELECT COUNT(*), COALESCE(SUM({sql_pendiente_positivo('f')}), 0)
                 FROM facturas f
-                LEFT JOIN caja_movimientos c
-                       ON c.factura_id = f.id
-                      AND c.tipo = 'ingreso'
-                      AND {sql_no_es_cuenta_corriente('c.medio_pago')}
-                WHERE f.tipo IN ({ph}) AND c.id IS NULL AND {sql_vigente('f')}""",
+                WHERE f.tipo IN ({ph}) AND {sql_vigente('f')} AND {sql_con_pendiente('f')}""",
             tipos,
         ).fetchone()
 

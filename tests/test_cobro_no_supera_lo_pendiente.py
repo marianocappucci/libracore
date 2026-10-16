@@ -27,30 +27,6 @@ from libracore.db.clients import create_client
 ITEMS = [{"description": "Servicio", "qty": 3, "unit_price": 1500.0}]
 
 
-@pytest.fixture
-def bases():
-    """Las bases PostgreSQL de `tests/conftest.py`, con un reintento al borrarlas.
-
-    El `DROP DATABASE … WITH (FORCE)` de `pg_descartable` corta las conexiones que quedan, y sobre una base
-    recién creada a veces le toca también al autovacuum del servidor (de otro rol): "permission denied to
-    terminate process". Es del entorno y no del test; pasa en uno de cada diez borrados y alcanza con esperar."""
-    import psycopg
-    from pg_descartable import Bases
-
-    b = Bases()
-    try:
-        yield b
-    finally:
-        for intento in range(5):
-            try:
-                b.limpiar()
-                break
-            except psycopg.errors.InsufficientPrivilege:
-                if intento == 4:
-                    raise
-                time.sleep(0.5)
-
-
 @pytest.fixture(params=["sqlite", "postgres"])
 def client(request, tmp_path, monkeypatch):
     destino = None if request.param == "sqlite" else request.getfixturevalue("bases").nueva()

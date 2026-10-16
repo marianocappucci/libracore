@@ -218,7 +218,7 @@ def emitir_recibo_venta(venta_id: int, punto_venta: int = 1, usuario_id=None,
 def emitir_recibo_factura(factura_id: int, punto_venta: int = 1, usuario_id=None,
                           observaciones: str = "", get_factura=None,
                           get_cobros_factura=None, tipo_label=None,
-                          resolver_cliente=None) -> dict:
+                          resolver_cliente=None, get_acreditado=None) -> dict:
     """El recibo de los cobros de una factura.
 
     A diferencia de los otros dos orígenes, **acumula**: una factura se puede
@@ -258,8 +258,15 @@ def emitir_recibo_factura(factura_id: int, punto_venta: int = 1, usuario_id=None
     # "Cancelación" sólo si con esto la factura queda saldada. Se mira el total
     # cobrado acumulado, no el de este recibo: dos cobros de la mitad cada uno
     # cancelan la factura, y decir "pago parcial" en el segundo sería falso.
+    # Lo que acreditan sus notas de crédito resta de lo que falta (ADR-059): una factura cobrada en
+    # parte y acreditada por el resto queda saldada, y decir «pago parcial» sería falso.
+    if get_acreditado is None:
+        from libracore.db.facturas import get_cobrado_y_acreditado
+
+        def get_acreditado(fid):
+            return (get_cobrado_y_acreditado(fid) or (0.0, 0.0))[1]
     cobrado_total = sum(float(c.get("monto") or 0) for c in cobros)
-    parcial = cobrado_total < float(factura.get("total") or 0) - 0.005
+    parcial = cobrado_total < float(factura.get("total") or 0) - float(get_acreditado(factura_id) or 0) - 0.005
 
     if tipo_label is None:
         from libracore.pdf_generator import _TIPO_NOMBRE_DOC
