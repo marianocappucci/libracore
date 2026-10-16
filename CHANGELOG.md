@@ -7,6 +7,21 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Un cobro de factura no puede superar lo que falta: `cobros.exigir_cobro_posible` (propuesta: v1.171.0)
+
+ADR-058. **Sin migración y sin cambio de schema.** `POST /api/facturas/{id}/cobrar` aceptaba un cobro mayor que lo pendiente (9.999 sobre 3.500: 200, «Cobrado completo — $ 10.999,00» y un ingreso de 9.999 en la caja; medido en el e2e de Contalibra). Ahora es **409** con el mensaje en castellano que dice cuánto falta, y no se escribe nada.
+
+- **`libracore.cobros`**: `CobroNoPermitido` (`codigo`: `excede`, `sin_saldo`, `anulada`, `no_existe`), `centavos`, `saldo_de_cobro` (pura), `estado_de_cobro` y `exigir_cobro_posible(factura_id, monto, *, conn=None)`. `pendiente = total − cobrado` en centavos enteros; **tolerancia de medio centavo** (3.500,004 entra, 3.500,01 sobre 3.500,00 no). Lo que no puede superar lo pendiente es la **suma** de los medios del cobro.
+- **Transaccional y con candado**: `registrar_cobro_factura` abre una sola transacción (o usa la de `conn=`), bloquea la fila de la factura (`FOR UPDATE` en PostgreSQL; en SQLite un `UPDATE` sin efecto) y escribe movimientos y abono de cuenta corriente ahí. Dos cobros simultáneos que juntos superan lo pendiente: entra uno. `db.caja.get_cobros_factura` acepta `conn=`.
+- **`POST /api/caja`** con `factura_id` e `ingreso` (salvo la marca de cuenta corriente) tiene el mismo tope (409; factura inexistente, 404).
+- El `pendiente` del detalle del comprobante sale de la misma cuenta (`saldo_de_cobro`): el valor no cambia, es una sola definición para la pantalla y para el tope.
+
+### Para los productos
+- Contalibra, Restolibra y LibraClub (montan `build_comprobantes_router`): un cobro de más pasa de 200 a **409**; el diálogo de `libra-ui` ya precarga el `pendiente` y muestra el `detail` del error. Un test de producto que cobre de más a propósito va a fallar.
+- Quien pasa `registrar_cobro=` recibe el cobro ya validado, **sin candado**: para frenar la carrera, `exigir_cobro_posible(factura_id, monto, conn=conn)` en la transacción donde escribe el movimiento. Un producto con su propio cobro de factura (LibraClub, `POST /api/caja/cobros` con `factura_id`) tiene que llamarlo: el motor no lo ve.
+- Quien inyecte `crear_movimiento` / `crear_cc_pago` en `registrar_cobro_factura` (sólo tests, hoy) tiene que aceptar `conn=`.
+- **Abierto**: las notas de crédito no restan de lo pendiente en ningún cálculo del motor (ni en este tope), y una nota de débito no tiene tope. Ver ADR-058.
+
 ## [Unreleased] — Un cliente con cuenta corriente no se puede borrar: `delete_client` la mira (propuesta: v1.170.0)
 
 ADR-057. **Sin migración y sin cambio de schema.** `libracore.db.clients.delete_client` bloqueaba la baja sólo por remitos y presupuestos; ahora también por movimientos de cuenta corriente: `cc_pagos`, `cc_debitos`, `recibos` y asientos del libro de clientes (`cc_asientos` con `rol='cliente'`). El `ValueError` dice cuántos hay y que el cliente se puede desactivar.

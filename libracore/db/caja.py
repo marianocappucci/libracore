@@ -432,16 +432,20 @@ def get_cobro_factura(factura_id):
         return dict(row) if row else None
 
 
-def get_cobros_factura(factura_id) -> list[dict]:
+def get_cobros_factura(factura_id, *, conn: Conexion | None = None) -> list[dict]:
     """Devuelve todos los movimientos de cobro de una factura.
 
     🔴 **Excluye los anulados, y acá no es cosmético**: esta lista alimenta el
     **recibo** (`recibos.py`) y el detalle del comprobante. Un recibo es un
     documento que dice *"recibimos esto"* — meterle un cobro anulado es firmar
     plata que no entró.
+
+    También es lo que **cuenta como cobrado** para el tope del cobro (ADR-058, `libracore.cobros`).
+    Con `conn`, lo ve como lo ve esa transacción, sin confirmar ni cerrar nada.
     """
-    with get_connection() as conn:
-        rows = conn.execute(
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        rows = c.execute(
             "SELECT * FROM caja_movimientos WHERE factura_id=? AND tipo='ingreso'"
             f" AND {sql_no_es_cuenta_corriente()} AND {sql_no_anulado()}"
             " ORDER BY id",

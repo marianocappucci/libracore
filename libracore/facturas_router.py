@@ -73,7 +73,13 @@ from libracore import (
 from libracore import pdf_generator as pdf_gen
 from libracore import tipos_comprobante as tipos_cbte
 from libracore.arca_facturacion import RECEPTORES_DE_FACTURA_A, get_next_numero_with_arca, solicitar_cae
-from libracore.cobros import MedioNoEsDeCobro, registrar_cobro_factura
+from libracore.cobros import (
+    CobroNoPermitido,
+    MedioNoEsDeCobro,
+    exigir_cobro_posible,
+    registrar_cobro_factura,
+    saldo_de_cobro,
+)
 from libracore.cuit import solo_digitos
 from libracore.db import arca_config as db_arca
 from libracore.db import caja as db_caja
@@ -561,9 +567,10 @@ def _detalle(factura: dict) -> dict:
 
     cobros = db_caja.get_cobros_factura(factura["id"]) if es_factura else []
     total_cobrado = sum(c["monto"] for c in cobros)
-    # `max(0, ...)`: un cobro de más no puede mostrarse como pendiente negativo.
+    # 🔑 La misma cuenta que usa el tope del cobro (ADR-058): total − cobrado, sin bajar de cero (un cobro
+    # de más de antes del tope no se muestra como pendiente negativo).
     pendiente = (
-        max(0.0, round(factura["total"] - total_cobrado, 2))
+        saldo_de_cobro(factura, cobros)["pendiente"]
         if es_factura and not factura.get("anulada_en") else 0.0
     )
 
@@ -834,6 +841,12 @@ def build_comprobantes_router(
     levante sale tal cual: un producto puede devolver un 409 si no hay caja
     abierta. Por omisión se usa `libracore.cobros.registrar_cobro_factura`, que
     es lo que hacen Contalibra y Restolibra.
+
+    🔴 **El reemplazo recibe el cobro ya validado contra lo que falta** (ADR-058: un cobro no puede
+    superar lo pendiente de la factura; 409 si lo supera), pero **sin candado**: dos cobros
+    simultáneos pasan los dos la validación. Para frenar esa carrera, el reemplazo llama
+    `libracore.cobros.exigir_cobro_posible(factura_id, monto, conn=conn)` con la conexión donde
+    escribe su movimiento, y escribe en esa transacción.
 
     `emisor_del_pdf` es `(comprobante: dict) -> dict | None`: los datos del emisor para el PDF y para quien
     firma el mail (`direccion`, `iva_condition`, `iibb`, `inicio_actividades`, `logo_bytes`...). Pisa lo que
@@ -1198,8 +1211,19 @@ def build_comprobantes_router(
         # Un producto con caja por turno reemplaza esta escritura entera —ver
         # `registrar_cobro` en el docstring del factory—, porque el default no
         # sabe de turnos y dejaría la plata fuera del arqueo.
+        #
+        # 🔴 Un cobro no puede superar lo que falta de la factura (ADR-058). El default lo exige él
+        # mismo, dentro de su transacción y con la factura bloqueada. Un producto que **reemplaza** la
+        # escritura no pasa por ahí: se le mira acá, antes de llamarlo, para que ninguna entrada se
+        # saltee la regla (sin el candado: el reemplazo que quiera frenar la carrera llama a
+        # `libracore.cobros.exigir_cobro_posible(..., conn=)` en su propia transacción).
         try:
             if registrar_cobro is not None:
+                a_cobrar = sum(
+                    float(p.get("monto") or 0) for p in payload.pagos if float(p.get("monto") or 0) > 0
+                )
+                if a_cobrar > 0:
+                    exigir_cobro_posible(factura_id, a_cobrar)
                 registrar_cobro(
                     factura, payload.pagos, fecha=payload.fecha or None,
                     caja_id=payload.caja_id, usuario=usuario,
@@ -1211,6 +1235,8 @@ def build_comprobantes_router(
                 )
         except MedioNoEsDeCobro as exc:
             raise HTTPException(400, str(exc)) from exc
+        except CobroNoPermitido as exc:
+            raise HTTPException(409, str(exc)) from exc
         return _detalle(db_facturas.get_factura(factura_id))
 
     _registrar_enviar_email(
