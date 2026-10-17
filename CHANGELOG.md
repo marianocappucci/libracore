@@ -7,6 +7,16 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Una caja nueva puede nacer en la sucursal predeterminada del producto (propuesta: v1.174.0)
+
+ADR-062. **Sin migración y sin cambio de schema.** Sin la opción nueva no cambia nada.
+
+- **`OpcionesCajas.sucursal_por_defecto: Callable[[], int | None] | None = None`.** En `POST /api/cajas`, si el pedido no trae `sucursal_id`, la caja nace con lo que devuelva la función (sin argumentos; el producto abre su propia conexión, como `resolver_sucursal_nombre` del cierre diario). Un `sucursal_id` explícito se respeta y no la llama; si devuelve `None`, la caja queda sin sucursal como siempre. Corre después de `validar_alta`, que ve el pedido tal como llegó.
+- **La edición no cambia:** `PUT /api/cajas/{id}` nunca escribió la sucursal, así que no deja una caja en NULL ni la pisa.
+
+### Para los productos
+- **ContaLibra** (sucursal única «Casa central», libracommerce v0.63.0): `OpcionesCajas(sucursal_por_defecto=...)` con una función que lee la fila `is_default` de `branches`; cierra el hueco de una caja creada por la API que quedaba en NULL hasta el próximo arranque.
+
 ## [Unreleased] — Una demo no habla con ARCA ni muestra un emisor de la base, y `libracore.demo` audita lo que parece real (propuesta: v1.173.0)
 
 ADR-061 (renumerar). **Sin migración y sin cambio de schema.** Fuera de una demo (`DEMO_MODE` distinto de `1`/`true`) no cambia nada. Con `DEMO_MODE=1`:

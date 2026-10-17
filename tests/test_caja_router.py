@@ -330,6 +330,65 @@ def test_los_ganchos_de_las_cajas(entorno):
     assert ("predeterminar", unica["id"]) in llamadas
 
 
+def test_sucursal_por_defecto_la_caja_nace_en_ella_y_lo_explicito_se_respeta(entorno):
+    """ADR-062: sin `sucursal_id` en el pedido la caja nace en la que diga el producto; con uno, se respeta."""
+    pedidas = []
+
+    def por_defecto():
+        pedidas.append(1)
+        return 5
+
+    client = _app_con_ganchos(entorno, opciones=OpcionesCajas(sucursal_por_defecto=por_defecto))
+    sin_sucursal = client.post("/api/cajas", json={"nombre": "Mostrador"}).json()
+    assert sin_sucursal["sucursal_id"] == 5
+    assert client.get("/api/cajas", params={"sucursal_id": 5}).json()[0]["id"] == sin_sucursal["id"]
+    # Un `sucursal_id` explícito gana, y ni siquiera se consulta la predeterminada.
+    pedidas.clear()
+    explicita = client.post("/api/cajas", json={"nombre": "Anexo", "sucursal_id": 9}).json()
+    assert explicita["sucursal_id"] == 9 and pedidas == []
+
+
+def test_sucursal_por_defecto_sin_sucursal_en_la_instancia_deja_la_caja_sin_ella(entorno):
+    """Si el producto todavía no tiene sucursal (`None`), la caja nace sin sucursal como siempre."""
+    client = _app_con_ganchos(entorno, opciones=OpcionesCajas(sucursal_por_defecto=lambda: None))
+    assert client.post("/api/cajas", json={"nombre": "Mostrador"}).json()["sucursal_id"] is None
+
+
+def test_sin_sucursal_por_defecto_la_caja_sigue_naciendo_sin_sucursal(entorno):
+    """Sin la opción —o sin `opciones`— el alta es la de siempre: `sucursal_id` NULL."""
+    for opciones in (None, OpcionesCajas(), OpcionesCajas(enriquecer=lambda c: c)):
+        client = _app_con_ganchos(entorno, opciones=opciones)
+        assert client.post("/api/cajas", json={"nombre": "Mostrador"}).json()["sucursal_id"] is None
+
+
+def test_sucursal_por_defecto_validar_alta_ve_el_pedido_tal_como_llego(entorno):
+    """`validar_alta` corre antes de resolver la predeterminada y ve el `sucursal_id` del pedido (aquí `None`)."""
+    vistos = []
+    client = _app_con_ganchos(entorno, opciones=OpcionesCajas(
+        validar_alta=lambda p: vistos.append(p.sucursal_id), sucursal_por_defecto=lambda: 5))
+    assert client.post("/api/cajas", json={"nombre": "Mostrador"}).json()["sucursal_id"] == 5
+    assert vistos == [None]
+    # Y si el gancho del producto la rechaza, no se crea nada.
+
+    def rechaza(payload):
+        raise HTTPException(422, "No.")
+    client = _app_con_ganchos(entorno, opciones=OpcionesCajas(validar_alta=rechaza, sucursal_por_defecto=lambda: 5))
+    assert client.post("/api/cajas", json={"nombre": "Otra"}).status_code == 422
+    assert "Otra" not in [c["nombre"] for c in client.get("/api/cajas").json()]
+
+
+def test_editar_una_caja_no_toca_su_sucursal_ni_con_la_opcion_ni_sin_ella(entorno):
+    """El PUT no escribe `sucursal_id` (una caja no se muda de sede): ni la deja en NULL ni la pisa con la predeterminada."""
+    client = _app_con_ganchos(entorno, opciones=OpcionesCajas(sucursal_por_defecto=lambda: 5))
+    caja = client.post("/api/cajas", json={"nombre": "Mostrador", "sucursal_id": 9}).json()
+    editada = client.put(f"/api/cajas/{caja['id']}", json={"nombre": "Mostrador 2", "sucursal_id": 7}).json()
+    assert editada["nombre"] == "Mostrador 2" and editada["sucursal_id"] == 9
+    # Una caja de antes, sin sucursal, tampoco la recibe al editarla: de eso se ocupa quien adopta la sucursal única.
+    with core.get_connection() as conn:
+        conn.execute("UPDATE cajas SET sucursal_id = NULL WHERE id = ?", (caja["id"],))
+    assert client.put(f"/api/cajas/{caja['id']}", json={"nombre": "Mostrador 3"}).json()["sucursal_id"] is None
+
+
 def test_los_ganchos_de_los_turnos(entorno):
     def validar(payload, user):
         if payload.caja_id is None:
