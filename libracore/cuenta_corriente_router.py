@@ -45,11 +45,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from libracore.cobros import bloquear_facturas
 from libracore.db import caja as db_caja
 from libracore.db import clients as db_clients
 from libracore.db import cuenta_corriente as db_cc
 from libracore.db import libro_de_clientes
 from libracore.db import recibos as db_recibos
+from libracore.db.core import get_connection
 from libracore.db.cuenta_corriente import VENTAS_LIBRACORE, OrigenVentas
 from libracore.validacion import sin_booleanos
 
@@ -167,43 +169,55 @@ def build_cuenta_corriente_router(
         if not cliente:
             raise HTTPException(404, "Cliente no encontrado")
 
-        # Se decide a qué facturas va el pago ANTES de escribir nada: un id que
-        # no está pendiente es un error del pedido y no puede dejar un pago a medias.
-        aplicaciones = _repartir(payload, db_cc.get_facturas_pendientes_cc(cliente_id))
+        # 🔴 Una sola transacción, con las facturas elegidas bloqueadas (ADR-063): lo pendiente se lee
+        # y el cobro se escribe con el candado puesto. Antes se leía por un lado y se escribía por otro,
+        # y dos pagos simultáneos a las mismas facturas pasaban los dos el tope y las cobraban de más.
+        # Quien llega segundo espera y ve lo que dejó el primero: se le aplica sólo lo que falta, o se
+        # rechaza con el 422 de siempre si la factura ya quedó cobrada. En orden de id ascendente, para que
+        # dos pagos con las mismas facturas en distinto orden no se esperen entre sí.
+        with get_connection() as conn:
+            bloquear_facturas(conn, payload.facturas)
 
-        # El producto puede rechazar el pago (HTTPException) y decidir la caja, el turno y la referencia.
-        cobro = (opciones.validar_pago(payload, user) if opciones.validar_pago is not None
-                 else CobroAprobado(caja_id=payload.caja_id))
+            # Se decide a qué facturas va el pago ANTES de escribir nada: un id que
+            # no está pendiente es un error del pedido y no puede dejar un pago a medias.
+            aplicaciones = _repartir(payload, db_cc.get_facturas_pendientes_cc(cliente_id, conn=conn))
 
-        pago_id = db_cc.create_cc_pago(
-            cliente_id=cliente_id, monto=payload.monto, fecha=payload.fecha,
-            concepto=payload.concepto, referencia=payload.referencia,
-            medio_pago=payload.medio_pago, caja_id=cobro.caja_id, usuario_id=user.get("id"),
-        )
+            # El producto puede rechazar el pago (HTTPException) y decidir la caja, el turno y la referencia.
+            # Corre con las facturas bloqueadas: un gancho sólo puede leer, no escribir con otra conexión
+            # (en SQLite esperaría el candado de escritura que tiene este pago).
+            cobro = (opciones.validar_pago(payload, user) if opciones.validar_pago is not None
+                     else CobroAprobado(caja_id=payload.caja_id))
 
-        referencia = (cobro.referencia_movimiento.format(pago_id=pago_id)
-                      if cobro.referencia_movimiento else payload.referencia)
-        # Una fila de caja por factura, con el mismo monto y medio que el pago:
-        # es el "Registrar cobro" de cada comprobante, pero sin un segundo abono
-        # (el pago a cuenta ya es el abono). La plata entra a caja una sola vez.
-        for factura, monto in aplicaciones:
-            db_caja.create_caja_movimiento(
-                fecha=payload.fecha, tipo="ingreso",
-                concepto=f"Cobro {factura['concepto']} — {cliente['name']}",
-                monto=monto, referencia=referencia, factura_id=factura["id"],
-                caja_id=cobro.caja_id, medio_pago=payload.medio_pago,
-                usuario_id=user.get("id"), turno_id=cobro.turno_id,
-                cc_pago_id=pago_id,
+            pago_id = db_cc.create_cc_pago(
+                cliente_id=cliente_id, monto=payload.monto, fecha=payload.fecha,
+                concepto=payload.concepto, referencia=payload.referencia,
+                medio_pago=payload.medio_pago, caja_id=cobro.caja_id, usuario_id=user.get("id"),
+                conn=conn,
             )
-        # Lo que no cubre ninguna factura sigue siendo un pago a cuenta suelto.
-        resto = round(payload.monto - sum(m for _, m in aplicaciones), 2)
-        if cobro.caja_id and resto > 0:
-            db_caja.create_caja_movimiento(
-                fecha=payload.fecha, tipo="ingreso", concepto=f"Pago CC - {cliente['name']}",
-                monto=resto, referencia=referencia,
-                caja_id=cobro.caja_id, medio_pago=payload.medio_pago, usuario_id=user.get("id"),
-                turno_id=cobro.turno_id, cc_pago_id=pago_id,
-            )
+
+            referencia = (cobro.referencia_movimiento.format(pago_id=pago_id)
+                          if cobro.referencia_movimiento else payload.referencia)
+            # Una fila de caja por factura, con el mismo monto y medio que el pago:
+            # es el "Registrar cobro" de cada comprobante, pero sin un segundo abono
+            # (el pago a cuenta ya es el abono). La plata entra a caja una sola vez.
+            for factura, monto in aplicaciones:
+                db_caja.create_caja_movimiento(
+                    fecha=payload.fecha, tipo="ingreso",
+                    concepto=f"Cobro {factura['concepto']} — {cliente['name']}",
+                    monto=monto, referencia=referencia, factura_id=factura["id"],
+                    caja_id=cobro.caja_id, medio_pago=payload.medio_pago,
+                    usuario_id=user.get("id"), turno_id=cobro.turno_id,
+                    cc_pago_id=pago_id, conn=conn,
+                )
+            # Lo que no cubre ninguna factura sigue siendo un pago a cuenta suelto.
+            resto = round(payload.monto - sum(m for _, m in aplicaciones), 2)
+            if cobro.caja_id and resto > 0:
+                db_caja.create_caja_movimiento(
+                    fecha=payload.fecha, tipo="ingreso", concepto=f"Pago CC - {cliente['name']}",
+                    monto=resto, referencia=referencia,
+                    caja_id=cobro.caja_id, medio_pago=payload.medio_pago, usuario_id=user.get("id"),
+                    turno_id=cobro.turno_id, cc_pago_id=pago_id, conn=conn,
+                )
 
         respuesta = {
             "movimientos": db_cc.get_cc_movimientos(cliente_id, origen=origen),

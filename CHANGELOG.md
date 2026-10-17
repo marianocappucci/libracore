@@ -7,6 +7,20 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — El pago a cuenta corriente toma el candado del cobro, y la nota de débito tiene tope (propuesta: v1.175.0)
+
+ADR-063 y ADR-064. **Sin migración y sin cambio de schema.**
+
+**ADR-063: dos pagos simultáneos no pueden cubrir la misma factura.** `POST /api/cuenta-corriente/{id}/pagar` con `facturas` leía lo pendiente y escribía el cobro en conexiones separadas y sin candado: dos pagos a la misma factura pasaban los dos el tope y la cobraban dos veces (medido: 2.000 cobrados sobre una factura de 1.000). Ahora lee, reparte, llama al gancho `validar_pago` y escribe (abono, cobro por factura y pago suelto) en **una transacción**, con las facturas pedidas bloqueadas —el mismo candado del cobro de una factura— **en orden de id ascendente** (sin interbloqueos entre dos pagos con las mismas facturas en distinto orden). Quien llega segundo ve lo que dejó el primero: factura ya cobrada, el 422 de siempre («Factura sin cobro pendiente en esta cuenta»); cobrada a medias, se le aplica sólo lo que falta y el resto queda como pago a cuenta suelto. Un pago que falla a mitad ya no deja el abono sin sus cobros.
+
+API nueva: `cobros.bloquear_facturas(conn, ids)` y `get_facturas_pendientes_cc(cliente_id, *, conn=None)`.
+
+**ADR-064: una nota de débito no se cobra de más.** `tipos_comprobante.COBRABLES` (facturas y notas de débito, la FCE incluida) manda `estado_de_cobro["con_tope"]`: `pendiente = total − cobrado − acreditado`, con los mismos fragmentos SQL que la factura. Cobrar de más una nota de débito pasa de 200 a **409** («… supera lo que falta cobrar de la nota de débito»). Las notas de crédito siguen sin tope.
+
+### Para los productos
+- Un `validar_pago` propio (`OpcionesCuentaCorriente`) corre ahora con las facturas bloqueadas, dentro de la transacción del pago: tiene que ser de sólo lectura.
+- **Abierto**: la pantalla (detalle, columna `pendiente`, «sin cobrar», resumen, tablero) y `get_facturas_pendientes_cc` siguen sin incluir las notas de débito; sumarlas cambia cifras visibles en todos los productos (ver ADR-064).
+
 ## [Unreleased] — Una caja nueva puede nacer en la sucursal predeterminada del producto (propuesta: v1.174.0)
 
 ADR-062. **Sin migración y sin cambio de schema.** Sin la opción nueva no cambia nada.

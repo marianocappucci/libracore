@@ -308,8 +308,9 @@ def test_un_cobro_sin_pagos_validos_no_mira_la_base_ni_rechaza():
     assert res["total"] == 0.0 and esc.lecturas == 0
 
 
-def test_un_comprobante_que_no_es_factura_no_tiene_tope():
-    """Una nota de débito no cobra «lo que falta» de ningún total: esa cuenta no existe en el motor."""
+def test_un_comprobante_sin_tope_deja_cobrar_cualquier_monto():
+    """Si el estado dice `con_tope: False` (una nota de crédito: no se cobra, resta), el tope no mira el monto.
+    La nota de débito SÍ tiene tope desde el ADR-064: ver `test_nota_de_debito_con_tope.py`."""
     esc = Escrituras(total=100.0)
     esc.estado["con_tope"] = False
 
