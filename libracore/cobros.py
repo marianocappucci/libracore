@@ -40,6 +40,10 @@ daba 200. (Una **cuenta corriente** sí admite pagar de más —queda a favor—
 pero eso es `cuenta_corriente_router`, donde el resto se asienta como pago a
 cuenta; acá no hay a qué asentarlo.)
 
+Lo mismo vale para una **nota de débito** (ADR-064): su `total` es el monto nuevo que cobra
+(intereses, un gasto, una diferencia), y cobrarle más es plata que nadie debía. Las notas de
+crédito no se cobran y no tienen tope.
+
 Lo que falta es `total − lo cobrado − lo acreditado por notas de crédito con CAE`
 (`saldo_de_cobro`, ADR-059), todo en centavos: la misma cuenta de «pendiente» que hace el
 resto del motor.
@@ -165,10 +169,12 @@ def saldo_de_cobro(factura, cobros: Sequence[dict], acreditado: float = 0.0) -> 
 def estado_de_cobro(factura_id, *, conn=None) -> dict | None:
     """El saldo de cobro **de ahora** de una factura, leído de la base (`None` si no existe).
 
-    Es `saldo_de_cobro` más `anulada` (¿está dado de baja?) y `con_tope` (¿es una factura, de las que
-    tienen un total que cobrar?). Un comprobante que no es factura (una nota) no tiene tope:
-    quien cobra una nota de débito no está cobrando «lo que falta» de ningún total, y esa
-    definición no existe en el motor. Con `conn`, lo ve como lo ve esa transacción.
+    Es `saldo_de_cobro` más `anulada` (¿está dado de baja?) y `con_tope` (¿es un comprobante de los
+    que tienen un total que cobrar?). Lo tienen las facturas **y las notas de débito** (ADR-064): una
+    nota de débito cobra un monto nuevo —intereses, un gasto, una diferencia—, y ese monto es su
+    `total`; lo que falta es `total − cobrado − acreditado` como en una factura (por si una nota de
+    crédito la acredita: `sql_acreditado` mira el comprobante asociado, sea cual sea su tipo). Una nota
+    de crédito no se cobra —resta— y no tiene tope. Con `conn`, lo ve como lo ve esa transacción.
 
     Lo cobrado y lo acreditado salen de los fragmentos SQL de `db.facturas` (`sql_cobrado`,
     `sql_acreditado`): una sola definición para esto y para todas las listas."""
@@ -181,7 +187,9 @@ def estado_de_cobro(factura_id, *, conn=None) -> dict | None:
     return {
         **saldo_de_cobro(factura, [{"monto": cobrado}], acreditado),
         "anulada": bool(factura.get("anulada_en")),
-        "con_tope": factura["tipo"] in tipos.FACTURAS,
+        "con_tope": factura["tipo"] in tipos.COBRABLES,
+        # Cómo se nombra en los mensajes del tope («Esta factura ya está cobrada…»).
+        "rotulo": "nota de débito" if factura["tipo"] in tipos.ND else "factura",
     }
 
 
@@ -197,6 +205,19 @@ def _bloquear_factura(conn, factura_id) -> None:
         conn.execute("UPDATE facturas SET total = total WHERE id = ?", (factura_id,))
     else:
         conn.execute("SELECT id FROM facturas WHERE id = ? FOR UPDATE", (factura_id,)).fetchall()
+
+
+def bloquear_facturas(conn, factura_ids) -> None:
+    """Bloquea **varias** facturas hasta el fin de la transacción de `conn`, **en orden de id ascendente**
+    (ADR-063).
+
+    Es `_bloquear_factura` para quien aplica una operación a más de una factura —el pago a cuenta
+    corriente que cubre varias—. El orden es lo que evita el interbloqueo: dos pagos que tocan las
+    mismas facturas en distinto orden (`[7, 3]` y `[3, 7]`) tomarían los candados cruzados y se
+    esperarían para siempre; con un orden único, el segundo espera en el primero y nadie se cruza.
+    Los repetidos se bloquean una vez y un id que no existe no bloquea nada (lo dice quien llama)."""
+    for factura_id in sorted(set(factura_ids)):
+        _bloquear_factura(conn, factura_id)
 
 
 def exigir_cobro_posible(factura_id, monto, *, conn=None, leer_estado=None) -> None:
@@ -222,6 +243,7 @@ def exigir_cobro_posible(factura_id, monto, *, conn=None, leer_estado=None) -> N
         return
     pedido = centavos(monto)
     pendiente = estado["pendiente_centavos"]
+    rotulo = estado.get("rotulo", "factura")
     if pedido <= 0 or pedido <= pendiente:
         return
     detalle = f"su total es {_pesos(centavos(estado['total']))}"
@@ -237,10 +259,10 @@ def exigir_cobro_posible(factura_id, monto, *, conn=None, leer_estado=None) -> N
         else:
             quien = "ya está cobrada por completo"
         raise CobroNoPermitido(
-            f"Esta factura {quien} ({detalle}): no se puede registrar un cobro de {_pesos(pedido)}.",
+            f"Esta {rotulo} {quien} ({detalle}): no se puede registrar un cobro de {_pesos(pedido)}.",
             CobroNoPermitido.SIN_SALDO, pendiente=0.0)
     raise CobroNoPermitido(
-        f"El cobro ({_pesos(pedido)}) supera lo que falta cobrar de la factura "
+        f"El cobro ({_pesos(pedido)}) supera lo que falta cobrar de la {rotulo} "
         f"({_pesos(pendiente)}): {detalle}.", CobroNoPermitido.EXCEDE, pendiente=pendiente / 100)
 
 

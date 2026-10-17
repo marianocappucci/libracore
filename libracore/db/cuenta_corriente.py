@@ -157,7 +157,7 @@ def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE)
     return libro_de_clientes.movimientos_de(cliente_id, origen)
 
 
-def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
+def get_facturas_pendientes_cc(cliente_id: int, *, conn: Conexion | None = None) -> list[dict]:
     """Las facturas a cuenta corriente del cliente que todavía no tienen cobro.
 
     Es lo que separa un **pago a cuenta** de un **cobro de factura**. Los dos
@@ -177,8 +177,13 @@ def get_facturas_pendientes_cc(cliente_id: int) -> list[dict]:
     sale el saldo del libro; esto sólo dice cuánto de CADA factura queda por cobrar, y no
     escribe nada. Se cruza por CUIT normalizado, por la misma razón que `_cuit_de`. Orden:
     la más vieja primero, que es el orden en que se aplica un pago.
+
+    Con `conn` lo lee **como lo ve esa transacción** (y no confirma ni cierra nada): es lo que
+    necesita el pago aplicado a facturas, que lee lo pendiente con las facturas ya bloqueadas
+    (`libracore.cobros.bloquear_facturas`, ADR-063) y escribe en esa misma transacción.
     """
-    with get_connection() as conn:
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as conn:
         cuit = _cuit_de(conn, cliente_id)
         if not cuit:
             return []

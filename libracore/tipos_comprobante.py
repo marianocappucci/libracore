@@ -15,6 +15,10 @@ FACTURAS = (1, 6, 11, 201, 206, 211)
 NC = (3, 8, 13, 203, 208, 213)
 ND = (2, 7, 12, 202, 207, 212)
 
+#: Los comprobantes que se cobran y tienen un total que cobrar: las facturas **y las notas de débito**
+#: (ADR-064). Las notas de crédito no se cobran: restan.
+COBRABLES = FACTURAS + ND
+
 #: Las que son FCE: la factura, y sus notas.
 FCE_FACTURA = frozenset({201, 206, 211})
 FCE_NOTA = frozenset({202, 203, 207, 208, 212, 213})
