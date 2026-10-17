@@ -154,7 +154,8 @@ def saldo_de_cobro(factura, cobros: Sequence[dict], acreditado: float = 0.0) -> 
     factura puntual, sólo de una cuenta corriente—.
 
     🔑 **Es la misma cuenta que las consultas SQL** (`sql_pendiente`: listado `sin_cobrar`, resumen,
-    tablero, cuenta corriente): un test las cruza. Si la pantalla ofreciera una cifra y el tope aceptara
+    tablero, cuenta corriente) y para los mismos comprobantes (`tipos.COBRABLES` / `sql_es_cobrable`, ADR-066):
+    un test las cruza, para una factura y para una nota de débito. Si la pantalla ofreciera una cifra y el tope aceptara
     otra, el cobro sugerido por la propia pantalla saldría rechazado."""
     total = centavos(factura["total"])
     cobrado = sum(centavos(c["monto"]) for c in cobros)

@@ -18,7 +18,7 @@ Ver wiki/analyses/panel-del-dueno-multisucursal.md.
 from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_no_anulado
 from libracore.db.core import get_connection
-from libracore.db.facturas import sql_con_pendiente, sql_pendiente_positivo, sql_vigente
+from libracore.db.facturas import sql_con_pendiente, sql_es_cobrable, sql_pendiente_positivo, sql_vigente
 from libracore.fechas import rango_por_dia
 
 #: Los tipos que son factura. Las notas de credito y debito quedan afuera de
@@ -58,7 +58,8 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
         ).fetchone()[0]
 
         # Sin cobrar: TODAS las que todavía deben algo, no las del periodo. Una
-        # factura de marzo sin cobrar sigue siendo plata que falta en agosto.
+        # factura de marzo sin cobrar sigue siendo plata que falta en agosto. Son las facturas **y las notas
+        # de débito** (`sql_es_cobrable`, ADR-066): lo facturado de arriba sigue siendo de las facturas.
         #
         # 🔴 Lo que falta sale de `sql_pendiente` (ADR-059): `total − cobrado − acreditado por
         # notas de crédito`, con la misma definición de «cobrado» que `get_cobros_factura`
@@ -69,8 +70,7 @@ def get_resumen_core(desde: str, hasta: str) -> dict:
         sin_cobrar_cant, sin_cobrar_monto = conn.execute(
             f"""SELECT COUNT(*), COALESCE(SUM({sql_pendiente_positivo('f')}), 0)
                 FROM facturas f
-                WHERE f.tipo IN ({ph}) AND {sql_vigente('f')} AND {sql_con_pendiente('f')}""",
-            tipos,
+                WHERE {sql_es_cobrable('f')} AND {sql_vigente('f')} AND {sql_con_pendiente('f')}"""
         ).fetchone()
 
     return {

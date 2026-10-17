@@ -23,9 +23,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from libracore import tipos_comprobante as tipos
 from libracore.db import dashboard as db_dashboard
-
-_TIPO_LETRA = {1: "A", 6: "B", 11: "C"}
 
 
 def build_dashboard_router(
@@ -48,7 +47,10 @@ def build_dashboard_router(
         data = db_dashboard.get_dashboard_data(mes_desde, hoy_iso, sin_fiado=sin_fiado)
 
         for f in data["facturas_sin_cobrar"]:
-            f["letra"] = _TIPO_LETRA.get(f["tipo"], "")
+            # Con la nota de débito en la lista (ADR-066) la letra sola no dice qué es: `tipo_label` lo nombra
+            # («Nota de Débito C»). La letra sale de la tabla única, así que la FCE y las notas también la tienen.
+            f["letra"] = tipos.LETRA.get(f["tipo"], "")
+            f["tipo_label"] = tipos.NOMBRE.get(f["tipo"], "")
             pv = str(f["punto_venta"]).zfill(4)
             num = str(f["numero"]).zfill(8)
             f["label_numero"] = f"{pv}-{num}"

@@ -6,7 +6,7 @@ a libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 from libracore import tipos_comprobante as tipos
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import get_connection
-from libracore.db.facturas import sql_con_pendiente, sql_pendiente_positivo, sql_vigente
+from libracore.db.facturas import sql_con_pendiente, sql_es_cobrable, sql_pendiente_positivo, sql_vigente
 from libracore.fechas import rango_por_dia
 
 
@@ -55,8 +55,8 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) 
             p_fecha,
         ).fetchone()[0]
 
-        # Facturas con algo por cobrar (ADR-059): `total − cobrado − acreditado por notas de crédito`, de
-        # `sql_pendiente`. Con `sin_fiado`, un ingreso a cuenta corriente no cuenta como cobro: la factura
+        # Comprobantes con algo por cobrar —facturas y notas de débito, ADR-066— (ADR-059):
+        # `total − cobrado − acreditado por notas de crédito`, de `sql_pendiente`. Con `sin_fiado`, un ingreso a cuenta corriente no cuenta como cobro: la factura
         # sigue apareciendo acá, que es lo real (nadie puso plata todavía). Sin `sin_fiado` (el criterio de
         # siempre de los productos que no separan fiar de cobrar) la marca de crédito cuenta como cobrada.
         # Cada fila trae `pendiente` (lo que falta) además de `total`.
@@ -65,7 +65,7 @@ def get_dashboard_data(mes_desde: str, mes_hasta: str, sin_fiado: bool = False) 
             f"""SELECT f.id, f.tipo, f.punto_venta, f.numero, f.fecha, f.cliente_razon, f.total,
                        {sql_pendiente_positivo('f', con_cuenta_corriente=con_cc)} AS pendiente
                FROM facturas f
-               WHERE f.tipo IN ({tipos.en_sql(tipos.FACTURAS)}) AND {sql_vigente('f')}
+               WHERE {sql_es_cobrable('f')} AND {sql_vigente('f')}
                  AND {sql_con_pendiente('f', con_cuenta_corriente=con_cc)}
                ORDER BY f.id DESC LIMIT 8""",
         ).fetchall()
