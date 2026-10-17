@@ -7,6 +7,13 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Una instancia nueva nace con 2 workers y 2 CPU (propuesta: v1.177.0)
+
+**Sin migración.** Sólo el alta de cliente (`provisioning/nuevo_cliente.py`): el compose de una instancia nueva lleva
+`WEB_CONCURRENCY=2` y `cpus: 2.0` (antes 1 proceso y 1.0). Las instancias existentes no cambian por subir el pin:
+`pinear_image` sólo toca la imagen. Decisión del dueño del 2026-10-17, ya aplicada a mano en dev, demos y clientes
+(`docs/varios-procesos.md`). Test: `tests/provisioning/test_alta_con_dos_workers.py`.
+
 ## [Unreleased] — La nota de crédito de una factura al contado cobrada pregunta qué hacer con la plata (propuesta: v1.176.0)
 
 ADR-065. **Sin migración y sin cambio de schema.** Sin `destino` no cambia nada.

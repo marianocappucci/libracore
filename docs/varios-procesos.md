@@ -1,7 +1,9 @@
 # Varios procesos por instancia (`uvicorn --workers N`)
 
 Hasta ahora el motor suponía **un solo proceso por instancia** (`uvicorn` sin `--workers`). Desde ADR-044 el código está
-listo para `WEB_CONCURRENCY` > 1; **ningún producto corre con más de uno todavía** (decisión del dueño, 2026-10-13).
+listo para `WEB_CONCURRENCY` > 1. **Desde el 2026-10-17 toda la suite corre con 2** (decisión del dueño): dev por el
+`.env` de cada checkout, demos y clientes por el compose de la instancia (`WEB_CONCURRENCY=2`; demos con 1 CPU, clientes
+con 2), y el alta (`provisioning/nuevo_cliente.py`) ya escribe las dos cosas para una instancia nueva.
 Esta página es qué se rompe con N procesos, cómo lo cubre el motor y qué le toca a cada producto.
 
 ## Qué hace el motor
