@@ -55,7 +55,7 @@ import logging
 import os
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -69,6 +69,7 @@ from libracore import (
     config_manager,
     email_sender,
     notas_de_credito,
+    reintegro_de_nota,
 )
 from libracore import pdf_generator as pdf_gen
 from libracore import tipos_comprobante as tipos_cbte
@@ -608,6 +609,8 @@ _STATUS_DE_NOTA = {
     notas_de_credito.NotaNoPermitida.RECEPTOR: 422,
     notas_de_credito.NotaNoPermitida.IMPORTE: 422,
     notas_de_credito.NotaNoPermitida.SUPERA_SALDO: 409,
+    notas_de_credito.NotaNoPermitida.DESTINO: 422,
+    notas_de_credito.NotaNoPermitida.SIN_TURNO: 409,
 }
 
 
@@ -692,23 +695,53 @@ class NotaCreditoIn(BaseModel):
 
     Sin cuerpo (o sin `importe`) la nota es **total**, como siempre. Con `importe` es **parcial**: el monto a acreditar,
     con IVA incluido, de hasta dos decimales. La fecha, la letra y el comprobante asociado no se eligen.
+
+    `destino` (ADR-065) dice qué pasa con la plata de una factura **al contado ya cobrada**: `devolver` (un egreso de
+    caja, con `medio_pago`; sin él, el único con el que se cobró) o `a_favor` (un abono en la cuenta corriente del
+    cliente; la factura tiene que tener uno identificado). Sin `destino` no se mueve plata, como siempre. No se manda
+    en una factura a cuenta corriente (la nota abona la cuenta sola, 422) y se ignora si no hay nada cobrado de más.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     importe: Decimal | None = None
+    destino: Literal["devolver", "a_favor"] | None = None
+    medio_pago: str | None = None
     _no_son_booleanos = sin_booleanos("importe")
 
 
 def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..., Any],
                                solo_admin: Callable[..., Any],
-                               emisor_del_pdf: Callable[[dict], dict | None] | None = None) -> None:
+                               emisor_del_pdf: Callable[[dict], dict | None] | None = None,
+                               exigir_turno: bool = False,
+                               usuario_del_turno: Callable[[dict], int | None] | None = None) -> None:
     """Registra `POST /{factura_id}/nota-credito` en `router`. **Una sola implementación**, la usan los dos factories.
 
     Existe para que un producto que no tiene pantallas de facturas (VentaLibra) pueda ofrecer la nota de crédito
     sin montar los otros once endpoints —alta manual, borrador, cobro, email, borrado—, que no usa. La lógica
     de fondo está en `notas_de_credito` (ADR-014); esto es el borde HTTP y el abono a la cuenta corriente.
+
+    `exigir_turno` y `usuario_del_turno` son los de `build_comprobantes_router` (ADR-060) y rigen sólo cuando la nota
+    **devuelve plata de la caja** (`destino: "devolver"`, ADR-065): el egreso entra por el turno abierto de quien emite.
     """
+    def turno_de_quien_emite(usuario: dict) -> dict | None:
+        quien = usuario_del_turno(usuario) if usuario_del_turno is not None else usuario.get("id")
+        return db_turnos.get_turno_activo(quien) if quien is not None else None
+
+    @router.get("/{factura_id}/nota-credito/destino", dependencies=[Depends(solo_admin)])
+    def destino_de_la_plata(factura_id: int, importe: Decimal | None = Query(None, gt=0),
+                            usuario: dict = Depends(usuario_actual)):
+        """Qué hay que preguntar antes de emitir la nota (ADR-065): si la factura es al contado y tiene plata cobrada
+        de más para ese `importe` (sin él, el de la nota total), cuánto, con qué medios y si se puede dejar a favor.
+        Es lo que dibuja la pantalla; no escribe nada. Sin plata que mover, `aplica` es `false`."""
+        orig = db_facturas.get_factura(factura_id)
+        if not orig:
+            raise HTTPException(404, "Factura no encontrada")
+        return reintegro_de_nota.ofrecer(
+            orig, importe if importe is not None else orig["total"],
+            turno_de=((lambda: turno_de_quien_emite(usuario)) if exigir_turno or usuario_del_turno is not None else None),
+            exigir_turno=exigir_turno)
+
     @router.post("/{factura_id}/nota-credito", dependencies=[Depends(solo_admin)])
     def nota_credito(factura_id: int, payload: NotaCreditoIn | None = None, usuario: dict = Depends(usuario_actual)):
         orig = db_facturas.get_factura(factura_id)
@@ -716,7 +749,20 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
             raise HTTPException(404, "Factura no encontrada")
         _exigir_vigente(orig)
         importe = payload.importe if payload else None
+        destino = payload.destino if payload else None
+        plan = None
         try:
+            if destino is not None or (payload and payload.medio_pago):
+                # 🔑 Con destino, la plata se decide ANTES de pedirle nada a ARCA: una nota autorizada no se deshace.
+                # Primero las guardas de la nota (409/422 propios), después las del destino.
+                notas_de_credito.validar_nota_de_credito(orig, db_facturas.get_nc_de_factura(
+                    orig["tipo"], orig["punto_venta"], orig["numero"],
+                    emisor_id=orig.get("emisor_id"), ambiente=orig.get("ambiente")), importe)
+                plan = reintegro_de_nota.planear(
+                    orig, importe if importe is not None else orig["total"], destino, payload.medio_pago,
+                    turno_de=((lambda: turno_de_quien_emite(usuario))
+                              if exigir_turno or usuario_del_turno is not None else None),
+                    exigir_turno=exigir_turno)
             nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"], importe, emisor_del_pdf))
         except notas_de_credito.NotaNoPermitida as e:
             raise HTTPException(_STATUS_DE_NOTA[e.codigo], str(e)) from None
@@ -742,7 +788,20 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
                     medio_pago="Cuenta Corriente", caja_id=None,
                     usuario_id=usuario["id"],
                 )
-        return db_facturas.get_factura(nota_id)
+            return db_facturas.get_factura(nota_id)
+
+        # Una factura al contado ya cobrada: la plata va adonde se eligió (ADR-065), y sólo con la nota autorizada.
+        # `solicitar_cae` no levanta si ARCA rechaza —deja el motivo en la nota—, así que se mira el CAE acá.
+        nota_db = db_facturas.get_factura(nota_id)
+        if plan is None:
+            reintegro = reintegro_de_nota.nada_que_mover(destino) if destino is not None else None
+        elif notas_de_credito._es_cae(nota_db.get("cae")):
+            reintegro = reintegro_de_nota.aplicar(plan, orig, nota_db, usuario["id"])
+        else:
+            reintegro = reintegro_de_nota.sin_mover(
+                plan, "La nota todavía no tiene CAE, así que la plata no se movió: autorizala y hacé el movimiento "
+                      f"a mano con la marca {notas_de_credito.referencia_cc_de_nota(factura_id, nota_id)}.")
+        return nota_db if reintegro is None else {**nota_db, "reintegro": reintegro}
 
 
 def build_nota_de_credito_router(
@@ -751,17 +810,21 @@ def build_nota_de_credito_router(
     solo_admin: Callable[..., Any],
     prefix: str = "/api/facturas",
     emisor_del_pdf: Callable[[dict], dict | None] | None = None,
+    exigir_turno: bool = False,
+    usuario_del_turno: Callable[[dict], int | None] | None = None,
 ) -> APIRouter:
-    """Sólo `POST {prefix}/{factura_id}/nota-credito`: la nota de crédito total de una factura, autorizada por ARCA.
+    """Sólo `POST {prefix}/{factura_id}/nota-credito`: la nota de crédito de una factura, autorizada por ARCA.
 
     Para los productos que facturan desde otra pantalla (la venta) y no necesitan el router completo de
     comprobantes. Mismas guardas, mismos códigos HTTP y mismo abono a la cuenta corriente que
-    `build_comprobantes_router`: es el mismo código. `solo_admin` gatea la ruta. `emisor_del_pdf`: ver
-    `build_comprobantes_router`.
+    `build_comprobantes_router`: es el mismo código. `solo_admin` gatea la ruta. `emisor_del_pdf`, `exigir_turno` y
+    `usuario_del_turno`: ver `build_comprobantes_router` (los dos últimos rigen cuando la nota devuelve plata de la
+    caja, ADR-065).
     """
     router = APIRouter(prefix=prefix, tags=["facturas"])
     _registrar_nota_de_credito(
-        router, usuario_actual=usuario_actual, solo_admin=solo_admin, emisor_del_pdf=emisor_del_pdf)
+        router, usuario_actual=usuario_actual, solo_admin=solo_admin, emisor_del_pdf=emisor_del_pdf,
+        exigir_turno=exigir_turno, usuario_del_turno=usuario_del_turno)
     return router
 
 
@@ -1309,7 +1372,8 @@ def build_comprobantes_router(
     # ── Notas ─────────────────────────────────────────────────────────────
 
     _registrar_nota_de_credito(
-        router, usuario_actual=usuario_actual, solo_admin=solo_admin, emisor_del_pdf=emisor_del_pdf)
+        router, usuario_actual=usuario_actual, solo_admin=solo_admin, emisor_del_pdf=emisor_del_pdf,
+        exigir_turno=exigir_turno, usuario_del_turno=usuario_del_turno)
 
     @router.post("/{factura_id}/nota-debito", dependencies=admin)
     def nota_debito(factura_id: int, usuario: dict = Depends(usuario_actual)):

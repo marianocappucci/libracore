@@ -95,6 +95,8 @@ def reintegrar_devolucion(
     usuario_id: int | None = None,
     turno_id: int | None = None,
     conn: Conexion | None = None,
+    concepto: str | None = None,
+    factura_id: int | None = None,
 ) -> None:
     """Devuelve plata por una devolución parcial.
 
@@ -105,6 +107,11 @@ def reintegrar_devolucion(
     Si el reintegro va a cuenta corriente, baja la deuda en vez de salir de
     la caja: es lo que corresponde cuando la compra estaba fiada y todavía
     no se pagó.
+
+    `concepto` pisa el texto del movimiento (o del abono) y `factura_id` ata
+    el egreso a un comprobante: los usa la nota de crédito de una factura al
+    contado (`libracore.reintegro_de_nota`, ADR-065). Sin ellos, todo sigue
+    como antes.
     """
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
@@ -112,7 +119,7 @@ def reintegrar_devolucion(
             if cliente_id:
                 create_cc_pago(
                     cliente_id=cliente_id, monto=monto, fecha=fecha,
-                    concepto=f"Devolución venta {numero}",
+                    concepto=concepto or f"Devolución venta {numero}",
                     referencia=referencia, medio_pago=MEDIO_CUENTA_CORRIENTE,
                     caja_id=None, usuario_id=usuario_id, conn=c,
                 )
@@ -120,8 +127,9 @@ def reintegrar_devolucion(
 
         create_caja_movimiento(
             fecha=fecha, tipo="egreso",
-            concepto=f"Devolución venta {numero}",
+            concepto=concepto or f"Devolución venta {numero}",
             monto=monto,
             referencia=referencia or f"devolucion:venta:{venta_id}",
+            factura_id=factura_id,
             medio_pago=medio_pago, usuario_id=usuario_id, turno_id=turno_id, conn=c,
         )
