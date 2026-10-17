@@ -1351,3 +1351,27 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 
 **Lo que queda abierto.** Un certificado suelto en `CERTS_DIR` sin fila en la base no se audita. `example.com.ar` (que usan las semillas en los correos) no es un dominio reservado como `.example`: el dato no es fiscal, pero conviene revisarlo.
 
+
+
+## ADR-062 — Una caja nueva puede nacer en la sucursal predeterminada del producto: `OpcionesCajas.sucursal_por_defecto`
+
+**Estado:** propuesta (2026-10-16; pedido del orquestador, a raíz de la sucursal única de ContaLibra).
+
+**Contexto.** `POST /api/cajas` crea la caja con `payload.sucursal_id`, que es `None` si el pedido no lo manda. ContaLibra adoptó el 2026-10-16 una sucursal única «Casa central» (libracommerce v0.63.0, ADR-063): su migración `0006_sucursal_unica` y su `init_db` asignan a ella las cajas con `sucursal_id IS NULL`, y sus depósitos nuevos ya caen en la predeterminada (`OpcionesDepositos(sucursal_por_defecto=True)`). Pero una caja creada **después** por la API quedaba en NULL hasta el próximo arranque: el hueco que el ADR-063 no podía cerrar desde el motor comercial, porque las cajas son de este motor. El motor no sabe de sucursales (viven en la base del producto: `branches` en LibraCommerce, `sucursales` en VentaLibra) ni depende de LibraCommerce, así que no puede ir a buscar «la predeterminada» él solo.
+
+**Decisión.** Una opción más en `OpcionesCajas`: **`sucursal_por_defecto: Callable[[], int | None] | None = None`**.
+- Sin argumentos y devolviendo el id, o `None`: la misma forma que `resolver_sucursal_nombre` del cierre diario (el producto abre su propia conexión; el motor no le pasa la suya porque la base de sucursales puede no ser la del motor).
+- En `crear`, si el pedido **no trae** `sucursal_id` y la opción está, la caja nace con lo que devuelva. Si el pedido trae uno, se respeta y **no se llama** a la función. Si devuelve `None` (una instancia que todavía no tiene sucursal), la caja queda sin ella, como siempre.
+- Corre **después** de `validar_alta`, que sigue viendo el pedido tal como llegó: la predeterminada la pone el producto, no hace falta que se valide contra sí mismo, y no se cambia el contrato de un gancho que ya existe (VentaLibra lo usa para exigir sucursal; con la opción puesta, esa exigencia sigue valiendo para quien lo pida).
+- **Sin la opción, el comportamiento es byte a byte el de siempre.**
+- **La edición no cambia.** `PUT /api/cajas/{id}` nunca escribió `sucursal_id` (`update_caja_config` no lo recibe; el campo del payload «sólo se usa al crear»: una caja no se muda de sede), así que no puede dejar una caja en NULL ni pisarla con la predeterminada. Tampoco hay `PATCH`. Una caja que ya estaba en NULL no se completa al editarla: de eso se ocupa quien adopta la sucursal (en ContaLibra, `app/sucursal_unica.py`).
+
+**Alternativas descartadas.**
+- **`sucursal_por_defecto=True`, como en los depósitos de LibraCommerce:** allá el router vive en el mismo paquete que la tabla `branches` y puede leerla; acá el motor no la conoce.
+- **Que el motor lea `branches` si existe:** supone un esquema de otro paquete y falla en silencio en un producto que la llame distinto (`sucursales`).
+- **Resolver antes de `validar_alta`:** el gancho vería una sucursal que el pedido no mandó y un producto no podría distinguir «la eligió el usuario» de «la puso el default».
+- **Completar la sucursal también al editar:** reabriría la decisión de que una caja no se muda, y taparía una caja sin sucursal que el producto quizá quiere ver.
+
+**Consecuencias.** MINOR (propuesta **v1.174.0**), aditivo, sin migración y sin cambio de schema. Un producto que no pasa la opción no cambia. **Para los productos:** ContaLibra la monta con una función que lee la fila `is_default` de `branches`; cualquier otro con una sucursal predeterminada puede hacer lo mismo. Lo que **no** cubre: la «Caja Principal» que siembra `init_core_schema` (nace sin sucursal por su propio camino, congelado desde la baseline); cada producto la asigna en su arranque.
+
+**Tests.** `tests/test_caja_router.py` (+5, SQLite): la caja nace en la predeterminada y el listado por sucursal la encuentra; un `sucursal_id` explícito se respeta y no consulta la función; `None` deja la caja sin sucursal; sin la opción (o sin `opciones`) sigue en NULL; `validar_alta` ve el pedido sin la sucursal y, si rechaza, no se crea nada; el PUT no toca la sucursal. Sin el cambio fallan 4 (la opción no existe); el quinto, «sin la opción», es la guarda de que nada cambia.

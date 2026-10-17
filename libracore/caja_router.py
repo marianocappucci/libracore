@@ -135,7 +135,8 @@ class CajaPayload(BaseModel):
     mp_pos_id: str | None = None
     #: La sucursal de esta caja, para los productos con sedes. Sólo se usa al
     #: crear: una caja no se muda de sede (se da de baja y se crea otra donde
-    #: corresponda). `None` deja la caja sin sucursal, que es lo de siempre.
+    #: corresponda). `None` deja la caja sin sucursal, que es lo de siempre,
+    #: salvo que el producto monte `OpcionesCajas.sucursal_por_defecto` (ADR-062).
     sucursal_id: int | None = None
 
     _no_son_booleanos = sin_booleanos("punto_venta", "sucursal_id")
@@ -167,6 +168,15 @@ class OpcionesCajas:
       sabe cómo se llama el rol admin de cada producto; sin esto, las escrituras
       quedan con la protección con la que el producto monte el router, que es
       la misma de la lectura.
+    - `sucursal_por_defecto() -> int | None` (ADR-062): la sucursal en la que
+      nace una caja **cuando el pedido no trae una**. Es del producto porque las
+      sucursales viven en su base (`branches` en LibraCommerce) y el motor no las
+      conoce; la llama sin argumentos y con su propia conexión, como
+      `resolver_sucursal_nombre` del cierre diario. Si el pedido trae
+      `sucursal_id`, se respeta y no se la llama; si devuelve `None` (la
+      instancia todavía no tiene sucursal), la caja queda sin sucursal como
+      siempre. Corre **después** de `validar_alta`, que ve el pedido tal como
+      llegó. Sólo rige al crear: la edición no toca la sucursal de una caja.
     """
 
     validar_alta: Callable[[CajaPayload], None] | None = None
@@ -175,6 +185,7 @@ class OpcionesCajas:
     predeterminar: Callable[[int], None] | None = None
     enriquecer: Callable[[dict], dict] | None = None
     autorizar_escritura: Any = None
+    sucursal_por_defecto: Callable[[], int | None] | None = None
 
 
 def build_cajas_router(*, prefix: str = "/api/cajas", opciones: OpcionesCajas | None = None) -> APIRouter:
@@ -207,10 +218,13 @@ def build_cajas_router(*, prefix: str = "/api/cajas", opciones: OpcionesCajas | 
             raise HTTPException(422, "El nombre es obligatorio.")
         if opt.validar_alta:
             opt.validar_alta(payload)
+        sucursal_id = payload.sucursal_id
+        if sucursal_id is None and opt.sucursal_por_defecto:
+            sucursal_id = opt.sucursal_por_defecto()
         try:
             cid = db_caja.create_caja_config(
                 nombre, payload.descripcion.strip(), payload.medios_pago,
-                sucursal_id=payload.sucursal_id,
+                sucursal_id=sucursal_id,
                 punto_venta=payload.punto_venta,
                 mp_pos_id=payload.mp_pos_id,
             )
