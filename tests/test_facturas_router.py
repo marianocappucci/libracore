@@ -1329,11 +1329,16 @@ def _solo_la_nota():
     return TestClient(app)
 
 
-def test_el_router_de_la_nota_expone_una_sola_ruta():
-    """El motivo de que exista: VentaLibra no necesita (ni debe exponer) el alta, el borrado ni el cobro."""
-    rutas = [(r.path, sorted(r.methods)) for r in fr.build_nota_de_credito_router(
-        usuario_actual=lambda: USUARIO, solo_admin=lambda: None).routes]
-    assert rutas == [("/api/facturas/{factura_id}/nota-credito", ["POST"])]
+def test_el_router_de_la_nota_expone_solo_la_nota_y_su_pregunta():
+    """El motivo de que exista: VentaLibra no necesita (ni debe exponer) el alta, el borrado ni el cobro.
+
+    Son dos rutas: la nota y, desde el ADR-065, `GET …/nota-credito/destino`, la pregunta que hace la pantalla antes de emitirla."""
+    rutas = sorted((r.path, sorted(r.methods)) for r in fr.build_nota_de_credito_router(
+        usuario_actual=lambda: USUARIO, solo_admin=lambda: None).routes)
+    assert rutas == [
+        ("/api/facturas/{factura_id}/nota-credito", ["POST"]),
+        ("/api/facturas/{factura_id}/nota-credito/destino", ["GET"]),
+    ]
 
 
 def test_el_router_de_la_nota_emite_la_misma_nota_que_el_completo(client):

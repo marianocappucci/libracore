@@ -65,6 +65,10 @@ rechazó), el motor no atrapa nada: el producto decide qué queda (en una transa
 - **Cuenta corriente:** el abono de una factura a crédito es el de cada nota, con la marca `nc:factura:<id>:<nota_id>`; `cc_acreditado_por_notas(conn, factura_id)` suma lo abonado.
 - Medido en homologación (2026-10-04): ARCA autoriza la nota parcial con el IVA hasta a 15 centavos del exacto.
 
+## La plata de una factura al contado cobrada (ADR-065)
+
+`POST /api/facturas/{id}/nota-credito` con `{"destino": "devolver", "medio_pago": "efectivo"}` (egreso de caja) o `{"destino": "a_favor"}` (abono en la cuenta corriente del cliente). Sin `destino` no se mueve plata. Se mueve lo que la nota deja cobrado de más, sólo con la nota autorizada, con la marca `nc:factura:<id>:<nota_id>`; `GET …/nota-credito/destino?importe=` dice qué preguntar. Detalle en `libracore/reintegro_de_nota.py` y el ADR-065.
+
 ## Qué falta (fases siguientes)
 
 El **motivo** obligatorio y guardado; guardar y mostrar las observaciones

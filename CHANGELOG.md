@@ -7,6 +7,19 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La nota de crédito de una factura al contado cobrada pregunta qué hacer con la plata (propuesta: v1.176.0)
+
+ADR-065. **Sin migración y sin cambio de schema.** Sin `destino` no cambia nada.
+
+- `POST /api/facturas/{id}/nota-credito` acepta **`destino`** (`"devolver"` | `"a_favor"`) y **`medio_pago`**. `devolver` escribe un egreso de caja (por el turno abierto de quien emite si el producto lleva `exigir_turno`/`usuario_del_turno`; 409 sin turno, antes del CAE); `a_favor` un abono en la cuenta corriente del cliente (422 sin cliente identificado). Los dos con `referencia = nc:factura:<id>:<nota_id>`. Sin medio, el único con el que se cobró (422 si hubo varios). En una factura a cuenta corriente el destino da 422.
+- Se mueve lo que la nota deja **cobrado de más** (`reintegro_de_nota.reintegrable`), nunca lo que no entró; lo que excede queda en la respuesta (`excedente`) y en el concepto. **Sólo con la nota autorizada**: sin CAE no se mueve nada y la respuesta (`reintegro.movido: false`) lo dice.
+- `GET /api/facturas/{id}/nota-credito/destino?importe=`: lo que una pantalla pregunta antes de emitir.
+- API nueva: `libracore.reintegro_de_nota` (`planear`, `ofrecer`, `aplicar`, `reintegrable`), `notas_de_credito.devuelto_por_notas`, `NotaNoPermitida.DESTINO` (422) y `SIN_TURNO` (409), `reintegrar_devolucion(…, concepto=, factura_id=)`, `build_nota_de_credito_router(…, exigir_turno=, usuario_del_turno=)`.
+
+### Para los productos
+- 🔴 **libracommerce (`anular_venta`)**: restar `devuelto_por_notas(conn, factura_id) + cc_acreditado_por_notas(conn, factura_id)` de lo que revierte de la caja; si no, anular una venta cuya nota ya devolvió saca la plata dos veces. Hasta entonces, no subir el pin en Contalibra, Restolibra ni VentaLibra junto con libra-ui v0.158.0.
+- Un producto con caja por turno pasa `exigir_turno`/`usuario_del_turno` también a `build_nota_de_credito_router`.
+
 ## [Unreleased] — El pago a cuenta corriente toma el candado del cobro, y la nota de débito tiene tope (propuesta: v1.175.0)
 
 ADR-063 y ADR-064. **Sin migración y sin cambio de schema.**

@@ -62,6 +62,8 @@ class NotaNoPermitida(Exception):
     IMPORTE = "importe"              # el importe pedido no es un monto válido (cero, negativo, más de 2 decimales)
     SUPERA_SALDO = "supera_saldo"    # lo acreditado más este importe superaría el total de la factura
     ORIGINAL_SIN_CAE = "original_sin_cae"  # el comprobante no tiene CAE: ARCA no lo conoce (la nota de débito lo exige)
+    DESTINO = "destino"              # el destino de la plata (devolver / a favor) no sirve para esta factura (ADR-065)
+    SIN_TURNO = "sin_turno"          # hay que devolver plata de la caja y quien emite no tiene un turno abierto (ADR-065)
 
     def __init__(self, mensaje: str, codigo: str):
         super().__init__(mensaje)
@@ -462,3 +464,23 @@ def cc_acreditado_por_notas(conn: Any, factura_id: int) -> Decimal:
 def cc_acreditada_por_nota(conn: Any, factura_id: int) -> bool:
     """¿Alguna nota de esta factura ya abonó la cuenta corriente del cliente?"""
     return cc_acreditado_por_notas(conn, factura_id) > 0
+
+
+def devuelto_por_notas(conn: Any, factura_id: int) -> Decimal:
+    """Cuánta plata **salió de la caja** por las notas de esta factura (ADR-065): los egresos con la marca de la nota.
+
+    Es la contracara de `cc_acreditado_por_notas`: una nota de una factura **al contado** que se emitió eligiendo
+    «Devolver» deja un egreso con `referencia = nc:factura:<id>:<nota_id>` y el `factura_id` de la factura; una
+    emitida eligiendo «Dejar a favor del cliente» deja un abono con la misma marca, y ése lo suma
+    `cc_acreditado_por_notas`. 🔴 **Quien anula la venta de esa factura tiene que restar las dos cosas** de lo que
+    revierte de la caja: la plata que la nota ya devolvió no se devuelve otra vez. Un movimiento anulado no cuenta."""
+    from libracore.db.caja import sql_no_anulado
+
+    base = referencia_cc_de_nota(factura_id)
+    fila = conn.execute(
+        "SELECT COALESCE(SUM(monto), 0) FROM caja_movimientos"
+        f" WHERE tipo = 'egreso' AND factura_id = ? AND {sql_no_anulado()}"
+        " AND (referencia = ? OR referencia LIKE ?)",
+        (int(factura_id), base, base + ":%"),
+    ).fetchone()
+    return _dec(fila[0])
