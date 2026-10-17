@@ -1050,7 +1050,7 @@ services:
     restart: unless-stopped
     mem_limit: 768m
     mem_reservation: 256m
-    cpus: 1.0
+    cpus: 2.0
     security_opt:
       - {sin_root.SECURITY_OPT}
     healthcheck:
@@ -1065,6 +1065,7 @@ services:
       - ./data:/app/data
 {resguardo_env}    environment:
       - DATA_DIR=/app/data
+      - WEB_CONCURRENCY=2
       - TZ={_TZ}
       - SECRET_KEY={secret_key}
       - ADMIN_USER={admin_user}
