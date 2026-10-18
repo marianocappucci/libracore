@@ -4,11 +4,10 @@ productos ya fijaban, sin el gate por módulo."""
 
 from __future__ import annotations
 
-import datetime
-
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from fechas import hoy
 
 from libracore.caja_router import (
     OpcionesCajas,
@@ -20,7 +19,6 @@ from libracore.db import core
 from libracore.db import turnos as db_turnos
 from libracore.db.schema import init_core_schema
 
-HOY = datetime.date.today().isoformat()
 USUARIO = {"id": 7, "username": "cajero", "role": "admin"}
 
 
@@ -62,11 +60,11 @@ def client(entorno):
 
 
 def test_movimientos_de_caja(client):
-    r = client.post("/api/caja", json={"fecha": HOY, "tipo": "ingreso", "concepto": "Venta suelta", "monto": 100.0, "medio_pago": "efectivo"})
+    r = client.post("/api/caja", json={"fecha": hoy(), "tipo": "ingreso", "concepto": "Venta suelta", "monto": 100.0, "medio_pago": "efectivo"})
     assert r.status_code == 200 and r.json()["id"]
     mid = r.json()["id"]
-    client.post("/api/caja", json={"fecha": HOY, "tipo": "egreso", "concepto": "Hielo", "monto": 30.0, "medio_pago": "efectivo"})
-    listado = client.get(f"/api/caja?desde={HOY}&hasta={HOY}").json()
+    client.post("/api/caja", json={"fecha": hoy(), "tipo": "egreso", "concepto": "Hielo", "monto": 30.0, "medio_pago": "efectivo"})
+    listado = client.get(f"/api/caja?desde={hoy()}&hasta={hoy()}").json()
     assert len(listado["movimientos"]) == 2
     assert listado["resumen"]["ingresos"] == 100.0 and listado["resumen"]["egresos"] == 30.0
     # Sin fechas, el mes en curso.
@@ -75,7 +73,7 @@ def test_movimientos_de_caja(client):
     assert all(m["usuario_id"] == USUARIO["id"] for m in listado["movimientos"])
     # Anular: la fila queda, sale de los totales.
     assert client.delete(f"/api/caja/{mid}").json() == {"ok": True}
-    listado = client.get(f"/api/caja?desde={HOY}&hasta={HOY}").json()
+    listado = client.get(f"/api/caja?desde={hoy()}&hasta={hoy()}").json()
     assert len(listado["movimientos"]) == 2 and listado["resumen"]["ingresos"] == 0.0
 
 
@@ -96,14 +94,14 @@ def test_anular_marca_la_fila_y_no_resta_dos_veces(client):
     El otro movimiento es el control del total: sin el, "ingresos == 0" pasaria
     igual con un resumen que no suma nada.
     """
-    mid = client.post("/api/caja", json={"fecha": HOY, "tipo": "ingreso", "concepto": "Se anula", "monto": 3000.0, "medio_pago": "efectivo"}).json()["id"]
-    client.post("/api/caja", json={"fecha": HOY, "tipo": "ingreso", "concepto": "Queda", "monto": 1000.0, "medio_pago": "efectivo"})
-    assert client.get(f"/api/caja?desde={HOY}&hasta={HOY}").json()["resumen"]["ingresos"] == 4000.0, "el control del total"
+    mid = client.post("/api/caja", json={"fecha": hoy(), "tipo": "ingreso", "concepto": "Se anula", "monto": 3000.0, "medio_pago": "efectivo"}).json()["id"]
+    client.post("/api/caja", json={"fecha": hoy(), "tipo": "ingreso", "concepto": "Queda", "monto": 1000.0, "medio_pago": "efectivo"})
+    assert client.get(f"/api/caja?desde={hoy()}&hasta={hoy()}").json()["resumen"]["ingresos"] == 4000.0, "el control del total"
 
     client.delete(f"/api/caja/{mid}")
     client.delete(f"/api/caja/{mid}")
 
-    listado = client.get(f"/api/caja?desde={HOY}&hasta={HOY}").json()
+    listado = client.get(f"/api/caja?desde={hoy()}&hasta={hoy()}").json()
     filas = [m for m in listado["movimientos"] if m["id"] == mid]
     assert len(filas) == 1, "el movimiento anulado tiene que seguir en la lista, una sola vez"
     assert filas[0]["anulado"] == 1
@@ -111,9 +109,9 @@ def test_anular_marca_la_fila_y_no_resta_dos_veces(client):
 
 
 @pytest.mark.parametrize("cuerpo", [
-    {"fecha": HOY, "tipo": "ingreso", "concepto": "  ", "monto": 10},
-    {"fecha": HOY, "tipo": "prestamo", "concepto": "X", "monto": 10},
-    {"fecha": HOY, "tipo": "ingreso", "concepto": "X", "monto": 0},
+    {"fecha": hoy(), "tipo": "ingreso", "concepto": "  ", "monto": 10},
+    {"fecha": hoy(), "tipo": "prestamo", "concepto": "X", "monto": 10},
+    {"fecha": hoy(), "tipo": "ingreso", "concepto": "X", "monto": 0},
 ])
 def test_movimiento_invalido_422(client, cuerpo):
     assert client.post("/api/caja", json=cuerpo).status_code == 422

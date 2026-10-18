@@ -107,7 +107,9 @@ def test_un_producto_sin_items_no_recibe_una_clave_items():
 def test_la_fecha_de_la_nota_es_la_de_hoy_y_no_la_del_original():
     nota = nc.armar_nota(_factura(fecha="2026-01-02"), 13, hoy=HOY)
     assert nota["fecha"] == "2026-10-04" and nota["fch_vto_pago"] == "2026-10-04"
-    assert nc.armar_nota(_factura(), 13)["fecha"] == datetime.date.today().isoformat()
+    nota_de_hoy = nc.armar_nota(_factura(), 13)
+    hoy = datetime.date.today()  # después de armarla: si cruzó la medianoche, la nota quedó con la fecha de ayer
+    assert nota_de_hoy["fecha"] in (hoy.isoformat(), (hoy - datetime.timedelta(days=1)).isoformat())
 
 
 def test_la_nota_lleva_el_comprobante_asociado_que_la_ata_a_su_factura():

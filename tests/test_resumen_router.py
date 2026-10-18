@@ -101,10 +101,10 @@ def test_la_instancia_se_identifica():
 
 
 def test_por_defecto_es_el_mes_en_curso():
-    hoy = datetime.date.today()
     periodo = _cliente().get("/api/resumen").json()["periodo"]
-    assert periodo["desde"] == hoy.replace(day=1).isoformat()
-    assert periodo["hasta"] == hoy.isoformat()
+    hoy = datetime.date.today()  # después del pedido: si cruzó la medianoche, el endpoint escribió ayer
+    assert periodo["hasta"] in (hoy.isoformat(), (hoy - datetime.timedelta(days=1)).isoformat())
+    assert periodo["desde"] == datetime.date.fromisoformat(periodo["hasta"]).replace(day=1).isoformat()
 
 
 def test_una_fecha_que_no_es_fecha_da_422():
