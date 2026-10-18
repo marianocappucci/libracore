@@ -72,7 +72,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
-from libracore import cobros, medios_pago
+from libracore import cobros, fechas, medios_pago
 from libracore import notas_de_credito as nc
 from libracore.notas_de_credito import NotaNoPermitida, _dec
 
@@ -370,7 +370,7 @@ def aplicar(plan: Plan, original: dict, nota: dict, usuario_id: int | None, *, c
                  if excedente > 0 else "")
         turno = plan.turno
         reintegrar_devolucion(
-            venta_id=original["id"], numero=nc.etiqueta(original), fecha=datetime.date.today().isoformat(),
+            venta_id=original["id"], numero=nc.etiqueta(original), fecha=fechas.hoy().isoformat(),
             monto=float(monto),
             medio_pago=MEDIO_CUENTA_CORRIENTE if plan.destino == A_FAVOR else plan.medio_pago,
             referencia=referencia, cliente_id=plan.cliente_id,

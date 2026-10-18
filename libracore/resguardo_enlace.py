@@ -51,6 +51,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from libracore.fechas import ZONA_AR
 from libracore.resguardo_estado import ESTADO
 
 DIRECTORIO = ".resguardo"
@@ -69,7 +70,7 @@ _TIMEOUT = 15
 
 # UTC-3 fijo, sin horario de verano: el estandar de la familia para lo que se
 # muestra. El `expiry` del token va en UTC, porque lo lee rclone y no una persona.
-_AR = timezone(timedelta(hours=-3))
+_AR = ZONA_AR  # UTC-3 fijo, el huso único del motor (libracore.fechas, ADR-070)
 
 
 @dataclass(frozen=True)

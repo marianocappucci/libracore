@@ -53,6 +53,8 @@ from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import ClientDisconnect
 
+from libracore.fechas import ZONA_AR
+
 # ── Configuración ─────────────────────────────────────────────────────────────
 
 #: Los entornos que entiende el vigía. Lo que no sea uno de estos es `desconocido`.
@@ -79,7 +81,7 @@ VENTANA_GLOBAL = 3600
 CLAVES_SENSIBLES = ("token", "password", "passwd", "clave", "secret", "cuit", "cert", "key", "dni", "cbu",
                     "authorization", "cookie")
 
-_AR = timezone(timedelta(hours=-3))  # UTC-3 fijo (reglas/producto.md): Argentina no tiene horario de verano
+_AR = ZONA_AR  # UTC-3 fijo, el huso único del motor (libracore.fechas, ADR-070)
 
 _SIN_RUTA = "(sin ruta)"
 _MASCARA = "***"

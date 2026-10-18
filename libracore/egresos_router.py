@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from libracore import fechas
 from libracore.db import caja as db_caja
 from libracore.db import egresos as db_egresos
 from libracore.validacion import sin_booleanos
@@ -36,7 +37,7 @@ _TIPO_LABEL_CAJA = {"factura": "Factura", "ticket": "Ticket", "recibo": "Recibo"
 
 
 def _hoy() -> str:
-    return datetime.date.today().isoformat()
+    return fechas.hoy().isoformat()
 
 
 class ProveedorPayload(BaseModel):
@@ -131,7 +132,7 @@ def build_egresos_router(*, usuario_actual: Callable[..., Any], prefix: str = "/
     @router.get("")
     def listar(desde: str = "", hasta: str = "", categoria: str = "", estado: str = "", proveedor_id: int = 0):
         if not desde and not hasta:
-            hoy = datetime.date.today()
+            hoy = fechas.hoy()
             desde, hasta = hoy.replace(day=1).isoformat(), hoy.isoformat()
         return {
             "items": db_egresos.get_all_egresos(desde=desde, hasta=hasta, categoria=categoria, estado=estado, proveedor_id=proveedor_id),

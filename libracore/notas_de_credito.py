@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
-from libracore import arca_wsfe
+from libracore import arca_wsfe, fechas
 from libracore import tipos_comprobante as tipos
 from libracore.candados import candado_de_base
 
@@ -334,7 +334,7 @@ def armar_nota(
     la nota vaya siempre por `importe` y no copie la factura aunque coincidan: los dos los usa la nota de débito
     (`libracore.notas_de_debito`). Sin ellos, la nota de crédito se arma exactamente como siempre.
     """
-    fecha = (hoy or datetime.date.today()).isoformat()
+    fecha = (hoy or fechas.hoy()).isoformat()
     # `por_importe` (la nota de débito, ADR-049): la nota va SIEMPRE por el importe pedido, aunque coincida con el total
     # de la factura. Una de débito no copia el comprobante: cobra un monto nuevo (intereses, un gasto, una diferencia).
     parcial = importe is not None and (por_importe or _dec(importe) != _dec(original["total"]))

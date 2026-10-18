@@ -68,6 +68,7 @@ from libracore import (
     arca_wsfecred,
     config_manager,
     email_sender,
+    fechas,
     notas_de_credito,
     reintegro_de_nota,
 )
@@ -830,7 +831,7 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
                 db_cc.create_cc_pago(
                     # El importe de ESTA nota (en la total es el de la factura; en una parcial, el acreditado).
                     cliente_id=cliente["id"], monto=nota_db["total"],
-                    fecha=datetime.date.today().isoformat(),
+                    fecha=fechas.hoy().isoformat(),
                     concepto=(
                         f"NC {_numero(orig)} (anula "
                         f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
@@ -1061,7 +1062,7 @@ def build_comprobantes_router(
             raise HTTPException(422, "El CUIT del receptor tiene que tener 11 dígitos.")
         arca = _config_del_emisor(emisor_id)
         resultado = asyncio.run(arca_wsfecred.corresponde_fce(
-            arca, digitos, total, fecha or datetime.date.today()))
+            arca, digitos, total, fecha or fechas.hoy()))
         return resultado | {"fce_habilitada": bool(_tipos_fce_del_emisor(emisor_id))}
 
     @router.get("")

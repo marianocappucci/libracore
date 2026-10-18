@@ -22,6 +22,8 @@ formulario de alta).
 """
 import datetime
 
+from libracore import fechas
+
 _TASA_IVA_DEFAULT = 0.21
 
 
@@ -73,7 +75,7 @@ def armar_borrador(factura, hoy=None, resolver_cliente=None):
     arma el formulario, no un comprobante.
     """
     if hoy is None:
-        hoy = datetime.date.today().isoformat()
+        hoy = fechas.hoy().isoformat()
     if resolver_cliente is None:
         from libracore.db.clients import get_client_by_cuit
 

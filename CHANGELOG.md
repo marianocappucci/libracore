@@ -7,6 +7,20 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Un solo reloj para «hoy» y «ahora»: el de Argentina (propuesta: v1.182.0)
+
+ADR-070. **Sin migración y sin cambio de schema.**
+
+- Antes: el motor tenía **dos relojes**. `datetime.date.today()` (el del proceso: depende de la `TZ` del contenedor) fechaba el cobro, la factura, la nota, el recibo, el egreso, el movimiento de stock, los reportes y los libros IVA; `_ar_now()` (UTC-3) fechaba el turno y el cierre. Con el contenedor en UTC, entre las 21:00 y la medianoche de Argentina daban días distintos: un cobro con fecha de mañana dentro de un turno de hoy, un cierre que no veía el cobro.
+- Ahora: `libracore.fechas.hoy()` (un `date`) y `libracore.fechas.ahora()` (un `datetime` con zona UTC-3) son la fuente única, y `_ar_now()` sale de ellas. Los 25 `date.today()` de producción (20 archivos) pasaron a `fechas.hoy()`. Lo único que lee el reloj del sistema es `fechas._ahora_utc()`: pisarla fija el instante en un test.
+- El huso es **un desfase fijo de -3 h** (`fechas.ZONA_AR`), no `zoneinfo`: Argentina no tiene horario de verano y así el motor no depende de que la imagen traiga la base de zonas (la razón que ya documenta libracommerce). `errores`, `resguardo_enlace`, `arca_pedidos` y `arca_wscpe` dejan de definir su propio `timezone(timedelta(hours=-3))` y usan `ZONA_AR`.
+- Se quedan con el reloj del proceso, a propósito, las marcas técnicas: nombre de los respaldos y de los volcados (`respaldo`, `admin/services`, `provisioning/panel_admin`), `mtime` de archivos, etiqueta de versión y `built-at` de la imagen, `desplegado_at` del panel, y la antigüedad de la copia externa (`resguardo_estado`, `provisioning/resguardo_externo`). La lista está en `tests/test_un_solo_reloj.py::MARCAS_TECNICAS`.
+- Test nuevo `tests/test_un_solo_reloj.py`: con `TZ=UTC` y las 23:30 de Argentina (02:30 UTC del día siguiente), el cobro, el turno y el cierre caen el mismo día; y una guardia recorre `libracore/` y `tests/` buscando `date.today()` / `datetime.now()` sin zona. `tests/fechas.py` (libracore#412) ahora delega en `libracore.fechas.hoy()`.
+
+### Para los productos
+- **Subir el pin cambia el «hoy» de los endpoints del motor** en un contenedor sin `TZ` de Argentina: pasa a ser el de Argentina (antes, el de UTC). En las instancias que ya corren con `TZ=America/Argentina/Buenos_Aires` no cambia nada.
+- Un producto con su propio `date.today()` / `datetime.now()` de negocio sigue con el reloj del proceso: pasarlo a `libracore.fechas.hoy()` / `ahora()` (LibraClub tiene `app.tiempo.hoy()`, el panel su `fechas.py`, libracommerce `hoy_argentina`: se pueden borrar en favor del motor).
+
 ## [Unreleased] — `HEAD` contesta como `GET` en la SPA y en la salud del backoffice (propuesta: v1.181.0)
 
 ADR-069. **Sin migración y sin cambio de schema.**

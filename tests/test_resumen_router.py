@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+from libracore import fechas
 from libracore.db import core
 from libracore.resumen_router import build_resumen_router
 
@@ -102,7 +103,7 @@ def test_la_instancia_se_identifica():
 
 def test_por_defecto_es_el_mes_en_curso():
     periodo = _cliente().get("/api/resumen").json()["periodo"]
-    hoy = datetime.date.today()  # después del pedido: si cruzó la medianoche, el endpoint escribió ayer
+    hoy = fechas.hoy()  # después del pedido: si cruzó la medianoche, el endpoint escribió ayer
     assert periodo["hasta"] in (hoy.isoformat(), (hoy - datetime.timedelta(days=1)).isoformat())
     assert periodo["desde"] == datetime.date.fromisoformat(periodo["hasta"]).replace(day=1).isoformat()
 

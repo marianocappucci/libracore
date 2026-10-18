@@ -46,10 +46,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 
 from libracore import arca_certificados
+from libracore.fechas import ZONA_AR
 
 logger = logging.getLogger(__name__)
 
-_AR = timezone(timedelta(hours=-3))  # America/Argentina/Buenos_Aires, sin horario de verano
+_AR = ZONA_AR  # UTC-3 fijo, el huso único del motor (libracore.fechas, ADR-070)
 
 
 @dataclass(frozen=True)

@@ -43,6 +43,7 @@ de VentaLibra, por ejemplo, no viven en la base de LibraCore.
 """
 import datetime
 
+from libracore import fechas
 from libracore.db import recibos as db_recibos
 from libracore.db.recibos import ORIGEN_CC_PAGO, ORIGEN_FACTURA, ORIGEN_VENTA
 
@@ -62,7 +63,7 @@ MENSAJE_SIN_COBROS = (
 
 
 def _hoy() -> str:
-    return datetime.date.today().isoformat()
+    return fechas.hoy().isoformat()
 
 
 def _movimientos_ya_cubiertos(recibos_previos) -> set:

@@ -35,7 +35,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 
-from libracore import medios_pago, ticket_generator
+from libracore import fechas, medios_pago, ticket_generator
 from libracore.cobros import CobroNoPermitido, es_medio_cuenta_corriente, transaccion_de_cobro
 from libracore.db import caja as db_caja
 from libracore.db import cierre_diario as db_cierre_diario
@@ -61,7 +61,7 @@ class MovimientoPayload(BaseModel):
 
 
 def _periodo_actual():
-    hoy = datetime.date.today()
+    hoy = fechas.hoy()
     return hoy.replace(day=1).isoformat(), hoy.isoformat()
 
 

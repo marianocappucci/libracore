@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 
+from libracore import fechas
 from libracore import tipos_comprobante as tipos
 
 # ── Constantes ARCA/REGINFO ───────────────────────────────────────────────────
@@ -32,7 +33,7 @@ _TIPO_EGRESO_AFIP = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _default_periodo():
-    hoy = datetime.date.today()
+    hoy = fechas.hoy()
     return hoy.replace(day=1).isoformat(), hoy.isoformat()
 
 

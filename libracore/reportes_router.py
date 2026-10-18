@@ -23,6 +23,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from libracore import fechas
 from libracore.db import caja as db_caja
 from libracore.db import reportes as db_reportes
 from libracore.reportes import (
@@ -37,9 +38,9 @@ from libracore.reportes import (
 
 def _fechas_default(desde: str, hasta: str):
     if not desde:
-        desde = datetime.date.today().replace(day=1).isoformat()
+        desde = fechas.hoy().replace(day=1).isoformat()
     if not hasta:
-        hasta = datetime.date.today().isoformat()
+        hasta = fechas.hoy().isoformat()
     return desde, hasta
 
 
