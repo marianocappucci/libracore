@@ -69,7 +69,9 @@ def create_admin_app(product_name: str, auth, services, templates, clientes_rout
         auth.clear_session_cookie(resp)
         return resp
 
-    @app.get("/health", include_in_schema=False)
+    # `GET` y `HEAD`: un monitor de uptime sondea con HEAD, y FastAPI no lo deriva
+    # del GET (daba 405 y el panel figuraba caído estando sano; ADR-069).
+    @app.api_route("/health", methods=["GET", "HEAD"], include_in_schema=False)
     def health():
         return {"ok": True}
 
