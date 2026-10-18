@@ -20,6 +20,11 @@ alias por CUIT. Acá los dos botones de *Facturar* pasan el CUIT del pagador.
 > transferencias reales incluidas. Decisión explícita del humano: entra todo, y
 > lo que resulte ser plata propia se descarta a mano.
 
+La excepción, que no reabre ese riesgo (ADR-072): un cobro cuyo **CUIT de
+pagador es el de un emisor de la instancia** nace `ignorado`
+(`db_mp.estado_al_nacer`). Un tercero no puede traer ese CUIT; el cobro igual
+queda registrado y aparece en el historial con `motivo_ignorado="cuit_propio"`.
+
 Lo que sí se filtra es distinto y no tiene ese riesgo: los cobros de **otro
 collector** (o sea, de otra cuenta) y los que ya están registrados.
 """
@@ -93,6 +98,25 @@ class PagoDeDemo(BaseModel):
     _no_son_booleanos = sin_booleanos("monto")
 
 
+def _con_motivo(items: list, propios: set[str]) -> list:
+    """Le cuelga a cada ignorado **por qué** lo está, si se puede saber.
+
+    No hay columna de motivo (y no se agrega una por esto): se deriva. Un
+    ignorado cuyo pagador es el CUIT de un emisor lleva `"cuit_propio"`
+    (ADR-072); el resto, `None` (lo ignoró una persona). Si alguien ignoró a mano
+    un cobro propio antes de la regla, también se lee `"cuit_propio"`, que es el
+    motivo verdadero.
+    """
+    for p in items:
+        p["motivo_ignorado"] = (
+            db_mp.MOTIVO_CUIT_PROPIO
+            if p.get("estado_factura") == "ignorado"
+            and db_mp.es_cuit_propio(p.get("payer_id_number"), propios)
+            else None
+        )
+    return items
+
+
 def _con_cliente(items: list, registro: RegistroDeClientes) -> list:
     """Le cuelga a cada fila el cliente que le correspondería, si lo hay.
 
@@ -162,11 +186,14 @@ def build_mp_bandeja_router(
     @router.get("")
     def bandeja():
         cfg = config_manager.load()
+        propios = db_mp.cuits_propios()
         return {
             "pendientes": _con_cliente(db_mp.get_mp_pagos_by_estado("pendiente"), registro_de_clientes),
-            "historial": _con_cliente(db_mp.get_mp_pagos_historial(limit=30), registro_de_clientes),
+            "historial": _con_motivo(
+                _con_cliente(db_mp.get_mp_pagos_historial(limit=30), registro_de_clientes), propios),
             "transferencias": _con_cliente(db_mp.get_mp_movimientos_by_estado("pendiente"), registro_de_clientes),
-            "transferencias_hist": _con_cliente(db_mp.get_mp_movimientos_historial(limit=30), registro_de_clientes),
+            "transferencias_hist": _con_motivo(
+                _con_cliente(db_mp.get_mp_movimientos_historial(limit=30), registro_de_clientes), propios),
             "mp_concepto_default": cfg.get("mp_concepto_descripcion", "") or "",
         }
 

@@ -365,6 +365,14 @@ def test_backup_cliente_cae_en_el_directorio_del_motor_no_en_la_constante_del_pr
     assert services._clientes_dir() == provisioning.get_config().clientes_dir
 
 
+
+def test_clientes_dir_es_publica_y_el_nombre_viejo_sigue(fake_scripts):
+    """El backoffice la pide por su nombre público; `_clientes_dir` queda como alias."""
+    assert services.clientes_dir() == fake_scripts["clientes_dir"]
+    assert services.clientes_dir() == provisioning.get_config().clientes_dir
+    assert services._clientes_dir is services.clientes_dir
+
+
 def test_eliminar_cliente_borra_directorio(fake_scripts):
     c = fake_scripts["mkclient"]("Cliente Ocho", "cliente-ocho")
     from pathlib import Path

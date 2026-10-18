@@ -75,7 +75,7 @@ def _plans():
     return plans
 
 
-def _clientes_dir() -> Path:
+def clientes_dir() -> Path:
     """Directorio de instancias: **el mismo** que usan `panel_admin` y el alta.
 
     Sale de `provisioning.get_config().clientes_dir` y de ningún otro lado. Antes
@@ -92,6 +92,11 @@ def _clientes_dir() -> Path:
     _pa()
     from ..provisioning import get_config
     return get_config().clientes_dir
+
+
+#: Alias del nombre viejo, privado: queda por compatibilidad con quien ya lo
+#: importaba (el backoffice, en `inventario.py`). Lo nuevo usa `clientes_dir()`.
+_clientes_dir = clientes_dir
 
 
 class ServiceError(Exception):
@@ -201,7 +206,7 @@ def token_de_servicio(slug: str) -> str | None:
 
     if not slug or slug in (".", "..") or Path(slug).name != slug:
         return None
-    dir_instancia = _clientes_dir() / slug
+    dir_instancia = clientes_dir() / slug
     if not dir_instancia.is_dir():
         return None
     try:
@@ -597,7 +602,7 @@ def backup_cliente(slug: str) -> str:
         raise ServiceError("El cliente no tiene datos para respaldar.")
     import tarfile
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_file = _clientes_dir() / f"{slug}_backup_{ts}.tar.gz"
+    out_file = clientes_dir() / f"{slug}_backup_{ts}.tar.gz"
     with tarfile.open(out_file, "w:gz") as tar:
         tar.add(data_dir, arcname=f"{slug}/data")
     return str(out_file)

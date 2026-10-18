@@ -239,6 +239,11 @@ def build_mp_webhook_router(
         if estado != "approved":
             return JSONResponse({"ok": True, "msg": f"status={estado}"}, status_code=200)
 
+        if db_mp.es_cuit_propio(datos["payer_id_number"]):
+            # Nació `ignorado` (ADR-072): el pagador es el propio titular.
+            logger.info("Pago %s del propio titular: ignorado", payment_id)
+            return JSONResponse({"ok": True, "msg": "cuit_propio"}, status_code=200)
+
         logger.info("Pago de MercadoPago aprobado %s por %.2f", payment_id, monto)
 
         # 🔑 El cliente sale de `resolver_cliente_pago` —alias primero— y no de
