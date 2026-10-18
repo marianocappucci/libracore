@@ -5,8 +5,83 @@ payer CUIT/email → cliente) y movimientos bancarios entrantes
 real, Tier 2 — el sistema de alias de facturación era solo de Contalibra
 y pasa a core, confirmado con el usuario — ver wiki/entities/libracore.md).
 """
+from libracore.cuit import solo_digitos
 from libracore.db.clients import get_client, get_client_by_cuit, get_client_by_email
 from libracore.db.core import get_connection
+
+# ── Los cobros que vienen del propio titular (ADR-072) ──────────────────────
+#
+# Una transferencia, un DEBIN o un pago que trae como CUIT del pagador **el de
+# quien factura** es plata del titular moviéndose entre sus cuentas, no una
+# venta. Nacen `ignorado` en vez de `pendiente`: siguen registrados (están en el
+# historial de la bandeja, con su motivo derivado), pero no esperan a nadie ni
+# se auto-facturan. Un cobro de un tercero nunca trae ese CUIT, así que no es el
+# filtro por `operation_type`/email propio que escondió transferencias reales
+# en 2026-07 (ver el docstring de `mp_bandeja_router`).
+
+#: El motivo que la bandeja le cuelga a un ignorado por esta regla.
+MOTIVO_CUIT_PROPIO = "cuit_propio"
+
+
+def cuits_propios() -> set[str]:
+    """Los CUIT (sólo dígitos) de quien factura en esta instancia.
+
+    Son **todos los emisores**: el `empresa_cuit` de la config y el `cuit` de
+    cada `arca_config` activa (un producto con varias razones sociales, como
+    LibraCargo, tiene más de uno). Sin ninguno cargado, el conjunto es vacío y la
+    regla no hace nada.
+    """
+    from libracore import config_manager
+    from libracore.db import arca_config
+
+    propios = {solo_digitos(config_manager.load().get("empresa_cuit"))}
+    propios.update(solo_digitos(c.get("cuit")) for c in arca_config.obtener_todas_arca_configs())
+    propios.discard("")
+    return propios
+
+
+def es_cuit_propio(numero, propios: set[str] | None = None) -> bool:
+    """¿El documento del pagador es el CUIT de un emisor de la instancia?"""
+    digitos = solo_digitos(numero)
+    if not digitos:
+        return False
+    return digitos in (cuits_propios() if propios is None else propios)
+
+
+def estado_al_nacer(estado_factura, payer_id_number, propios: set[str] | None = None):
+    """El estado con el que se guarda un cobro nuevo: `pendiente` pasa a
+    `ignorado` si el pagador es el propio titular. Cualquier otro estado
+    (`facturado`, `None` de un pago no aprobado) queda como vino."""
+    if estado_factura == "pendiente" and es_cuit_propio(payer_id_number, propios):
+        return "ignorado"
+    return estado_factura
+
+
+def ignorar_pendientes_de_cuit_propio() -> dict:
+    """Aplica la regla a los pendientes que ya están en la bandeja.
+
+    Idempotente: sólo toca filas `pendiente` cuyo CUIT de pagador es el de un
+    emisor, y las pasa a `ignorado`. **No se corre sola**: los cobros que ya
+    existían se revisan a mano por instancia. Devuelve cuántos pasó de cada tabla.
+    """
+    propios = cuits_propios()
+    resultado = {"pagos": 0, "movimientos": 0}
+    if not propios:
+        return resultado
+    with get_connection() as conn:
+        for tabla, clave in (("mp_pagos", "pagos"), ("mp_movimientos", "movimientos")):
+            filas = conn.execute(
+                f"SELECT id, payer_id_number FROM {tabla} WHERE estado_factura='pendiente'"
+            ).fetchall()
+            for fila in filas:
+                if es_cuit_propio(fila["payer_id_number"], propios):
+                    conn.execute(
+                        f"UPDATE {tabla} SET estado_factura='ignorado' "
+                        "WHERE id=? AND estado_factura='pendiente'",
+                        (fila["id"],),
+                    )
+                    resultado[clave] += 1
+    return resultado
 
 
 def get_mp_pago(mp_payment_id: str):
@@ -22,6 +97,7 @@ def create_mp_pago(mp_payment_id: str, status: str, monto: float,
                    estado_factura: str = None, payment_type: str = None,
                    payment_method: str = None, descripcion_mp: str = None,
                    payer_id_type: str = None, payer_id_number: str = None):
+    estado_factura = estado_al_nacer(estado_factura, payer_id_number)
     with get_connection() as conn:
         cur = conn.execute(
             """INSERT INTO mp_pagos
@@ -172,6 +248,7 @@ def create_mp_movimiento(mp_movement_id: str, tipo: str, monto: float, fecha: st
                          payer_email: str = "", payer_name: str = "",
                          payer_id_type: str = "", payer_id_number: str = "",
                          estado_factura: str = "pendiente"):
+    estado_factura = estado_al_nacer(estado_factura, payer_id_number)
     with get_connection() as conn:
         cur = conn.execute(
             """INSERT INTO mp_movimientos

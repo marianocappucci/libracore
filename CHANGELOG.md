@@ -7,6 +7,22 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — MercadoPago: los cobros del propio titular nacen ignorados (propuesta: v1.184.0)
+
+ADR-072. **Sin migración y sin cambio de schema.**
+
+- Antes: una transferencia, un DEBIN o un pago entre cuentas del propio titular entraba a la bandeja como `pendiente` y alguien lo tenía que ignorar a mano (en Compulibra, 91 de 141 pendientes).
+- Ahora: si el CUIT del pagador (sólo dígitos) es el de **un emisor de la instancia** —el `empresa_cuit` de la config o el `cuit` de cualquier `arca_config` activa—, el cobro nace `ignorado`. Lo aplican `db_mp.create_mp_movimiento` y `db_mp.create_mp_pago` (vía `estado_al_nacer`), así que cubre el cron, la sincronización de la bandeja, el webhook y cualquier alta de un producto. Sólo cambia `pendiente`: `facturado` y el `None` de un pago no aprobado quedan como vienen. Sin CUIT de emisor cargado, nada cambia.
+- `mp_sync.ingerir` no devuelve esos cobros entre los `nuevos` (no se auto-facturan aunque exista un cliente con ese CUIT y la bandera prendida) y el webhook corta antes de resolver cliente.
+- La bandeja agrega `motivo_ignorado` a cada fila del historial (`"cuit_propio"` o `None`), **derivado** del CUIT, sin columna nueva.
+- `db_mp.cuits_propios()`, `es_cuit_propio()`, `estado_al_nacer()` y `MOTIVO_CUIT_PROPIO` (nuevos). `db_mp.ignorar_pendientes_de_cuit_propio()` aplica la regla a los pendientes que ya existen; es idempotente y **no se corre sola**.
+- `libracore.admin.services.clientes_dir()` (pública): el directorio de instancias. `_clientes_dir` queda como alias.
+
+### Para los productos
+- Subir el pin alcanza para los cobros nuevos. Los que ya están pendientes no se tocan; para limpiarlos en una instancia, `python -c "from libracore.db import mp; print(mp.ignorar_pendientes_de_cuit_propio())"` con la base de esa instancia configurada.
+- La pantalla de la bandeja (libra-ui) puede mostrar `motivo_ignorado` en el historial; sin cambio, el ignorado se ve como cualquier otro.
+- El backoffice (`inventario.py`) puede pasar de `services._clientes_dir()` a `services.clientes_dir()`.
+
 ## [Unreleased] — Credenciales de máquina por instancia: servicio e integración (propuesta: v1.183.0)
 
 ADR-071. **Sin migración y sin cambio de schema.** Segundo PR de la serie de libraauth v0.52.0 (su ADR-025).

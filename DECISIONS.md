@@ -1590,3 +1590,26 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 **Consecuencias.** MINOR (propuesta **v1.183.0**), sin migración ni cambio de schema. Las instancias nuevas nacen con credenciales propias; las existentes siguen con la del producto hasta que se roten (el estado del comando lo avisa). **Orden de despliegue:** primero el backoffice que pide `token_de_servicio(slug)`, después las rotaciones; si se rota antes, el backoffice recibe 401 de esa instancia. Entre la escritura y el `up -d` de una rotación de servicio hay unos segundos en que el backoffice ya manda la nueva y la instancia todavía no la conoce. El motor no pinea libraauth; cada producto sube su pin a v0.52.0.
 
 **Tests.** `tests/provisioning/test_tokens_instancia.py` (lectura literal, entre comillas, en mapa y por `.env`; escritura que respeta la ubicación, respaldo y modo 600; los tres comandos con directorios de `tmp_path` y Docker simulado; que ninguna salida tenga un valor), `tests/admin/test_services.py` (`token_de_servicio`) y `tests/provisioning/test_nuevo_cliente.py` (las dos credenciales nacen propias, distintas entre instancias y entre sí, y no salen por el resultado ni el log).
+
+## ADR-072 — Los cobros de MercadoPago con el CUIT de un emisor nacen ignorados
+
+**Estado:** propuesta (2026-10-18), pedido del humano.
+
+**Contexto.** La bandeja de MercadoPago recibe todo lo que entra a la cuenta, y una parte es plata del propio titular: transferencias entre sus cuentas, DEBIN, fondeos. Llegan con el CUIT de quien factura como CUIT del pagador y entraban `pendiente`; alguien las ignoraba a mano (en Compulibra, 91 de 141). En 2026-07 Contalibra tuvo un filtro por `operation_type`/email propio que escondió una transferencia real de un cliente, y la decisión fue «entra todo» (docstring de `mp_bandeja_router`). El CUIT del emisor no tiene ese riesgo: un tercero no paga con el CUIT del titular.
+
+**Decisión.**
+- Un cobro nuevo (pago o movimiento) cuyo CUIT de pagador, en sólo dígitos (`libracore.cuit.solo_digitos`), es el de un emisor de la instancia **nace `ignorado` en vez de `pendiente`**. Los emisores son el `empresa_cuit` de la config y el `cuit` de cada `arca_config` activa: una instancia con varias razones sociales las cuenta a todas (`db_mp.cuits_propios()`).
+- La regla vive en el alta (`create_mp_movimiento`, `create_mp_pago`, por `estado_al_nacer`) y no en cada camino: cron, sincronización manual, webhook y altas de los productos la heredan. Sólo transforma `pendiente`.
+- El cobro **se registra igual**: está en el historial, no se pierde el rastro. El cron no lo cuenta entre los nuevos y el webhook corta antes de auto-facturar.
+- El motivo se **deriva** en la bandeja (`motivo_ignorado = "cuit_propio"` si el ignorado tiene CUIT propio), sin columna nueva.
+- Los pendientes existentes no se tocan; `db_mp.ignorar_pendientes_de_cuit_propio()` aplica la regla a demanda, idempotente.
+
+**Alternativas descartadas.**
+- **Volver a filtrar por `operation_type` o email propio:** es lo que escondió una transferencia real en 2026-07.
+- **No registrar el cobro:** se pierde el rastro de que entró plata, y si un CUIT de emisor quedó mal cargado no habría cómo verlo.
+- **Una columna `motivo_ignorado`:** pide migración en todas las instancias por una información que se puede derivar; un ignorado a mano de un cobro propio también se lee `cuit_propio`, que es el motivo real.
+- **Correr la limpieza sola al subir el pin:** los existentes ya se revisaron a mano donde importaba; cambiar estados viejos sin que nadie mire no es del motor.
+
+**Consecuencias.** MINOR (propuesta **v1.184.0**), sin migración. Si una instancia carga como `empresa_cuit` un CUIT que no es el suyo, sus cobros con ese CUIT dejan de esperar en la bandeja (se ven en el historial con su motivo). Un ignorado no se puede facturar desde la bandeja (el botón exige `pendiente`), igual que hoy un ignorado a mano.
+
+**Tests.** `tests/test_mp_cuit_propio.py`: CUIT de la empresa y de un segundo emisor, normalización, sin CUIT de emisor ni de pagador, pagos y estados no pendientes, la limpieza idempotente, cron y webhook que no auto-facturan al titular aunque tenga la bandera, y el motivo en la bandeja. `tests/admin/test_services.py`: `clientes_dir()` pública con su alias.

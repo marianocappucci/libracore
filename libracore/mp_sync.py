@@ -107,6 +107,7 @@ async def ingerir(
         raise MercadoPagoNoContesta(str(e)) from None
 
     nuevos: list[MovimientoNuevo] = []
+    propios = db_mp.cuits_propios()
     for pago in movimientos:
         payment_id = str(pago.get("id", "") or "").strip()
         if not payment_id:
@@ -148,6 +149,11 @@ async def ingerir(
             payer_id_type=(ident.get("type") or "").strip(),
             payer_id_number=id_number, estado_factura="pendiente",
         )
+        if db_mp.es_cuit_propio(id_number, propios):
+            # Nació `ignorado` (ADR-072): es plata del propio titular, no una
+            # venta. Queda registrado pero no espera a nadie ni se auto-factura.
+            logger.info("Cobro del propio titular, ignorado: %s | $%.2f", payment_id, monto)
+            continue
         logger.info("Nuevo cobro: %s | $%.2f | %s", payment_id, monto, nombre or "sin nombre")
         nuevos.append(MovimientoNuevo(
             mov_id=mov_id, payment_id=payment_id, monto=monto,
