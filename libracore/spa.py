@@ -117,7 +117,13 @@ def montar_spa(app, dist, *, prefijos_api=PREFIJOS_API) -> None:
         "/assets", AssetsInmutables(directory=raiz / "assets"), name="frontend-assets"
     )
 
-    @app.get("/{full_path:path}", include_in_schema=False)
+    # 🔴 `GET` **y `HEAD`**. Con `@app.get` a secas, `HEAD /` daba 405 (`Allow:
+    # GET`): FastAPI no deriva el HEAD del GET como hace Starlette con sus
+    # rutas. Y HEAD es lo que usan los monitores de uptime (uptime-kuma) y
+    # algunos navegadores y proxies para ver si el sitio está vivo: una instancia
+    # sana figuraba caída. Starlette descarta el cuerpo de la respuesta a un
+    # HEAD, así que es el mismo handler (ADR-069).
+    @app.api_route("/{full_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     async def spa_fallback(full_path: str):
         if es_de_la_api(full_path, prefijos_api):
             # La misma forma que el 404 de FastAPI, para que el cliente lo lea igual.

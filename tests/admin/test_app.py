@@ -135,6 +135,13 @@ def test_health_no_requiere_auth(client):
     assert r.json() == {"ok": True}
 
 
+def test_health_contesta_head(client):
+    """Un monitor de uptime sondea con HEAD; FastAPI no lo deriva del GET (ADR-069)."""
+    r = client.head("/health")
+    assert r.status_code == 200, f"HEAD /health dio {r.status_code}"
+    assert r.content == b""
+
+
 def test_listar_clientes_sin_sesion_redirige_a_login(client):
     r = client.get("/", follow_redirects=False)
     assert r.status_code in (302, 303, 307)

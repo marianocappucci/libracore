@@ -1528,3 +1528,19 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 **Consecuencias.** MINOR (propuesta **v1.180.0**), sin migración. API: `create_remito(..., conn=None)`. LibraDesk borra su copia al subir el pin.
 
 **Tests.** `tests/test_create_remito_con_conexion.py` (SQLite y PostgreSQL: sin `conn`, con `conn` y commit del llamador, con `conn` y rollback, la conexión sigue abierta, la fila con y sin `conn` es la misma; y con una sesión de SQLAlchemy sobre PostgreSQL: remito y vínculo juntos, y la caída antes del commit no deja ninguno).
+
+## ADR-069 — La SPA (y la salud del backoffice) contestan `HEAD` como `GET`
+
+**Estado:** propuesta (2026-10-18; ítem 12b de la cola autónoma del 2026-10-17). Completa el ADR-020.
+
+**Contexto.** En toda la familia `HEAD /`, `HEAD` a cualquier ruta de la SPA y `HEAD /health` daban **405** (`Allow: GET`). FastAPI **no** deriva el `HEAD` del `GET` (Starlette sí, en sus rutas planas; `APIRoute` no), y el catch-all de la SPA estaba declarado con `@app.get`. Los monitores de uptime (uptime-kuma) y algunos navegadores y proxies sondean con `HEAD`: una instancia sana figuraba caída. Lo midió y lo arregló LibraClub (libraclub#411) con `api_route(..., methods=["GET", "HEAD"])`.
+
+**Decisión.** El arreglo de fondo va en el motor, en `libracore.spa.montar_spa`: el catch-all pasa a `api_route("/{full_path:path}", methods=["GET", "HEAD"])`. Es el mismo handler: Starlette descarta el cuerpo de la respuesta a un `HEAD`, así que `HEAD` devuelve las mismas cabeceras (`Content-Type`, `Cache-Control`) que `GET` y nada de cuerpo. La guarda de la API (ADR-020) se aplica igual: `HEAD /api/lo-que-sea` da 404, no el `index.html`. `/assets` ya contestaba `HEAD` (`StaticFiles`). También `/health` del backoffice compartido (`libracore.admin.app`).
+
+**Alternativas descartadas.**
+- **Un middleware que convierta `HEAD` en `GET`**: cambia el método de toda la app, también de las rutas que sí quieren distinguirlos, para arreglar tres rutas.
+- **Parchear cada producto**: el defecto vive en un único lugar del motor, y los productos que ya llaman `montar_spa` (VentaLibra, por su re-export) lo reciben subiendo el pin.
+
+**Consecuencias.** MINOR (v1.181.0). Sin migración y sin cambio de schema. Quedan fuera, por ser de cada producto: la ruta `/health` o `/salud` de cada uno (`@router.get`/`@app.get` a secas, mismo defecto) y los catch-all propios que no usan `montar_spa`. Un endpoint de la API declarado sólo con `GET` sigue sin contestar `HEAD`: ahora cae al catch-all y da 404 (antes 405); quien lo necesite lo declara con `api_route`.
+
+**Tests.** `tests/test_spa_head.py` (10 casos de `montar_spa`: `HEAD` en `/`, rutas de la SPA, el manifest, un asset con hash, `/api` inexistente, y que `POST` siga dando 405) y `tests/admin/test_app.py::test_health_contesta_head`.

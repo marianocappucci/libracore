@@ -7,6 +7,16 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — `HEAD` contesta como `GET` en la SPA y en la salud del backoffice (propuesta: v1.181.0)
+
+ADR-069. **Sin migración y sin cambio de schema.**
+
+- Antes: `HEAD /`, `HEAD` a cualquier ruta de la SPA y `HEAD /health` daban **405** (FastAPI no deriva el `HEAD` del `GET`): los monitores de uptime (uptime-kuma) y algunos navegadores y proxies veían la instancia caída estando sana. Ahora `libracore.spa.montar_spa` declara el catch-all con `methods=["GET", "HEAD"]` y `libracore.admin.app` hace lo mismo con `/health`: `HEAD` devuelve el mismo estado y las mismas cabeceras que `GET`, sin cuerpo. `HEAD /api/lo-que-sea` sigue dando 404 (ADR-020).
+- Un endpoint de la API declarado sólo con `GET` sigue sin contestar `HEAD`: ahora cae al catch-all y da 404 (antes 405).
+
+### Para los productos
+- Un producto que llama `montar_spa` (hoy VentaLibra, por el re-export de su `app/spa.py`) lo recibe subiendo el pin. **No cambia lo propio de cada producto**: su ruta `/health` o `/salud` (`@router.get` / `@app.get` a secas) y los catch-all que armaron a mano en `app/asgi.py` o en su `app.py` siguen dando 405 a `HEAD` hasta pasarlos a `api_route(..., methods=["GET", "HEAD"])`.
+
 ## [Unreleased] — `create_remito(conn=...)`: el remito entra en la transacción de quien lo pide (propuesta: v1.180.0)
 
 ADR-068. **Sin migración y sin cambio de schema.** Sin `conn` no cambia nada.
