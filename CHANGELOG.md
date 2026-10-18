@@ -7,7 +7,17 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
-## [Unreleased] — MercadoPago: los cobros del propio titular nacen ignorados (propuesta: v1.184.0)
+## [Unreleased] — Tokens por instancia: `${VAR:?mensaje}` se lee del `.env` (propuesta: v1.184.1)
+
+Corrige ADR-071. **Sin migración.** `tokens_instancia` sólo reconocía `${VAR}`, `${VAR-x}` y
+`${VAR:-x}`: las instancias de LibraDesk, LibraCargo y LibraClub declaran
+`LIBRA_SERVICE_TOKEN=${LIBRA_SERVICE_TOKEN:?falta en el .env}`, y `leer()` devolvía el texto literal
+(mensaje incluido) como si fuera el token. `token-servicio --rotar` se frenaba solo («el valor para
+`LIBRA_SERVICE_TOKEN_ANTERIOR` tiene caracteres que no se escriben») y el backoffice entraba por el
+respaldo del token global. Ahora `${VAR:?…}` y `${VAR?…}` son referencias al `.env` (lectura, `donde()`
+y escritura), y el texto después del `?` nunca es un valor. Pasó en las demos el 2026-10-18.
+
+## [1.184.0] — MercadoPago: los cobros del propio titular nacen ignorados
 
 ADR-072. **Sin migración y sin cambio de schema.**
 
