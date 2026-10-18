@@ -754,3 +754,50 @@ def test_abono_por_lineas_resuelve_un_plan_retirado_y_marca_los_incompatibles(co
 def test_abono_por_lineas_con_una_clave_que_no_se_vende_es_value_error(con_adicionales):
     with pytest.raises(ValueError, match="desconocido"):
         services.abono_por_lineas("pro", {"cohetes": True})
+
+
+# ── token de servicio de cada instancia (ADR-071) ──────────────────────────────
+
+TOKEN_FICTICIO = "f" * 64
+
+
+def _con_compose(cdir, env_lineas, dotenv=None):
+    (cdir / "docker-compose.yml").write_text(
+        "services:\n  app:\n    image: testprod:v1\n    environment:\n" + env_lineas
+        + "  app-postgres:\n    image: postgres:16\n    environment:\n      - POSTGRES_DB=x\n",
+        encoding="utf-8")
+    if dotenv is not None:
+        (cdir / ".env").write_text(dotenv, encoding="utf-8")
+
+
+def test_token_de_servicio_literal_en_el_compose(fake_scripts):
+    c = fake_scripts["mkclient"]("Uno", "uno")
+    _con_compose(c["dir"], f"      - LIBRA_SERVICE_TOKEN={TOKEN_FICTICIO}\n")
+    assert services.token_de_servicio("uno") == TOKEN_FICTICIO
+
+
+def test_token_de_servicio_por_referencia_al_env(fake_scripts):
+    c = fake_scripts["mkclient"]("Uno", "uno")
+    _con_compose(c["dir"], "      - LIBRA_SERVICE_TOKEN=${LIBRA_SERVICE_TOKEN}\n",
+                 dotenv=f'LIBRA_SERVICE_TOKEN="{TOKEN_FICTICIO}"\n')
+    assert services.token_de_servicio("uno") == TOKEN_FICTICIO
+
+
+def test_token_de_servicio_ausente_o_instancia_inexistente(fake_scripts):
+    c = fake_scripts["mkclient"]("Uno", "uno")
+    _con_compose(c["dir"], "      - ADMIN_USER=admin\n")
+    fake_scripts["mkclient"]("Dos", "dos")  # sin compose
+    assert services.token_de_servicio("uno") is None
+    assert services.token_de_servicio("dos") is None
+    assert services.token_de_servicio("no-existe") is None
+    assert services.token_de_servicio("../uno") is None
+    assert services.token_de_servicio("") is None
+
+
+def test_token_de_servicio_no_se_loguea(fake_scripts, caplog):
+    c = fake_scripts["mkclient"]("Uno", "uno")
+    _con_compose(c["dir"], f"      - LIBRA_SERVICE_TOKEN={TOKEN_FICTICIO}\n")
+    with caplog.at_level("DEBUG"):
+        services.token_de_servicio("uno")
+        services.token_de_servicio("dos")
+    assert TOKEN_FICTICIO not in caplog.text

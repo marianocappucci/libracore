@@ -1179,13 +1179,58 @@ def test_el_compose_trae_las_credenciales_con_el_nombre_que_la_app_lee(cfg):
     assert "ADMIN_PASSWORD=secreto123" in texto
 
 
-def test_el_token_de_servicio_sale_del_entorno(cfg, monkeypatch):
+def _tok(texto: str, var: str) -> str:
+    m = re.search(rf"- {var}=(\S+)$", texto, re.M)
+    assert m, f"el compose no tiene {var}"
+    return m.group(1)
+
+
+@pytest.mark.parametrize("var", ["LIBRA_SERVICE_TOKEN", "LIBRA_INTEGRACION_TOKEN"])
+def test_la_instancia_nace_con_sus_credenciales_de_maquina(cfg, var):
     """Sin `LIBRA_SERVICE_TOKEN` en la instancia, `token_de_servicio_valido()`
     devuelve False sin mirar el header y el backoffice recibe 401 en Usuarios y
-    SMTP de la instancia que acaba de crear."""
-    monkeypatch.setenv("LIBRA_SERVICE_TOKEN", "un-token-de-servicio")
+    SMTP de la instancia que acaba de crear. La de integracion (libraauth
+    v0.52.0) nace igual, para que la proxima integracion no pida tocar el host
+    (ADR-071)."""
     nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
-    assert "LIBRA_SERVICE_TOKEN=un-token-de-servicio" in _compose(cfg)
+    assert re.fullmatch(r"[0-9a-f]{64}", _tok(_compose(cfg), var))
+
+
+@pytest.mark.parametrize("var", ["LIBRA_SERVICE_TOKEN", "LIBRA_INTEGRACION_TOKEN"])
+def test_el_token_de_servicio_ya_no_sale_del_entorno(cfg, monkeypatch, var):
+    """🔴 El ADR-071 entero. Copiarlo del entorno del backoffice lo hacia uno
+    por PRODUCTO: quien tuviera el de un cliente administraba a todos."""
+    monkeypatch.setenv(var, "un-token-del-entorno")
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Dos", slug="cliente-dos", setup_npm=False)
+
+    uno, dos = _compose(cfg, "cliente-uno"), _compose(cfg, "cliente-dos")
+    assert "un-token-del-entorno" not in uno + dos
+    assert _tok(uno, var) != _tok(dos, var)
+    assert len(re.findall(rf"- {var}=", uno)) == 1
+
+
+def test_las_tres_credenciales_de_una_instancia_son_distintas(cfg):
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
+    texto = _compose(cfg)
+    valores = {_tok(texto, "LIBRA_SERVICE_TOKEN"), _tok(texto, "LIBRA_INTEGRACION_TOKEN"), _tok_panel(texto)}
+    assert len(valores) == 3
+    assert _tok_panel(texto) == info["panel_token"]
+
+
+def test_las_credenciales_de_maquina_no_salen_por_el_resultado_ni_el_log(cfg):
+    """Quedan solo en el compose: de ahi las lee el backoffice
+    (`admin.services.token_de_servicio`) y las reparte `vincular-integracion`."""
+    lineas = []
+    info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno",
+                            setup_npm=False, log=lineas.append)
+    texto = _compose(cfg)
+    meta = (cfg.clientes_dir / "cliente-uno" / "cliente.json").read_text()
+    for var in ("LIBRA_SERVICE_TOKEN", "LIBRA_INTEGRACION_TOKEN"):
+        valor = _tok(texto, var)
+        assert valor not in repr(info)
+        assert valor not in meta
+        assert not [ln for ln in lineas if valor in str(ln)]
 
 
 # ── identidad fiscal de la instancia ────────────────────────────────────────
@@ -1314,16 +1359,16 @@ def test_dos_altas_no_comparten_la_credencial_de_panel(cfg):
 def test_la_credencial_de_panel_no_es_la_de_servicio(cfg, monkeypatch):
     """Contraprueba del anterior contra la fuente equivocada mas a mano.
 
-    `LIBRA_SERVICE_TOKEN` es por PRODUCTO: medido en el VPS, `contalibra` y
-    `contalibra-demo` comparten uno y `libradesk-lagrace` y
-    `libradesk-compulibra` —dos clientes distintos— tambien. Reusarlo seria
-    exactamente el agujero que esta credencial existe para no abrir."""
+    Hasta el ADR-071 `LIBRA_SERVICE_TOKEN` era por PRODUCTO: medido en el VPS,
+    `libradesk-lagrace` y `libradesk-compulibra` —dos clientes distintos—
+    compartian uno. Ahora es por instancia, pero sigue siendo otra puerta: la
+    del panel se le entrega al dueno y no puede abrir la del backoffice."""
     monkeypatch.setenv("LIBRA_SERVICE_TOKEN", "un-token-de-servicio")
     info = nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
 
     texto = _compose(cfg)
-    assert "LIBRA_SERVICE_TOKEN=un-token-de-servicio" in texto
     assert info["panel_token"] != "un-token-de-servicio"
+    assert info["panel_token"] != _tok(texto, "LIBRA_SERVICE_TOKEN")
     assert _tok_panel(texto) == info["panel_token"]
 
 
@@ -1352,13 +1397,13 @@ def test_la_credencial_de_panel_no_queda_en_cliente_json(cfg):
     assert "panel_token" not in meta
 
 
-def test_sin_token_en_el_entorno_no_se_escribe_la_variable(cfg, monkeypatch):
-    """Contraprueba: es opt-in por ausencia, igual que del lado de libraauth. Un
-    alta desde la CLI no debe estampar una vacia — `LIBRA_SERVICE_TOKEN=` es
-    peor que no tenerla, porque parece configurado."""
+def test_sin_token_en_el_entorno_la_instancia_igual_tiene_el_suyo(cfg, monkeypatch):
+    """Antes, un alta desde la CLI del host —sin la variable en el entorno—
+    dejaba la instancia sin token y el backoffice no la podia administrar.
+    Ahora no depende del entorno."""
     monkeypatch.delenv("LIBRA_SERVICE_TOKEN", raising=False)
     nc.crear_cliente(empresa_cuit=CUIT, nombre="Cliente Uno", slug="cliente-uno", setup_npm=False)
-    assert "LIBRA_SERVICE_TOKEN" not in _compose(cfg)
+    assert re.fullmatch(r"[0-9a-f]{64}", _tok(_compose(cfg), "LIBRA_SERVICE_TOKEN"))
 
 
 def test_la_espera_de_la_base_entra_en_el_presupuesto_del_proxy():

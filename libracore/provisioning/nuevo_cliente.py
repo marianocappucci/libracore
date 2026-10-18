@@ -35,6 +35,7 @@ from . import (
     npm_available,
     resolver_plan,
     sin_root,
+    tokens_instancia,
 )
 
 # Huso horario del ecosistema: Argentina, UTC-3 fijo, sin horario de verano
@@ -774,14 +775,13 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
     # — credencial del panel del cliente —
     #
     # 🔴 **Aleatoria y distinta en cada instancia, y ese es todo el punto.** No
-    # sale del entorno como `LIBRA_SERVICE_TOKEN` (ver más abajo) ni se deriva
-    # del `secret_key`: `LIBRA_SERVICE_TOKEN` es **por producto**. Medido el
-    # 2026-08-20 en el VPS: `contalibra` y `contalibra-demo` comparten uno, y
-    # `libradesk-lagrace` y `libradesk-compulibra` —dos CLIENTES distintos—
-    # también. Correcto para lo que es, porque el backoffice del proveedor
-    # administra todas las instancias de un producto; inservible acá, porque
-    # esta credencial se le entrega al DUEÑO de unas sucursales y con un valor
-    # compartido le abriría las de los demás.
+    # se deriva del `secret_key` ni sale del entorno del proceso: esta
+    # credencial se le entrega al DUEÑO de unas sucursales, y con un valor
+    # compartido le abriría las de los demás. Hasta el ADR-071
+    # `LIBRA_SERVICE_TOKEN` sí salía del entorno —era **por producto**: medido
+    # el 2026-08-20, `libradesk-lagrace` y `libradesk-compulibra`, dos CLIENTES
+    # distintos, compartían uno—; desde entonces las tres credenciales de
+    # máquina de la instancia nacen así (ver más abajo).
     #
     # Se escribe SIEMPRE, no sólo si alguien la pidió. El guard de libraauth es
     # opt-in por ausencia: sin la variable, `/api/resumen` devuelve **401 sin
@@ -908,23 +908,33 @@ def crear_cliente(nombre: str, slug: str = "", domain: str = "", port: int = 0,
             f"      - {prefijo_env}_ADMIN_PASSWORD={admin_password}\n"
         )
 
-        # — token de servicio, para que el backoffice pueda administrar la instancia —
+        # — credenciales de máquina de la instancia: servicio e integración (ADR-071) —
         #
         # Sin `LIBRA_SERVICE_TOKEN` en la instancia, `token_de_servicio_valido()`
         # de libraauth devuelve False **sin mirar el header** (es opt-in por
         # ausencia, a propósito), así que las pantallas de Usuarios y SMTP del
         # backoffice dan 401 contra una instancia recién creada.
         #
-        # Sale del entorno del proceso que corre el alta —el backoffice, que ya
-        # exige esta variable en sus settings— y por eso la instancia nace con el
-        # mismo valor que él. Desde la CLI, sin la variable puesta, no se escribe
-        # nada y la instancia se comporta como antes.
-        token_servicio = os.environ.get("LIBRA_SERVICE_TOKEN", "").strip()
+        # 🔴 **Una por instancia, generada acá.** Antes se copiaba del entorno del
+        # proceso que corría el alta —el backoffice— y por eso era una por
+        # producto: quien tuviera la de un cliente entraba a todos los del
+        # producto. Ahora nace propia, como la del panel, y el backoffice la lee
+        # del disco de cada instancia (`libracore.admin.services.token_de_servicio`).
+        #
+        # `LIBRA_INTEGRACION_TOKEN` es la otra puerta (header
+        # `x-integracion-auth`, libraauth v0.52.0): la que se le entrega a OTRA
+        # instancia que le habla a esta (MedLibra → ContaLibra), con menos
+        # alcance que la de servicio. Nace siempre, aunque nadie la use todavía,
+        # por la misma razón que la del panel: que la próxima integración no
+        # necesite una visita al host. Se reparte con
+        # `panel_admin.py vincular-integracion`.
+        #
+        # Ninguna de las dos vuelve en el resultado ni pasa por `log()`: quedan
+        # sólo en el compose, que es de donde las lee quien las necesita.
         token_env = (
-            f"      - LIBRA_SERVICE_TOKEN={token_servicio}\n" if token_servicio else ""
+            f"      - {tokens_instancia.SERVICIO}={tokens_instancia.nuevo_token()}\n"
+            f"      - {tokens_instancia.INTEGRACION}={tokens_instancia.nuevo_token()}\n"
         )
-        # Sin `if`: a diferencia de la de servicio, esta no depende de que el
-        # entorno del proceso que corre el alta tenga nada puesto.
         token_env += f"      - LIBRA_PANEL_TOKEN={panel_token}\n"
 
         # — casilla de correo saliente, una por instancia —
