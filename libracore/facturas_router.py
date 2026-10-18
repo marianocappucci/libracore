@@ -87,7 +87,7 @@ from libracore.db import caja as db_caja
 from libracore.db import clients as db_clients
 from libracore.db import core as db_core
 from libracore.db import cuenta_corriente as db_cc
-from libracore.db import envios_email
+from libracore.db import envios_email, reintegros_pendientes
 from libracore.db import facturas as db_facturas
 from libracore.db import turnos as db_turnos
 from libracore.db.envios_email import TIPO_FACTURA
@@ -702,6 +702,7 @@ class NotaCreditoIn(BaseModel):
     caja, con `medio_pago`; sin él, el único con el que se cobró) o `a_favor` (un abono en la cuenta corriente del
     cliente; la factura tiene que tener uno identificado). Sin `destino` no se mueve plata, como siempre. No se manda
     en una factura a cuenta corriente (la nota abona la cuenta sola, 422) y se ignora si no hay nada cobrado de más.
+    Si la nota no obtiene CAE, el destino queda anotado y la plata se mueve cuando se autorice (`/autorizar`, ADR-067).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -710,6 +711,57 @@ class NotaCreditoIn(BaseModel):
     destino: Literal["devolver", "a_favor"] | None = None
     medio_pago: str | None = None
     _no_son_booleanos = sin_booleanos("importe")
+
+
+def _turno_abierto_de(usuario: dict, usuario_del_turno: Callable[[dict], int | None] | None) -> dict | None:
+    """El turno abierto de quien opera (`usuario_del_turno`, o su `id`), o `None`."""
+    quien = usuario_del_turno(usuario) if usuario_del_turno is not None else usuario.get("id")
+    return db_turnos.get_turno_activo(quien) if quien is not None else None
+
+
+def _plan_del_reintegro_pendiente(
+    factura: dict, usuario: dict, *, exigir_turno: bool, usuario_del_turno: Callable[[dict], int | None] | None,
+) -> tuple[dict, reintegro_de_nota.Plan] | None:
+    """Si la nota que se va a autorizar tiene un destino anotado (ADR-067), `(anotación, plan)`; si no, `None`.
+
+    Corre **antes** de pedirle el CAE a ARCA: lo que impide mover la plata (sin turno abierto, sin cliente donde
+    dejarla a favor) se dice ahora, con el mismo 409 / 422 que el alta de la nota, y no con la nota ya autorizada."""
+    pendiente = reintegros_pendientes.de_nota(factura["id"])
+    if pendiente is None:
+        return None
+    original = db_facturas.get_factura(pendiente["factura_id"])
+    try:
+        plan = reintegro_de_nota.planear_pendiente(
+            pendiente, original,
+            turno_de=((lambda: _turno_abierto_de(usuario, usuario_del_turno))
+                      if exigir_turno or usuario_del_turno is not None else None),
+            exigir_turno=exigir_turno)
+    except notas_de_credito.NotaNoPermitida as e:
+        raise HTTPException(_STATUS_DE_NOTA[e.codigo], str(e)) from None
+    return pendiente, plan
+
+
+def _mover_el_reintegro_pendiente(
+    detalle: dict, nota: dict, pendiente_y_plan: tuple[dict, reintegro_de_nota.Plan] | None, usuario: dict,
+) -> dict:
+    """La nota ya tiene CAE: mueve la plata con el destino anotado y suma `reintegro` al `detalle` (aditivo).
+
+    **No puede tumbar la request**: la nota ya está autorizada y eso no se deshace. Si la plata no se pudo mover,
+    la anotación queda y volver a llamar a `/autorizar` sobre la nota lo reintenta."""
+    if pendiente_y_plan is None:
+        return detalle
+    pendiente, plan = pendiente_y_plan
+    try:
+        reintegro = reintegro_de_nota.aplicar_pendiente(
+            plan, db_facturas.get_factura(pendiente["factura_id"]), nota, usuario.get("id"))
+    except Exception:
+        logger.exception("La nota %s se autorizó pero no se pudo mover la plata (factura %s).",
+                         nota["id"], pendiente["factura_id"])
+        reintegro = reintegro_de_nota.sin_mover(
+            plan, "La nota se autorizó, pero la plata no se pudo mover. Volvé a autorizarla para reintentarlo, o hacé "
+                  f"el movimiento a mano con la marca {notas_de_credito.referencia_cc_de_nota(pendiente['factura_id'], nota['id'])}.",
+            pendiente=True)
+    return {**detalle, "reintegro": reintegro}
 
 
 def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..., Any],
@@ -727,8 +779,7 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
     **devuelve plata de la caja** (`destino: "devolver"`, ADR-065): el egreso entra por el turno abierto de quien emite.
     """
     def turno_de_quien_emite(usuario: dict) -> dict | None:
-        quien = usuario_del_turno(usuario) if usuario_del_turno is not None else usuario.get("id")
-        return db_turnos.get_turno_activo(quien) if quien is not None else None
+        return _turno_abierto_de(usuario, usuario_del_turno)
 
     @router.get("/{factura_id}/nota-credito/destino", dependencies=[Depends(solo_admin)])
     def destino_de_la_plata(factura_id: int, importe: Decimal | None = Query(None, gt=0),
@@ -800,9 +851,8 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
         elif notas_de_credito._es_cae(nota_db.get("cae")):
             reintegro = reintegro_de_nota.aplicar(plan, orig, nota_db, usuario["id"])
         else:
-            reintegro = reintegro_de_nota.sin_mover(
-                plan, "La nota todavía no tiene CAE, así que la plata no se movió: autorizala y hacé el movimiento "
-                      f"a mano con la marca {notas_de_credito.referencia_cc_de_nota(factura_id, nota_id)}.")
+            # Sin CAE el destino se anota (ADR-067): `/autorizar` mueve la plata cuando la nota se autorice.
+            reintegro = reintegro_de_nota.dejar_pendiente(plan, orig, nota_db)
         return nota_db if reintegro is None else {**nota_db, "reintegro": reintegro}
 
 
@@ -1238,18 +1288,29 @@ def build_comprobantes_router(
         return armar_borrador(_exigir(factura_id))
 
     @router.post("/{factura_id}/autorizar")
-    def autorizar(factura_id: int):
+    def autorizar(factura_id: int, usuario: dict = Depends(usuario_actual)):
         """Reintenta el CAE de un comprobante que quedó sin autorizar.
 
         🔑 **Lo que se reintenta es el CAE, no la emisión.** El comprobante ya
         existe y tiene número; volver a emitirlo sería un segundo comprobante
         por el mismo hecho. Si ya tiene CAE, esto no hace nada y devuelve el
         detalle.
+
+        Una nota de crédito que salió sin CAE con un `destino` para la plata (ADR-065) lo tiene anotado
+        (ADR-067): al obtener el CAE la plata se mueve —una sola vez, ver `reintegro_de_nota.aplicar`— y la
+        respuesta suma `reintegro`. Lo que impide moverla (sin turno abierto, sin cliente) frena **antes** de
+        pedirle nada a ARCA. Con la nota ya autorizada y la plata sin mover, llamar de nuevo lo reintenta.
         """
         factura = _exigir(factura_id)
         if factura.get("cae"):
-            return _detalle(factura)
+            if not notas_de_credito._es_cae(factura["cae"]):
+                return _detalle(factura)
+            plan = _plan_del_reintegro_pendiente(
+                factura, usuario, exigir_turno=exigir_turno, usuario_del_turno=usuario_del_turno)
+            return _mover_el_reintegro_pendiente(_detalle(factura), factura, plan, usuario)
         _exigir_vigente(factura)
+        plan = _plan_del_reintegro_pendiente(
+            factura, usuario, exigir_turno=exigir_turno, usuario_del_turno=usuario_del_turno)
 
         # El par del emisor con el que se numeró: otro CUIT no puede autorizarlo.
         arca = _config_del_emisor(factura.get("emisor_id"))
@@ -1273,7 +1334,6 @@ def build_comprobantes_router(
             factura = db_facturas.get_factura(factura_id)
             pdf_path = pdf_gen.generate_pdf_factura(factura, resolvedor=emisor_del_pdf)
             db_facturas.update_factura_pdf_path(factura_id, pdf_path)
-            return _detalle(factura)
         except HTTPException:
             raise
         except Exception as e:
@@ -1281,6 +1341,8 @@ def build_comprobantes_router(
             db_facturas.update_factura_cae_error(factura_id, str(e))
             # 502 y no 500: el que falló es ARCA, no esta aplicación.
             raise HTTPException(502, str(e)) from e
+        # Con el CAE ya guardado, la plata de la nota (si la había): fuera del `try`, que marcaría un error de ARCA.
+        return _mover_el_reintegro_pendiente(_detalle(factura), factura, plan, usuario)
 
     @router.post("/{factura_id}/cobrar")
     def cobrar(
