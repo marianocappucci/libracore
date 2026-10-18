@@ -169,9 +169,10 @@ def get_facturas_pendientes_cc(cliente_id: int, *, conn: Conexion | None = None)
 
     Excluye las notas de crédito, los comprobantes sin CAE y los anulados. Una **nota de débito** entra si ella
     misma lleva `condicion_venta = 'Cuenta Corriente'` (ADR-066, `sql_es_cobrable`): es la regla de la factura.
-    La que arma el motor para una factura a crédito no la lleva y no asentó su débito en la cuenta, así que no
-    es una deuda de la cuenta (pagarla desde acá dejaría el saldo a favor): se ve en la pantalla y se cobra con
-    «Cobrar». **El `pendiente` es
+    La que emite el motor sobre una factura a crédito la lleva y asienta su débito en la misma transacción
+    (ADR-073), así que se paga desde acá; la de una factura al contado no la lleva y se cobra con «Cobrar».
+    Las notas de débito emitidas antes del ADR-073 sobre facturas a crédito no se tocaron: siguen sin la
+    condición y sin débito, y por eso tampoco entran. **El `pendiente` es
     `total − cobrado − acreditado por notas de crédito`** (ADR-059, `sql_pendiente`): una
     nota total la saca de la lista, como antes, y una **parcial** la deja con lo que
     todavía se debe (antes la sacaba entera, aunque faltara cobrar el resto).

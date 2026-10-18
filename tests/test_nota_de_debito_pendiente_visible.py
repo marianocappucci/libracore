@@ -21,7 +21,7 @@ from libracore import cobros
 from libracore import tipos_comprobante as tipos
 from libracore.cuenta_corriente_router import build_cuenta_corriente_router
 from libracore.dashboard_router import build_dashboard_router
-from libracore.db import caja, core
+from libracore.db import core
 from libracore.db import cuenta_corriente as db_cc
 from libracore.db.clients import create_client
 from libracore.db.dashboard import get_dashboard_data
@@ -208,31 +208,13 @@ def _cuenta():
     return TestClient(app)
 
 
-def test_la_nota_de_debito_de_una_factura_a_credito_se_cobra_en_caja_y_no_toca_la_cuenta(client):
-    """🔑 Decisión del ADR-066, medida. La nota de débito del motor no lleva `condicion_venta` ni escribe un
-    débito en la cuenta del cliente: su deuda NO está en el saldo. Ofrecerla para pagar desde la cuenta
-    corriente dejaría el saldo a favor (un pago que baja una deuda que nunca se asentó). Se ve pendiente en
-    la pantalla y se cobra con «Cobrar», que entra a la caja, sin mover la cuenta."""
+def test_la_nota_de_debito_de_una_factura_a_credito_se_paga_desde_la_cuenta(client):
+    """La regla del ADR-066 (la nota entra a lo pendiente de la cuenta si ella misma lleva `condicion_venta`), con lo
+    que cambió el ADR-073: la nota de una factura a crédito **la lleva** y asentó su débito, así que entra a la lista y
+    un pago aplicado la cubre. La cuenta queda en cero. El resto (Cobrar, sin CAE, anular, la nota de contado) está
+    en `test_nota_de_debito_a_cuenta_corriente.py`."""
     factura, nota = _con_su_nota_de_debito(client, condicion_venta="Cuenta Corriente")
-    assert db_cc.get_cc_saldo(1) == 4500.0, "el saldo es el de la factura; la nota no asentó nada"
-
-    assert [p["id"] for p in db_cc.get_facturas_pendientes_cc(1)] == [factura["id"]]
-    assert _detalle(client, nota)["pendiente"] == 4500.0
-
-    assert _cobrar(client, nota, 4500.0).status_code == 200
-    assert db_cc.get_cc_saldo(1) == 4500.0, "cobrar la nota en caja no mueve la cuenta del cliente"
-    assert _detalle(client, nota)["pendiente"] == 0.0
-
-
-def test_una_nota_de_debito_a_credito_con_su_propio_debito_se_paga_desde_la_cuenta(client):
-    """La nota que un producto fía de verdad (lleva `condicion_venta = Cuenta Corriente` y su débito en la
-    cuenta, como una factura) entra a lo pendiente de la cuenta corriente y un pago aplicado la cubre: la
-    cuenta queda en cero. Es la misma regla de la factura, sin un caso aparte."""
-    factura, nota = _con_su_nota_de_debito(client, condicion_venta="Cuenta Corriente")
-    with core.get_connection() as conn:
-        conn.execute("UPDATE facturas SET condicion_venta = 'Cuenta Corriente' WHERE id = ?", (nota["id"],))
-        caja.create_caja_movimiento(hoy(), "ingreso", "Nota de débito", 4500.0, factura_id=nota["id"],
-                                    medio_pago="Cuenta Corriente", conn=conn)
+    assert nota["condicion_venta"] == "Cuenta Corriente"
     assert db_cc.get_cc_saldo(1) == 9000.0
     pendientes = db_cc.get_facturas_pendientes_cc(1)
     assert [(p["id"], p["pendiente"]) for p in pendientes] == [(factura["id"], 4500.0), (nota["id"], 4500.0)]

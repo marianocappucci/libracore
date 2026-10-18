@@ -7,6 +7,21 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La nota de débito de una factura a cuenta corriente hereda la cuenta (propuesta: v1.185.0)
+
+ADR-073. **Sin migración y sin cambio de schema.** Cierra el punto (1) que el ADR-066 dejó abierto (decisión del humano, 2026-10-18).
+
+- Antes: `POST /api/facturas/{id}/nota-debito` sobre una factura a cuenta corriente armaba una nota sin `condicion_venta` y sin débito en la cuenta: se veía pendiente (ADR-066) pero sólo se cobraba por caja.
+- Ahora: la nota lleva `condicion_venta = 'Cuenta Corriente'` y **asienta su débito en la cuenta del cliente** (la misma marca de `POST /api/facturas`: ingreso «Cuenta Corriente» con `factura_id` de la nota, que el libro `cc_asientos` lleva al saldo) **en la misma transacción que la nota**. Entra a `get_facturas_pendientes_cc` y se paga con un recibo (`/api/cuenta-corriente/{id}/pagar` con `facturas`), con su tope y su candado. «Cobrar» la cobra en la caja y abona la cuenta, como a la factura; después no se cobra dos veces (409 / 422).
+- Sin CAE (ARCA rechaza), como la factura a crédito: la nota queda **con** su débito y fuera de lo que se paga desde la cuenta hasta que se autorice; anularla o borrarla saca la deuda.
+- La nota de una factura **al contado** no cambia. `armar_nota` no cambia (la condición se agrega en el router). Las notas ya emitidas no se tocan.
+
+### Para los productos
+- Contalibra, Restolibra y LibraClub (montan `build_comprobantes_router`): subir el pin alcanza. Visible: la nota de débito de una factura a crédito sube el saldo del cliente y aparece en sus movimientos y en lo que se paga desde la cuenta.
+- LibraCargo emite su nota con `notas_de_debito.emitir_nota_de_debito` y sus costuras: no cambia. Si quiere lo mismo, su `registrar` escribe la condición y el débito en su transacción.
+- Un `registrar_cobro` propio (el que reemplaza la escritura de «Cobrar») ya tiene que abonar la cuenta de un comprobante con `condicion_venta = 'Cuenta Corriente'`: ahora eso incluye a estas notas.
+- La pantalla (libra-ui) no necesita cambios: el detalle ya muestra la condición y «Registrar cobro» para una nota de débito, y la cuenta corriente lista lo que manda el motor.
+
 ## [Unreleased] — Tokens por instancia: `${VAR:?mensaje}` se lee del `.env` (propuesta: v1.184.1)
 
 Corrige ADR-071. **Sin migración.** `tokens_instancia` sólo reconocía `${VAR}`, `${VAR-x}` y
