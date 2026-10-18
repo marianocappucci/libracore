@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (414)
+## tablas (419)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -353,6 +353,11 @@ recibos|pagos|TEXT|NN|'[]'
 recibos|punto_venta|INTEGER|NN|1
 recibos|total|REAL|NN|
 recibos|usuario_id|INTEGER||
+reintegros_pendientes|created_at|TEXT||datetime('now','-3 hours')
+reintegros_pendientes|destino|TEXT|NN|
+reintegros_pendientes|factura_id|INTEGER|NN|
+reintegros_pendientes|medio_pago|TEXT|NN|''
+reintegros_pendientes|nota_id|INTEGER||
 remitos|client_address|TEXT||
 remitos|client_cuit|TEXT||
 remitos|client_email|TEXT||
@@ -416,7 +421,7 @@ ventas|total|REAL|NN|0
 ventas|turno_id|INTEGER||
 ventas|usuario_id|INTEGER||
 
-## claves primarias (35)
+## claves primarias (36)
 arca_config|id
 arca_credenciales_servicio|id
 auth_log|id
@@ -447,13 +452,14 @@ presupuestos|id
 productos|id
 proveedores|id
 recibos|id
+reintegros_pendientes|nota_id
 remitos|id
 turnos_caja|id
 usuarios|id
 ventas_pagos|id
 ventas|id
 
-## claves foráneas (47)
+## claves foráneas (49)
 caja_movimientos|caja_id|cajas|id|SET NULL|NO ACTION
 caja_movimientos|turno_id|turnos_caja|id|SET NULL|NO ACTION
 caja_movimientos|usuario_id|usuarios|id|SET NULL|NO ACTION
@@ -491,6 +497,8 @@ presupuestos|remito_id|remitos|id|NO ACTION|NO ACTION
 presupuestos|usuario_id|usuarios|id|SET NULL|NO ACTION
 recibos|cliente_id|clients|id|SET NULL|NO ACTION
 recibos|usuario_id|usuarios|id|SET NULL|NO ACTION
+reintegros_pendientes|factura_id|facturas|id|CASCADE|NO ACTION
+reintegros_pendientes|nota_id|facturas|id|CASCADE|NO ACTION
 remitos|client_id|clients|id|SET NULL|NO ACTION
 remitos|usuario_id|usuarios|id|SET NULL|NO ACTION
 turnos_caja|caja_id|cajas|id|SET NULL|NO ACTION

@@ -7,6 +7,20 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — La nota de crédito sin CAE recuerda el destino de la plata y la mueve al autorizarse (propuesta: v1.179.0)
+
+ADR-067 (cierra el hueco que dejó el ADR-065). **Migración aditiva `0027_reintegros_pendientes`** (tabla nueva, `IF NOT EXISTS`; `init_core_schema` la crea sola en el arranque, así que una instancia que sube el pin la tiene aunque no corra `alembic`). Sin `destino` en la nota, o con la nota autorizada en el acto, no cambia nada.
+
+- Antes: si la nota de una factura al contado cobrada salía con `destino` y ARCA no le daba CAE, la plata no se movía y **el destino se perdía**: autorizada después con `/autorizar`, había que hacer el movimiento a mano. Ahora el destino (y el medio ya resuelto) queda anotado en **`reintegros_pendientes`**, una fila por nota, y `POST /api/facturas/{id}/autorizar` mueve la plata al obtener el CAE: **una sola vez** (misma marca `nc:factura:<id>:<nota_id>` y misma `aplicar`, con la factura bloqueada), en una transacción que además borra la anotación. Borrar la nota borra la anotación (`ON DELETE CASCADE`).
+- `reintegro.motivo` de la respuesta de la nota sin CAE ahora dice qué va a pasar («… cuando la autorices van a salir $ 1.000,00 de la caja (Efectivo)» / «… van a quedar $ 1.000,00 a favor del cliente …») y suma `pendiente: true`.
+- `/autorizar` suma `reintegro` a su respuesta cuando movió (o intentó mover) plata, y **recibe `usuario_actual`** (el turno de la devolución es el de quien autoriza). Lo que impide mover la plata frena **antes** de pedirle el CAE a ARCA, como el alta: **409** si el producto exige turno y no hay uno abierto, **422** si había que dejar a favor y la factura ya no tiene cliente. Si el CAE salió y la plata no se pudo mover, la request no falla (la nota ya está autorizada): `reintegro.movido: false`, la anotación queda y volver a llamar a `/autorizar` sobre la nota lo reintenta.
+- API nueva: `libracore.db.reintegros_pendientes` (`anotar`, `de_nota`, `borrar`), `reintegro_de_nota.dejar_pendiente`, `planear_pendiente`, `aplicar_pendiente`.
+
+### Para los productos
+- Un producto con su **propia** ruta para autorizar notas (no la del factory `build_comprobantes_router`) tiene que llamar a `planear_pendiente` antes del CAE y a `aplicar_pendiente` después; si no, la anotación queda sin consumir y la plata se mueve a mano, como antes.
+- La pantalla ya muestra el `motivo` de `reintegro` cuando `movido` es `false` (libra-ui `avisoDeReintegro`): sin cambios obligatorios. Opcional: mostrar `reintegro` también en la respuesta de «Reintentar CAE».
+- Bajar la migración (`downgrade 0026`) borra las anotaciones de las notas que siguen sin CAE: esas notas vuelven a resolverse a mano.
+
 ## [Unreleased] — Lo pendiente de una nota de débito se ve donde se ve lo de una factura (propuesta: v1.178.0)
 
 ADR-066. **Sin migración y sin cambio de schema.** Cierra lo que el ADR-064 dejó abierto.

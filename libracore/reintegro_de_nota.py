@@ -39,12 +39,19 @@ si ARCA rechaza: deja el motivo en la nota y sigue. Por eso el router mira el CA
 
 - con CAE: escribe el movimiento, **en una transacción propia**, con la factura bloqueada, que mira lo cobrado y
   lo ya devuelto y escribe;
-- sin CAE: **no mueve plata** y lo dice en la respuesta (`movido: false`). La nota queda sin CAE como siempre
-  (se autoriza con `/autorizar` o se borra) y **el destino no se recuerda**: autorizada después, la plata se
-  mueve a mano (un egreso o un pago a cuenta) con la marca `nc:factura:<id>:<nota_id>`.
+- sin CAE: **no mueve plata** y lo dice en la respuesta (`movido: false`, `pendiente: true`), pero **anota el
+  destino** (`reintegros_pendientes`, una fila por nota; ADR-067) y el `motivo` cuenta qué va a pasar. La nota queda
+  sin CAE como siempre (se autoriza con `/autorizar` o se borra):
+  - **se autoriza**: `/autorizar` mira la tabla **antes** de pedirle el CAE a ARCA (`planear_pendiente`: sin turno
+    abierto, en un producto que lo exige, o sin cliente para dejar a favor, frena con 409 / 422 como el alta) y,
+    obtenido el CAE, mueve la plata con el destino anotado (`aplicar_pendiente`: la misma `aplicar`, en una
+    transacción que además borra la fila). Si la plata no se pudo mover, la fila queda y volver a llamar a
+    `/autorizar` sobre la nota —ya con CAE— lo reintenta;
+  - **se borra**: la fila se va con la nota (`ON DELETE CASCADE`) y no se mueve nada.
 
 Entre el CAE y el movimiento puede morir el proceso: la nota queda autorizada y sin movimiento. Es el mismo
-hueco que el del abono de las facturas a cuenta corriente, y se arregla igual (a mano, con la marca).
+hueco que el del abono de las facturas a cuenta corriente, y se arregla igual (a mano, con la marca) salvo que
+la nota haya salido sin CAE: ahí la fila sigue y `/autorizar` lo termina.
 
 ## Que no se devuelva dos veces
 
@@ -59,6 +66,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -68,6 +76,8 @@ from libracore import cobros, medios_pago
 from libracore import notas_de_credito as nc
 from libracore.notas_de_credito import NotaNoPermitida, _dec
 
+logger = logging.getLogger(__name__)
+
 DEVOLVER = "devolver"
 A_FAVOR = "a_favor"
 DESTINOS = (DEVOLVER, A_FAVOR)
@@ -75,6 +85,8 @@ DESTINOS = (DEVOLVER, A_FAVOR)
 CONDICION_CUENTA_CORRIENTE = cobros.CONDICION_CUENTA_CORRIENTE
 
 MENSAJE_SIN_TURNO = "No hay una caja abierta. Abrí el turno antes de devolver."
+MENSAJE_SIN_TURNO_AL_AUTORIZAR = (
+    "Esta nota devuelve plata de la caja y no hay una caja abierta. Abrí el turno antes de autorizarla.")
 
 
 def reintegrable(total: Any, cobrado: Any, acreditado: Any, ya_reintegrado: Any, importe: Any) -> Decimal:
@@ -212,10 +224,80 @@ def medios_de_devolucion(estado: Estado) -> list[str]:
     return elegibles + [m for m in estado.medios if m not in elegibles and not cobros.es_medio_cuenta_corriente(m)]
 
 
-def sin_mover(plan: Plan, motivo: str) -> dict:
-    """La respuesta cuando había que mover plata y no se movió (la nota no obtuvo CAE)."""
+def sin_mover(plan: Plan, motivo: str, *, pendiente: bool = False) -> dict:
+    """La respuesta cuando había que mover plata y no se movió (la nota no obtuvo CAE).
+
+    `pendiente`: el destino quedó anotado y la plata se mueve sola cuando la nota se autorice."""
     return {"destino": plan.destino, "medio_pago": plan.medio_pago, "movido": False, "monto": 0.0,
-            "excedente": 0.0, "referencia": None, "motivo": motivo}
+            "excedente": 0.0, "referencia": None, "motivo": motivo, **({"pendiente": True} if pendiente else {})}
+
+
+def dejar_pendiente(plan: Plan, original: dict, nota: dict) -> dict:
+    """La nota no obtuvo CAE: anota el destino para moverlo cuando se autorice (ADR-067) y devuelve el `reintegro`
+    de la respuesta, cuyo `motivo` dice qué va a pasar.
+
+    Anotarlo **no puede tumbar la emisión** (la nota ya existe): si la base falla, la respuesta vuelve al
+    «hacelo a mano con la marca» de antes."""
+    from libracore.db import reintegros_pendientes
+
+    referencia = nc.referencia_cc_de_nota(original["id"], nota["id"])
+    a_mano = ("La nota todavía no tiene CAE, así que la plata no se movió: autorizala y hacé el movimiento "
+              f"a mano con la marca {referencia}.")
+    try:
+        estado = leer_estado(original["id"])
+        importe = _dec(nota["total"])
+        monto = reintegrable(original["total"], estado.cobrado, estado.acreditado + importe, estado.ya_reintegrado, importe)
+        reintegros_pendientes.anotar(nota["id"], original["id"], plan.destino, plan.medio_pago or "")
+    except Exception:
+        logger.exception("No se pudo anotar el destino de la plata de la nota %s (factura %s).",
+                         nota.get("id"), original.get("id"))
+        return sin_mover(plan, a_mano)
+    cuenta = cobros._pesos(cobros.centavos(monto))
+    que_pasa = (f"van a salir {cuenta} de la caja ({medios_pago.label(plan.medio_pago or '')})"
+                if plan.destino == DEVOLVER else f"van a quedar {cuenta} a favor del cliente, en su cuenta corriente")
+    return sin_mover(
+        plan, "La nota todavía no tiene CAE, así que la plata no se movió. Quedó anotado el destino que elegiste: "
+              f"cuando la autorices {que_pasa}. Si en cambio la borrás, no se mueve nada.", pendiente=True)
+
+
+def planear_pendiente(
+    pendiente: dict, original: dict, *, turno_de: Callable[[], dict | None] | None = None, exigir_turno: bool = False,
+) -> Plan:
+    """El `Plan` de una nota con el destino anotado (`reintegros_pendientes.de_nota`), a la hora de autorizarla.
+
+    Se llama **antes** de pedirle el CAE a ARCA, por lo mismo que `planear`: una nota autorizada no se deshace.
+    Levanta `NotaNoPermitida`: `SIN_TURNO` (409) si hay que devolver, el producto lleva la caja por turno y quien
+    autoriza no tiene uno abierto; `DESTINO` (422) si hay que dejar a favor y la factura ya no tiene un cliente."""
+    if pendiente["destino"] == A_FAVOR:
+        from libracore.db import clients as db_clients
+
+        cliente = db_clients.get_client_by_cuit(original.get("cliente_cuit") or "")
+        if not cliente:
+            raise NotaNoPermitida(
+                "Esta nota deja la plata a favor del cliente y la factura ya no tiene un cliente identificado: "
+                "dalo de alta como cliente antes de autorizarla.", NotaNoPermitida.DESTINO)
+        return Plan(A_FAVOR, None, cliente["id"], None)
+    turno = turno_de() if turno_de is not None else None
+    if turno is None and exigir_turno:
+        raise NotaNoPermitida(MENSAJE_SIN_TURNO_AL_AUTORIZAR, NotaNoPermitida.SIN_TURNO)
+    return Plan(DEVOLVER, pendiente["medio_pago"] or None, None, turno)
+
+
+def aplicar_pendiente(plan: Plan, original: dict, nota: dict, usuario_id: int | None) -> dict:
+    """Mueve la plata de una nota **que acaba de obtener CAE** con el destino anotado y borra la anotación.
+
+    Todo en una sola transacción: o queda el movimiento y la anotación borrada, o ninguna de las dos cosas (y un
+    nuevo `/autorizar` lo reintenta). `aplicar` no escribe dos veces la misma marca, así que dos autorizaciones
+    a la vez, o una repetida, no duplican nada."""
+    from libracore.db import reintegros_pendientes
+    from libracore.db.core import get_connection
+
+    with get_connection() as c:
+        reintegro = aplicar(plan, original, nota, usuario_id, conn=c)
+        reintegros_pendientes.borrar(nota["id"], conn=c)
+    if not reintegro["movido"] and not reintegro.get("ya_estaba"):
+        reintegro["motivo"] = nada_que_mover(plan.destino)["motivo"]
+    return reintegro
 
 
 def ofrecer(

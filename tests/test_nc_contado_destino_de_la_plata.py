@@ -7,6 +7,9 @@ Hasta la v1.175.0 esa nota no movía plata: ARCA quedaba al día y la caja, no. 
 - `a_favor`: un abono en la cuenta corriente del cliente (hace falta uno identificado);
 - sin `destino` no se mueve nada, como siempre; en una factura a cuenta corriente no se manda (422).
 
+Si la nota no obtiene CAE, el destino queda anotado (`reintegros_pendientes`, ADR-067) y la plata se mueve cuando
+se autoriza con `/autorizar`: una sola vez, y nada si no se mandó destino.
+
 Cada test mira lo escrito en la base, no sólo el status. En SQLite y en PostgreSQL.
 """
 
@@ -344,8 +347,261 @@ def test_si_la_nota_no_obtiene_CAE_la_plata_no_se_mueve(tmp_path, monkeypatch):
     nota = r.json()
     assert not nota["cae"]
     assert nota["reintegro"]["movido"] is False and "CAE" in nota["reintegro"]["motivo"]
-    assert f"nc:factura:{factura['id']}:{nota['id']}" in nota["reintegro"]["motivo"]
+    # Ya no se pide hacerlo a mano: el destino queda anotado y la plata sale sola al autorizarse (ADR-067).
+    assert nota["reintegro"]["pendiente"] is True and "cuando la autorices" in nota["reintegro"]["motivo"]
     assert _egresos(factura) == [] and _abonos(factura) == []
+
+
+# ── La nota sin CAE se autoriza después (ADR-067) ─────────────────────────
+
+
+@pytest.fixture
+def sin_arca(motor, tmp_path, monkeypatch):
+    """Como `emisor`, pero sin ARCA: toda nota sale sin CAE. `(client, montar, habilitar_arca)`.
+
+    `habilitar_arca()` carga un par de certificados y simula a ARCA: desde ahí `/autorizar` obtiene CAE."""
+    base = _montar(tmp_path, monkeypatch, dev=False, db_path=motor)
+    cliente_id = create_client("Juan Perez", cuit_dni=CUIT)
+
+    def montar(usuario=USUARIO, **opciones) -> TestClient:
+        app = FastAPI()
+        app.include_router(fr.build_comprobantes_router(
+            usuario_actual=lambda: usuario, solo_admin=lambda: None, **opciones))
+        return TestClient(app)
+
+    pedidos = []
+
+    def habilitar_arca(*, rechaza: str | None = None):
+        from libracore.db import arca_config as db_arca
+
+        cert, clave = tmp_path / "cert.pem", tmp_path / "clave.key"
+        cert.write_text("x")
+        clave.write_text("x")
+        if not db_arca.obtener_arca_config("empresa"):
+            db_arca.crear_arca_config("empresa", "30712345679", 1, "", "", "homologacion")
+            db_arca.actualizar_arca_config(
+                "empresa", clave_path_homologacion=str(clave), certificado_path_homologacion=str(cert))
+
+        async def autenticar(*a, **kw):
+            return {"token": "t", "sign": "s"}
+
+        async def cae(comprobante, *a, **kw):
+            pedidos.append(comprobante["id"])
+            if rechaza:
+                raise RuntimeError(rechaza)
+            return {"cae": "75123456789012", "cae_vto": "20261231"}
+
+        monkeypatch.setattr(fr.arca_wsaa, "autenticar", autenticar)
+        monkeypatch.setattr(fr.arca_wsfe, "solicitar_cae", cae)
+
+    montar.cliente_id = cliente_id
+    montar.pedidos_de_cae = pedidos
+    yield base, montar, habilitar_arca
+    core._db_path = None
+    core._database_url = None
+
+
+def _anotados() -> list[dict]:
+    with core.get_connection() as c:
+        return [dict(f) for f in c.execute("SELECT * FROM reintegros_pendientes ORDER BY nota_id").fetchall()]
+
+
+def _autorizar(client, nota):
+    return client.post(f"{API}/{nota['id']}/autorizar")
+
+
+def test_la_nota_sin_CAE_anota_el_destino_y_dice_que_va_a_pasar(sin_arca):
+    base, _, _ = sin_arca
+    factura = _cobrada(base)
+
+    nota = _nota(base, factura, destino="devolver", medio_pago="efectivo").json()
+
+    assert not nota["cae"]
+    reintegro = nota["reintegro"]
+    assert reintegro["movido"] is False and reintegro["pendiente"] is True
+    assert "van a salir $ 1.000,00 de la caja" in reintegro["motivo"] and "autorices" in reintegro["motivo"]
+    assert _anotados() == [{"nota_id": nota["id"], "factura_id": factura["id"], "destino": "devolver",
+                            "medio_pago": "efectivo", "created_at": _anotados()[0]["created_at"]}]
+    assert _egresos(factura) == [], "hasta que se autorice no sale nada"
+
+
+def test_la_nota_sin_CAE_que_dejaba_a_favor_lo_dice_con_otras_palabras(sin_arca):
+    base, _, _ = sin_arca
+    factura = _cobrada(base)
+
+    nota = _nota(base, factura, destino="a_favor").json()
+
+    assert "van a quedar $ 1.000,00 a favor del cliente" in nota["reintegro"]["motivo"]
+    assert [(a["destino"], a["medio_pago"]) for a in _anotados()] == [("a_favor", "")]
+
+
+def test_autorizar_la_nota_sin_CAE_devuelve_la_plata_con_el_destino_elegido(sin_arca):
+    base, _, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="devolver", medio_pago="efectivo").json()
+    habilitar_arca()
+
+    r = _autorizar(base, nota)
+
+    assert r.status_code == 200, r.text
+    marca = f"nc:factura:{factura['id']}:{nota['id']}"
+    assert r.json()["reintegro"] == {
+        "destino": "devolver", "medio_pago": "efectivo", "movido": True, "monto": 1000.0, "excedente": 0.0,
+        "referencia": marca}
+    (egreso,) = _egresos(factura)
+    assert (egreso["monto"], egreso["medio_pago"], egreso["referencia"]) == (1000.0, "efectivo", marca)
+    assert base.get(f"{API}/{nota['id']}").json()["factura"]["cae"], "y la nota quedó con su CAE"
+    assert _anotados() == [], "la anotación se consumió"
+
+
+def test_autorizar_la_nota_sin_CAE_deja_a_favor_del_cliente(sin_arca):
+    base, montar, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="a_favor").json()
+    habilitar_arca()
+
+    r = _autorizar(base, nota)
+
+    assert r.status_code == 200, r.text
+    assert r.json()["reintegro"]["movido"] is True and r.json()["reintegro"]["destino"] == "a_favor"
+    assert len(_abonos(factura)) == 1 and _egresos(factura) == []
+    assert libro_de_clientes.saldo_de(montar.cliente_id) == -1000.0
+
+
+def test_autorizar_dos_veces_no_mueve_la_plata_dos_veces(sin_arca):
+    base, _, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="devolver", medio_pago="efectivo").json()
+    habilitar_arca()
+
+    primera, segunda = _autorizar(base, nota), _autorizar(base, nota)
+
+    assert primera.status_code == segunda.status_code == 200
+    assert "reintegro" in primera.json() and "reintegro" not in segunda.json()
+    assert len(_egresos(factura)) == 1
+
+
+def test_si_la_anotacion_sobrevive_a_un_movimiento_ya_hecho_no_se_escribe_otro(sin_arca):
+    """Un reintento después de que el movimiento quedó escrito (la marca de la nota manda, no la anotación)."""
+    base, _, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="devolver", medio_pago="efectivo").json()
+    habilitar_arca()
+    assert _autorizar(base, nota).status_code == 200
+    from libracore.db import reintegros_pendientes
+    reintegros_pendientes.anotar(nota["id"], factura["id"], "devolver", "efectivo")   # como si no se hubiera borrado
+
+    r = _autorizar(base, nota)
+
+    assert r.status_code == 200 and r.json()["reintegro"]["ya_estaba"] is True
+    assert len(_egresos(factura)) == 1 and _anotados() == []
+
+
+def test_sin_destino_autorizar_la_nota_no_mueve_plata_ni_agrega_nada(sin_arca):
+    base, _, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura).json()
+    assert "reintegro" not in nota and _anotados() == []
+    habilitar_arca()
+
+    r = _autorizar(base, nota)
+
+    assert r.status_code == 200 and "reintegro" not in r.json()
+    assert _egresos(factura) == [] and _abonos(factura) == []
+
+
+def test_autorizar_una_factura_cualquiera_no_cambia_nada(sin_arca):
+    base, _, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    habilitar_arca()
+
+    r = _autorizar(base, factura)
+
+    assert r.status_code == 200 and "reintegro" not in r.json()
+    assert _egresos(factura) == []
+
+
+def test_si_ARCA_vuelve_a_rechazar_la_nota_la_anotacion_sigue_y_no_sale_plata(sin_arca):
+    base, _, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="devolver", medio_pago="efectivo").json()
+    habilitar_arca(rechaza="ARCA dijo que no")
+
+    r = _autorizar(base, nota)
+
+    assert r.status_code == 502, r.text
+    assert len(_anotados()) == 1 and _egresos(factura) == []
+
+
+def test_borrar_la_nota_sin_CAE_borra_su_anotacion_y_no_mueve_nada(sin_arca):
+    base, _, _ = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="devolver", medio_pago="efectivo").json()
+    assert len(_anotados()) == 1
+
+    assert base.delete(f"{API}/{nota['id']}", headers=ADMIN).status_code == 200
+
+    assert _anotados() == [] and _egresos(factura) == []
+
+
+def test_si_la_plata_no_se_pudo_mover_la_nota_queda_autorizada_y_reautorizar_lo_reintenta(sin_arca, monkeypatch):
+    base, _, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="devolver", medio_pago="efectivo").json()
+    habilitar_arca()
+    real = reintegro_de_nota.aplicar_pendiente
+
+    def falla(*a, **k):
+        raise RuntimeError("se cayó la base")
+
+    monkeypatch.setattr(reintegro_de_nota, "aplicar_pendiente", falla)
+    primera = _autorizar(base, nota)
+
+    assert primera.status_code == 200, "la nota ya está autorizada: no se tumba la request"
+    assert primera.json()["reintegro"]["movido"] is False and "no se pudo mover" in primera.json()["reintegro"]["motivo"]
+    assert base.get(f"{API}/{nota['id']}").json()["factura"]["cae"]
+    assert len(_anotados()) == 1 and _egresos(factura) == []
+
+    monkeypatch.setattr(reintegro_de_nota, "aplicar_pendiente", real)
+    segunda = _autorizar(base, nota)
+
+    assert segunda.json()["reintegro"]["movido"] is True
+    assert len(_egresos(factura)) == 1 and _anotados() == []
+
+
+def test_al_autorizar_sin_turno_abierto_y_con_turno_exigido_es_409_antes_de_pedir_el_CAE(sin_arca):
+    base, montar, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="devolver", medio_pago="efectivo").json()
+    habilitar_arca()
+    con_turno = montar(exigir_turno=True)
+
+    r = _autorizar(con_turno, nota)
+
+    assert r.status_code == 409 and "turno" in r.json()["detail"], r.text
+    assert montar.pedidos_de_cae == [], "no se le pidió nada a ARCA"
+    assert not base.get(f"{API}/{nota['id']}").json()["factura"]["cae"] and _egresos(factura) == []
+
+    turno, caja = _turno()
+    ok = _autorizar(con_turno, nota)
+
+    assert ok.status_code == 200, ok.text
+    (egreso,) = _egresos(factura)
+    assert (egreso["turno_id"], egreso["caja_id"]) == (turno, caja)
+
+
+def test_al_autorizar_dejar_a_favor_sin_cliente_es_422_antes_de_pedir_el_CAE(sin_arca):
+    base, montar, habilitar_arca = sin_arca
+    factura = _cobrada(base)
+    nota = _nota(base, factura, destino="a_favor").json()
+    with core.get_connection() as c:
+        c.execute("DELETE FROM clients")
+    habilitar_arca()
+
+    r = _autorizar(base, nota)
+
+    assert r.status_code == 422 and "cliente" in r.json()["detail"], r.text
+    assert montar.pedidos_de_cae == [] and len(_anotados()) == 1
 
 
 # ── Caja por turno ────────────────────────────────────────────────────────

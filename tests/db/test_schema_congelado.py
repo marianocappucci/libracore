@@ -140,6 +140,9 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
+        # 420 desde el 2026-10-18 (era 415), cuando entró `reintegros_pendientes` (5 columnas): el destino
+        # de la plata de una nota de crédito que salió sin CAE, para moverla cuando se autorice (ADR-067).
+        #
         # 415 desde el 2026-10-14 (era 406), cuando entró `envios_email` (9 columnas): el rastro de
         # cada envío por mail de un comprobante o un presupuesto (ADR-050).
         #
@@ -197,7 +200,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (415)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (420)"}
     finally:
         conn.close()
         _liberar()

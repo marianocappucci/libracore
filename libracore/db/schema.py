@@ -856,6 +856,19 @@ def init_core_schema(conn: Conexion):
         );
         CREATE INDEX IF NOT EXISTS idx_envios_email_documento
             ON envios_email(documento_tipo, documento_id);
+
+        -- A dónde va la plata de una nota de crédito de una factura al contado cobrada que todavía NO tiene
+        -- CAE (ADR-067, sobre el ADR-065): el destino que se eligió al emitir, para moverla cuando se autorice.
+        -- Una fila por nota. `/autorizar` la lee, mueve la plata y la borra en la misma transacción. Si la
+        -- nota se borra, la fila se va con ella. `medio_pago` es el ya resuelto (vacío con `a_favor`). Ojo:
+        -- este script se parte por el punto y coma, así que ningún comentario puede llevar uno.
+        CREATE TABLE IF NOT EXISTS reintegros_pendientes (
+            nota_id     INTEGER PRIMARY KEY REFERENCES facturas(id) ON DELETE CASCADE,
+            factura_id  INTEGER NOT NULL REFERENCES facturas(id) ON DELETE CASCADE,
+            destino     TEXT NOT NULL CHECK (destino IN ('devolver', 'a_favor')),
+            medio_pago  TEXT NOT NULL DEFAULT '',
+            created_at  TEXT DEFAULT (datetime('now','-3 hours'))
+        );
     """)
 
     if is_postgres():

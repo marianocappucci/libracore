@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (414)
+## tablas (419)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -353,6 +353,11 @@ recibos|pagos|text|NN|'[]'::text
 recibos|punto_venta|integer|NN|1
 recibos|total|numeric|NN|
 recibos|usuario_id|integer||
+reintegros_pendientes|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+reintegros_pendientes|destino|text|NN|
+reintegros_pendientes|factura_id|integer|NN|
+reintegros_pendientes|medio_pago|text|NN|''::text
+reintegros_pendientes|nota_id|integer|NN|
 remitos|client_address|text||
 remitos|client_cuit|text||
 remitos|client_email|text||
@@ -416,7 +421,7 @@ ventas|total|numeric|NN|0
 ventas|turno_id|integer||
 ventas|usuario_id|integer||
 
-## claves primarias (35)
+## claves primarias (36)
 arca_config|PRIMARY KEY (id)
 arca_credenciales_servicio|PRIMARY KEY (id)
 auth_log|PRIMARY KEY (id)
@@ -447,13 +452,14 @@ presupuestos|PRIMARY KEY (id)
 productos|PRIMARY KEY (id)
 proveedores|PRIMARY KEY (id)
 recibos|PRIMARY KEY (id)
+reintegros_pendientes|PRIMARY KEY (nota_id)
 remitos|PRIMARY KEY (id)
 turnos_caja|PRIMARY KEY (id)
 usuarios|PRIMARY KEY (id)
 ventas_pagos|PRIMARY KEY (id)
 ventas|PRIMARY KEY (id)
 
-## claves foráneas (47)
+## claves foráneas (49)
 caja_movimientos|caja_movimientos_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
 caja_movimientos|caja_movimientos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 caja_movimientos|fk_caja_movimientos_turno|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
@@ -491,6 +497,8 @@ presupuestos|presupuestos_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remi
 presupuestos|presupuestos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 recibos|recibos_cliente_id_fkey|FOREIGN KEY (cliente_id) REFERENCES clients(id) ON DELETE SET NULL
 recibos|recibos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
+reintegros_pendientes|reintegros_pendientes_factura_id_fkey|FOREIGN KEY (factura_id) REFERENCES facturas(id) ON DELETE CASCADE
+reintegros_pendientes|reintegros_pendientes_nota_id_fkey|FOREIGN KEY (nota_id) REFERENCES facturas(id) ON DELETE CASCADE
 remitos|remitos_client_id_fkey|FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL
 remitos|remitos_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 turnos_caja|turnos_caja_caja_id_fkey|FOREIGN KEY (caja_id) REFERENCES cajas(id) ON DELETE SET NULL
@@ -502,7 +510,7 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (70)
+## índices (71)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 arca_credenciales_servicio|arca_credenciales_servicio_empresa_servicio_ambiente_key|CREATE UNIQUE INDEX arca_credenciales_servicio_empresa_servicio_ambiente_key ON public.arca_credenciales_servicio USING btree (empresa, servicio, ambiente)
@@ -564,6 +572,7 @@ recibos|idx_recibos_cliente|CREATE INDEX idx_recibos_cliente ON public.recibos U
 recibos|idx_recibos_numero_unico|CREATE UNIQUE INDEX idx_recibos_numero_unico ON public.recibos USING btree (punto_venta, numero)
 recibos|idx_recibos_origen|CREATE INDEX idx_recibos_origen ON public.recibos USING btree (origen_tipo, origen_id)
 recibos|recibos_pkey|CREATE UNIQUE INDEX recibos_pkey ON public.recibos USING btree (id)
+reintegros_pendientes|reintegros_pendientes_pkey|CREATE UNIQUE INDEX reintegros_pendientes_pkey ON public.reintegros_pendientes USING btree (nota_id)
 remitos|remitos_number_key|CREATE UNIQUE INDEX remitos_number_key ON public.remitos USING btree (number)
 remitos|remitos_pkey|CREATE UNIQUE INDEX remitos_pkey ON public.remitos USING btree (id)
 turnos_caja|turnos_caja_pkey|CREATE UNIQUE INDEX turnos_caja_pkey ON public.turnos_caja USING btree (id)
@@ -574,7 +583,7 @@ ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON public.ventas USING btr
 ventas|ventas_numero_key|CREATE UNIQUE INDEX ventas_numero_key ON public.ventas USING btree (numero)
 ventas|ventas_pkey|CREATE UNIQUE INDEX ventas_pkey ON public.ventas USING btree (id)
 
-## checks (9)
+## checks (10)
 arca_credenciales_servicio|arca_credenciales_servicio_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
 arca_credenciales_servicio|arca_credenciales_servicio_servicio_check|CHECK ((servicio <> ''::text))
 cc_asientos|cc_asientos_check1|CHECK (((((debe)::double precision > (0)::double precision) AND ((haber)::double precision = (0)::double precision)) OR (((haber)::double precision > (0)::double precision) AND ((debe)::double precision = (0)::double precision)) OR (origen_legado IS NOT NULL)))
@@ -583,4 +592,5 @@ cc_asientos|cc_asientos_rol_check|CHECK ((rol <> ''::text))
 facturacion_alias|facturacion_alias_tipo_check|CHECK ((tipo = ANY (ARRAY['cuit'::text, 'email'::text])))
 facturas|facturas_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
 productos|productos_tipo_check|CHECK ((tipo = ANY (ARRAY['producto'::text, 'servicio'::text])))
+reintegros_pendientes|reintegros_pendientes_destino_check|CHECK ((destino = ANY (ARRAY['devolver'::text, 'a_favor'::text])))
 ventas_pagos|ventas_pagos_estado_check|CHECK ((estado = ANY (ARRAY['pendiente'::text, 'aprobado'::text, 'rechazado'::text, 'vencido'::text])))
