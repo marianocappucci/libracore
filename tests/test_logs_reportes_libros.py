@@ -4,12 +4,12 @@ los generadores REGINFO."""
 
 from __future__ import annotations
 
-import datetime
 import importlib
 
 import pytest
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
+from fechas import desde_del_mes, hoy
 
 from libracore import libros_iva as li
 from libracore.db import cierre_diario as db_cierre_diario
@@ -21,10 +21,6 @@ from libracore.logs_router import TIPO_META, build_logs_export_router, build_log
 from libracore.reportes import MEDIO_LABEL, PuertoDeReportes, pivot_caja_medios, totales_por_medio
 from libracore.reportes_router import build_reportes_export_router, build_reportes_router
 
-HOY = datetime.date.today().isoformat()
-#: El primer día del mes en curso: los datos de la fixture están fechados HOY, así que un rango FIJO (p. ej. septiembre) los deja
-#: afuera apenas cambia el mes y el test se rompe solo.
-DESDE_DEL_MES = datetime.date.today().replace(day=1).isoformat()
 ADMIN = {"x-rol": "admin"}
 
 
@@ -47,10 +43,10 @@ def entorno(tmp_path, monkeypatch):
     db_cierre_diario.crear_tablas(conn)
     conn.execute("INSERT INTO usuarios (id, username, nombre, password_hash, role) VALUES (7, 'ana', 'Ana', 'x', 'admin')")
     conn.execute("INSERT INTO ventas (numero, fecha, items, subtotal, descuento, total, cliente_nombre, usuario_id, estado) "
-                 "VALUES ('V-1', ?, '[]', 100, 0, 100, 'Cli', 7, 'cobrada')", (HOY,))
-    conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago, usuario_id) VALUES (?, 'ingreso', 'Venta V-1', 100, 'efectivo', 7)", (HOY,))
-    conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago) VALUES (?, 'egreso', 'Hielo', 30, 'efectivo')", (HOY,))
-    conn.execute("INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial) VALUES (7, ?, 500)", (HOY + " 08:00:00",))
+                 "VALUES ('V-1', ?, '[]', 100, 0, 100, 'Cli', 7, 'cobrada')", (hoy(),))
+    conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago, usuario_id) VALUES (?, 'ingreso', 'Venta V-1', 100, 'efectivo', 7)", (hoy(),))
+    conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago) VALUES (?, 'egreso', 'Hielo', 30, 'efectivo')", (hoy(),))
+    conn.execute("INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial) VALUES (7, ?, 500)", (hoy() + " 08:00:00",))
     conn.commit()
     conn.close()
     cm.save({"empresa_cuit": "20111111112"})
@@ -69,7 +65,7 @@ def test_las_partes_del_log_se_componen(entorno):
     solo_core = db_logs.get_actividad_log(partes=db_logs.PARTES_CORE)
     assert sorted({f["tipo"] for f in solo_core}) == ["caja", "turno"]
     # La fecha del turno es TEXT (substr), no DATE: filtra como las otras.
-    assert db_logs.get_actividad_log(tipos=["turno"], desde=HOY, hasta=HOY)[0]["fecha"] == HOY
+    assert db_logs.get_actividad_log(tipos=["turno"], desde=hoy(), hasta=hoy())[0]["fecha"] == hoy()
     assert db_logs.get_actividad_log(usuario_id=7, tipos=["caja"])[0]["descripcion"] == "ingreso: Venta V-1"
     assert db_logs.get_actividad_log(usuario_id=99) == []
     assert db_logs.get_actividad_count(turno_id=1) == 1
@@ -87,14 +83,14 @@ def test_el_cierre_diario_entra_a_la_linea_de_tiempo(entorno):
                (sucursal_id, numero, fecha, usuario_id, monto_esperado_total,
                 monto_declarado_total, diferencia_total)
                VALUES (NULL, 1, ?, 7, 1000, 900, -100)""",
-            (HOY,),
+            (hoy(),),
         )
         conn.commit()
 
     filas = db_logs.get_actividad_log(tipos=["cierre_diario"])
     assert len(filas) == 1
     fila = filas[0]
-    assert fila["fecha"] == HOY
+    assert fila["fecha"] == hoy()
     assert fila["usuario"] == "Ana"
     assert fila["ref_tabla"] == "cierres_diarios"
     assert "Cierre diario #1" in fila["descripcion"]
@@ -182,17 +178,17 @@ def test_reportes_router_con_el_puerto_del_producto(entorno):
     app.include_router(build_reportes_router(reportes=puerto))
     app.include_router(build_reportes_export_router(sesion=_gate_admin, reportes=puerto))
     client = TestClient(app)
-    r = client.get(f"/api/reportes?desde={DESDE_DEL_MES}&hasta={HOY}&agrupacion=mes").json()
-    assert r["ventas_ts"][0]["periodo"] == DESDE_DEL_MES and r["agrupacion"] == "mes"
+    r = client.get(f"/api/reportes?desde={desde_del_mes()}&hasta={hoy()}&agrupacion=mes").json()
+    assert r["ventas_ts"][0]["periodo"] == desde_del_mes() and r["agrupacion"] == "mes"
     assert r["caja"][0]["tipo"] in ("ingreso", "egreso") and r["stock_bajo"][0]["nombre"] == "Yerba"
     assert r["medio_label"]["efectivo"] == "Efectivo" and r["resumen"]["ventas_total"] == 100.0
     # Sin fechas, el mes en curso.
-    assert client.get("/api/reportes").json()["hasta"] == HOY
+    assert client.get("/api/reportes").json()["hasta"] == hoy()
     cm = client.get("/api/reportes/caja-medios").json()
     assert cm["cajas"][0]["saldo"] == 70.0 and cm["totales"]["efectivo"]["ingresos"] == 100.0 and cm["cajas_config"][0]["nombre"]
     assert client.get("/reportes/export/ventas").status_code == 403
-    r = client.get(f"/reportes/export/ventas?desde={DESDE_DEL_MES}&hasta={HOY}", headers=ADMIN)
-    assert r.headers["content-disposition"].endswith(f'ventas_{DESDE_DEL_MES}_{HOY}.csv"') and "periodo,cantidad,total" in r.text
+    r = client.get(f"/reportes/export/ventas?desde={desde_del_mes()}&hasta={hoy()}", headers=ADMIN)
+    assert r.headers["content-disposition"].endswith(f'ventas_{desde_del_mes()}_{hoy()}.csv"') and "periodo,cantidad,total" in r.text
     assert "efectivo,1,100.0" in client.get("/reportes/export/medios", headers=ADMIN).text
     r = client.get("/reportes/export/productos", headers=ADMIN)
     assert "Yerba,2,100.0" in r.text and limites[-1] == 500  # el export pide 500, la pantalla 20
@@ -212,9 +208,9 @@ def _con_fiado(entorno):
     movimiento por cada medio, cuenta corriente incluido) y una anulada."""
     with core.get_connection() as conn:
         conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago) "
-                     "VALUES (?, 'ingreso', 'Venta V-2 (fiado)', 500, 'cuenta_corriente')", (HOY,))
+                     "VALUES (?, 'ingreso', 'Venta V-2 (fiado)', 500, 'cuenta_corriente')", (hoy(),))
         conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago, anulado) "
-                     "VALUES (?, 'ingreso', 'Venta V-3 anulada', 999, 'efectivo', 1)", (HOY,))
+                     "VALUES (?, 'ingreso', 'Venta V-3 anulada', 999, 'efectivo', 1)", (hoy(),))
         conn.commit()
 
 
@@ -283,16 +279,16 @@ def test_libros_iva_router_y_exports(entorno):
     with core.get_connection() as conn:
         conn.execute(
             "INSERT INTO facturas (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, cliente_iva_cond, "
-            "items, subtotal, iva_amount, total, ambiente, cae) VALUES (6, 1, 1, ?, '20111111112', 'Ana', 1, '[]', 1000, 210, 1210, 'produccion', '123')", (HOY,))
+            "items, subtotal, iva_amount, total, ambiente, cae) VALUES (6, 1, 1, ?, '20111111112', 'Ana', 1, '[]', 1000, 210, 1210, 'produccion', '123')", (hoy(),))
         conn.execute(
             "INSERT INTO egresos (fecha, concepto, total, tipo_comprobante, numero, monto_neto, iva_pct, iva_monto) "
-            "VALUES (?, 'Harina', 1210, 'factura', '0001-00000009', 1000, 0.21, 210)", (HOY,))
+            "VALUES (?, 'Harina', 1210, 'factura', '0001-00000009', 1000, 0.21, 210)", (hoy(),))
     app = FastAPI()
     app.include_router(build_libros_iva_router())
     app.include_router(build_libros_iva_export_router(solo_admin=_gate_admin))
     client = TestClient(app)
     r = client.get("/api/libros-iva").json()
-    assert r["empresa_cuit"] == "20111111112" and r["hasta"] == HOY
+    assert r["empresa_cuit"] == "20111111112" and r["hasta"] == hoy()
     assert r["resumen_v"]["cbtes"] == len(r["facturas"]) and r["resumen_c"]["total"] == 1210.0
     assert client.get("/libros-iva/export/ventas-cbte").status_code == 403
     for ruta, prefijo in (("ventas-cbte", "REGINFO_CV_VENTAS_CBTE_"), ("ventas-alicuotas", "REGINFO_CV_VENTAS_ALICUOTAS_"),

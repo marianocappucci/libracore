@@ -7,11 +7,10 @@ router la cablee bien -- listar/detalle/pdf, los tres orígenes, el gate de
 
 from __future__ import annotations
 
-import datetime
-
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from fechas import hoy
 
 from libracore.db import caja as db_caja
 from libracore.db import core
@@ -20,7 +19,6 @@ from libracore.db import facturas as db_facturas
 from libracore.db.schema import init_core_schema
 from libracore.recibos_router import build_recibos_router
 
-HOY = datetime.date.today().isoformat()
 USUARIO = {"id": 7, "username": "cajero", "role": "staff"}
 
 
@@ -59,19 +57,19 @@ def client(conn, request):
 
 def _crear_pago(monto=1000.0):
     return db_cc.create_cc_pago(
-        cliente_id=1, monto=monto, fecha=HOY, concepto="Pago a cuenta",
+        cliente_id=1, monto=monto, fecha=hoy(), concepto="Pago a cuenta",
         referencia="", medio_pago="efectivo", caja_id=None, usuario_id=7,
     )
 
 
 def _crear_factura_cobrada(total=5000.0):
     factura_id = db_facturas.create_factura(
-        tipo=6, punto_venta=1, numero=1, fecha=HOY, cliente_cuit="20111111119",
+        tipo=6, punto_venta=1, numero=1, fecha=hoy(), cliente_cuit="20111111119",
         cliente_razon="Kiosco SRL", cliente_iva_cond="CF", items=[], subtotal=total,
         iva_amount=0, total=total, ambiente="produccion",
     )
     db_caja.create_caja_movimiento(
-        fecha=HOY, tipo="ingreso", concepto="Cobro factura", monto=total,
+        fecha=hoy(), tipo="ingreso", concepto="Cobro factura", monto=total,
         referencia="r1", factura_id=factura_id, usuario_id=7, medio_pago="efectivo",
     )
     return factura_id
@@ -121,7 +119,7 @@ def test_emitir_de_factura(client):
 
 def test_factura_sin_cobros_da_409(client):
     factura_id = db_facturas.create_factura(
-        tipo=6, punto_venta=1, numero=2, fecha=HOY, cliente_cuit="20111111119",
+        tipo=6, punto_venta=1, numero=2, fecha=hoy(), cliente_cuit="20111111119",
         cliente_razon="Kiosco SRL", cliente_iva_cond="CF", items=[], subtotal=100,
         iva_amount=0, total=100, ambiente="produccion",
     )
@@ -138,7 +136,7 @@ def test_venta_inexistente_da_409_con_el_default_del_motor(client):
 
 
 @pytest.mark.parametrize("client", [lambda vid: {
-    "id": vid, "numero": 501, "fecha": HOY, "cliente_nombre": "Mostrador",
+    "id": vid, "numero": 501, "fecha": hoy(), "cliente_nombre": "Mostrador",
     "cliente_id": None, "cliente_cuit": None, "cliente_domicilio": None,
     "pagos": [{"medio": "efectivo", "referencia": "", "monto": 750.0}],
 }], indirect=True)

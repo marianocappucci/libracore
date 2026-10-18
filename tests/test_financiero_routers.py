@@ -4,11 +4,10 @@ en sus suites, sin el gate por módulo."""
 
 from __future__ import annotations
 
-import datetime
-
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from fechas import hoy
 
 from libracore.clientes_router import build_clientes_router
 from libracore.cuenta_corriente_router import (
@@ -23,7 +22,6 @@ from libracore.db.schema import init_core_schema
 from libracore.egresos_router import build_egresos_router, build_proveedores_router
 from libracore.tesoreria_router import build_tesoreria_router
 
-HOY = datetime.date.today().isoformat()
 USUARIO = {"id": 7, "username": "cajero", "role": "admin"}
 
 
@@ -100,7 +98,7 @@ def test_no_se_desactiva_un_cliente_con_presupuestos_aprobados(client):
     with core.get_connection() as conn:
         conn.execute(
             "INSERT INTO presupuestos (number, date, valid_until, client_id, client_name, status, items, subtotal, tax_amount, total) "
-            "VALUES ('P-1', ?, ?, ?, 'Ana', 'aceptado', '[]', 10, 0, 10)", (HOY, HOY, cid))
+            "VALUES ('P-1', ?, ?, ?, 'Ana', 'aceptado', '[]', 10, 0, 10)", (hoy(), hoy(), cid))
     r = client.post(f"/api/clientes/{cid}/desactivar")
     assert r.status_code == 422 and "presupuestos aprobados" in r.json()["detail"]
 
@@ -168,15 +166,15 @@ def test_tesoreria(client):
     assert client.put(f"/api/tesoreria/cuentas/{a['id']}", json={"nombre": "Banco Nación"}).json()["nombre"] == "Banco Nación"
     assert client.put(f"/api/tesoreria/cuentas/{a['id']}", json={"nombre": " "}).status_code == 422
     assert client.put("/api/tesoreria/cuentas/999", json={"nombre": "X"}).status_code == 404
-    for cuerpo in ({"tipo": "ingreso", "monto": 0, "concepto": "x", "fecha": HOY}, {"tipo": "ingreso", "monto": 5, "concepto": " ", "fecha": HOY}):
+    for cuerpo in ({"tipo": "ingreso", "monto": 0, "concepto": "x", "fecha": hoy()}, {"tipo": "ingreso", "monto": 5, "concepto": " ", "fecha": hoy()}):
         assert client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json=cuerpo).status_code == 422
-    assert client.post("/api/tesoreria/cuentas/999/movimiento", json={"tipo": "ingreso", "monto": 5, "concepto": "x", "fecha": HOY}).status_code == 404
-    r = client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json={"tipo": "ingreso", "monto": 500, "concepto": "Cobro", "fecha": HOY})
+    assert client.post("/api/tesoreria/cuentas/999/movimiento", json={"tipo": "ingreso", "monto": 5, "concepto": "x", "fecha": hoy()}).status_code == 404
+    r = client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json={"tipo": "ingreso", "monto": 500, "concepto": "Cobro", "fecha": hoy()})
     assert r.status_code == 200
-    assert client.post("/api/tesoreria/transferencia", json={"cuenta_origen_id": a["id"], "cuenta_destino_id": a["id"], "monto": 1, "fecha": HOY}).status_code == 422
-    assert client.post("/api/tesoreria/transferencia", json={"cuenta_origen_id": a["id"], "cuenta_destino_id": b["id"], "monto": 0, "fecha": HOY}).status_code == 422
-    assert client.post("/api/tesoreria/transferencia", json={"cuenta_origen_id": a["id"], "cuenta_destino_id": 999, "monto": 1, "fecha": HOY}).status_code == 404
-    assert client.post("/api/tesoreria/transferencia", json={"cuenta_origen_id": a["id"], "cuenta_destino_id": b["id"], "monto": 200, "fecha": HOY}).json() == {"ok": True}
+    assert client.post("/api/tesoreria/transferencia", json={"cuenta_origen_id": a["id"], "cuenta_destino_id": a["id"], "monto": 1, "fecha": hoy()}).status_code == 422
+    assert client.post("/api/tesoreria/transferencia", json={"cuenta_origen_id": a["id"], "cuenta_destino_id": b["id"], "monto": 0, "fecha": hoy()}).status_code == 422
+    assert client.post("/api/tesoreria/transferencia", json={"cuenta_origen_id": a["id"], "cuenta_destino_id": 999, "monto": 1, "fecha": hoy()}).status_code == 404
+    assert client.post("/api/tesoreria/transferencia", json={"cuenta_origen_id": a["id"], "cuenta_destino_id": b["id"], "monto": 200, "fecha": hoy()}).json() == {"ok": True}
     det = client.get(f"/api/tesoreria/cuentas/{b['id']}").json()
     # La transferencia aparece en las dos cuentas: la salida de A y la entrada de B.
     assert det["cuenta"]["id"] == b["id"] and {m["tipo"] for m in det["movimientos"]} == {"transferencia_entrada", "transferencia_salida"}
@@ -201,14 +199,14 @@ def test_tesoreria_los_saldos(client):
     a = client.post("/api/tesoreria/cuentas", json={"nombre": "Banco Nacion", "tipo": "banco", "saldo_inicial": 10000.0}).json()
     assert saldo(a["id"]) == 10000.0, "el saldo inicial cuenta"
 
-    client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json={"tipo": "ingreso", "monto": 500.0, "concepto": "Cobranza", "fecha": HOY})
+    client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json={"tipo": "ingreso", "monto": 500.0, "concepto": "Cobranza", "fecha": hoy()})
     assert saldo(a["id"]) == 10500.0
-    client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json={"tipo": "egreso", "monto": 300.0, "concepto": "Pago proveedor", "fecha": HOY})
+    client.post(f"/api/tesoreria/cuentas/{a['id']}/movimiento", json={"tipo": "egreso", "monto": 300.0, "concepto": "Pago proveedor", "fecha": hoy()})
     assert saldo(a["id"]) == 10200.0, "el egreso resta"
 
     b = client.post("/api/tesoreria/cuentas", json={"nombre": "Destino", "tipo": "banco", "saldo_inicial": 0.0}).json()
     r = client.post("/api/tesoreria/transferencia", json={
-        "cuenta_origen_id": a["id"], "cuenta_destino_id": b["id"], "monto": 2000.0, "fecha": HOY})
+        "cuenta_origen_id": a["id"], "cuenta_destino_id": b["id"], "monto": 2000.0, "fecha": hoy()})
     assert r.status_code == 200, r.text
     assert saldo(a["id"]) == 8200.0, "la salida resta del origen"
     assert saldo(b["id"]) == 2000.0, "la entrada suma al destino"
@@ -220,7 +218,7 @@ def test_tesoreria_los_saldos(client):
 def _cliente_con_deuda(client, monto=1000.0):
     cid = client.post("/api/clientes", json={"name": "Deudor"}).json()["id"]
     # Por el escritor del motor, que lo lleva al libro: la cuenta se lee de ahí (ADR-029).
-    create_cc_debito(cid, monto, HOY, "Fiado")
+    create_cc_debito(cid, monto, hoy(), "Fiado")
     return cid
 
 
@@ -232,14 +230,14 @@ def test_cuenta_corriente_sin_recibos(client):
     assert client.get("/api/cuenta-corriente/cajas").json()[0]["nombre"]
     assert client.get("/api/cuenta-corriente/999").status_code == 404
     assert client.get(f"/api/cuenta-corriente/{cid}").json()["saldo"] == 1000.0
-    assert client.post("/api/cuenta-corriente/999/pagar", json={"monto": 1, "fecha": HOY}).status_code == 404
+    assert client.post("/api/cuenta-corriente/999/pagar", json={"monto": 1, "fecha": hoy()}).status_code == 404
     caja = client.get("/api/cuenta-corriente/cajas").json()[0]["id"]
-    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": HOY, "caja_id": caja, "medio_pago": "efectivo"}).json()
+    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": hoy(), "caja_id": caja, "medio_pago": "efectivo"}).json()
     assert r["saldo"] == 600.0 and "recibo_id" not in r
     with core.get_connection() as conn:
         assert conn.execute("SELECT concepto FROM caja_movimientos").fetchone()["concepto"] == "Pago CC - Deudor"
     # Sin caja no hay movimiento.
-    client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 100, "fecha": HOY})
+    client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 100, "fecha": hoy()})
     with core.get_connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM caja_movimientos").fetchone()[0] == 1
         pago_id = conn.execute("SELECT MAX(id) FROM cc_pagos").fetchone()[0]
@@ -256,7 +254,7 @@ def test_cuenta_corriente_con_recibos(client, monkeypatch, tmp_path):
 
     monkeypatch.setattr(pdf_gen, "FACTURAS_PDF_DIR", str(tmp_path / "pdf"))
     cid = _cliente_con_deuda(client)
-    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": HOY}).json()
+    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": hoy()}).json()
     assert r["recibo_id"], "el recibo sale con el cobro"
     with core.get_connection() as conn:
         pago_id = conn.execute("SELECT MAX(id) FROM cc_pagos").fetchone()[0]
@@ -268,7 +266,7 @@ def test_cuenta_corriente_con_recibos(client, monkeypatch, tmp_path):
     from libracore import recibos as mod_recibos
 
     monkeypatch.setattr(mod_recibos, "emitir_recibo_cobranza", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("sin pdf")))
-    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 100, "fecha": HOY}).json()
+    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 100, "fecha": hoy()}).json()
     assert r["recibo_id"] is None and r["saldo"] == 900.0
 
 
@@ -296,7 +294,7 @@ def test_los_ganchos_deciden_la_caja_el_turno_y_la_referencia_del_pago(entorno):
     client = _client_con_opciones(entorno, OpcionesCuentaCorriente(validar_pago=validar))
     cid = _cliente_con_deuda(client)
     r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={
-        "monto": 400, "fecha": HOY, "referencia": "lo-que-escribio-el-usuario", "caja_id": 999,
+        "monto": 400, "fecha": hoy(), "referencia": "lo-que-escribio-el-usuario", "caja_id": 999,
     })
     assert r.status_code == 200, r.text
     assert vistos["usuario"] == USUARIO["id"]
@@ -315,7 +313,7 @@ def test_el_gancho_puede_rechazar_el_pago_y_no_queda_nada(entorno):
 
     client = _client_con_opciones(entorno, OpcionesCuentaCorriente(validar_pago=validar))
     cid = _cliente_con_deuda(client)
-    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": HOY})
+    r = client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": hoy()})
     assert r.status_code == 409 and "turno" in r.json()["detail"]
     with core.get_connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM cc_pagos").fetchone()[0] == 0
@@ -340,7 +338,7 @@ def test_al_eliminar_un_pago_el_gancho_corre_antes_y_puede_frenar_la_baja(entorn
 
     client = _client_con_opciones(entorno, OpcionesCuentaCorriente(al_eliminar_pago=al_eliminar))
     cid = _cliente_con_deuda(client)
-    client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": HOY})
+    client.post(f"/api/cuenta-corriente/{cid}/pagar", json={"monto": 400, "fecha": hoy()})
     with core.get_connection() as conn:
         pago_id = conn.execute("SELECT MAX(id) FROM cc_pagos").fetchone()[0]
 
@@ -363,9 +361,9 @@ def test_dashboard_y_el_extra_del_producto(entorno):
     with core.get_connection() as conn:
         conn.execute(
             "INSERT INTO facturas (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, cliente_iva_cond, "
-            "items, subtotal, iva_amount, total, ambiente) VALUES (11, 5, 11, ?, '', 'CF', 5, '[]', 100, 0, 100, 'produccion')", (HOY,))
+            "items, subtotal, iva_amount, total, ambiente) VALUES (11, 5, 11, ?, '', 'CF', 5, '[]', 100, 0, 100, 'produccion')", (hoy(),))
     d = client.get("/api/dashboard").json()
-    assert d["mes_hasta"] == HOY and d["salon"] == HOY
+    assert d["mes_hasta"] == hoy() and d["salon"] == hoy()
     assert d["facturas_sin_cobrar"][0]["letra"] == "C" and d["facturas_sin_cobrar"][0]["label_numero"] == "0005-00000011"
     assert d["facturado_mes"] == 100.0
 
@@ -377,16 +375,16 @@ def _con_fiado(conn, numero_factura: int):
     conn.execute(
         "INSERT INTO facturas (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, cliente_iva_cond, "
         "items, subtotal, iva_amount, total, ambiente) VALUES (11, 5, ?, ?, '', 'CF', 5, '[]', 500, 0, 500, 'produccion')",
-        (numero_factura, HOY),
+        (numero_factura, hoy()),
     )
     fid = conn.execute("SELECT id FROM facturas WHERE numero=?", (numero_factura,)).fetchone()[0]
     conn.execute(
         "INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago, factura_id) "
-        "VALUES (?, 'ingreso', 'Venta a cuenta corriente', 500, 'cuenta_corriente', ?)", (HOY, fid),
+        "VALUES (?, 'ingreso', 'Venta a cuenta corriente', 500, 'cuenta_corriente', ?)", (hoy(), fid),
     )
     conn.execute(
         "INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago) "
-        "VALUES (?, 'ingreso', 'Venta en efectivo', 100, 'efectivo')", (HOY,),
+        "VALUES (?, 'ingreso', 'Venta en efectivo', 100, 'efectivo')", (hoy(),),
     )
     conn.commit()
 

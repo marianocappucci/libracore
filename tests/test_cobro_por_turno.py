@@ -10,12 +10,12 @@ En SQLite y en PostgreSQL. Cada test mira lo escrito en la base, no sólo el sta
 
 from __future__ import annotations
 
-import datetime
 import threading
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from fechas import hoy
 from test_facturas_router import API, USUARIO, _emitir, _montar
 
 from libracore import cobros
@@ -25,7 +25,6 @@ from libracore.db import core
 from libracore.db import turnos as db_turnos
 from libracore.db.clients import create_client
 
-HOY = datetime.date.today().isoformat()
 ITEMS = [{"description": "Servicio", "qty": 1, "unit_price": 1000.0}]
 SIN_TURNO = "No hay una caja abierta. Abrí el turno antes de cobrar."
 
@@ -88,7 +87,7 @@ def test_el_cobro_entra_en_el_turno_abierto_con_su_caja_su_dueno_y_el_dia_de_hoy
     assert r.status_code == 200, r.text
     (mov,) = _movimientos(factura)
     # La caja y el día los define el turno, no el pedido (aceptarlos sería una segunda puerta).
-    assert (mov["turno_id"], mov["caja_id"], mov["usuario_id"], mov["fecha"]) == (turno, caja, 1, HOY)
+    assert (mov["turno_id"], mov["caja_id"], mov["usuario_id"], mov["fecha"]) == (turno, caja, 1, hoy())
     # Y es lo que el arqueo cuenta: la razón de ser de todo esto.
     assert db_turnos.get_resumen_turno_caja(turno)["pagos_por_medio"]["efectivo"] == 1000.0
 
@@ -248,13 +247,13 @@ def test_transaccion_de_cobro_escribe_con_el_tope_y_confirma_al_salir(emisor):
     turno, _caja = _turno()
 
     with cobros.transaccion_de_cobro(factura["id"], 600.0) as c:
-        db_caja.create_caja_movimiento(HOY, "ingreso", "Cobro de la agenda", 600.0, factura_id=factura["id"],
+        db_caja.create_caja_movimiento(hoy(), "ingreso", "Cobro de la agenda", 600.0, factura_id=factura["id"],
                                        medio_pago="efectivo", turno_id=turno, conn=c)
     assert [m["monto"] for m in _movimientos(factura)] == [600.0]
 
     with pytest.raises(cobros.CobroNoPermitido) as exc:
         with cobros.transaccion_de_cobro(factura["id"], 500.0) as c:
-            db_caja.create_caja_movimiento(HOY, "ingreso", "Cobro de la agenda", 500.0, factura_id=factura["id"],
+            db_caja.create_caja_movimiento(hoy(), "ingreso", "Cobro de la agenda", 500.0, factura_id=factura["id"],
                                            medio_pago="efectivo", turno_id=turno, conn=c)
     assert exc.value.codigo == cobros.CobroNoPermitido.EXCEDE and "$ 400,00" in str(exc.value)
     assert [m["monto"] for m in _movimientos(factura)] == [600.0], "el rechazo no escribe"
@@ -267,7 +266,7 @@ def test_transaccion_de_cobro_deshace_lo_escrito_si_algo_falla_adentro(emisor):
 
     with pytest.raises(RuntimeError):
         with cobros.transaccion_de_cobro(factura["id"], 600.0) as c:
-            db_caja.create_caja_movimiento(HOY, "ingreso", "Cobro", 600.0, factura_id=factura["id"],
+            db_caja.create_caja_movimiento(hoy(), "ingreso", "Cobro", 600.0, factura_id=factura["id"],
                                            medio_pago="efectivo", turno_id=turno, conn=c)
             raise RuntimeError("se cayó antes de confirmar")
 

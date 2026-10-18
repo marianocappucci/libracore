@@ -6,17 +6,16 @@ pero las dos facturas quedaron "Sin cobrar" para siempre, porque sólo el cobro
 de una factura escribe el movimiento de caja que la marca "Cobrada". Y
 "Registrar cobro" después las habría cobrado dos veces.
 """
-import datetime
 
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from fechas import hoy
 
 from libracore.cuenta_corriente_router import build_cuenta_corriente_router
 from libracore.db import caja, core, cuenta_corriente
 from libracore.db.schema import init_core_schema
 
-HOY = datetime.date.today().isoformat()
 CUIT_FICHA = "30-66513816-6"
 CUIT_FACTURA = "30665138166"
 
@@ -73,7 +72,7 @@ def _factura(numero, total, fecha="2026-08-28", cae="123", cond="Cuenta Corrient
 def _pagar(client, monto, **extra):
     caja = 1
     return client.post("/api/cuenta-corriente/1/pagar", json={
-        "monto": monto, "fecha": HOY, "caja_id": caja, "medio_pago": "transferencia",
+        "monto": monto, "fecha": hoy(), "caja_id": caja, "medio_pago": "transferencia",
         "referencia": "Transf. 2348", **extra})
 
 
@@ -103,7 +102,7 @@ def test_no_son_pendientes_las_notas_las_sin_cae_las_de_contado_ni_las_anuladas(
     con_cobro = _factura(6, 100)
     with core.get_connection() as conn:
         conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, factura_id, medio_pago)"
-                     " VALUES (?, 'ingreso', 'Cobro', 100, ?, 'efectivo')", (HOY, con_cobro))
+                     " VALUES (?, 'ingreso', 'Cobro', 100, ?, 'efectivo')", (hoy(), con_cobro))
     assert anulada and cuenta_corriente.get_facturas_pendientes_cc(1) == []
 
 
@@ -111,7 +110,7 @@ def test_un_cobro_parcial_deja_el_resto_pendiente(client):
     fid = _factura(74, 1000)
     with core.get_connection() as conn:
         conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, factura_id, medio_pago)"
-                     " VALUES (?, 'ingreso', 'Cobro', 400, ?, 'efectivo')", (HOY, fid))
+                     " VALUES (?, 'ingreso', 'Cobro', 400, ?, 'efectivo')", (hoy(), fid))
     assert cuenta_corriente.get_facturas_pendientes_cc(1)[0]["pendiente"] == 600
 
 
@@ -168,7 +167,7 @@ def test_aplicar_a_una_factura_que_no_esta_pendiente_se_rechaza_sin_escribir_nad
 def test_sin_caja_igual_queda_el_cobro_ligado_a_la_factura(client):
     f74 = _factura(74, 920000)
     client.post("/api/cuenta-corriente/1/pagar", json={
-        "monto": 920000, "fecha": HOY, "medio_pago": "transferencia", "facturas": [f74]})
+        "monto": 920000, "fecha": hoy(), "medio_pago": "transferencia", "facturas": [f74]})
     assert _cobrado(f74) == 920000
 
 
@@ -177,7 +176,7 @@ def test_venta_fiada_de_ventalibra_y_facturada_no_duplica_la_deuda_y_se_puede_co
     Al facturar la venta la factura sale 'Cuenta Corriente' pero sin ningún movimiento de cuenta
     corriente: la deuda es la de `cc_debitos`, una sola vez, y la factura aparece pendiente."""
     fid = _factura(9, 9000, cond="Cuenta Corriente", con_debito=False)
-    cuenta_corriente.create_cc_debito(1, 9000, HOY, "Venta POS-000009", "sale-9")
+    cuenta_corriente.create_cc_debito(1, 9000, hoy(), "Venta POS-000009", "sale-9")
     detalle = client.get("/api/cuenta-corriente/1").json()
     assert detalle["saldo"] == 9000                        # no se cuenta dos veces
     assert [p["id"] for p in detalle["facturas_pendientes"]] == [fid]
@@ -235,10 +234,10 @@ def test_la_baja_no_toca_los_cobros_de_otros_pagos_ni_los_pagos_anteriores_a_la_
     _pagar(client, 573750, facturas=[f75])
     # Un pago viejo: sin `cc_pago_id` en su movimiento. Darlo de baja sigue sin tocar nada de caja.
     with core.get_connection() as conn:
-        conn.execute("INSERT INTO cc_pagos (cliente_id, monto, fecha, concepto) VALUES (1, 10, ?, 'viejo')", (HOY,))
+        conn.execute("INSERT INTO cc_pagos (cliente_id, monto, fecha, concepto) VALUES (1, 10, ?, 'viejo')", (hoy(),))
         viejo = conn.execute("SELECT MAX(id) FROM cc_pagos").fetchone()[0]
         conn.execute("INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, medio_pago)"
-                     " VALUES (?, 'ingreso', 'Pago CC - viejo', 10, 'efectivo')", (HOY,))
+                     " VALUES (?, 'ingreso', 'Pago CC - viejo', 10, 'efectivo')", (hoy(),))
     _eliminar(client, viejo)
     with core.get_connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM caja_movimientos WHERE concepto='Pago CC - viejo' AND anulado=0"

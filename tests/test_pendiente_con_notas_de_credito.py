@@ -13,9 +13,8 @@ En SQLite y en PostgreSQL: los fragmentos de SQL son los mismos, pero el motor q
 
 from __future__ import annotations
 
-import datetime
-
 import pytest
+from fechas import hoy, periodo
 
 from libracore import cobros, notas_de_credito
 from libracore import tipos_comprobante as tipos
@@ -27,8 +26,6 @@ from libracore.db.dashboard import get_dashboard_data
 from libracore.db.resumen import get_resumen_core
 from libracore.db.schema import init_core_schema
 
-HOY = datetime.date.today().isoformat()
-PERIODO = (HOY[:8] + "01", HOY)
 CUIT = "20304050607"
 
 # (nombre, total, cobros, notas, pendiente esperado)
@@ -80,7 +77,7 @@ def _factura(numero=1, total=1000.0, *, cond="Contado", tipo=11, cae="123", emis
             "INSERT INTO facturas (tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, items, subtotal,"
             " iva_amount, total, cae, condicion_venta, emisor_id, ambiente, cbte_asoc_tipo, cbte_asoc_pv,"
             " cbte_asoc_nro, anulada_en) VALUES (?,5,?,?,?,?,'[]',?,0,?,?,?,?,?,?,?,?,?)",
-            (tipo, numero, HOY, CUIT, "Juan Perez", total, total, cae, cond, emisor_id, ambiente, *asoc,
+            (tipo, numero, hoy(), CUIT, "Juan Perez", total, total, cae, cond, emisor_id, ambiente, *asoc,
              "2026-10-16 10:00:00" if anulada else None),
         )
         return cur.lastrowid
@@ -96,7 +93,7 @@ def _cobro(fid, monto, medio="efectivo", anulado=0):
     with core.get_connection() as conn:
         conn.execute(
             "INSERT INTO caja_movimientos (fecha, tipo, concepto, monto, factura_id, medio_pago, anulado)"
-            " VALUES (?, 'ingreso', 'Cobro', ?, ?, ?, ?)", (HOY, monto, fid, medio, anulado))
+            " VALUES (?, 'ingreso', 'Cobro', ?, ?, ?, ?)", (hoy(), monto, fid, medio, anulado))
 
 
 def _armar(total, cobros_, notas, **opciones) -> int:
@@ -148,14 +145,14 @@ def test_todos_los_calculos_dicen_lo_mismo(base, nombre, total, cobros_, notas, 
     assert fila["total_cobrado"] == pytest.approx(estado["cobrado"])
 
     # 3. El resumen del panel: la cantidad y el monto de lo que falta (no el total de la factura).
-    sc = get_resumen_core(*PERIODO)["sin_cobrar"]
+    sc = get_resumen_core(*periodo())["sin_cobrar"]
     assert sc == {"cantidad": 1 if debe else 0, "monto": esperado}
 
     # 4. El tablero, con y sin `sin_fiado`: la marca de cuenta corriente sólo cuenta como cobro sin él (el
     #    criterio de siempre de los productos que no separan fiar de cobrar).
     for sin_fiado in (True, False):
         fiar_es_cobrar = not sin_fiado and nombre == "la_marca_de_cuenta_corriente_no_es_cobro"
-        filas = get_dashboard_data(*PERIODO, sin_fiado=sin_fiado)["facturas_sin_cobrar"]
+        filas = get_dashboard_data(*periodo(), sin_fiado=sin_fiado)["facturas_sin_cobrar"]
         assert (fid in _ids(filas)) is (debe and not fiar_es_cobrar)
         if debe and not fiar_es_cobrar:
             assert filas[0]["pendiente"] == esperado and filas[0]["total"] == total
@@ -220,8 +217,8 @@ def test_las_notas_y_las_anuladas_no_figuran_como_sin_cobrar(base):
     anulada = _factura(2, 500.0, cae="", anulada=True)  # sólo se anula lo que no tiene CAE (ADR-022)
 
     assert _ids(db_facturas.get_facturas_filtradas(vista="sin_cobrar")["items"]) == {fid}
-    assert get_resumen_core(*PERIODO)["sin_cobrar"] == {"cantidad": 1, "monto": 600.0}
-    assert anulada not in _ids(get_dashboard_data(*PERIODO)["facturas_sin_cobrar"])
+    assert get_resumen_core(*periodo())["sin_cobrar"] == {"cantidad": 1, "monto": 600.0}
+    assert anulada not in _ids(get_dashboard_data(*periodo())["facturas_sin_cobrar"])
     filas = db_facturas.get_facturas_filtradas(vista="nc")["items"]
     assert [f["pendiente"] for f in filas] == [0], "una nota no tiene «lo que falta cobrar»"
 
@@ -244,8 +241,8 @@ def test_cada_tipo_de_comprobante_tiene_algo_que_cobrar_o_no_en_todos_lados_a_la
     vista = "facturas" if tipo in tipos.FACTURAS else "nd" if tipo in tipos.ND else "nc"
     fila = next(f for f in db_facturas.get_facturas_filtradas(vista=vista)["items"] if f["id"] == fid)
     assert fila["pendiente"] == (1000.0 if cobrable else 0)
-    assert get_resumen_core(*PERIODO)["sin_cobrar"] == {"cantidad": int(cobrable), "monto": 1000.0 * cobrable}
-    assert (fid in _ids(get_dashboard_data(*PERIODO)["facturas_sin_cobrar"])) is cobrable
+    assert get_resumen_core(*periodo())["sin_cobrar"] == {"cantidad": int(cobrable), "monto": 1000.0 * cobrable}
+    assert (fid in _ids(get_dashboard_data(*periodo())["facturas_sin_cobrar"])) is cobrable
     assert [p["id"] for p in db_cc.get_facturas_pendientes_cc(1)] == ([fid] if cobrable else [])
 
 
@@ -257,14 +254,14 @@ def test_la_nota_de_debito_suma_a_lo_pendiente_una_vez_y_no_a_lo_facturado(base)
     nota = _factura(901, 300.0, tipo=12, asoc=(11, 5, 1))
     _nota_de(factura, 200.0, "123", numero=902)
 
-    resumen = get_resumen_core(*PERIODO)
+    resumen = get_resumen_core(*periodo())
     assert resumen["sin_cobrar"] == {"cantidad": 2, "monto": 800.0 + 300.0}
     assert (resumen["facturado"], resumen["comprobantes"]) == (1000.0, 1)
-    filas = {f["id"]: f["pendiente"] for f in get_dashboard_data(*PERIODO)["facturas_sin_cobrar"]}
+    filas = {f["id"]: f["pendiente"] for f in get_dashboard_data(*periodo())["facturas_sin_cobrar"]}
     assert filas == {factura: 800.0, nota: 300.0}
 
     _cobro(nota, 300.0)
-    assert get_resumen_core(*PERIODO)["sin_cobrar"] == {"cantidad": 1, "monto": 800.0}
+    assert get_resumen_core(*periodo())["sin_cobrar"] == {"cantidad": 1, "monto": 800.0}
     assert _ids(db_facturas.get_facturas_filtradas(vista="sin_cobrar")["items"]) == {factura}
 
 
@@ -343,7 +340,7 @@ def test_la_nota_ya_descuenta_el_saldo_y_el_pendiente_por_factura_no_la_descuent
 
     # Un pago a cuenta de 1.000 aplicado a la factura: sólo se aplican los 600 que se deben.
     r = cuenta.post(f"/api/cuenta-corriente/{cliente}/pagar", json={
-        "monto": 1000.0, "fecha": HOY, "caja_id": 1, "medio_pago": "transferencia", "referencia": "T-1",
+        "monto": 1000.0, "fecha": hoy(), "caja_id": 1, "medio_pago": "transferencia", "referencia": "T-1",
         "facturas": [f["id"]]})
     assert r.status_code == 200, r.text
     assert cobros.estado_de_cobro(f["id"])["cobrado"] == 600.0

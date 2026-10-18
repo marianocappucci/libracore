@@ -15,12 +15,12 @@ Cada test mira lo escrito en la base, no sólo el status. En SQLite y en Postgre
 
 from __future__ import annotations
 
-import datetime
 from decimal import Decimal
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from fechas import hoy
 from test_facturas_router import ADMIN, API, USUARIO, _emitir, _montar
 
 from libracore import facturas_router as fr
@@ -30,7 +30,6 @@ from libracore.db import core, libro_de_clientes
 from libracore.db import turnos as db_turnos
 from libracore.db.clients import create_client
 
-HOY = datetime.date.today().isoformat()
 ITEMS = [{"description": "Servicio", "qty": 1, "unit_price": 1000.0}]
 SIN_TURNO = "No hay una caja abierta. Abrí el turno antes de devolver."
 CUIT = "20304050607"
@@ -113,7 +112,7 @@ def test_devolver_escribe_un_egreso_de_caja_con_la_marca_de_la_nota(emisor):
     marca = f"nc:factura:{factura['id']}:{nota['id']}"
     assert (egreso["tipo"], egreso["monto"], egreso["medio_pago"], egreso["referencia"]) == (
         "egreso", 1000.0, "efectivo", marca)
-    assert egreso["fecha"] == HOY and "Devolución" in egreso["concepto"]
+    assert egreso["fecha"] == hoy() and "Devolución" in egreso["concepto"]
     assert nota["reintegro"] == {
         "destino": "devolver", "medio_pago": "efectivo", "movido": True, "monto": 1000.0, "excedente": 0.0,
         "referencia": marca}

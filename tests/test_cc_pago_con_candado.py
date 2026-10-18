@@ -11,13 +11,13 @@ el candado los dos hilos ven la factura entera pendiente.
 """
 from __future__ import annotations
 
-import datetime
 import threading
 import time
 
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from fechas import hoy
 
 from libracore import cobros
 from libracore.cuenta_corriente_router import (
@@ -28,7 +28,6 @@ from libracore.cuenta_corriente_router import (
 from libracore.db import caja, core
 from libracore.db.schema import init_core_schema
 
-HOY = datetime.date.today().isoformat()
 CUIT = "30665138166"
 
 
@@ -97,7 +96,7 @@ def _factura(numero, total, fecha="2026-08-28") -> int:
 
 def _pagar(client, monto, facturas, referencia=""):
     return client.post("/api/cuenta-corriente/1/pagar", json={
-        "monto": monto, "fecha": HOY, "caja_id": 1, "medio_pago": "transferencia",
+        "monto": monto, "fecha": hoy(), "caja_id": 1, "medio_pago": "transferencia",
         "referencia": referencia, "facturas": facturas})
 
 
@@ -192,7 +191,7 @@ def test_un_pago_y_un_cobro_simultaneos_a_la_misma_factura_tampoco_la_cobran_de_
 
     def cobrar():
         try:
-            cobros.registrar_cobro_factura(fila, [{"medio_id": "efectivo", "monto": 1000.0}], fecha=HOY)
+            cobros.registrar_cobro_factura(fila, [{"medio_id": "efectivo", "monto": 1000.0}], fecha=hoy())
             return "ok"
         except cobros.CobroNoPermitido as exc:
             return exc.codigo

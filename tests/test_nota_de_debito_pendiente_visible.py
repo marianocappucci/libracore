@@ -10,11 +10,10 @@ La cuenta de cada superficie contra la del tope, caso por caso, está en `test_p
 
 from __future__ import annotations
 
-import datetime
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from fechas import del_anio, hoy
 from test_cobro_no_supera_lo_pendiente import ITEMS
 from test_facturas_router import ADMIN, API, USUARIO, _emitir, _montar
 
@@ -28,8 +27,6 @@ from libracore.db.clients import create_client
 from libracore.db.dashboard import get_dashboard_data
 from libracore.db.resumen import get_resumen_core
 
-HOY = datetime.date.today().isoformat()
-PERIODO = ("2026-01-01", "2026-12-31")
 CUIT = "20304050607"
 
 
@@ -159,19 +156,19 @@ def test_el_resumen_y_el_tablero_cuentan_la_nota_de_debito_sin_cobrar(client):
     siendo sólo el de las facturas."""
     factura, nota = _con_su_nota_de_debito(client)
 
-    resumen = get_resumen_core(*PERIODO)
+    resumen = get_resumen_core(*del_anio())
     assert resumen["sin_cobrar"] == {"cantidad": 2, "monto": 9000.0}
     assert (resumen["facturado"], resumen["comprobantes"]) == (4500.0, 1)
-    tablero = get_dashboard_data(*PERIODO)
+    tablero = get_dashboard_data(*del_anio())
     assert {f["id"]: f["pendiente"] for f in tablero["facturas_sin_cobrar"]} == {factura["id"]: 4500.0, nota["id"]: 4500.0}
     assert (tablero["facturado_mes"], tablero["cant_facturas_mes"]) == (4500.0, 1)
 
     assert _cobrar(client, nota, 1500.0).status_code == 200
 
-    assert get_resumen_core(*PERIODO)["sin_cobrar"] == {"cantidad": 2, "monto": 7500.0}
+    assert get_resumen_core(*del_anio())["sin_cobrar"] == {"cantidad": 2, "monto": 7500.0}
     assert _cobrar(client, nota, 3000.0).status_code == 200
-    assert get_resumen_core(*PERIODO)["sin_cobrar"] == {"cantidad": 1, "monto": 4500.0}
-    assert [f["id"] for f in get_dashboard_data(*PERIODO)["facturas_sin_cobrar"]] == [factura["id"]]
+    assert get_resumen_core(*del_anio())["sin_cobrar"] == {"cantidad": 1, "monto": 4500.0}
+    assert [f["id"] for f in get_dashboard_data(*del_anio())["facturas_sin_cobrar"]] == [factura["id"]]
 
 
 def test_el_tablero_por_http_rotula_la_nota_de_debito_con_su_tipo(client):
@@ -198,7 +195,7 @@ def test_todo_lo_que_se_ve_coincide_con_lo_que_acepta_el_tope(client):
     assert tope == 3265.44
     assert _detalle(client, nota)["pendiente"] == tope
     assert _fila(client, "nd", nota)["pendiente"] == tope
-    assert {f["id"]: f["pendiente"] for f in get_dashboard_data(*PERIODO)["facturas_sin_cobrar"]}[nota["id"]] == tope
+    assert {f["id"]: f["pendiente"] for f in get_dashboard_data(*del_anio())["facturas_sin_cobrar"]}[nota["id"]] == tope
     assert _cobrar(client, nota, round(tope + 0.01, 2)).status_code == 409
 
 
@@ -234,7 +231,7 @@ def test_una_nota_de_debito_a_credito_con_su_propio_debito_se_paga_desde_la_cuen
     factura, nota = _con_su_nota_de_debito(client, condicion_venta="Cuenta Corriente")
     with core.get_connection() as conn:
         conn.execute("UPDATE facturas SET condicion_venta = 'Cuenta Corriente' WHERE id = ?", (nota["id"],))
-        caja.create_caja_movimiento(HOY, "ingreso", "Nota de débito", 4500.0, factura_id=nota["id"],
+        caja.create_caja_movimiento(hoy(), "ingreso", "Nota de débito", 4500.0, factura_id=nota["id"],
                                     medio_pago="Cuenta Corriente", conn=conn)
     assert db_cc.get_cc_saldo(1) == 9000.0
     pendientes = db_cc.get_facturas_pendientes_cc(1)
@@ -242,7 +239,7 @@ def test_una_nota_de_debito_a_credito_con_su_propio_debito_se_paga_desde_la_cuen
     assert pendientes[1]["concepto"].startswith("ND C ")
 
     r = _cuenta().post("/api/cuenta-corriente/1/pagar", json={
-        "monto": 9000.0, "fecha": HOY, "caja_id": 1, "medio_pago": "transferencia", "referencia": "T-1",
+        "monto": 9000.0, "fecha": hoy(), "caja_id": 1, "medio_pago": "transferencia", "referencia": "T-1",
         "facturas": [factura["id"], nota["id"]]})
 
     assert r.status_code == 200, r.text
