@@ -76,6 +76,7 @@ from libracore import pdf_generator as pdf_gen
 from libracore import tipos_comprobante as tipos_cbte
 from libracore.arca_facturacion import RECEPTORES_DE_FACTURA_A, get_next_numero_with_arca, solicitar_cae
 from libracore.cobros import (
+    CONDICION_CUENTA_CORRIENTE,
     CobroNoPermitido,
     MedioNoEsDeCobro,
     exigir_cobro_posible,
@@ -617,13 +618,14 @@ _STATUS_DE_NOTA = {
 }
 
 
-def _registrar_nota(nota: dict, ambiente: str, usuario_id: int, emisor_id: int | None) -> int:
+def _registrar_nota(nota: dict, ambiente: str, usuario_id: int, emisor_id: int | None, *, conn=None) -> int:
     """Guarda la nota en la tabla `facturas` de este router (todavía sin CAE) y devuelve su id.
 
-    La nota es del emisor de su original: lo emite la misma razón social, con su par de ARCA.
+    La nota es del emisor de su original: lo emite la misma razón social, con su par de ARCA. Con `conn`, dentro de
+    la transacción de quien llama (la nota de débito a cuenta corriente escribe ahí también su débito).
     """
     return db_facturas.create_factura(
-        emisor_id=emisor_id,
+        emisor_id=emisor_id, conn=conn,
         # 🔑 El ambiente con el que se emitió, que es lo que separa un comprobante real de uno de prueba en el
         # libro IVA. Sin ARCA configurado no hay CAE y el número es el de la propia instancia: ese comprobante
         # **es** el real del cliente, así que va como `produccion`. No es un default silencioso: es la respuesta
@@ -642,16 +644,52 @@ async def _crear_nota(
     `libracore.notas_de_credito` (`emitir_nota_de_credito`). Esta función arma la nota con el mismo
     `armar_nota` (importes copiados, fecha de hoy, comprobante asociado), pero la nota de débito no tiene
     guardas propias: una factura admite varias.
+
+    🔑 **La nota de una factura a cuenta corriente hereda la cuenta** (ADR-073): lleva `condicion_venta = 'Cuenta
+    Corriente'` y su débito entra a la cuenta del cliente —la misma marca que escribe `crear` para una factura a
+    crédito, un ingreso «Cuenta Corriente» ligado a la nota, que el libro (`cc_asientos`) asienta— **en la misma
+    transacción que la nota**: o están las dos cosas o ninguna. Por eso se paga desde la cuenta con un recibo (ADR-063)
+    y «Cobrar» la abona como a la factura (`registrar_cobro_factura`). La condición se agrega acá y no en `armar_nota`,
+    que reciben las costuras `registrar` de los productos (ADR-066). La nota de una factura al contado no cambia.
     """
     nota = notas_de_credito.armar_nota(orig, nuevo_tipo, prefijo=obs_prefijo)
+    a_cuenta = orig.get("condicion_venta") == CONDICION_CUENTA_CORRIENTE
+    if a_cuenta:
+        nota["condicion_venta"] = CONDICION_CUENTA_CORRIENTE
     emisor_id = orig.get("emisor_id")
     numero, ta, arca = await get_next_numero_with_arca(orig["punto_venta"], nuevo_tipo, emisor_id)
     nota["numero"] = numero
-    nota_id = _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id, emisor_id)
+    # La caja se elige antes de abrir la transacción: es una lectura con su propia conexión.
+    caja_id = db_caja.get_default_caja_id() if a_cuenta else None
+    with db_core.get_connection() as conn:
+        nota_id = _registrar_nota(nota, arca_facturacion.ambiente_de(arca), usuario_id, emisor_id, conn=conn)
+        if a_cuenta:
+            _debitar_nota_en_la_cuenta(db_facturas.get_factura(nota_id, conn=conn), usuario_id, caja_id, conn)
+    # 🔑 El CAE va después, como en `crear`: si ARCA rechaza, `solicitar_cae` deja el motivo y la nota queda sin CAE
+    # **con** su débito, igual que una factura a crédito sin CAE. Esa deuda sale si la nota se anula o se borra
+    # (`anular_factura` y `delete_factura` revierten la marca en el libro), y se autoriza con `/autorizar`. Atar el
+    # débito al CAE dejaría, mientras tanto, una nota «a cuenta corriente» sin su débito: «Cobrar» la abonaría y el
+    # cliente quedaría con saldo a favor (lo que el ADR-066 midió).
     nota_db = db_facturas.get_factura(nota_id)
     nota_db = await solicitar_cae(nota_id, nota_db, ta, arca)
     db_facturas.update_factura_pdf_path(nota_id, pdf_gen.generate_pdf_factura(nota_db, resolvedor=emisor_del_pdf))
     return nota_id
+
+
+def _debitar_nota_en_la_cuenta(nota: dict, usuario_id: int, caja_id: int | None, conn) -> int:
+    """El débito de una nota a cuenta corriente: la marca de `crear` (ingreso «Cuenta Corriente» con `factura_id`).
+
+    Va con el número que quedó en la base (`create_factura` lo recalcula si chocó) y en la transacción `conn`;
+    `create_caja_movimiento` lo lleva al libro de clientes con esa misma conexión.
+    """
+    pv_str = str(nota["punto_venta"]).zfill(4)
+    num_str = str(nota["numero"]).zfill(8)
+    return db_caja.create_caja_movimiento(
+        fecha=nota["fecha"], tipo="ingreso",
+        concepto=f"{TIPO_LABEL.get(nota['tipo'], 'Nota de débito')} {pv_str}-{num_str} — {nota['cliente_razon']}",
+        monto=nota["total"], referencia="", factura_id=nota["id"], caja_id=caja_id,
+        medio_pago=CONDICION_CUENTA_CORRIENTE, usuario_id=usuario_id, conn=conn,
+    )
 
 
 async def _emitir_nota_de_credito(

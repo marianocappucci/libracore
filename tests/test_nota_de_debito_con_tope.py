@@ -168,9 +168,10 @@ def test_una_nota_de_credito_sigue_sin_tope_y_las_facturas_siguen_con_el_suyo(cl
 # ── Lo que NO cambia: la cuenta corriente ─────────────────────────────────
 
 
-def test_la_lista_de_pendientes_de_cuenta_corriente_sigue_siendo_de_facturas(client):
-    """La nota de débito que emite el motor no lleva `condicion_venta` ni escribe un débito en la cuenta, así que
-    nunca es una deuda de cuenta corriente: `get_facturas_pendientes_cc` no la lista (ADR-064, dudoso)."""
+def test_la_nota_de_debito_de_una_factura_al_contado_no_es_deuda_de_la_cuenta(client):
+    """La nota de débito de una factura **al contado** no lleva `condicion_venta` ni escribe un débito en la cuenta:
+    `get_facturas_pendientes_cc` no la lista. La de una factura a cuenta corriente sí (ADR-073,
+    `test_nota_de_debito_a_cuenta_corriente.py`)."""
     create_client("Juan Perez", cuit_dni="20304050607")
     nota = _nota_de_debito(client)
     assert nota["condicion_venta"] != "Cuenta Corriente"
