@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from libracore import fechas
 from libracore.feriados import (
     _ARCHIVO,
     FueraDeCobertura,
@@ -86,9 +87,9 @@ def test_el_anio_en_curso_esta_cubierto():
     `scripts/generar_feriados.py`. Si el año en curso no está, toda consulta de
     la agenda levanta `FueraDeCobertura` y el producto se queda sin feriados.
     """
-    assert cubre(date.today().year), (
+    assert cubre(fechas.hoy().year), (
         f"el catalogo se estampo el {generado()} y ya no cubre "
-        f"{date.today().year}: regenerar con scripts/generar_feriados.py"
+        f"{fechas.hoy().year}: regenerar con scripts/generar_feriados.py"
     )
 
 

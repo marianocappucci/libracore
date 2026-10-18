@@ -9,6 +9,7 @@ la fecha de emisión se reseteaba a hoy (ver libracore/facturas_borrador.py).
 El padrón de clientes se sustituye por un doble: acá interesa qué borrador
 sale, no cómo se lee la base.
 """
+from libracore import fechas
 from libracore.facturas_borrador import (
     armar_borrador,
     tasa_iva,
@@ -175,4 +176,4 @@ def test_hoy_por_defecto_es_la_fecha_del_sistema():
     import datetime
 
     b = armar_borrador(FACTURA_SERVICIOS, resolver_cliente=_sin_padron)
-    assert b["fch_serv_desde"] == datetime.date.today().isoformat()
+    assert b["fch_serv_desde"] == fechas.hoy().isoformat()

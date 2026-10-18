@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from libracore import fechas
 from libracore.db.resumen import get_resumen_core
 
 
@@ -63,7 +64,7 @@ def build_resumen_router(
         maquinas, y el estandar de la familia es que las URLs lleven ISO aunque
         la interfaz muestre dd-mm-aaaa.
         """
-        hoy = datetime.date.today()
+        hoy = fechas.hoy()
         desde_ = desde or hoy.replace(day=1).isoformat()
         hasta_ = hasta or hoy.isoformat()
 

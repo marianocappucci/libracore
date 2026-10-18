@@ -36,7 +36,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from libracore import config_manager
+from libracore import config_manager, fechas
 from libracore import pdf_generator as pdf_gen
 from libracore.arca_facturacion import (
     ambiente_de,
@@ -267,7 +267,7 @@ async def facturar_venta(ventas: PuertoDeVentas, venta_id: int, *,
 
     factura_id = db_facturas.create_factura(
         tipo=tipo, punto_venta=punto_venta, numero=numero,
-        fecha=datetime.date.today().isoformat(),
+        fecha=fechas.hoy().isoformat(),
         cliente_cuit=cliente.get("cuit_dni", ""),
         cliente_razon=cliente["name"],
         cliente_iva_cond=_IVA_CODES.get(cliente.get("iva_condition", "Consumidor Final"), 5),

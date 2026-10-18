@@ -26,7 +26,7 @@ import datetime
 import logging
 from dataclasses import dataclass
 
-from libracore import config_manager, mp_api, mp_facturacion
+from libracore import config_manager, fechas, mp_api, mp_facturacion
 from libracore.db import mp as db_mp
 from libracore.registro_de_clientes import RegistroDeClientes, el_registro
 
@@ -92,7 +92,7 @@ async def ingerir(
     if not access_token:
         raise ValueError("Configurá el Access Token de MercadoPago en Configuración.")
 
-    hoy = datetime.date.today()
+    hoy = fechas.hoy()
     dias = max(1, min(dias, DIAS_MAX))
     desde = (hoy - datetime.timedelta(days=dias)).isoformat()
     hasta = hoy.isoformat()

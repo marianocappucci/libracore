@@ -65,6 +65,8 @@ import sqlite3
 from collections.abc import Sequence
 from decimal import ROUND_HALF_UP, Decimal
 
+from libracore import fechas
+
 # Las dos grafías que conviven en la base viven en `db.caja`, que es de donde
 # salen también los fragmentos SQL que las consultan. Se importan en vez de
 # copiarse: tener dos listas del mismo criterio es cómo se llega a que una
@@ -358,7 +360,7 @@ def registrar_cobro_factura(
         raise ValueError("exigir_turno necesita turno_de: no hay de dónde sacar el turno")
     usa_base = any(f is None for f in (crear_movimiento, crear_cc_pago, leer_estado))
     if fecha is None:
-        fecha = datetime.date.today().isoformat()
+        fecha = fechas.hoy().isoformat()
     if crear_movimiento is None:
         from libracore.db.caja import create_caja_movimiento
 
@@ -404,7 +406,7 @@ def registrar_cobro_factura(
             raise CobroNoPermitido(MENSAJE_SIN_TURNO, CobroNoPermitido.SIN_TURNO)
         if turno is not None:
             # La caja, el día y el dueño del movimiento son los del turno (ver el docstring).
-            fecha = datetime.date.today().isoformat()
+            fecha = fechas.hoy().isoformat()
             caja_id = turno.get("caja_id")
             usuario_id = turno.get("usuario_id", usuario_id)
             del_turno = {"turno_id": turno["id"]}   # el abono de cuenta corriente no tiene turno: sólo el movimiento

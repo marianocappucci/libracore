@@ -13,6 +13,7 @@ Contalibra no configura nada y preserva el comportamiento simple original
 import contextlib
 import json
 
+from libracore import fechas
 from libracore.db.core import Conexion, get_connection, get_resolver_receta
 from libracore.db.productos import get_default_deposito_id
 from libracore.fechas import rango_por_dia
@@ -25,8 +26,7 @@ def add_movimiento_stock(producto_id: int, tipo: str, cantidad: float,
                          deposito_id: int | None = None,
                          conn: Conexion | None = None):
     """Agrega un movimiento de stock. cantidad positiva=entrada, negativa=salida."""
-    from datetime import date as _date
-    _fecha = fecha or _date.today().isoformat()
+    _fecha = fecha or fechas.hoy().isoformat()
     _deposito = deposito_id or get_default_deposito_id()
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:

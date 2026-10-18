@@ -5,6 +5,7 @@ Tier 2 — `generar_codigo_producto` y el manejo de `estacion`/`vendible`
 eran solo de Restolibra y pasan a core, confirmado con el usuario — ver
 wiki/entities/libracore.md).
 """
+from libracore import fechas
 from libracore.db.core import get_connection, sql_busqueda
 
 
@@ -103,8 +104,7 @@ def get_stock_producto_todos_depositos(producto_id: int) -> list[dict]:
 def transferir_stock(producto_id: int, origen_id: int, destino_id: int,
                      cantidad: float, usuario_id: int | None = None,
                      fecha: str = "", observaciones: str = ""):
-    from datetime import date as _date
-    _fecha = fecha or _date.today().isoformat()
+    _fecha = fecha or fechas.hoy().isoformat()
     stock_origen = 0.0
     with get_connection() as conn:
         row = conn.execute(

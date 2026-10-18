@@ -14,6 +14,8 @@ import logging
 import os
 import random
 
+from libracore import fechas
+
 from . import arca_credenciales, arca_wsaa, arca_wsfe, config_manager
 from .db import arca_config as db_arca_config
 from .db import facturas as db_facturas
@@ -28,7 +30,7 @@ def _es_dev() -> bool:
 def _mock_cae() -> dict:
     """Genera CAE y vencimiento falsos para entorno de desarrollo."""
     cae = str(random.randint(10_000_000_000_000, 99_999_999_999_999))
-    vto = (datetime.date.today() + datetime.timedelta(days=10)).strftime("%Y%m%d")
+    vto = (fechas.hoy() + datetime.timedelta(days=10)).strftime("%Y%m%d")
     return {"cae": cae, "cae_vto": vto}
 
 

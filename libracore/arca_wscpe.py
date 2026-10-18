@@ -32,6 +32,7 @@ import httpx
 
 from libracore import arca_credenciales, arca_servicios, arca_wsaa
 from libracore.cuit import solo_digitos
+from libracore.fechas import ZONA_AR
 
 #: El servicio a pedirle a WSAA. Un ticket de `wsfe` no sirve para este.
 SERVICIO = "wscpe"
@@ -44,7 +45,7 @@ _NS = _CATALOGO.namespace
 TIPO_AUTOMOTOR = 74
 
 #: ARCA informa las fechas sin zona; son de la Argentina.
-_AR = timezone(timedelta(hours=-3))
+_AR = ZONA_AR  # UTC-3 fijo, el huso único del motor (libracore.fechas, ADR-070)
 
 #: «No existen solicitudes para los parámetros indicados.» Medido el 2026-10-07: un CTG que no existe, o una CPE en la
 #: que el CUIT representado no interviene, dan el mismo error.

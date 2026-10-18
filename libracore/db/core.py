@@ -13,16 +13,17 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from datetime import datetime as _datetime
-from datetime import timedelta as _timedelta
-from datetime import timezone as _timezone
 from typing import TYPE_CHECKING, TypeAlias
 
-_AR_TZ = _timezone(_timedelta(hours=-3))   # America/Argentina/Buenos_Aires (sin DST)
+from libracore import fechas
 
 
 def _ar_now() -> str:
-    """Fecha y hora actual en zona horaria Argentina (UTC-3)."""
-    return _datetime.now(_AR_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    """Fecha y hora actual en zona horaria Argentina (UTC-3), como texto.
+
+    Sale del reloj único del motor (`libracore.fechas.ahora()`, ADR-070): el mismo que da el
+    «hoy» de un cobro, de un cierre o de una factura."""
+    return fechas.ahora().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def minutos_desde(ts: str) -> int:

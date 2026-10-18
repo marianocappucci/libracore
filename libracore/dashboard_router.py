@@ -23,6 +23,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
+from libracore import fechas
 from libracore import tipos_comprobante as tipos
 from libracore.db import dashboard as db_dashboard
 
@@ -40,7 +41,7 @@ def build_dashboard_router(
 
     @router.get("/dashboard")
     def dashboard(user: dict = Depends(usuario_actual)):
-        hoy = datetime.date.today()
+        hoy = fechas.hoy()
         hoy_iso = hoy.isoformat()
         mes_desde = hoy.replace(day=1).isoformat()
 

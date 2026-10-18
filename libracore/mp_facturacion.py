@@ -41,6 +41,7 @@ from libracore import (
     arca_facturacion,
     config_manager,
     email_sender,
+    fechas,
 )
 from libracore import (
     pdf_generator as pdf_gen,
@@ -89,7 +90,7 @@ CONDICION_POR_PAYMENT_TYPE = {
 def _fechas_de_servicio_del_mes():
     """Del 1 al último día del mes en curso, más la fecha de hoy como
     vencimiento de pago. WSFE las exige cuando el concepto es Servicios."""
-    hoy = datetime.date.today()
+    hoy = fechas.hoy()
     ultimo = calendar.monthrange(hoy.year, hoy.month)[1]
     return (
         hoy.replace(day=1).isoformat(),
@@ -182,7 +183,7 @@ async def generar_factura_mp(
     items = [{"description": descripcion, "qty": 1,
               "unit_price": subtotal, "subtotal": subtotal}]
 
-    fecha_hoy = datetime.date.today().isoformat()
+    fecha_hoy = fechas.hoy().isoformat()
     fch_desde, fch_hasta, fch_vto = _fechas_de_servicio_del_mes()
 
     # El punto de venta sale de la config de ARCA y hace falta ANTES de pedir el

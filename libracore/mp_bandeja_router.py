@@ -35,6 +35,7 @@ from pydantic import BaseModel
 from libracore import (
     config_manager,
     email_sender,
+    fechas,
     mp_facturacion,
     mp_sync,
 )
@@ -377,7 +378,7 @@ def build_mp_bandeja_router(
                 if it.clase == "transferencia":
                     db_mp.create_mp_movimiento(
                         mp_movement_id=pid, tipo=it.payment_type, monto=it.monto,
-                        fecha=datetime.date.today().isoformat(),
+                        fecha=fechas.hoy().isoformat(),
                         descripcion=it.descripcion, origen_nombre=it.payer_name,
                         origen_banco=it.payment_method, origen_cbu="",
                         payer_email=it.payer_email, payer_name=it.payer_name,

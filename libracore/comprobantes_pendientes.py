@@ -17,6 +17,8 @@ aparte y posterior a que ARCA haya devuelto el CAE — ver
 """
 import datetime
 
+from libracore import fechas
+
 _TASA_IVA_DEFAULT = 0.21
 
 
@@ -83,7 +85,7 @@ def armar_prefill(comprobantes: list, hoy=None) -> dict:
     if not comprobantes:
         raise ValueError("no hay comprobantes que facturar")
     if hoy is None:
-        hoy = datetime.date.today().isoformat()
+        hoy = fechas.hoy().isoformat()
 
     claves = {_clave_cliente(c) for c in comprobantes}
     if len(claves) > 1:
