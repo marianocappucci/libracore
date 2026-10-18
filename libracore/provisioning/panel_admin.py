@@ -9,6 +9,7 @@ función de acá. `npm_api.py` (idéntico entre productos, pero vive en
 ejecución vía import diferido — ver `libracore.provisioning._npm_api()`.
 """
 import json
+import os
 import re
 import secrets
 import shutil
@@ -31,6 +32,7 @@ from . import (
     mail_cuentas,
     migraciones_declaradas,
     sin_root,
+    tokens_instancia,
 )
 
 BACKUP_RETENTION_DIAS = 14
@@ -44,11 +46,20 @@ def docker(*args, capture=False, cwd=None) -> subprocess.CompletedProcess:
 
 
 def compose(slug: str, *args) -> subprocess.CompletedProcess:
-    cfg = get_config()
-    compose_file = cfg.clientes_dir / slug / "docker-compose.yml"
+    return compose_en(get_config().clientes_dir / slug, *args)
+
+
+def compose_en(dir_instancia, *args) -> subprocess.CompletedProcess:
+    """`docker compose` sobre el compose de un directorio de instancia (de este producto o de otro).
+
+    El entorno va sin las credenciales de máquina del proceso (ADR-071): `docker compose` resuelve
+    los `${VAR}` primero contra el entorno y después contra el `.env`, y el del backoffice trae su
+    propio `LIBRA_SERVICE_TOKEN` — ver `tokens_instancia.entorno_para_compose`.
+    """
+    d = Path(dir_instancia)
     return subprocess.run(
-        ["docker", "compose", "-f", str(compose_file), *args],
-        cwd=str(cfg.clientes_dir / slug),
+        ["docker", "compose", "-f", str(d / "docker-compose.yml"), *args],
+        cwd=str(d), env=tokens_instancia.entorno_para_compose(),
     )
 
 
@@ -1720,6 +1731,198 @@ def _borrar_casilla_recien_creada(cuenta) -> None:
         print(f"[ERROR] Quedó la casilla {cuenta.direccion} sin borrar: {e}")
 
 
+# ── credenciales de máquina de una instancia (ADR-071) ───────────────────────
+#
+# `LIBRA_SERVICE_TOKEN` (la del backoffice) y `LIBRA_INTEGRACION_TOKEN` (la que se le da a otra
+# instancia) son una por instancia. La rotación es en dos pasos para no cortar a nadie: `--rotar`
+# deja la vigente como `<VAR>_ANTERIOR` —libraauth acepta las dos— y `--cerrar`, cuando quien la usa
+# ya tiene la nueva, borra la anterior. Ningún comando imprime un valor: a lo sumo su huella.
+
+
+def _sello() -> str:
+    """Marca técnica para el nombre del respaldo (reloj del proceso, como los demás respaldos del panel)."""
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _describir_token(dir_instancia: Path, var: str) -> None:
+    valor = tokens_instancia.leer(dir_instancia, var)
+    anterior = tokens_instancia.leer(dir_instancia, tokens_instancia.anterior_de(var))
+    if valor:
+        donde = tokens_instancia.donde(dir_instancia, var)
+        extra = ""
+        del_proceso = os.environ.get(var, "").strip()
+        if del_proceso and del_proceso == valor:
+            extra = " — 🔴 es el mismo del entorno de este proceso (el del producto): rotalo"
+        print(f"  {var}: propio (huella {tokens_instancia.huella(valor)}, en {donde}){extra}")
+    else:
+        print(f"  {var}: ausente")
+    if anterior:
+        print(f"  {tokens_instancia.anterior_de(var)}: sí (huella {tokens_instancia.huella(anterior)}) "
+              "— rotación abierta; cerrala con --cerrar cuando quien la usa tenga la nueva")
+    else:
+        print(f"  {tokens_instancia.anterior_de(var)}: no")
+
+
+def _recrear(dir_instancia: Path, nombre: str, para: str) -> bool:
+    print(f"[*] Recreando {nombre} para que tome {para} ...")
+    r = compose_en(dir_instancia, "up", "-d")
+    if r.returncode != 0:
+        print(f"[ERROR] Los archivos quedaron escritos pero `up -d` falló: {nombre} sigue con lo de "
+              "antes hasta que se recree.")
+        return False
+    return True
+
+
+def _cmd_token(slug: str, var: str, rotar: bool, cerrar: bool) -> bool:
+    if rotar and cerrar:
+        print("[ERROR] --rotar y --cerrar no van juntos.")
+        return False
+    c = find_client(slug)
+    if not c:
+        print(f"[ERROR] Cliente '{slug}' no encontrado.")
+        return False
+    d = Path(c["dir"])
+    anterior_var = tokens_instancia.anterior_de(var)
+    try:
+        if not rotar and not cerrar:
+            print(f"[*] Credenciales de '{slug}':")
+            _describir_token(d, var)
+            return True
+
+        actual = tokens_instancia.leer(d, var)
+        anterior = tokens_instancia.leer(d, anterior_var)
+        if cerrar:
+            if not anterior:
+                print(f"[OK] '{slug}' no tiene {anterior_var}: no hay rotación abierta.")
+                return True
+            respaldos = tokens_instancia.escribir(d, {anterior_var: None}, sello=_sello())
+            print(f"[OK] {anterior_var} borrada de '{slug}' (respaldo: {', '.join(p.name for p in respaldos)}).")
+            return _recrear(d, c["container"], "el cierre de la rotación")
+
+        if anterior:
+            print(f"[ERROR] '{slug}' ya tiene una rotación abierta ({anterior_var}). Cerrala primero "
+                  f"(panel_admin.py {'token-servicio' if var == tokens_instancia.SERVICIO else 'token-integracion'} "
+                  f"{slug} --cerrar): rotar de nuevo dejaría afuera a quien todavía usa la anterior.")
+            return False
+        nuevo = tokens_instancia.nuevo_token()
+        cambios: dict[str, str | None] = {var: nuevo}
+        if actual:
+            cambios[anterior_var] = actual
+        respaldos = tokens_instancia.escribir(
+            d, cambios, sello=_sello(), junto_a={anterior_var: var})
+    except tokens_instancia.TokenError as e:
+        print(f"[ERROR] {e}")
+        return False
+    print(f"[OK] {var} nueva en '{slug}' (huella {tokens_instancia.huella(nuevo)})"
+          + (f"; la anterior queda como {anterior_var}" if actual else "")
+          + (f" (respaldo: {', '.join(p.name for p in respaldos)})." if respaldos else "."))
+    return _recrear(d, c["container"], "la credencial nueva")
+
+
+def cmd_token_servicio(slug: str, rotar: bool = False, cerrar: bool = False) -> bool:
+    """Estado, rotación o cierre de la rotación de `LIBRA_SERVICE_TOKEN` de una instancia.
+
+    El backoffice la lee del disco en cada llamada (`admin.services.token_de_servicio`), así que
+    después de `--rotar` usa la nueva sin reiniciarse; `--cerrar` se puede correr enseguida.
+    """
+    return _cmd_token(slug, tokens_instancia.SERVICIO, rotar, cerrar)
+
+
+def cmd_token_integracion(slug: str, rotar: bool = False, cerrar: bool = False) -> bool:
+    """Lo mismo para `LIBRA_INTEGRACION_TOKEN`.
+
+    Después de `--rotar`, volver a correr `vincular-integracion` en cada instancia que le habla a
+    esta (tienen una copia de la vieja) y recién entonces `--cerrar`.
+    """
+    return _cmd_token(slug, tokens_instancia.INTEGRACION, rotar, cerrar)
+
+
+_NOMBRE_VAR = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def cmd_vincular_integracion(origen: str, destino: str, url_var: str, token_var: str, url: str) -> bool:
+    """Le da a la instancia `origen` la URL y la credencial de integración de la instancia `destino`.
+
+    Lee `LIBRA_INTEGRACION_TOKEN` del directorio `destino` y escribe `<url_var>=<url>` y
+    `<token_var>=<token>` en el compose (o `.env`) de `origen`, con respaldo, y la recrea. Los nombres
+    de las variables son los que ya lee el código del origen (MedLibra: `CONTALIBRA_URL` y
+    `CONTALIBRA_SERVICE_TOKEN`), así que no hace falta cambiarlo. Pueden ser de productos distintos:
+    por eso recibe directorios y no slugs. Idempotente: si ya está así, no toca nada.
+    """
+    d_origen, d_destino = Path(origen), Path(destino)
+    for nombre, d in (("--origen", d_origen), ("--destino", d_destino)):
+        if not (d / tokens_instancia.COMPOSE).is_file():
+            print(f"[ERROR] {nombre} {d}: no es el directorio de una instancia (no tiene "
+                  f"{tokens_instancia.COMPOSE}).")
+            return False
+    if d_origen.resolve() == d_destino.resolve():
+        print("[ERROR] --origen y --destino son la misma instancia.")
+        return False
+    for nombre, var in (("--url-var", url_var), ("--token-var", token_var)):
+        if not _NOMBRE_VAR.match(var or ""):
+            print(f"[ERROR] {nombre} {var!r} no es un nombre de variable.")
+            return False
+    if url_var == token_var:
+        print("[ERROR] --url-var y --token-var tienen que ser variables distintas.")
+        return False
+    if not re.match(r"^https?://[^\s\"'$\\]+$", url or ""):
+        print(f"[ERROR] --url {url!r} no es una URL http(s).")
+        return False
+    try:
+        token = tokens_instancia.leer(d_destino, tokens_instancia.INTEGRACION)
+        if not token:
+            print(f"[ERROR] {d_destino.name} no tiene {tokens_instancia.INTEGRACION}. Generala en su "
+                  f"panel: panel_admin.py token-integracion {d_destino.name} --rotar")
+            return False
+        if (tokens_instancia.leer(d_origen, url_var) == url
+                and tokens_instancia.leer(d_origen, token_var) == token):
+            print(f"[OK] {d_origen.name} ya habla con {d_destino.name} con su credencial vigente; nada que hacer.")
+            return True
+        respaldos = tokens_instancia.escribir(
+            d_origen, {url_var: url, token_var: token}, sello=_sello(), junto_a={token_var: url_var})
+    except tokens_instancia.TokenError as e:
+        print(f"[ERROR] {e}")
+        return False
+    print(f"[OK] {d_origen.name}: {url_var}={url} y {token_var} (huella {tokens_instancia.huella(token)}) "
+          f"de {d_destino.name}" + (f" (respaldo: {', '.join(p.name for p in respaldos)})." if respaldos else "."))
+    return _recrear(d_origen, d_origen.name, "la credencial de integración")
+
+
+def _opciones_de_vincular(args: list[str]) -> dict | None:
+    claves = {"--origen": "origen", "--destino": "destino", "--url-var": "url_var",
+              "--token-var": "token_var", "--url": "url"}
+    opciones: dict[str, str] = {}
+    i = 0
+    while i < len(args):
+        a, valor = args[i], None
+        if "=" in a and a.split("=", 1)[0] in claves:
+            a, valor = a.split("=", 1)
+        elif a in claves and i + 1 < len(args):
+            i += 1
+            valor = args[i]
+        if a not in claves or valor is None:
+            return None
+        opciones[claves[a]] = valor
+        i += 1
+    return opciones if set(opciones) == set(claves.values()) else None
+
+
+def _cli_vincular(args: list[str]):
+    opciones = _opciones_de_vincular(args)
+    if opciones is None:
+        print("Uso: panel_admin.py vincular-integracion --origen <dir-instancia> --destino <dir-instancia> "
+              "--url-var <VAR_URL> --token-var <VAR_TOKEN> --url <url>")
+        return False
+    return cmd_vincular_integracion(**opciones)
+
+
+def _cli_token(fn, nombre: str, slug: str | None, extra: list[str]):
+    if not slug or slug.startswith("--") or any(a not in ("--rotar", "--cerrar") for a in extra):
+        print(f"Uso: panel_admin.py {nombre} <slug> [--rotar | --cerrar]")
+        return False
+    return fn(slug, rotar="--rotar" in extra, cerrar="--cerrar" in extra)
+
+
 # ── NPM proxy ─────────────────────────────────────────────────────────────────
 
 def _npm_client():
@@ -2036,6 +2239,9 @@ def cli():
         "suspender":   lambda: cmd_suspender(slug) if slug else print("Uso: panel_admin.py suspender <slug>"),
         "estado":      lambda: cmd_estado_servicio(slug) if slug else print("Uso: panel_admin.py estado <slug>"),
         "casilla":     lambda: cmd_casilla(slug, recrear="--recrear" in args[2:]) if slug else print("Uso: panel_admin.py casilla <slug> [--recrear]"),
+        "token-servicio":       lambda: _cli_token(cmd_token_servicio, "token-servicio", slug, args[2:]),
+        "token-integracion":    lambda: _cli_token(cmd_token_integracion, "token-integracion", slug, args[2:]),
+        "vincular-integracion": lambda: _cli_vincular(args[1:]),
     }
 
     fn = dispatch.get(cmd)
@@ -2060,5 +2266,7 @@ def cli():
         print("Externo:  resguardo-externo [slug] | estado-externo [slug]")
         print("Servicio: activar <slug> | pausar <slug> | suspender <slug> | estado <slug>")
         print("Correo:   casilla <slug> [--recrear]   crea o repara la casilla de correo saliente (idempotente)")
+        print("Tokens:   token-servicio <slug> [--rotar | --cerrar] | token-integracion <slug> [--rotar | --cerrar]")
+        print("          vincular-integracion --origen <dir> --destino <dir> --url-var <VAR> --token-var <VAR> --url <url>")
         print("NPM:      npm-listar | npm-crear <slug> | npm-eliminar <slug>")
         sys.exit(1)

@@ -7,6 +7,24 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Credenciales de máquina por instancia: servicio e integración (propuesta: v1.183.0)
+
+ADR-071. **Sin migración y sin cambio de schema.** Segundo PR de la serie de libraauth v0.52.0 (su ADR-025).
+
+- **Alta** (`provisioning/nuevo_cliente.py`): la instancia nace con un `LIBRA_SERVICE_TOKEN` y un `LIBRA_INTEGRACION_TOKEN` **propios** (`secrets.token_hex(32)`, como `LIBRA_PANEL_TOKEN`). Antes `LIBRA_SERVICE_TOKEN` se copiaba del entorno del proceso que corría el alta (el backoffice) y por eso era uno por producto; desde la CLI sin la variable, la instancia nacía sin él. Ninguno de los dos vuelve en el resultado del alta ni pasa por `log()`: quedan en el compose.
+- **`libracore.provisioning.tokens_instancia`** (nuevo): `leer(dir, var)`, `donde(dir, var)`, `escribir(dir, cambios, sello=, junto_a=)`, `nuevo_token()`, `huella()`, `entorno_para_compose()`. Lee el valor literal del `environment:` (lista o mapa) o el `${VAR}` resuelto contra el `.env` del directorio; escribe donde vivía (`.env` o compose), con respaldo `<archivo>.antes-token-<fecha>` y reemplazo atómico, los dos en modo 600.
+- **`libracore.admin.services.token_de_servicio(slug)`** (nuevo): el `LIBRA_SERVICE_TOKEN` de una instancia leído de su directorio, o `None`. Nunca loguea el valor.
+- **`panel_admin.py`**, comandos nuevos:
+  - `token-servicio <slug> [--rotar | --cerrar]` y `token-integracion <slug> [--rotar | --cerrar]`: sin flags muestran el estado (propio/ausente, si hay `_ANTERIOR`, huella de 8 y si coincide con el del entorno del proceso) **sin imprimir valores**; `--rotar` genera uno nuevo, pasa el vigente a `<VAR>_ANTERIOR` y recrea; `--cerrar` borra `_ANTERIOR` y recrea. Rotar con una rotación abierta se rechaza.
+  - `vincular-integracion --origen <dir> --destino <dir> --url-var <VAR> --token-var <VAR> --url <url>`: copia el `LIBRA_INTEGRACION_TOKEN` del destino al compose/.env del origen bajo los nombres que el origen ya lee (MedLibra: `CONTALIBRA_URL` / `CONTALIBRA_SERVICE_TOKEN`) y lo recrea. Idempotente.
+- `panel_admin.compose()` pasa a `compose_en(dir, ...)` y **corre `docker compose` sin las cuatro variables de credencial del entorno del proceso**: `docker compose` resuelve `${VAR}` primero contra el entorno, y el del backoffice traía su propio `LIBRA_SERVICE_TOKEN`.
+- Docstring de `comprobantes_router`: la ingesta va con `json_api_require_integracion_o_servicio` (libraauth v0.52.0).
+
+### Para los productos
+- **El backoffice tiene que dejar de mandar el `LIBRA_SERVICE_TOKEN` de su entorno** y pedir el de cada instancia con `libracore.admin.services.token_de_servicio(slug)` (`libra-backoffice/backend/libra_backoffice/inventario.py` y los clientes HTTP de Usuarios/SMTP). Sin eso, las instancias nacidas con este motor le contestan 401.
+- Las instancias existentes conservan el token del producto hasta que se rote con `panel_admin.py token-servicio <slug> --rotar` (el estado sin flags avisa si todavía es el del producto). Primero el backoffice nuevo, después la rotación.
+- La ingesta de comprobantes (ContaLibra) pasa al gate `json_api_require_integracion_o_servicio` y el depositante (MedLibra) recibe la credencial con `vincular-integracion`. El motor no pinea libraauth: el pin v0.52.0 va en cada producto.
+
 ## [Unreleased] — Un solo reloj para «hoy» y «ahora»: el de Argentina (propuesta: v1.182.0)
 
 ADR-070. **Sin migración y sin cambio de schema.**

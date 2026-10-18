@@ -4,10 +4,10 @@ Mismo criterio que `config_router` y que `libraauth.build_logs_router`: el
 paquete arma el router, el **producto lo monta con su propio gate**. Acá eso
 importa más que en otros módulos, porque los dos routers no se protegen igual:
 
-    # lo que deposita otro producto de la familia, sin humano detrás
+    # lo que deposita otra instancia de la familia, sin humano detrás
     app.include_router(
         build_comprobantes_ingesta_router(),
-        dependencies=[Depends(solo_token_de_servicio)],
+        dependencies=[Depends(json_api_require_integracion_o_servicio)],
     )
     # la bandeja que mira una persona
     app.include_router(
@@ -19,10 +19,16 @@ Van en **dos routers con el mismo prefijo** y no en uno con guards por endpoint
 porque FastAPI evalúa las dependencias del router antes que las de la ruta — el
 mismo motivo por el que los datos de empresa están partidos en `config_router`.
 
-El gate de ingesta que corresponde es el token de servicio de libraauth
-(`libraauth.session_auth.json_api_require_admin_o_servicio`), que falla cerrado
-si `LIBRA_SERVICE_TOKEN` no está definido. Este paquete no lo importa: libracore
-no depende de libraauth, y la elección del gate es del producto.
+El gate de ingesta que corresponde es el de **integración** de libraauth
+(`libraauth.session_auth.json_api_require_integracion_o_servicio`, v0.52.0): la
+instancia que deposita (MedLibra) presenta el `LIBRA_INTEGRACION_TOKEN` de esta
+en `x-integracion-auth`, y el backoffice sigue entrando con su
+`LIBRA_SERVICE_TOKEN` en `x-internal-auth`. Las dos son **una por instancia**
+(ADR-071) y fallan cerrado si la variable no está definida. Antes la ingesta
+usaba el token de servicio, que era uno por producto: quien depositaba en una
+instancia podía administrar todas. La credencial se reparte con
+`panel_admin.py vincular-integracion`. Este paquete no importa libraauth:
+libracore no depende de libraauth, y la elección del gate es del producto.
 """
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel

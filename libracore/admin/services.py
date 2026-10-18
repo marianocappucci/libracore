@@ -184,6 +184,33 @@ def get_cliente(slug: str) -> dict | None:
     return data
 
 
+def token_de_servicio(slug: str) -> str | None:
+    """El `LIBRA_SERVICE_TOKEN` de la instancia `slug`, leído de su directorio; `None` si no tiene.
+
+    Desde el ADR-071 cada instancia tiene el suyo, así que el backoffice ya no puede mandar el de su
+    propio entorno: lo pide acá en cada llamada (`x-internal-auth`). Leerlo del disco cada vez es lo
+    que hace que una rotación (`panel_admin.py token-servicio <slug> --rotar`) no pida reiniciar el
+    backoffice. Soporta el valor literal en el `environment:` del compose y el `${VAR}` resuelto
+    contra el `.env` del directorio.
+
+    🔴 **Nunca se loguea el valor**, ni acá ni en el error: un compose ilegible se registra con la
+    ruta y nada más, y se devuelve `None` (para el backoffice, lo mismo que una instancia sin token:
+    no le manda nada y la instancia contesta 401).
+    """
+    from ..provisioning import tokens_instancia
+
+    if not slug or slug in (".", "..") or Path(slug).name != slug:
+        return None
+    dir_instancia = _clientes_dir() / slug
+    if not dir_instancia.is_dir():
+        return None
+    try:
+        return tokens_instancia.leer(dir_instancia, tokens_instancia.SERVICIO)
+    except tokens_instancia.TokenError:
+        _log.warning("No se pudo leer el token de servicio de %s (compose ilegible)", dir_instancia)
+        return None
+
+
 # ── alta ───────────────────────────────────────────────────────────────────────
 
 def crear_cliente(nombre, slug="", domain="", port=0, admin_user="admin",
