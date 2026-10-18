@@ -1506,3 +1506,25 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 **Consecuencias.** MINOR (v1.179.0), migración aditiva `0027_reintegros_pendientes` (`downgrade` borra la tabla: las notas sin CAE con destino anotado vuelven a resolverse a mano). Un producto con su propia ruta de autorización de notas tiene que llamar a `planear_pendiente` / `aplicar_pendiente` (ver CHANGELOG). El kit no necesita cambios: `avisoDeReintegro` ya muestra el `motivo`.
 
 **Tests.** `tests/test_nc_contado_destino_de_la_plata.py`, sección «La nota sin CAE se autoriza después» (SQLite y PostgreSQL); `tests/db/test_schema.py` y el schema congelado (`tests/db/fixtures`).
+
+## ADR-068 — `create_remito(conn=...)`: el remito se escribe con la conexión que le dan, sin commitear
+
+**Estado:** propuesta (2026-10-18; ítem 4 de la cola autónoma del wiki). Pedido por LibraDesk tras libradesk#588.
+
+**Contexto.** `create_remito` abría siempre su propia conexión y commiteaba. LibraDesk necesita atar el remito a su origen (reclamos, cuotas, venta, presupuesto) en una sola transacción: si el proceso cae entre el remito y el vínculo queda un remito huérfano que el puente de facturación ofrece igual, mientras el origen sigue «pendiente de remitir» y se vuelve a remitir (el mismo trabajo cobrado dos veces). Como el motor no aceptaba conexión, LibraDesk copió el INSERT (`_insertar_remito`, `_COLUMNAS_REMITO`) y un test comparaba las dos filas para enterarse si el motor sumaba una columna: una copia vigilada por un test, que es el defecto de siempre (dos lugares con la misma regla).
+
+**Qué ya existe** (se miró antes). `create_cc_pago`, `create_cc_debito`, `create_caja_movimiento` y otras escrituras del motor ya aceptan `conn: Conexion | None = None` con `contextlib.nullcontext(conn) if conn is not None else get_connection()`. Y `libracore.db.migraciones.conexion_libracore(bind)` ya presenta la conexión DB-API de un bind de SQLAlchemy como la espera `libracore.db` (el adaptador de PostgreSQL envolviendo la conexión psycopg del propio bind).
+
+**Decisión.**
+- `create_remito(..., conn=None)`. Con `conn`: escribe por esa conexión, **no commitea ni cierra**; sin `conn`: abre la suya y commitea al salir, idéntico a hoy. Nada más en la familia: el remito es una sola fila (`items` es una columna JSON), no hay tabla de líneas.
+- **No se agrega una función nueva para tomar la conexión de una sesión de SQLAlchemy.** El camino ya existe y se documenta en el docstring de `create_remito`: `conexion_libracore(sesion.connection())`. `sesion.connection()` es la conexión de la transacción en curso, y sus escrituras ORM y las del motor comparten transacción. Sólo vale si SQLAlchemy y `libracore.db.core` apuntan a la misma base.
+- `convertir_presupuesto_a_remito` no cambia: sigue creando con su conexión (el producto que necesite atomicidad con el vínculo pasa su `crear_remito`).
+
+**Alternativas descartadas.**
+- **Un `create_remito_en(sesion, ...)` que dependa de SQLAlchemy**: el motor no importa SQLAlchemy (sólo la cadena de migraciones lo necesita); la costura es la conexión DB-API.
+- **`conn=` también en `create_presupuesto`, `update_*`, `delete_*`**: nadie lo pide; se suma cuando haya un consumidor.
+- **Que `get_next_remito_number` también tome `conn`**: el número sale de `MAX(id)+1` y tiene su propia carrera (dos altas simultáneas dan el mismo número; la columna es `UNIQUE` y la segunda falla). No es de este ADR.
+
+**Consecuencias.** MINOR (propuesta **v1.180.0**), sin migración. API: `create_remito(..., conn=None)`. LibraDesk borra su copia al subir el pin.
+
+**Tests.** `tests/test_create_remito_con_conexion.py` (SQLite y PostgreSQL: sin `conn`, con `conn` y commit del llamador, con `conn` y rollback, la conexión sigue abierta, la fila con y sin `conn` es la misma; y con una sesión de SQLAlchemy sobre PostgreSQL: remito y vínculo juntos, y la caída antes del commit no deja ninguno).

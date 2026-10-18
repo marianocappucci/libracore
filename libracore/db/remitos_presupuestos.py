@@ -4,9 +4,10 @@ vencimiento automático de presupuestos enviados. Extraído de database.py
 de Contalibra/Restolibra (idéntico en ambos) como parte de la migración
 real a libracore.db (Fase 3 de LibraCore, ver wiki/entities/libracore.md).
 """
+import contextlib
 import json
 
-from libracore.db.core import get_connection, sql_busqueda
+from libracore.db.core import Conexion, get_connection, sql_busqueda
 
 
 def get_next_remito_number():
@@ -18,9 +19,36 @@ def get_next_remito_number():
 
 def create_remito(number, date, client_id, client_name, client_address, client_cuit,
                   client_email, client_phone, items, subtotal, tax_rate, tax_amount,
-                  total, observations="", pdf_path="", usuario_id=None):
-    with get_connection() as conn:
-        cur = conn.execute(
+                  total, observations="", pdf_path="", usuario_id=None,
+                  conn: Conexion | None = None):
+    """Inserta el remito y devuelve su id. Los ítems van en la columna `items` (JSON):
+    el remito es una sola fila.
+
+    Sin `conn` abre su propia conexión y commitea al salir, como siempre. **Con `conn`
+    escribe por esa conexión y no commitea ni cierra**: el remito entra en la
+    transacción de quien la abrió y se deshace con su rollback. Es lo que deja atar un
+    remito a su origen (reclamo, cuota, venta, presupuesto) en un solo commit, sin un
+    remito huérfano si el proceso cae en el medio (ADR-068; mismo patrón que
+    `create_cc_pago`).
+
+    Un producto con una sesión de SQLAlchemy sobre la misma base PostgreSQL le pasa la
+    conexión de la sesión, presentada como la espera `libracore.db`::
+
+        from libracore.db.migraciones import conexion_libracore
+
+        with Session(engine) as sesion:
+            remito_id = create_remito(..., conn=conexion_libracore(sesion.connection()))
+            sesion.execute(...)   # el vínculo, en la misma transacción
+            sesion.commit()
+
+    `sesion.connection()` es la conexión de SQLAlchemy de la transacción en curso;
+    `conexion_libracore` toma su conexión DB-API (`driver_connection`) y, contra
+    PostgreSQL, la envuelve en el adaptador de la capa. Sólo sirve si SQLAlchemy y
+    `libracore.db.core` apuntan a la **misma base**: con dos bases no hay transacción común.
+    """
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        cur = c.execute(
             """INSERT INTO remitos
                (number, date, client_id, client_name, client_address, client_cuit,
                 client_email, client_phone, items, subtotal, tax_rate, tax_amount,

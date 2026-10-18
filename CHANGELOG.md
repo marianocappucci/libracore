@@ -7,6 +7,17 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — `create_remito(conn=...)`: el remito entra en la transacción de quien lo pide (propuesta: v1.180.0)
+
+ADR-068. **Sin migración y sin cambio de schema.** Sin `conn` no cambia nada.
+
+- `libracore.db.remitos_presupuestos.create_remito(..., conn=None)`: con `conn` escribe por esa conexión **sin commitear ni cerrar** (el commit y el rollback son de quien la abrió); sin `conn`, igual que siempre. Mismo patrón que `create_cc_pago` (`contextlib.nullcontext(conn) if conn is not None else get_connection()`). El remito es una sola fila (los ítems van en la columna JSON `items`), así que no hay más funciones que tocar.
+- **Desde una sesión de SQLAlchemy** (la misma base PostgreSQL que `libracore.db.core`): `create_remito(..., conn=conexion_libracore(sesion.connection()))`, con `conexion_libracore` de `libracore.db.migraciones`. Remito y vínculo con su origen quedan en un solo commit; si la sesión se cae antes, no queda ninguno de los dos.
+
+### Para los productos
+- LibraDesk puede **borrar su copia del INSERT** (`_insertar_remito`, `_COLUMNAS_REMITO` y el test que compara las dos filas): al subir el pin pasa a `rp.create_remito(..., conn=...)` dentro de la transacción del vínculo.
+- Un producto con dos bases (SQLAlchemy por un lado, `libracore.db.core` por otro) no tiene transacción común: `conn=` no se lo resuelve.
+
 ## [Unreleased] — La nota de crédito sin CAE recuerda el destino de la plata y la mueve al autorizarse (propuesta: v1.179.0)
 
 ADR-067 (cierra el hueco que dejó el ADR-065). **Migración aditiva `0027_reintegros_pendientes`** (tabla nueva, `IF NOT EXISTS`; `init_core_schema` la crea sola en el arranque, así que una instancia que sube el pin la tiene aunque no corra `alembic`). Sin `destino` en la nota, o con la nota autorizada en el acto, no cambia nada.
