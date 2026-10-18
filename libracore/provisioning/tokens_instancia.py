@@ -48,8 +48,11 @@ _ENVIRONMENT = re.compile(r"^    environment:[ \t]*$")
 _ITEM_LISTA = re.compile(
     r"""^(?P<sangria>[ \t]+)-[ \t]*(?P<q>["']?)(?P<clave>[A-Za-z_][A-Za-z0-9_]*)=(?P<valor>.*?)(?P=q)[ \t]*$""")
 _ITEM_MAPA = re.compile(r"^(?P<sangria>[ \t]{6,})(?P<clave>[A-Za-z_][A-Za-z0-9_]*):[ \t]*(?P<valor>.*?)[ \t]*$")
-_REFERENCIA = re.compile(r"^\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)\}$")
-_SUSTITUCION = re.compile(r"\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)(?:(?P<op>:?-)(?P<defecto>[^}]*))?\}"
+#: Una referencia a una variable del `.env`, con o sin modificador de compose: `${VAR}`,
+#  `${VAR:-x}`, `${VAR-x}`, `${VAR:?mensaje}` o `${VAR?mensaje}` (las instancias de LibraDesk,
+#  LibraCargo y LibraClub usan `:?`). Sin el modificador, `${VAR:?…}` se leía como un literal.
+_REFERENCIA = re.compile(r"^\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)(?::?[-?][^}]*)?\}$")
+_SUSTITUCION = re.compile(r"\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)(?:(?P<op>:?[-?])(?P<defecto>[^}]*))?\}"
                           r"|\$(?P<suelta>[A-Za-z_][A-Za-z0-9_]*)")
 _LINEA_DOTENV = re.compile(r"^(?P<pre>[ \t]*(?:export[ \t]+)?)(?P<clave>[A-Za-z_][A-Za-z0-9_]*)[ \t]*=(?P<valor>.*)$")
 _SEGURO_SIN_COMILLAS = re.compile(r"^[A-Za-z0-9_.,:/@+%=-]*$")
@@ -194,8 +197,10 @@ def _resolver(crudo: str, dotenv: dict[str, str]) -> str:
         var = m.group("var") or m.group("suelta")
         valor = dotenv.get(var)
         op = m.group("op")
-        if op is not None and (valor is None or (op == ":-" and valor == "")):
+        if op in ("-", ":-") and (valor is None or (op == ":-" and valor == "")):
             return m.group("defecto") or ""
+        # `?` / `:?`: el texto después es el mensaje de error de compose, nunca un valor. Sin la
+        # variable compose no levanta; acá se lee como ausente.
         return valor or ""
     return _SUSTITUCION.sub(_uno, crudo.replace("$$", "\0")).replace("\0", "$")
 

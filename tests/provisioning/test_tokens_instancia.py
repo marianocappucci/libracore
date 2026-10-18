@@ -160,6 +160,33 @@ def test_lo_que_vive_en_el_env_se_escribe_en_el_env(tmp_path):
     assert _modo(d / ".env") == 0o600
 
 
+@pytest.mark.parametrize("modificador", [":?falta en el .env", "?falta", ":-", "-x"])
+def test_la_referencia_con_modificador_de_compose_se_lee_del_env(tmp_path, modificador):
+    """LibraDesk, LibraCargo y LibraClub declaran `${LIBRA_SERVICE_TOKEN:?falta en el .env}`: el texto
+    del modificador es el mensaje de error de compose, nunca el valor (antes se leía como literal)."""
+    compose = _compose_app(f"      - {SERVICIO}=${{{SERVICIO}{modificador}}}\n")
+    d = _instancia(tmp_path, compose, dotenv=f"{SERVICIO}={TOKEN_A}\n")
+    assert ti.leer(d, SERVICIO) == TOKEN_A
+    assert ti.donde(d, SERVICIO) == ti.DOTENV
+
+
+def test_la_referencia_con_error_sin_valor_en_el_env_es_none(tmp_path):
+    d = _instancia(tmp_path, _compose_app(f"      - {SERVICIO}=${{{SERVICIO}:?falta}}\n"), dotenv="OTRA=1\n")
+    assert ti.leer(d, SERVICIO) is None
+
+
+def test_rotar_con_referencia_con_error_escribe_el_env_y_no_toca_la_linea(tmp_path):
+    linea = f"      - {SERVICIO}=${{{SERVICIO}:?falta en el .env}}\n"
+    d = _instancia(tmp_path, _compose_app(linea), dotenv=f"{SERVICIO}={TOKEN_A}\nSECRET_KEY=x\n")
+
+    ti.escribir(d, {SERVICIO: TOKEN_B, ANTERIOR: TOKEN_A}, sello="s1", junto_a={ANTERIOR: SERVICIO})
+
+    texto = (d / "docker-compose.yml").read_text()
+    assert linea in texto
+    assert TOKEN_A not in texto and TOKEN_B not in texto
+    assert ti.leer(d, SERVICIO) == TOKEN_B and ti.leer(d, ANTERIOR) == TOKEN_A
+
+
 def test_cerrar_saca_la_anterior_de_los_dos_lados(tmp_path):
     d = _instancia(tmp_path, _compose_app(f"      - {SERVICIO}=${{{SERVICIO}}}\n      - {ANTERIOR}=${{{ANTERIOR}}}\n"),
                    dotenv=f"{SERVICIO}={TOKEN_B}\n{ANTERIOR}={TOKEN_A}\n")
