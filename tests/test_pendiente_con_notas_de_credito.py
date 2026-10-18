@@ -6,8 +6,9 @@ CAE y vigentes** de esa factura. Antes de la 1.172.0 las notas no restaban en ni
 
 Cada caso de la tabla se mide contra **cada** cálculo del motor que dice «cuánto falta» —el tope del cobro,
 la vista `sin_cobrar`, el resumen, el tablero, la cuenta corriente, y la versión en Python de las notas— y
-todos tienen que dar lo mismo. En SQLite y en PostgreSQL: los fragmentos de SQL son los mismos, pero el
-motor que los corre no.
+todos tienen que dar lo mismo, **para una factura y para una nota de débito** (ADR-066: lo que se ve de lo
+pendiente de una nota de débito es lo mismo que de una factura; antes el tope la contaba y la pantalla no).
+En SQLite y en PostgreSQL: los fragmentos de SQL son los mismos, pero el motor que los corre no.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import datetime
 import pytest
 
 from libracore import cobros, notas_de_credito
+from libracore import tipos_comprobante as tipos
 from libracore.db import core
 from libracore.db import cuenta_corriente as db_cc
 from libracore.db import facturas as db_facturas
@@ -110,12 +112,18 @@ def _ids(items):
     return {f["id"] for f in items}
 
 
+#: Los dos comprobantes que se cobran: una Factura C (11) y una Nota de Débito C (12). El listado de cada uno
+#: es su vista (`facturas` y `nd`).
+COBRABLES = [pytest.param(11, "facturas", id="factura"), pytest.param(12, "nd", id="nota_de_debito")]
+
+
 # ── Cada cálculo, con cada caso ───────────────────────────────────────────
 
 
+@pytest.mark.parametrize("tipo,vista", COBRABLES)
 @pytest.mark.parametrize("nombre,total,cobros_,notas,esperado", CASOS, ids=[c[0] for c in CASOS])
-def test_todos_los_calculos_dicen_lo_mismo(base, nombre, total, cobros_, notas, esperado):
-    fid = _armar(total, cobros_, notas)
+def test_todos_los_calculos_dicen_lo_mismo(base, nombre, total, cobros_, notas, esperado, tipo, vista):
+    fid = _armar(total, cobros_, notas, tipo=tipo)
     debe = esperado > 0
 
     # 1. El tope del cobro: lo que se puede cobrar es exactamente lo pendiente.
@@ -134,7 +142,7 @@ def test_todos_los_calculos_dicen_lo_mismo(base, nombre, total, cobros_, notas, 
     # 2. La vista «sin cobrar» del listado, y las columnas de cada fila.
     sin_cobrar = db_facturas.get_facturas_filtradas(vista="sin_cobrar")["items"]
     assert (fid in _ids(sin_cobrar)) is debe
-    fila = next(f for f in db_facturas.get_facturas_filtradas(vista="facturas")["items"] if f["id"] == fid)
+    fila = next(f for f in db_facturas.get_facturas_filtradas(vista=vista)["items"] if f["id"] == fid)
     assert fila["pendiente"] == esperado
     assert fila["total_acreditado"] == pytest.approx(estado["acreditado"])
     assert fila["total_cobrado"] == pytest.approx(estado["cobrado"])
@@ -162,12 +170,14 @@ def test_todos_los_calculos_dicen_lo_mismo(base, nombre, total, cobros_, notas, 
 SIN_LA_MARCA = [c for c in CASOS if c[0] != "la_marca_de_cuenta_corriente_no_es_cobro"]
 
 
+@pytest.mark.parametrize("tipo,vista", COBRABLES)
 @pytest.mark.parametrize("nombre,total,cobros_,notas,esperado", SIN_LA_MARCA, ids=[c[0] for c in SIN_LA_MARCA])
-def test_la_cuenta_corriente_dice_lo_mismo_para_una_factura_a_credito(base, nombre, total, cobros_, notas, esperado):
-    """`get_facturas_pendientes_cc`: la misma cuenta, sobre una factura a crédito. (La marca de cuenta
-    corriente de la emisión es la deuda, no un cobro: acá no se carga, como en la emisión real del test
-    de abajo.)"""
-    fid = _armar(total, cobros_, notas, cond="Cuenta Corriente")
+def test_la_cuenta_corriente_dice_lo_mismo_para_una_factura_a_credito(base, nombre, total, cobros_, notas, esperado,
+                                                                      tipo, vista):
+    """`get_facturas_pendientes_cc`: la misma cuenta, sobre un comprobante a crédito (una factura o una nota de
+    débito que lleva su propia condición de venta: ADR-066). (La marca de cuenta corriente de la emisión es la
+    deuda, no un cobro: acá no se carga, como en la emisión real del test de abajo.)"""
+    fid = _armar(total, cobros_, notas, cond="Cuenta Corriente", tipo=tipo)
 
     pendientes = db_cc.get_facturas_pendientes_cc(1)
 
@@ -214,6 +224,48 @@ def test_las_notas_y_las_anuladas_no_figuran_como_sin_cobrar(base):
     assert anulada not in _ids(get_dashboard_data(*PERIODO)["facturas_sin_cobrar"])
     filas = db_facturas.get_facturas_filtradas(vista="nc")["items"]
     assert [f["pendiente"] for f in filas] == [0], "una nota no tiene «lo que falta cobrar»"
+
+
+@pytest.mark.parametrize("tipo", sorted(tipos.FACTURAS + tipos.NC + tipos.ND))
+def test_cada_tipo_de_comprobante_tiene_algo_que_cobrar_o_no_en_todos_lados_a_la_vez(base, tipo):
+    """🔑 La definición única (ADR-066): «tiene algo que cobrar» es `tipo in COBRABLES` para el tope, el listado, el
+    resumen, el tablero y la cuenta corriente **a la vez**. Se mide con los 18 tipos (la FCE incluida): si una lista
+    se quedara con su propia copia de `(1, 6, 11)`, el comprobante que falta aparecería en unas pantallas y en las
+    otras no. Las notas de crédito restan, no se cobran: afuera de todas."""
+    fid = _factura(1, 1000.0, tipo=tipo, cond="Cuenta Corriente")
+    cobrable = tipo in tipos.COBRABLES
+
+    estado = cobros.estado_de_cobro(fid)
+    assert estado["con_tope"] is cobrable
+    assert estado["pendiente"] == 1000.0  # la cuenta pura da lo mismo para todos; lo que cambia es si se muestra
+
+    sin_cobrar = db_facturas.get_facturas_filtradas(vista="sin_cobrar")["items"]
+    assert (fid in _ids(sin_cobrar)) is cobrable
+    vista = "facturas" if tipo in tipos.FACTURAS else "nd" if tipo in tipos.ND else "nc"
+    fila = next(f for f in db_facturas.get_facturas_filtradas(vista=vista)["items"] if f["id"] == fid)
+    assert fila["pendiente"] == (1000.0 if cobrable else 0)
+    assert get_resumen_core(*PERIODO)["sin_cobrar"] == {"cantidad": int(cobrable), "monto": 1000.0 * cobrable}
+    assert (fid in _ids(get_dashboard_data(*PERIODO)["facturas_sin_cobrar"])) is cobrable
+    assert [p["id"] for p in db_cc.get_facturas_pendientes_cc(1)] == ([fid] if cobrable else [])
+
+
+def test_la_nota_de_debito_suma_a_lo_pendiente_una_vez_y_no_a_lo_facturado(base):
+    """Una factura de 1.000 y su nota de débito de 300, sin cobrar: se debe 1.300 en total (resumen y tablero), cada
+    comprobante por lo suyo. «Facturado» sigue siendo de las facturas (la nota no se mezcla con lo facturado) y la
+    nota de crédito resta de la factura que acredita una sola vez."""
+    factura = _factura(1, 1000.0)
+    nota = _factura(901, 300.0, tipo=12, asoc=(11, 5, 1))
+    _nota_de(factura, 200.0, "123", numero=902)
+
+    resumen = get_resumen_core(*PERIODO)
+    assert resumen["sin_cobrar"] == {"cantidad": 2, "monto": 800.0 + 300.0}
+    assert (resumen["facturado"], resumen["comprobantes"]) == (1000.0, 1)
+    filas = {f["id"]: f["pendiente"] for f in get_dashboard_data(*PERIODO)["facturas_sin_cobrar"]}
+    assert filas == {factura: 800.0, nota: 300.0}
+
+    _cobro(nota, 300.0)
+    assert get_resumen_core(*PERIODO)["sin_cobrar"] == {"cantidad": 1, "monto": 800.0}
+    assert _ids(db_facturas.get_facturas_filtradas(vista="sin_cobrar")["items"]) == {factura}
 
 
 # ── Las notas, en la pantalla y en el tope (por HTTP) ─────────────────────

@@ -146,6 +146,17 @@ def sql_pendiente(alias: str = "f", *, con_cuenta_corriente: bool = False) -> st
             f" - {sql_acreditado(alias)})")
 
 
+def sql_es_cobrable(alias: str = "f") -> str:
+    """Condición: `alias` es un comprobante con algo que cobrar —una factura o una nota de débito (ADR-064/066)—.
+
+    🔑 **Es la única lista de «qué comprobante tiene un pendiente»** para las consultas: el listado `sin_cobrar`
+    y su columna `pendiente`, el resumen, el tablero y la cuenta corriente la usan, igual que el tope del cobro
+    usa `tipos.COBRABLES` (de ahí sale). Una consulta que repita `(1, 6, 11, …)` en vez de esto es la que, el día
+    que se sume un tipo, se queda atrás: ese comprobante aparece en unas pantallas y en otras no. Las notas de
+    crédito quedan afuera: no se cobran, restan (`sql_acreditado`)."""
+    return f"{alias}.tipo IN ({tipos.en_sql(tipos.COBRABLES)})"
+
+
 def sql_con_pendiente(alias: str = "f", *, con_cuenta_corriente: bool = False) -> str:
     """Condición: a la factura `alias` todavía le falta cobrar algo (más de medio centavo)."""
     return f"{sql_pendiente(alias, con_cuenta_corriente=con_cuenta_corriente)} > {SQL_MEDIO_CENTAVO}"
@@ -418,7 +429,7 @@ def registrar_comprobante(tipo, punto_venta, numero, fecha, cliente_cuit, client
 
 
 _TIPOS_FACTURA = tipos.FACTURAS
-_EN_FACTURAS = tipos.en_sql(tipos.FACTURAS)
+_TIPOS_COBRABLES = tipos.COBRABLES
 _TIPOS_NC      = tipos.NC
 _TIPOS_ND      = tipos.ND
 
@@ -459,7 +470,8 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
     cliente no lo recibió— y se limita a los comprobantes con CAE, que son los que se mandan.
     """
     solo_sin_cobrar = (vista == "sin_cobrar")
-    tipos = _VISTA_TIPOS.get("facturas" if solo_sin_cobrar else vista, _TIPOS_FACTURA)
+    # «Sin cobrar» mira todo lo que se cobra: las facturas y las notas de débito (ADR-066).
+    tipos = _TIPOS_COBRABLES if solo_sin_cobrar else _VISTA_TIPOS.get(vista, _TIPOS_FACTURA)
     ph = ",".join("?" * len(tipos))
     conds = [f"f.tipo IN ({ph})"]
     params = list(tipos)
@@ -485,9 +497,10 @@ def get_facturas_filtradas(desde="", hasta="", q="", vista="facturas", limit=50,
     where = " AND ".join(conds)
     # `total_acreditado` y `pendiente` son nuevos (aditivos): con una nota de crédito, «cobrado < total» ya no
     # alcanza para decir «sin cobrar» —la factura acreditada por completo no debe nada—.
-    # El `pendiente` es sólo de las facturas: una nota no tiene «lo que falta cobrar».
+    # El `pendiente` es de lo que se cobra (facturas y notas de débito, ADR-066): una nota de crédito no tiene
+    # «lo que falta cobrar», resta.
     cobrada_col = (f"{sql_cobrado('f')} AS total_cobrado, {sql_acreditado('f')} AS total_acreditado,"
-                   f" (CASE WHEN f.tipo IN ({_EN_FACTURAS}) THEN {sql_pendiente_positivo('f')} ELSE 0 END)"
+                   f" (CASE WHEN {sql_es_cobrable('f')} THEN {sql_pendiente_positivo('f')} ELSE 0 END)"
                    " AS pendiente")
     with get_connection() as conn:
         total = conn.execute(f"SELECT COUNT(*) FROM facturas f WHERE {where}", params).fetchone()[0]

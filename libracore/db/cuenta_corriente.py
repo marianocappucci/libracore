@@ -70,7 +70,7 @@ from dataclasses import dataclass
 
 from libracore import tipos_comprobante as tipos
 from libracore.db.core import get_connection
-from libracore.db.facturas import sql_acreditado, sql_cobrado, sql_vigente
+from libracore.db.facturas import sql_acreditado, sql_cobrado, sql_es_cobrable, sql_vigente
 
 from .core import Conexion
 
@@ -158,7 +158,7 @@ def get_cc_movimientos(cliente_id: int, origen: OrigenVentas = VENTAS_LIBRACORE)
 
 
 def get_facturas_pendientes_cc(cliente_id: int, *, conn: Conexion | None = None) -> list[dict]:
-    """Las facturas a cuenta corriente del cliente que todavía no tienen cobro.
+    """Las facturas (y notas de débito) a cuenta corriente del cliente que todavía no tienen cobro.
 
     Es lo que separa un **pago a cuenta** de un **cobro de factura**. Los dos
     bajan el saldo (`cc_pagos`), pero sólo el segundo escribe un movimiento de
@@ -167,7 +167,11 @@ def get_facturas_pendientes_cc(cliente_id: int, *, conn: Conexion | None = None)
     para siempre, aunque el saldo del cliente ya la descuente. Incidente real:
     Municipalidad de Suipacha, FC 74 y 75, 2026-09-14.
 
-    Excluye las notas, las facturas sin CAE y las anuladas. **El `pendiente` es
+    Excluye las notas de crédito, los comprobantes sin CAE y los anulados. Una **nota de débito** entra si ella
+    misma lleva `condicion_venta = 'Cuenta Corriente'` (ADR-066, `sql_es_cobrable`): es la regla de la factura.
+    La que arma el motor para una factura a crédito no la lleva y no asentó su débito en la cuenta, así que no
+    es una deuda de la cuenta (pagarla desde acá dejaría el saldo a favor): se ve en la pantalla y se cobra con
+    «Cobrar». **El `pendiente` es
     `total − cobrado − acreditado por notas de crédito`** (ADR-059, `sql_pendiente`): una
     nota total la saca de la lista, como antes, y una **parcial** la deja con lo que
     todavía se debe (antes la sacaba entera, aunque faltara cobrar el resto).
@@ -193,7 +197,7 @@ def get_facturas_pendientes_cc(cliente_id: int, *, conn: Conexion | None = None)
                    {sql_acreditado('f')} AS acreditado
             FROM facturas f
             WHERE REPLACE(f.cliente_cuit, '-', '') = ?
-              AND f.tipo IN ({tipos.en_sql(tipos.FACTURAS)})
+              AND {sql_es_cobrable('f')}
               AND f.condicion_venta = 'Cuenta Corriente'
               AND COALESCE(f.cae, '') NOT IN ('', 'PENDIENTE')
               AND {sql_vigente('f')}

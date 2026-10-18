@@ -549,6 +549,8 @@ def _registrar_enviar_email(
 def _detalle(factura: dict) -> dict:
     """El comprobante con todo lo que le cuelga: sus notas, su original y sus cobros."""
     es_factura = factura["tipo"] in TIPOS_FACTURA
+    # Los cobros, lo acreditado y lo que falta son de todo lo que se cobra: la factura y la nota de débito (ADR-066).
+    cobrable = factura["tipo"] in tipos_cbte.COBRABLES
     ncs = nds = []
     if es_factura:
         # Del mismo emisor y ambiente: `(tipo, pv, número)` solo no identifica al comprobante.
@@ -567,16 +569,16 @@ def _detalle(factura: dict) -> dict:
             emisor_id=factura.get("emisor_id"), ambiente=factura.get("ambiente"),
         )
 
-    cobros = db_caja.get_cobros_factura(factura["id"]) if es_factura else []
+    cobros = db_caja.get_cobros_factura(factura["id"]) if cobrable else []
     total_cobrado = sum(c["monto"] for c in cobros)
     # 🔑 La misma cuenta que usa el tope del cobro y todas las listas (ADR-058/059):
     # total − cobrado − acreditado por notas de crédito con CAE, sin bajar de cero. Una factura acreditada por
     # completo (o cobrada y después acreditada) queda en 0: `total_acreditado` es lo que la pantalla necesita
     # para rotularla distinto de «Cobrada».
-    acreditado = (db_facturas.get_cobrado_y_acreditado(factura["id"]) or (0.0, 0.0))[1] if es_factura else 0.0
+    acreditado = (db_facturas.get_cobrado_y_acreditado(factura["id"]) or (0.0, 0.0))[1] if cobrable else 0.0
     saldo = saldo_de_cobro(factura, cobros, acreditado)
     total_acreditado = saldo["acreditado"]
-    pendiente = saldo["pendiente"] if es_factura and not factura.get("anulada_en") else 0.0
+    pendiente = saldo["pendiente"] if cobrable and not factura.get("anulada_en") else 0.0
 
     cliente = db_clients.get_client_by_cuit(factura.get("cliente_cuit", ""))
 

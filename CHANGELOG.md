@@ -7,6 +7,21 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Lo pendiente de una nota de débito se ve donde se ve lo de una factura (propuesta: v1.178.0)
+
+ADR-066. **Sin migración y sin cambio de schema.** Cierra lo que el ADR-064 dejó abierto.
+
+- **Una nota de débito sin cobrar aparece como pendiente**: el detalle (`GET /api/facturas/{id}`: `cobros`, `total_cobrado`, `pendiente`) deja de dar `pendiente = 0` y la pantalla puede ofrecer «Cobrar»; la columna `pendiente` del listado (`vista=nd`); la vista `sin_cobrar`; `resumen.sin_cobrar` (cantidad y monto) y el tablero (`facturas_sin_cobrar`). Lo que se ve es exactamente lo que el tope acepta cobrar. Las notas de crédito siguen afuera (restan).
+- **Una sola definición**: `db.facturas.sql_es_cobrable(alias)` (y `tipos.COBRABLES` en Python) reemplaza las listas `tipos.FACTURAS` de esas cinco consultas. Un test recorre los 18 tipos de comprobante contra todas las superficies a la vez.
+- **`facturado`, `comprobantes`, `facturado_mes` y `cant_facturas_mes` no cambian**: siguen siendo de las facturas. La nota suma a lo que se debe, no a lo facturado.
+- **Tablero**: cada fila de `facturas_sin_cobrar` trae `tipo_label` («Nota de Débito C»), aditivo, para distinguir la nota de su factura; y `letra` sale de `tipos.LETRA` (antes una copia de tres tipos: la FCE y las notas daban `""`).
+- **Cuenta corriente**: `get_facturas_pendientes_cc` incluye la nota de débito **sólo si ella misma** es `condicion_venta = 'Cuenta Corriente'`. La que emite el motor sobre una factura a crédito no lo es (no asienta su débito en la cuenta; pagarla desde ahí dejaría el saldo a favor): se ve pendiente y se cobra con «Cobrar», sin mover la cuenta.
+
+### Para los productos
+- 🔴 **Cambia cifras visibles al actualizar el pin**: las notas de débito emitidas y nunca cobradas figuran de golpe en «Sin cobrar», en el resumen y en el tablero. Mirar las instancias con datos reales antes de desplegar.
+- `libra-ui`: el detalle de una nota de débito tiene que mostrar «Cobrar»/estado de cobro, y las filas de «Sin cobrar» y del tablero rotularse con el tipo del comprobante (hoy suponen factura).
+- Un producto con **su propia** lista de pendientes o tablero (que no sale de `get_facturas_filtradas`, `get_resumen_core` ni `get_dashboard_data`) tiene que usar `sql_es_cobrable`/`tipos.COBRABLES` para seguir la misma regla.
+
 ## [Unreleased] — Una instancia nueva nace con 2 workers y 2 CPU (propuesta: v1.177.0)
 
 **Sin migración.** Sólo el alta de cliente (`provisioning/nuevo_cliente.py`): el compose de una instancia nueva lleva
