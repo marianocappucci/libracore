@@ -8,6 +8,15 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — El motor se puede importar en Windows (propuesta: v1.186.2)
+
+**Sin migración.** El nodo de LibraEdge corre el motor en Windows (instalador E7, ADR-010 de libraedge), y
+`candados.py` y `arca_wsaa.py` importaban `fcntl` al cargarse: en la VM de prueba, `libracore-migrar` caía con
+`ModuleNotFoundError` y arrastraba 35 módulos (todo ARCA, `db.schema`). `libracore.bloqueo_de_archivo` (nuevo) es la
+única costura con el sistema operativo: `intentar(fd)` / `soltar(fd)` con `flock` en POSIX y `msvcrt.locking` en
+Windows (probado en Windows 10: excluye entre dos aperturas y suelta). Un test vigila que ningún módulo del motor vuelva
+a importar `fcntl`, `pwd`, `grp`, `termios` ni `resource`.
+
 ## [Unreleased] — La bandeja no deja descartar a mano una venta del nodo (propuesta: v1.186.1)
 
 Completa el ADR-074. **Sin migración.** `POST /api/comprobantes-pendientes/{id}/descartar` contesta 409 si la fila es

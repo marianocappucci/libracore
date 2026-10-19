@@ -6,7 +6,6 @@ Implementa el flujo: TRA → firma CMS → llamada SOAP → token+sign.
 import asyncio
 import base64
 import contextlib
-import fcntl
 import hashlib
 import json
 import logging
@@ -16,7 +15,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta, timezone
 
-from libracore import arca_certificados
+from libracore import arca_certificados, bloqueo_de_archivo
 
 logger = logging.getLogger(__name__)
 
@@ -276,19 +275,17 @@ async def _cerrojo(ruta):
     try:
         limite = time.monotonic() + ESPERA_DEL_CERROJO
         while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if bloqueo_de_archivo.intentar(fd):
                 break
-            except BlockingIOError:
-                if time.monotonic() > limite:
-                    raise RuntimeError(
-                        "WSAA: otro proceso está pidiendo el ticket y no terminó. "
-                        "Reintentá en un momento.")
-                await asyncio.sleep(0.1)
+            if time.monotonic() > limite:
+                raise RuntimeError(
+                    "WSAA: otro proceso está pidiendo el ticket y no terminó. "
+                    "Reintentá en un momento.")
+            await asyncio.sleep(0.1)
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            bloqueo_de_archivo.soltar(fd)
     finally:
         os.close(fd)
 
