@@ -49,11 +49,20 @@ from fastapi import APIRouter, Depends, HTTPException
 from libracore import config_manager
 from libracore import pagos as acreditacion
 from libracore.db import caja as db_caja
+from libracore.nodo_offline import (
+    MENSAJE_QR_SIN_CONEXION,
+    FacturaPendiente,
+    NodoSinArca,
+    SinConexion,
+)
 from libracore.venta_facturacion import (
+    FacturacionEnCurso,
     PuertoDeVentas,
     VentaNoFacturable,
+    facturar_pendientes_del_nodo,
     facturar_si_esta_prendida,
     facturar_venta,
+    ventas_a_facturar,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,6 +123,12 @@ def build_cobro_de_ventas_router(
             raise HTTPException(404, "Venta no encontrada")
         return venta
 
+    def _exigir_conexion() -> None:
+        try:
+            ventas.conexion.exigir(MENSAJE_QR_SIN_CONEXION)
+        except SinConexion as e:
+            raise HTTPException(409, e.detalle()) from None
+
     # 🔴 Las tres rutas son `def` y no `async def`, a propósito: uvicorn corre
     # con UN solo proceso. Como corrutinas, el puerto de ventas —la base del
     # producto—, `config.json` y, al facturar, la firma del TRA con `openssl`
@@ -141,6 +156,12 @@ def build_cobro_de_ventas_router(
             factura = asyncio.run(facturar_venta(ventas, vid, usuario_id=user.get("id")))
         except VentaNoFacturable as e:
             raise HTTPException(422, str(e)) from None
+        except FacturaPendiente as e:
+            raise HTTPException(409, e.detalle()) from None
+        except NodoSinArca as e:
+            raise HTTPException(422, e.detalle()) from None
+        except FacturacionEnCurso as e:
+            raise HTTPException(409, str(e)) from None
         return {"venta": ventas.obtener(vid), "factura": factura}
 
     @router.post("/{vid}/mp-qr")
@@ -161,6 +182,7 @@ def build_cobro_de_ventas_router(
         necesita esa fila de pago para poder sellar la referencia después.
         """
         venta = _venta_o_404(vid)
+        _exigir_conexion()
         cfg = config_manager.load()
         access_token = cfg.get("mp_access_token", "")
         user_id = cfg.get("mp_user_id", "")
@@ -239,6 +261,7 @@ def build_cobro_de_ventas_router(
             return {"status": "approved", "payment_id": venta["mp_payment_id"],
                     "factura_id": factura_id}
 
+        _exigir_conexion()
         cfg = config_manager.load()
         access_token = cfg.get("mp_access_token", "")
         if not access_token:
@@ -268,5 +291,39 @@ def build_cobro_de_ventas_router(
         factura_id = (asyncio.run(facturar_si_esta_prendida(ventas, vid, cfg))
                       if facturacion_habilitada() else None)
         return {"status": "approved", "payment_id": payment_id, "factura_id": factura_id}
+
+    return router
+
+
+def build_facturacion_del_nodo_router(
+    *,
+    ventas: PuertoDeVentas,
+    usuario_actual: Callable[..., Any],
+    prefix: str = "/api/nodo",
+    facturacion_habilitada: Callable[[], bool] = _siempre_facturable,
+) -> APIRouter:
+    """`GET /conexion` y `POST /facturar-pendientes` del nodo offline (ADR-074). Se monta con el mismo gate que el
+    cobro de ventas. Fuera de un nodo contestan igual (`es_nodo: false`) y no hacen nada."""
+    router = APIRouter(prefix=prefix, tags=["nodo"])
+
+    @router.get("/conexion")
+    def conexion(user: dict = Depends(usuario_actual)):
+        """`{"es_nodo", "en_linea", "node_id", "a_facturar"}`. `a_facturar` es cuántas ventas de este nodo esperan
+        la factura en la bandeja. La pantalla lo consulta para avisar «sin conexión» y apagar el QR."""
+        c = ventas.conexion
+        return {"es_nodo": c.es_nodo(), "en_linea": not c.sin_conexion(), "node_id": c.node_id(),
+                "a_facturar": ventas_a_facturar(ventas)}
+
+    @router.post("/facturar-pendientes")
+    def facturar_pendientes(user: dict = Depends(usuario_actual)):
+        """Factura ya lo que el nodo dejó en la bandeja (lo mismo que hace sola la tanda automática). 409
+        `sin_conexion` si todavía no hay conexión; 403 con el módulo de facturación apagado."""
+        if not facturacion_habilitada():
+            raise HTTPException(403, "El módulo de facturación está deshabilitado para esta instancia.")
+        c = ventas.conexion
+        if c.es_nodo() and c.sin_conexion():
+            raise HTTPException(409, SinConexion(
+                "Sin conexión: las ventas se facturan cuando vuelva la conexión.").detalle())
+        return asyncio.run(facturar_pendientes_del_nodo(ventas, usuario_id=user.get("id")))
 
     return router

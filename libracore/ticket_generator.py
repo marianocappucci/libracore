@@ -309,6 +309,13 @@ def generar_ticket_venta(venta: dict) -> bytes:
             label = medios_pago.label(p.get("medio", ""))
             pdf._row(label + ":", "$" + _ar(float(p.get('monto', 0))))
 
+    # Venta cobrada en un nodo sin conexión (ADR-074): el ticket es lo único que se lleva el cliente hasta que la
+    # factura salga al volver. El producto lo marca con `factura_pendiente` (`venta_facturacion.pendiente_de_facturar`).
+    if venta.get("factura_pendiente"):
+        pdf._separador("-")
+        pdf._centrado("NO VÁLIDO COMO FACTURA", bold=True)
+        pdf._centrado("La factura se emite al volver la conexión")
+
     _pie_ticket(pdf, pie, corte)
     return recortar_a_contenido(pdf)
 

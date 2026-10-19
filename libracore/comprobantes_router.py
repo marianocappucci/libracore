@@ -102,6 +102,9 @@ def build_comprobantes_ingesta_router() -> APIRouter:
 
     @router.post("", status_code=201)
     def depositar(payload: ComprobantePayload):
+        if payload.origen_tipo == db.ORIGEN_VENTA:
+            # La deja el motor del nodo (ADR-074), nunca otro producto: se factura desde la venta.
+            raise HTTPException(422, "origen_tipo 'venta' lo usa sólo el nodo offline del propio producto")
         try:
             comprobante_id, creado = db.upsert_comprobante(
                 origen_producto=payload.origen_producto,
@@ -174,6 +177,14 @@ def build_comprobantes_bandeja_router(usuario_actual=None) -> APIRouter:
         comprobantes = db.get_comprobantes(payload.ids)
         if len(comprobantes) != len(set(payload.ids)):
             raise HTTPException(404, "Alguno de los comprobantes no existe")
+        de_ventas = [c["id"] for c in comprobantes if c["origen_tipo"] == db.ORIGEN_VENTA]
+        if de_ventas:
+            # 🔴 Con el formulario saldría una factura sin vínculo con la venta, y la tanda del nodo emitiría otra.
+            raise HTTPException(409, {
+                "codigo": "se_factura_desde_la_venta",
+                "mensaje": "Las ventas cobradas sin conexión se facturan desde la venta (o solas al volver la "
+                           "conexión), no con el formulario: " + ", ".join(str(i) for i in de_ventas),
+            })
         no_pendientes = [c["id"] for c in comprobantes
                          if c["estado"] != db.ESTADO_PENDIENTE]
         if no_pendientes:

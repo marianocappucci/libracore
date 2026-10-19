@@ -99,7 +99,7 @@ def test_los_tres_call_sites_del_motor_la_usan():
     ]
     assert sorted(usan) == [
         "arca_facturacion.py", "arca_router.py", "arca_wsfecred.py", "consultar_cuit_router.py",
-        "facturas_router.py",
+        "facturas_router.py", "nodo_offline.py", "venta_facturacion.py",
     ], usan
 
 
