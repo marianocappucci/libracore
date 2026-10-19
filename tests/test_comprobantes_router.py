@@ -176,6 +176,24 @@ def test_descartar_algo_que_no_existe_da_404(client):
                        json={"motivo": ""}, headers=ADMIN).status_code == 404
 
 
+def test_una_venta_del_nodo_no_se_descarta_a_mano(client):
+    """ADR-074: una venta cobrada sin conexión en un nodo queda en la bandeja para facturarse desde la venta o sola al
+    volver la conexión. Descartarla a mano la dejaría cobrada y sin factura: 409, y la fila sigue pendiente."""
+    from libracore.db import comprobantes_pendientes as db
+
+    comprobante_id, _ = db.upsert_comprobante(
+        "contalibra", db.ORIGEN_VENTA, "7", "Consumidor Final",
+        [{"description": "Venta S02-POS-000007", "qty": 1, "unit_price": 1000.0, "iva_rate": 0.21}],
+        origen_instancia="nodo-ficticio-1",
+    )
+    r = client.post(f"/api/comprobantes-pendientes/{comprobante_id}/descartar",
+                    json={"motivo": "no va"}, headers=ADMIN)
+    assert r.status_code == 409
+    assert "sin conexión" in r.json()["detail"]
+    assert client.get(f"/api/comprobantes-pendientes/{comprobante_id}",
+                      headers=ADMIN).json()["estado"] == "pendiente"
+
+
 # ── Facturar ─────────────────────────────────────────────────────────────────
 
 def test_la_ruta_estatica_no_la_come_el_parametro(client):
