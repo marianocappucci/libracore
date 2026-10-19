@@ -611,24 +611,40 @@ INTERVALO_AL_VOLVER = 60.0
 
 
 def arrancar_facturacion_al_volver(ventas: PuertoDeVentas, *, intervalo: float = INTERVALO_AL_VOLVER,
-                                   habilitada: Callable[[], bool] = lambda: True) -> threading.Event | None:
+                                   habilitada: Callable[[], bool] = lambda: True,
+                                   en_cada_vuelta: Callable[[], object] | None = None) -> threading.Event | None:
     """En un nodo, arranca un hilo que cada `intervalo` segundos factura la bandeja si hay conexión.
 
     Devuelve el `Event` que lo para (`.set()`), o `None` si la instancia no es un nodo (no arranca nada). Va en un
     hilo y no en el loop de la app por lo mismo que las rutas del cobro son `def`: la firma del ticket y la base son
     sincrónicas y frenarían el loop entero. Con varios workers, cada uno arranca el suyo; el candado por venta hace
-    que no se emita dos veces. `habilitada` es el mismo `facturacion_habilitada` del router (VentaLibra)."""
+    que no se emita dos veces. `habilitada` es el mismo `facturacion_habilitada` del router (VentaLibra).
+
+    `en_cada_vuelta` (opcional) se llama **una vez al arrancar el hilo** y en cada vuelta **después** de facturar,
+    haya conexión o no: es donde el producto reconcilia lo que `al_facturar` no llegó a encolar (en LibraCommerce,
+    `reconciliador(OUTBOX, get_connection)`, que encola la `venta.facturada` de lo recién facturado). Un error suyo se
+    registra (sólo el tipo, sin datos) y no corta el ciclo; tampoco lo corta un error al facturar."""
     if not ventas.conexion.es_nodo():
         return None
     parar = threading.Event()
 
+    def _reconciliar() -> None:
+        if en_cada_vuelta is None:
+            return
+        try:
+            en_cada_vuelta()
+        except Exception as e:
+            logger.error("Nodo: falló en_cada_vuelta de la facturación al volver: %s", type(e).__name__)
+
     def _bucle() -> None:
+        _reconciliar()
         while not parar.wait(intervalo):
             try:
                 if habilitada() and not ventas.conexion.sin_conexion():
                     asyncio.run(facturar_pendientes_del_nodo(ventas))
-            except Exception:
-                logger.exception("Nodo: falló la facturación automática de la bandeja")
+            except Exception as e:
+                logger.error("Nodo: falló la facturación automática de la bandeja: %s", type(e).__name__)
+            _reconciliar()
 
     threading.Thread(target=_bucle, name="libracore-facturar-al-volver", daemon=True).start()
     return parar

@@ -620,3 +620,79 @@ def test_otro_error_del_ticket_no_se_disfraza_de_corte(con_arca, ventas, red):
     with pytest.raises(type(_status(401))):
         asyncio.run(vf.facturar_venta(_con_ticket(ventas, red, _status(401)), 1))
     assert _bandeja() == [] and _facturas() == 0
+
+
+# ── El hilo de la facturación al volver ──────────────────────────────────────
+
+
+def _esperar(condicion, segundos=5.0):
+    import time
+
+    limite = time.monotonic() + segundos
+    while not condicion() and time.monotonic() < limite:
+        time.sleep(0.01)
+    return condicion()
+
+
+def test_el_hilo_reconcilia_al_arrancar_y_despues_de_facturar(ventas, red, monkeypatch):
+    red.en_linea = True
+    pasos = []
+
+    async def facturar(puerto, **kw):
+        pasos.append("facturar")
+        return {}
+
+    monkeypatch.setattr(vf, "facturar_pendientes_del_nodo", facturar)
+    parar = vf.arrancar_facturacion_al_volver(_puerto(ventas, red), intervalo=0.02,
+                                              en_cada_vuelta=lambda: pasos.append("reconciliar"))
+    try:
+        assert _esperar(lambda: pasos.count("reconciliar") >= 3)
+    finally:
+        parar.set()
+    assert pasos[0] == "reconciliar"  # una vez al arrancar, antes de la primera espera
+    # Después, en cada vuelta: primero facturar, después reconciliar.
+    assert pasos[1:5] == ["facturar", "reconciliar", "facturar", "reconciliar"]
+
+
+def test_sin_conexion_igual_reconcilia(ventas, red, monkeypatch):
+    llamadas = []
+
+    async def facturar(puerto, **kw):
+        raise AssertionError("sin conexión no se factura")
+
+    monkeypatch.setattr(vf, "facturar_pendientes_del_nodo", facturar)
+    parar = vf.arrancar_facturacion_al_volver(_puerto(ventas, red), intervalo=0.02,
+                                              en_cada_vuelta=lambda: llamadas.append(1))
+    try:
+        assert _esperar(lambda: len(llamadas) >= 3)
+    finally:
+        parar.set()
+
+
+def test_un_error_no_mata_el_hilo(ventas, red, monkeypatch, caplog):
+    red.en_linea = True
+    vueltas = {"facturar": 0, "reconciliar": 0}
+
+    async def facturar(puerto, **kw):
+        vueltas["facturar"] += 1
+        raise RuntimeError("token-secreto-que-no-va-al-log")
+
+    def reconciliar():
+        vueltas["reconciliar"] += 1
+        raise RuntimeError("otro-dato-que-no-va-al-log")
+
+    monkeypatch.setattr(vf, "facturar_pendientes_del_nodo", facturar)
+    with caplog.at_level("ERROR", logger=vf.logger.name):
+        parar = vf.arrancar_facturacion_al_volver(_puerto(ventas, red), intervalo=0.02, en_cada_vuelta=reconciliar)
+        try:
+            assert _esperar(lambda: vueltas["facturar"] >= 3 and vueltas["reconciliar"] >= 4)
+        finally:
+            parar.set()
+    assert "RuntimeError" in caplog.text
+    assert "token-secreto" not in caplog.text and "otro-dato" not in caplog.text
+
+
+def test_fuera_de_un_nodo_no_arranca_ni_reconcilia(ventas):
+    llamadas = []
+    assert vf.arrancar_facturacion_al_volver(ventas.puerto(), en_cada_vuelta=lambda: llamadas.append(1)) is None
+    assert llamadas == []
