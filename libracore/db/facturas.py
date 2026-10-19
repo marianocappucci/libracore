@@ -428,6 +428,28 @@ def registrar_comprobante(tipo, punto_venta, numero, fecha, cliente_cuit, client
         raise
 
 
+def registrar_del_nodo(*, tipo, punto_venta, numero, ambiente, fecha, cliente_cuit, cliente_razon,
+                       cliente_iva_cond, items, subtotal, iva_amount, total, concepto=1, cae="", cae_vto="",
+                       observaciones="", cliente_domicilio="", fch_serv_desde="", fch_serv_hasta="",
+                       fch_vto_pago="", cbte_asoc_tipo=0, cbte_asoc_pv=0, cbte_asoc_nro=0, condicion_venta="",
+                       emisor_id=None, conn: Conexion | None = None) -> int:
+    """Escribe en el central un comprobante que emitió un nodo offline, **con su número y su ambiente** (ADR-074).
+
+    Como `registrar_comprobante`, el número es el dato y no se reintenta con otro; a diferencia de él, el ambiente
+    viene del nodo (pudo emitir contra homologación). Sin usuario: el del nodo no existe acá. Lo llama
+    `facturas_del_nodo.aplicar_factura_del_nodo`, que antes mira si ya está."""
+    ambiente = (ambiente or "").strip().lower()
+    if ambiente not in ("homologacion", "produccion"):
+        raise ValueError(f"ambiente inválido para un comprobante: {ambiente!r}.")
+    with _savepoint(conn, "libracore_del_nodo"):
+        return _insertar(
+            tipo, punto_venta, numero, fecha, cliente_cuit, cliente_razon, cliente_iva_cond, items, subtotal,
+            iva_amount, total, concepto, cae, cae_vto, observaciones, "", cliente_domicilio, fch_serv_desde,
+            fch_serv_hasta, fch_vto_pago, cbte_asoc_tipo, cbte_asoc_pv, cbte_asoc_nro, condicion_venta, None,
+            ambiente, "", "", "", "", emisor_id, conn=conn,
+        )
+
+
 _TIPOS_FACTURA = tipos.FACTURAS
 _TIPOS_COBRABLES = tipos.COBRABLES
 _TIPOS_NC      = tipos.NC

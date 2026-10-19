@@ -49,6 +49,11 @@ ORIGEN_PRESUPUESTO = "presupuesto"
 # tickets): no es una sola fila de origen. `libracore.pre_facturas` le pone de
 # `origen_id` su número interno si el producto no pasa uno propio.
 ORIGEN_PRE_FACTURA = "pre_factura"
+# Una venta del punto de venta que un nodo offline cobró **sin conexión** (ADR-074): salió con ticket no fiscal y se
+# factura al volver. `origen_instancia` es el `node_id` y `origen_id` el id local de la venta. 🔴 No se factura con el
+# formulario (`armar_prefill` la rechaza): se factura **desde la venta** (`venta_facturacion.facturar_venta`), que es lo
+# que la vincula y lo que impide la segunda factura.
+ORIGEN_VENTA = "venta"
 
 ORIGENES = (
     ORIGEN_CUOTA_CONTRATO,
@@ -56,6 +61,7 @@ ORIGENES = (
     ORIGEN_REMITO,
     ORIGEN_PRESUPUESTO,
     ORIGEN_PRE_FACTURA,
+    ORIGEN_VENTA,
 )
 
 
@@ -211,6 +217,31 @@ def get_comprobante(comprobante_id: int, *, conn: Conexion | None = None) -> dic
             "SELECT * FROM comprobantes_pendientes WHERE id=?", (comprobante_id,)
         ).fetchone()
         return _row_a_dict(row) if row else None
+
+
+def get_por_origen(origen_producto: str, origen_instancia: str, origen_tipo: str, origen_id, *,
+                   conn: Conexion | None = None) -> dict | None:
+    """La fila de un origen (la cuádrupla del UNIQUE), en cualquier estado, o `None`."""
+    with _con(conn) as c:
+        row = c.execute(
+            "SELECT * FROM comprobantes_pendientes WHERE origen_producto=? AND origen_instancia=? "
+            "AND origen_tipo=? AND origen_id=?",
+            (origen_producto, origen_instancia, origen_tipo, str(origen_id)),
+        ).fetchone()
+        return _row_a_dict(row) if row else None
+
+
+def list_pendientes_de(origen_tipo: str, origen_instancia: str, limit: int = 50, *,
+                       origen_producto: str | None = None, conn: Conexion | None = None) -> list[dict]:
+    """Los `pendiente` de un tipo de origen y una instancia (y un producto), **los más viejos primero**."""
+    sql = ("SELECT * FROM comprobantes_pendientes WHERE estado=? AND origen_tipo=? AND origen_instancia=?")
+    params: list = [ESTADO_PENDIENTE, origen_tipo, origen_instancia]
+    if origen_producto is not None:
+        sql += " AND origen_producto=?"
+        params.append(origen_producto)
+    with _con(conn) as c:
+        rows = c.execute(sql + " ORDER BY id LIMIT ?", (*params, int(limit))).fetchall()
+        return [_row_a_dict(r) for r in rows]
 
 
 def get_comprobantes(ids: list, *, conn: Conexion | None = None) -> list[dict]:

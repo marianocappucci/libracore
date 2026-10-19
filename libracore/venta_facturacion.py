@@ -27,16 +27,41 @@ Dos cosas que **no** hace, a propósito, y que lo distinguen de
 - **No crea un cliente.** Una venta sin cliente se factura a Consumidor Final
   sin persistir nada: un mostrador con 200 ventas por día llenaría `clients` en
   una semana.
+
+## En un nodo offline de LibraEdge (ADR-074)
+
+`PuertoDeVentas.conexion` dice si la instancia es un nodo y si está en línea
+(`libracore.nodo_offline`). Fuera de un nodo no cambia nada. En un nodo:
+
+- **Con conexión, se factura como siempre**, con una diferencia: si ARCA no da
+  el número, **no** se cae a la numeración local (en un nodo choca con la de
+  ARCA y con la del central). La venta va a la bandeja, como sin conexión.
+- **Sin conexión, no se sale a ARCA.** La venta ya está cobrada y tiene su
+  ticket (no válido como factura); entra a la bandeja de comprobantes
+  pendientes (`origen_tipo = "venta"`, `origen_instancia = node_id`) y
+  `facturar_venta` levanta `nodo_offline.FacturaPendiente` (la API: 409
+  `factura_pendiente`).
+- **Al volver**, `facturar_pendientes_del_nodo` (sola, con
+  `arrancar_facturacion_al_volver`, o a mano desde
+  `POST /api/nodo/facturar-pendientes`) factura cada una **desde la venta** y
+  cierra su fila de la bandeja.
+
+**Una sola factura por venta**: `facturar_venta` toma un candado por venta
+(`candados.candado_de_base`, entre procesos) y relee la venta adentro. Dos
+intentos a la vez (la tanda automática y el botón, el webhook y el poll) no
+piden dos CAE: el segundo recibe `FacturacionEnCurso`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from libracore import config_manager, fechas
+from libracore import arca_credenciales, candados, config_manager, fechas
 from libracore import pdf_generator as pdf_gen
 from libracore.arca_facturacion import (
     ambiente_de,
@@ -46,8 +71,17 @@ from libracore.arca_facturacion import (
 )
 from libracore.db import arca_config as db_arca
 from libracore.db import clients as db_clients
+from libracore.db import comprobantes_pendientes as db_pendientes
 from libracore.db import facturas as db_facturas
 from libracore.db.caja import resolver_punto_venta
+from libracore.db.core import get_connection
+from libracore.nodo_offline import (
+    FUERA_DE_NODO,
+    ConexionDelNodo,
+    FacturaPendiente,
+    NodoSinArca,
+    SinConexion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,12 +137,20 @@ class VentaNoFacturable(Exception):
     ítems)."""
 
 
+class FacturacionEnCurso(Exception):
+    """Otro proceso está facturando esta misma venta ahora. No se emite otra: la API contesta 409."""
+
+
 def _sin_alicuota_propia(venta_id: int) -> float | None:
     return None
 
 
 def _nada(*args) -> None:
     return None
+
+
+#: El `origen_producto` de la bandeja cuando el producto no dice el suyo.
+PRODUCTO_POR_DEFECTO = "ventas"
 
 
 @dataclass(frozen=True)
@@ -137,6 +179,14 @@ class PuertoDeVentas:
     #: producto lo intercepte —su suite fija el ambiente parcheando el numerador,
     #: porque con `ENV=development` todo sale `produccion` y la marca es invisible—.
     numerar_comprobante: Callable[[int, int], Awaitable[tuple]] | None = None
+    #: Si la instancia es un nodo offline y si está en línea (ADR-074). El default no es un nodo: nada cambia.
+    conexion: ConexionDelNodo = FUERA_DE_NODO
+    #: El nombre del producto (`ventalibra`): el `origen_producto` de la bandeja y del candado por venta.
+    producto: str = PRODUCTO_POR_DEFECTO
+    #: `(venta, factura) -> None`, después de vincular la factura a la venta. En un nodo es donde el producto encola
+    #: la subida de la factura al central (`facturas_del_nodo.payload_factura`). Un error acá se registra y no se
+    #: propaga: la factura ya existe y tiene su CAE.
+    al_facturar: Callable[[dict, dict], None] = _nada
 
 
 def _tipo_comprobante(emisor_cond: str, cliente_cond: str) -> int:
@@ -217,6 +267,10 @@ def _punto_venta(venta: dict) -> int:
     return cfg.get("punto_venta", 1) if cfg else 1
 
 
+def _nombre_del_candado(ventas: PuertoDeVentas, venta_id: int) -> str:
+    return f"facturar-venta:{ventas.producto}:{venta_id}"
+
+
 async def facturar_venta(ventas: PuertoDeVentas, venta_id: int, *,
                          usuario_id: int | None = None) -> dict:
     """Emite la factura de una venta, pide el CAE, genera el PDF y las vincula.
@@ -224,9 +278,73 @@ async def facturar_venta(ventas: PuertoDeVentas, venta_id: int, *,
     Idempotente: si la venta ya tiene factura devuelve esa, sin emitir otra. Es
     lo que sostiene el reintento del webhook de MercadoPago y el poll de
     `mp-status`, que le pega cada pocos segundos mientras el cliente escanea.
+    Dos llamadas **a la vez** sobre la misma venta no emiten dos: la segunda
+    levanta `FacturacionEnCurso` (candado por venta, entre procesos).
+
+    En un nodo sin conexión (o si ARCA no da el número) no emite: deja la venta
+    en la bandeja y levanta `nodo_offline.FacturaPendiente`. Sin `arca_config`
+    espejada o sin forma de autenticarse, `nodo_offline.NodoSinArca`.
 
     No toca la caja — ver el docstring del módulo.
     """
+    with get_connection() as conn, candados.candado_de_base(conn, _nombre_del_candado(ventas, venta_id)) as tomado:
+        if not tomado:
+            raise FacturacionEnCurso(f"La venta {venta_id} ya se está facturando: esperá unos segundos.")
+        return await _facturar_venta(ventas, venta_id, usuario_id=usuario_id)
+
+
+def _items_de_la_bandeja(items: list, iva_rate: float) -> list:
+    """Las líneas de la factura con la forma de la bandeja (`iva_rate` por línea: `calcular_total` da el total)."""
+    return [{"description": i["description"], "qty": i["qty"], "unit_price": i["unit_price"],
+             "iva_rate": iva_rate} for i in items]
+
+
+def _a_la_bandeja(ventas: PuertoDeVentas, venta: dict, cliente: dict, items: list, iva_rate: float,
+                  motivo: str) -> FacturaPendiente:
+    """Deja la venta en la bandeja «a facturar» del nodo y devuelve la excepción para levantar.
+
+    Idempotente por origen (`upsert_comprobante`): reintentar sin conexión no duplica la fila."""
+    node_id = ventas.conexion.node_id() or ""
+    try:
+        pendiente_id, _ = db_pendientes.upsert_comprobante(
+            origen_producto=ventas.producto, origen_tipo=db_pendientes.ORIGEN_VENTA,
+            origen_id=str(venta["id"]), origen_instancia=node_id,
+            cliente_id=venta.get("cliente_id") if cliente is not CONSUMIDOR_FINAL else None,
+            cliente_razon=cliente.get("name") or CONSUMIDOR_FINAL["name"],
+            cliente_cuit=cliente.get("cuit_dni", "") or "", cliente_domicilio=cliente.get("address", "") or "",
+            fecha_sugerida=str(venta.get("fecha") or "")[:10], concepto="",
+            condicion_venta=_condicion_venta(venta), items=_items_de_la_bandeja(items, iva_rate),
+            observaciones=f"Venta {venta['numero']}: {motivo}",
+        )
+    except db_pendientes.ComprobanteYaResuelto:
+        # Alguien la descartó de la bandeja: no se vuelve a abrir sola.
+        fila = db_pendientes.get_por_origen(ventas.producto, node_id, db_pendientes.ORIGEN_VENTA, venta["id"])
+        pendiente_id = fila["id"] if fila else None
+    logger.warning("Nodo %s: la venta %s queda para facturar al volver (%s), pendiente %s",
+                   node_id, venta["numero"], motivo, pendiente_id)
+    return FacturaPendiente(comprobante_pendiente_id=pendiente_id, motivo=motivo)
+
+
+def _cerrar_pendiente(ventas: PuertoDeVentas, venta_id: int, factura_id: int, usuario_id) -> None:
+    """Si la venta estaba en la bandeja del nodo, la marca facturada con esta factura."""
+    if not ventas.conexion.es_nodo():
+        return
+    fila = db_pendientes.get_por_origen(ventas.producto, ventas.conexion.node_id() or "",
+                                        db_pendientes.ORIGEN_VENTA, venta_id)
+    if fila and fila["estado"] in db_pendientes.ESTADOS_ABIERTOS:
+        db_pendientes.marcar_facturado(fila["id"], factura_id, usuario=str(usuario_id or ""))
+
+
+def pendiente_de_facturar(ventas: PuertoDeVentas, venta_id: int) -> dict | None:
+    """La fila abierta de la bandeja de esta venta (nodo), o `None`. Para el ticket: «no válido como factura»."""
+    if not ventas.conexion.es_nodo():
+        return None
+    fila = db_pendientes.get_por_origen(ventas.producto, ventas.conexion.node_id() or "",
+                                        db_pendientes.ORIGEN_VENTA, venta_id)
+    return fila if fila and fila["estado"] in db_pendientes.ESTADOS_ABIERTOS else None
+
+
+async def _facturar_venta(ventas: PuertoDeVentas, venta_id: int, *, usuario_id: int | None) -> dict:
     venta = ventas.obtener(venta_id)
     if not venta:
         raise VentaNoFacturable(f"La venta {venta_id} no existe.")
@@ -234,6 +352,7 @@ async def facturar_venta(ventas: PuertoDeVentas, venta_id: int, *,
     if venta.get("factura_id"):
         logger.info("Venta %s ya facturada (factura %s), no se reemite",
                     venta_id, venta["factura_id"])
+        _cerrar_pendiente(ventas, venta_id, venta["factura_id"], usuario_id)
         return db_facturas.get_factura(venta["factura_id"])
 
     # `status` es el crudo; `estado` puede venir pisado por `status_detail`.
@@ -261,9 +380,31 @@ async def facturar_venta(ventas: PuertoDeVentas, venta_id: int, *,
     if not items:
         raise VentaNoFacturable(f"La venta {venta_id} no tiene ítems.")
 
+    conexion = ventas.conexion
+    en_nodo = conexion.es_nodo()
+    if en_nodo and conexion.sin_conexion():
+        raise _a_la_bandeja(ventas, venta, cliente, items, iva_rate, "sin conexión")
+
     punto_venta = _punto_venta(venta)
     numerar = ventas.numerar_comprobante or get_next_numero_with_arca
-    numero, ta, arca = await numerar(punto_venta, tipo)
+    try:
+        numero, ta, arca = await numerar(punto_venta, tipo)
+    except SinConexion as e:
+        if not en_nodo:
+            raise
+        raise _a_la_bandeja(ventas, venta, cliente, items, iva_rate, e.mensaje) from None
+
+    if en_nodo and not ta:
+        # 🔴 En un nodo no hay numeración local: `get_next_numero_with_arca` cae a ella cuando ARCA no contesta
+        # (o no hay ARCA), y ese número choca con el de ARCA y con el del central.
+        if not arca:
+            raise NodoSinArca(
+                "Este equipo no tiene la configuración de ARCA del central: hay que espejar arca_config.")
+        if ventas.numerar_comprobante is None and not all(arca_credenciales.paths_en_disco(arca)):
+            raise NodoSinArca(
+                "Este equipo no tiene con qué autenticarse en ARCA: configurá el ticket prestado del central "
+                "(nodo_offline.numerador_con_ta).")
+        raise _a_la_bandeja(ventas, venta, cliente, items, iva_rate, "ARCA no respondió")
 
     factura_id = db_facturas.create_factura(
         tipo=tipo, punto_venta=punto_venta, numero=numero,
@@ -296,6 +437,11 @@ async def facturar_venta(ventas: PuertoDeVentas, venta_id: int, *,
 
     ventas.vincular_factura(venta_id, factura_id)
     vinculados = ventas.vincular_cobros(venta["numero"], factura_id)
+    _cerrar_pendiente(ventas, venta_id, factura_id, usuario_id)
+    try:
+        ventas.al_facturar(ventas.obtener(venta_id) or venta, factura)
+    except Exception:
+        logger.exception("al_facturar falló para la venta %s (factura %s)", venta_id, factura_id)
 
     logger.info(
         "Venta %s facturada: %s %04d-%08d (CAE %s), %s movimiento/s de caja vinculado/s",
@@ -358,3 +504,90 @@ def manejador_de_cobro_por_qr(
         return await facturar_si_esta_prendida(ventas, venta_id, cfg)
 
     return _cobro_de_venta_por_qr
+
+
+# ── Facturar al volver la conexión (nodo, ADR-074) ───────────────────────────
+
+
+async def facturar_pendientes_del_nodo(ventas: PuertoDeVentas, *, limite: int = 20,
+                                       usuario_id: int | None = None) -> dict:
+    """Factura las ventas que el nodo dejó en la bandeja sin conexión, **las más viejas primero**.
+
+    Cada una se factura **desde la venta** (`facturar_venta`): la vincula, cierra su fila de la bandeja y, con el
+    candado por venta, no emite dos veces aunque la tanda automática y el botón corran juntos. Idempotente: una venta
+    que ya tiene factura sólo cierra su fila.
+
+    - Si la conexión se vuelve a cortar a mitad de tanda, se corta ahí (lo que queda, queda para la próxima).
+    - Una venta anulada o que ya no existe se **descarta** de la bandeja con el motivo: no hay nada que facturar.
+    - `NodoSinArca` corta la tanda y se informa: no se arregla solo.
+
+    Devuelve `{"es_nodo", "en_linea", "facturadas": [{venta_id, factura_id, cae}], "descartadas", "errores",
+    "quedan"}`. Fuera de un nodo no hace nada."""
+    conexion = ventas.conexion
+    resultado = {"es_nodo": conexion.es_nodo(), "en_linea": not conexion.sin_conexion(),
+                 "facturadas": [], "descartadas": [], "errores": [], "quedan": 0}
+    if not resultado["es_nodo"] or not resultado["en_linea"]:
+        resultado["quedan"] = ventas_a_facturar(ventas)
+        return resultado
+
+    for fila in db_pendientes.list_pendientes_de(
+            db_pendientes.ORIGEN_VENTA, conexion.node_id() or "", limite, origen_producto=ventas.producto):
+        venta_id = int(fila["origen_id"])
+        try:
+            factura = await facturar_venta(ventas, venta_id, usuario_id=usuario_id)
+        except SinConexion:
+            resultado["en_linea"] = False
+            break
+        except FacturacionEnCurso:
+            continue
+        except VentaNoFacturable as e:
+            db_pendientes.descartar(fila["id"], motivo=str(e), usuario="nodo")
+            resultado["descartadas"].append({"venta_id": venta_id, "motivo": str(e)})
+            continue
+        except NodoSinArca as e:
+            resultado["errores"].append({"venta_id": venta_id, "error": str(e)})
+            break
+        except Exception as e:
+            logger.exception("Nodo: no se pudo facturar la venta %s de la bandeja", venta_id)
+            resultado["errores"].append({"venta_id": venta_id, "error": type(e).__name__})
+            continue
+        resultado["facturadas"].append({"venta_id": venta_id, "factura_id": factura["id"],
+                                        "cae": factura.get("cae") or ""})
+    resultado["quedan"] = ventas_a_facturar(ventas)
+    return resultado
+
+
+def ventas_a_facturar(ventas: PuertoDeVentas) -> int:
+    """Cuántas ventas de este nodo esperan la factura en la bandeja (0 fuera de un nodo)."""
+    if not ventas.conexion.es_nodo():
+        return 0
+    return len(db_pendientes.list_pendientes_de(
+        db_pendientes.ORIGEN_VENTA, ventas.conexion.node_id() or "", 10_000, origen_producto=ventas.producto))
+
+
+#: Cada cuánto mira la bandeja la facturación automática del nodo.
+INTERVALO_AL_VOLVER = 60.0
+
+
+def arrancar_facturacion_al_volver(ventas: PuertoDeVentas, *, intervalo: float = INTERVALO_AL_VOLVER,
+                                   habilitada: Callable[[], bool] = lambda: True) -> threading.Event | None:
+    """En un nodo, arranca un hilo que cada `intervalo` segundos factura la bandeja si hay conexión.
+
+    Devuelve el `Event` que lo para (`.set()`), o `None` si la instancia no es un nodo (no arranca nada). Va en un
+    hilo y no en el loop de la app por lo mismo que las rutas del cobro son `def`: la firma del ticket y la base son
+    sincrónicas y frenarían el loop entero. Con varios workers, cada uno arranca el suyo; el candado por venta hace
+    que no se emita dos veces. `habilitada` es el mismo `facturacion_habilitada` del router (VentaLibra)."""
+    if not ventas.conexion.es_nodo():
+        return None
+    parar = threading.Event()
+
+    def _bucle() -> None:
+        while not parar.wait(intervalo):
+            try:
+                if habilitada() and not ventas.conexion.sin_conexion():
+                    asyncio.run(facturar_pendientes_del_nodo(ventas))
+            except Exception:
+                logger.exception("Nodo: falló la facturación automática de la bandeja")
+
+    threading.Thread(target=_bucle, name="libracore-facturar-al-volver", daemon=True).start()
+    return parar

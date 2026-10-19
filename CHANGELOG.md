@@ -7,6 +7,22 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+## [Unreleased] — Facturar en un nodo offline: con conexión como siempre; sin conexión, ticket y bandeja (propuesta: v1.186.0)
+
+ADR-074. **Sin migración y sin cambio de schema.** Ítem E4 de la fase 1 de LibraEdge.
+
+- `libracore.nodo_offline` (nuevo): `ConexionDelNodo`, `FUERA_DE_NODO`, `conexion_desde_entorno()` (`LIBRAEDGE_NODE_ID`, `LIBRAEDGE_ESTADO`), `esta_en_linea()` / `en_linea_segun_estado()` (la que `libracommerce.erp.offline` pasa a importar), `SinConexion`, `FacturaPendiente`, `NodoSinArca`, y el ticket prestado: `ta_para_el_nodo()` (central) y `numerador_con_ta()` (nodo).
+- `PuertoDeVentas` suma `conexion`, `producto` y `al_facturar` (defaults: nada cambia). En un nodo sin conexión, `facturar_venta` deja la venta en la bandeja (`origen_tipo = "venta"`) y levanta `FacturaPendiente`; con conexión y ARCA sin número, igual (nunca numeración local en un nodo); sin ARCA espejada, `NodoSinArca`.
+- `facturar_pendientes_del_nodo()` y `arrancar_facturacion_al_volver()`: la bandeja se factura sola al volver, desde la venta. `pendiente_de_facturar()` y `ventas_a_facturar()`.
+- **Candado por venta en `facturar_venta`** (también fuera del nodo): dos intentos simultáneos emiten una factura; el segundo, `FacturacionEnCurso` → 409.
+- API: `POST /api/ventas/{id}/facturar` 409 `factura_pendiente` / 422 `nodo_sin_arca`; `mp-qr` y `mp-status` 409 `sin_conexion` sin llamar a MercadoPago; `build_facturacion_del_nodo_router`: `GET /api/nodo/conexion` y `POST /api/nodo/facturar-pendientes`. La bandeja rechaza armar el formulario de una venta (409 `se_factura_desde_la_venta`) y la ingesta rechaza `origen_tipo = "venta"` (422).
+- `libracore.facturas_del_nodo` (nuevo): `payload_factura()` y `aplicar_factura_del_nodo()` (idempotente, `FacturaEnConflicto`); `db.facturas.registrar_del_nodo()`; `db.comprobantes_pendientes.ORIGEN_VENTA`, `get_por_origen()`, `list_pendientes_de()`.
+- El ticket de venta con `factura_pendiente` dice «NO VÁLIDO COMO FACTURA».
+
+### Para los productos
+- RestoLibra, VentaLibra y ContaLibra, en su `PuertoDeVentas`: `conexion=nodo_offline.conexion_desde_entorno(nodo=lambda: nodo_actual("<producto>"))`, `producto="<producto>"` y `al_facturar` (encolar la subida con `payload_factura`); en el nodo, `numerar_comprobante=nodo_offline.numerador_con_ta(...)` cuando exista el transporte del ticket; montar `build_facturacion_del_nodo_router` con el gate del cobro; llamar `arrancar_facturacion_al_volver(PUERTO)` al arrancar; marcar `factura_pendiente` en el ticket. Espejar `arca_config:id` (y `cajas:id` si resuelven el punto de venta por caja).
+- Fuera de un nodo, subir el pin alcanza; lo visible es el 409 si dos facturan la misma venta a la vez.
+
 ## [Unreleased] — La nota de débito de una factura a cuenta corriente hereda la cuenta (propuesta: v1.185.0)
 
 ADR-073. **Sin migración y sin cambio de schema.** Cierra el punto (1) que el ADR-066 dejó abierto (decisión del humano, 2026-10-18).
