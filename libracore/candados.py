@@ -35,7 +35,6 @@ trabajo duplicado (una nota ante ARCA, un INSERT); la restricción es la red de 
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import logging
 import os
@@ -44,6 +43,8 @@ import threading
 import time
 from collections.abc import Iterator
 from typing import Any
+
+from . import bloqueo_de_archivo
 
 logger = logging.getLogger(__name__)
 
@@ -136,18 +137,16 @@ def _candado_de_archivo(nombre: str, *, espera: float = 0.0) -> Iterator[bool]:
     try:
         limite = time.monotonic() + espera
         while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if bloqueo_de_archivo.intentar(fd):
                 obtenido = True
                 break
-            except BlockingIOError:
-                if time.monotonic() >= limite:
-                    break
-                time.sleep(_PASO)
+            if time.monotonic() >= limite:
+                break
+            time.sleep(_PASO)
         yield obtenido
     finally:
         if obtenido:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            bloqueo_de_archivo.soltar(fd)
         os.close(fd)
 
 
