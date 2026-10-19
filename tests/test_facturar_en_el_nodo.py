@@ -480,3 +480,66 @@ def test_ticket_de_una_venta_pendiente_dice_no_valido_como_factura():
     assert "NO V" not in _texto_del_pdf(generar_ticket_venta(venta))
     texto = _texto_del_pdf(generar_ticket_venta({**venta, "factura_pendiente": True}))
     assert "NO V" in texto and "FACTURA" in texto
+
+
+# ── La fecha de la factura al volver (decisión del humano, 2026-10-19) ─────────
+
+
+def test_fecha_de_la_factura_segun_lo_que_admite_arca():
+    from datetime import date
+
+    hoy = date(2026, 10, 19)
+    f = vf.fecha_de_la_factura
+    assert f("2026-10-17 13:05:00", hoy=hoy) == date(2026, 10, 17)  # dentro: la de la venta
+    assert f("2026-10-14", hoy=hoy) == date(2026, 10, 14)  # borde: 5 días justos, productos
+    assert f("2026-10-13", hoy=hoy) == hoy  # 6 días: ARCA no la admite, hoy
+    assert f("2026-10-09", concepto=2, hoy=hoy) == date(2026, 10, 9)  # servicios: 10 días justos
+    assert f("2026-10-08", concepto=3, hoy=hoy) == hoy
+    assert f("2026-10-20", hoy=hoy) == hoy  # del futuro
+    assert f("", hoy=hoy) == hoy and f(None, hoy=hoy) == hoy and f("20261017", hoy=hoy) == hoy
+    # Nunca antes que el último comprobante de la serie (correlatividad de fechas en ARCA).
+    assert f("2026-10-15", hoy=hoy, piso=date(2026, 10, 18)) == date(2026, 10, 18)
+    assert f("2026-10-18", hoy=hoy, piso=date(2026, 10, 15)) == date(2026, 10, 18)
+
+
+def _facturar_al_volver(ventas, red, fechas_de_venta):
+    for vid, fecha in fechas_de_venta.items():
+        ventas.alta(vid, 100.0, fecha=fecha)
+    puerto = _puerto(ventas, red)
+    for vid in fechas_de_venta:
+        with pytest.raises(FacturaPendiente):
+            asyncio.run(vf.facturar_venta(puerto, vid))
+    red.en_linea = True
+    asyncio.run(vf.facturar_pendientes_del_nodo(puerto))
+    return {vid: db_facturas.get_factura(ventas.obtener(vid)["factura_id"])["fecha"] for vid in fechas_de_venta}
+
+
+def test_al_volver_la_factura_lleva_la_fecha_de_la_venta_si_arca_la_admite(ventas, red):
+    from libracore import fechas
+
+    hoy = fechas.hoy()
+    hace = {d: (hoy - timedelta(days=d)).isoformat() for d in (5, 6)}
+    emitidas = _facturar_al_volver(ventas, red, {1: hace[5] + " 21:40:00", 2: hace[6]})
+    assert emitidas[1] == hace[5]  # el borde: 5 días justos
+    assert emitidas[2] == hoy.isoformat()  # pasó el plazo: la del día
+
+
+def test_al_volver_no_queda_antes_que_una_factura_ya_emitida(ventas, red):
+    from libracore import fechas
+
+    hoy = fechas.hoy()
+    ventas.alta(9, 50.0, fecha=hoy.isoformat())
+    red.en_linea = True
+    hoy_emitida = asyncio.run(vf.facturar_venta(_puerto(ventas, red), 9))  # una venta nueva, facturada en línea
+    assert hoy_emitida["fecha"] == hoy.isoformat()
+    red.en_linea = False
+    emitidas = _facturar_al_volver(ventas, red, {1: (hoy - timedelta(days=2)).isoformat()})
+    assert emitidas[1] == hoy.isoformat()
+
+
+def test_en_linea_la_fecha_sigue_siendo_la_del_dia(ventas, red):
+    from libracore import fechas
+
+    red.en_linea = True
+    ventas.alta(1, 100.0, fecha=(fechas.hoy() - timedelta(days=2)).isoformat())
+    assert asyncio.run(vf.facturar_venta(_puerto(ventas, red), 1))["fecha"] == fechas.hoy().isoformat()

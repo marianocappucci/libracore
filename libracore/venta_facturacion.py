@@ -107,6 +107,41 @@ _TIPO_LABEL = {1: "Factura A", 6: "Factura B", 11: "Factura C"}
 #: Misma tasa por defecto que el formulario manual (`FacturaPayload.tax_rate`).
 IVA_RATE_DEFAULT = 0.21
 
+#: Cuántos días para atrás admite ARCA la fecha de un comprobante (`CbteFch` de wsfe, RG 4291): 5 para productos
+#: (concepto 1) y 10 para servicios o productos y servicios (2 y 3). Hacia adelante admite lo mismo; acá no se usa.
+DIAS_ATRAS_SEGUN_CONCEPTO = {1: 5, 2: 10, 3: 10}
+
+
+def fecha_de_la_factura(fecha_venta, *, concepto: int = 1, hoy: datetime.date | None = None,
+                        piso: datetime.date | None = None) -> datetime.date:
+    """La fecha de la factura de una venta que se factura al volver la conexión (ADR-074, decisión del humano).
+
+    - La **de la venta**, si está dentro de lo que ARCA admite para atrás según el concepto (5 días en productos, 10 en
+      servicios), bordes incluidos: una venta de hace exactamente 5 días sale con su fecha.
+    - **Hoy**, si pasó más, si la fecha no se lee o si es del futuro.
+    - Nunca antes que `piso`: la fecha del último comprobante de ese punto de venta y tipo. 🔴 ARCA rechaza un
+      comprobante con fecha anterior a la del último autorizado de la misma serie (la correlatividad es por número y
+      por fecha), y al volver la conexión el nodo puede haber facturado ventas nuevas con la fecha de hoy antes de
+      vaciar la bandeja.
+    """
+    hoy = hoy or fechas.hoy()
+    dia = fechas.dia_iso(str(fecha_venta or "")[:10])
+    dias = DIAS_ATRAS_SEGUN_CONCEPTO.get(int(concepto or 1), 5)
+    elegida = dia if dia is not None and hoy - datetime.timedelta(days=dias) <= dia <= hoy else hoy
+    if piso is not None and elegida < piso <= hoy:
+        elegida = piso
+    return elegida
+
+
+def _ultima_fecha_de_la_serie(punto_venta: int, tipo: int, ambiente: str) -> datetime.date | None:
+    with get_connection() as conn:
+        fila = conn.execute(
+            "SELECT MAX(fecha) FROM facturas WHERE punto_venta=? AND tipo=? AND ambiente=? "
+            "AND COALESCE(emisor_id, 0) = 0",
+            (punto_venta, tipo, ambiente),
+        ).fetchone()
+    return fechas.dia_iso(str(fila[0])[:10]) if fila and fila[0] else None
+
 # Los ids son los de `medios_pago.ELEGIBLES`; los valores, los de
 # `CONDICIONES_VENTA` de `facturas_router` (lo que acepta ARCA).
 #
@@ -406,9 +441,15 @@ async def _facturar_venta(ventas: PuertoDeVentas, venta_id: int, *, usuario_id: 
                 "(nodo_offline.numerador_con_ta).")
         raise _a_la_bandeja(ventas, venta, cliente, items, iva_rate, "ARCA no respondió")
 
+    fecha = fechas.hoy()
+    if en_nodo and pendiente_de_facturar(ventas, venta_id) is not None:
+        # Al volver: la fecha de la venta, si ARCA todavía la admite (ver `fecha_de_la_factura`).
+        fecha = fecha_de_la_factura(venta.get("fecha"), concepto=1,
+                                    piso=_ultima_fecha_de_la_serie(punto_venta, tipo, ambiente_de(arca)))
+
     factura_id = db_facturas.create_factura(
         tipo=tipo, punto_venta=punto_venta, numero=numero,
-        fecha=fechas.hoy().isoformat(),
+        fecha=fecha.isoformat(),
         cliente_cuit=cliente.get("cuit_dni", ""),
         cliente_razon=cliente["name"],
         cliente_iva_cond=_IVA_CODES.get(cliente.get("iva_condition", "Consumidor Final"), 5),
