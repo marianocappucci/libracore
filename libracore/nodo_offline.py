@@ -101,6 +101,35 @@ class NodoSinArca(Exception):
         return {"codigo": self.codigo, "mensaje": str(self)}
 
 
+class RechazoDelCentral(NodoSinArca):
+    """El central **contestó** y no presta el ticket: nodo revocado o sin credencial (401), el central sin ARCA (422),
+    servicio que no presta (501). No es un corte: reintentar al volver no lo arregla. Termina en el 422 `nodo_sin_arca`.
+
+    El producto traduce a esto (o a `NodoSinArca`) el rechazo de su cliente del ticket —en libraedge,
+    `TicketRechazado`—. También cuenta como rechazo cualquier excepción con el atributo `rechazo_del_central = True`."""
+
+
+def _es_rechazo(error: BaseException) -> bool:
+    return isinstance(error, NodoSinArca) or getattr(error, "rechazo_del_central", False) is True
+
+
+def _es_de_red(error: BaseException) -> bool:
+    """Un corte: la red (conexión, DNS, tiempo agotado) o un 5xx del central. Se reintenta al volver."""
+    if isinstance(error, (SinConexion, OSError, TimeoutError)):  # ConnectionError es un OSError
+        return True
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx viene con el motor
+        httpx = None
+    if httpx is not None:
+        if isinstance(error, httpx.TransportError):
+            return True
+        if isinstance(error, httpx.HTTPStatusError):
+            return error.response.status_code >= 500
+    status = getattr(error, "status_code", None)
+    return isinstance(status, int) and status >= 500
+
+
 # ── El estado del nodo ──────────────────────────────────────────────────────
 
 
@@ -243,8 +272,15 @@ def numerador_con_ta(obtener_ta: ObtenerTa, emisor_id=None) -> Callable[[int, in
     `obtener_ta(arca)` trae el ticket del central (lo arma el producto sobre el transporte de LibraEdge; ver
     `ta_para_el_nodo`) y devuelve un dict con `token` y `sign`. Devuelve `(numero, ta, arca)` como
     `arca_facturacion.get_next_numero_with_arca`, **sin caer nunca a la numeración local**: en un nodo, un número local
-    choca con el de ARCA y con el del central. Si el ticket o ARCA fallan, `SinConexion`; si el nodo no tiene la
-    `arca_config` espejada, `NodoSinArca`."""
+    choca con el de ARCA y con el del central.
+
+    Qué pasa con un error de `obtener_ta`:
+    - **Corte** (`SinConexion`, red, tiempo agotado, 5xx del central): `SinConexion` → la venta va a la bandeja.
+    - **Rechazo** (`NodoSinArca`, `RechazoDelCentral` o una excepción con `rechazo_del_central = True`; en libraedge,
+      `TicketRechazado` traducido por el producto): `NodoSinArca` → 422, no va a la bandeja.
+    - Cualquier otra: sale tal cual (es un error, no un corte).
+
+    Si ARCA no da el número, `SinConexion`. Sin `arca_config` espejada, `NodoSinArca`."""
     from libracore import arca_wsfe
     from libracore.db import arca_config as db_arca
 
@@ -254,15 +290,27 @@ def numerador_con_ta(obtener_ta: ObtenerTa, emisor_id=None) -> Callable[[int, in
             raise NodoSinArca("Este equipo no tiene la configuración de ARCA del central (falta espejar arca_config).")
         try:
             ta = await obtener_ta(arca)
+        except Exception as e:
+            if _es_rechazo(e):
+                # El central dijo que no: no es un corte, no va a la bandeja (422 `nodo_sin_arca`).
+                if isinstance(e, NodoSinArca):
+                    raise
+                raise RechazoDelCentral(
+                    "El central no presta el ticket de ARCA a este equipo (nodo revocado o sin credencial).") from e
+            if _es_de_red(e):
+                logger.error("Nodo: el central no respondió al pedir el ticket de ARCA: %s", type(e).__name__)
+                raise SinConexion(
+                    "El central no respondió: la venta se factura al volver la conexión.") from e
+            raise  # cualquier otra cosa es un error, no un corte: que se vea
+        try:
             ultimo = await arca_wsfe.ultimo_numero_autorizado(
                 punto_venta, tipo, arca["cuit"], ta["token"], ta["sign"], arca["ambiente"])
-        except SinConexion:
-            raise
         except Exception as e:
-            # Sin el texto del error en el mensaje: puede traer el token.
+            # ARCA no contestó o rechazó el pedido del último número: se reintenta al volver. Sin el texto del error
+            # en el log: puede traer el token.
             logger.error("Nodo: no se pudo pedir el número a ARCA (PV=%s tipo=%s): %s", punto_venta, tipo,
                          type(e).__name__)
-            raise SinConexion("ARCA o el central no respondieron: la venta se factura al volver la conexión.") from e
+            raise SinConexion("ARCA no respondió: la venta se factura al volver la conexión.") from e
         return ultimo + 1, ta, arca
 
     return numerar

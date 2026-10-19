@@ -543,3 +543,80 @@ def test_en_linea_la_fecha_sigue_siendo_la_del_dia(ventas, red):
     red.en_linea = True
     ventas.alta(1, 100.0, fecha=(fechas.hoy() - timedelta(days=2)).isoformat())
     assert asyncio.run(vf.facturar_venta(_puerto(ventas, red), 1))["fecha"] == fechas.hoy().isoformat()
+
+
+# ── El ticket prestado: corte o rechazo del central ──────────────────────────
+
+
+@pytest.fixture
+def con_arca(ventas, red, monkeypatch):
+    monkeypatch.delenv("ENV", raising=False)
+    red.en_linea = True
+    db_arca.crear_arca_config("Comercio Ficticio", "20000000001", 3, "", "", ambiente="homologacion")
+
+    async def ultimo(*args):
+        return 7
+
+    async def cae(*args):
+        return {"cae": "70000000000002", "cae_vto": "20261030"}
+
+    monkeypatch.setattr(arca_wsfe, "ultimo_numero_autorizado", ultimo)
+    monkeypatch.setattr(arca_wsfe, "solicitar_cae", cae)
+
+
+def _con_ticket(ventas, red, falla):
+    async def obtener_ta(arca):
+        raise falla
+
+    return _puerto(ventas, red, numerar_comprobante=nodo_offline.numerador_con_ta(obtener_ta))
+
+
+def _status(codigo):
+    import httpx
+
+    pedido = httpx.Request("POST", "https://central.invalid/sync/v1/arca/ta")
+    return httpx.HTTPStatusError("x", request=pedido, response=httpx.Response(codigo, request=pedido))
+
+
+class TicketRechazadoDeEjemplo(Exception):
+    """Como el `TicketRechazado` de libraedge, marcado por el producto."""
+
+    rechazo_del_central = True
+
+
+@pytest.mark.parametrize("falla", [
+    ConnectionError("sin ruta"), TimeoutError(), SinConexion("central caído"), _status(503),
+], ids=["conexion", "tiempo", "sin_conexion", "5xx"])
+def test_un_corte_del_central_manda_la_venta_a_la_bandeja(con_arca, ventas, red, falla):
+    ventas.alta(1, 100.0)
+    with pytest.raises(FacturaPendiente):
+        asyncio.run(vf.facturar_venta(_con_ticket(ventas, red, falla), 1))
+    assert len(_bandeja()) == 1 and _facturas() == 0
+
+
+@pytest.mark.parametrize("falla", [
+    nodo_offline.RechazoDelCentral("nodo revocado"), NodoSinArca("el central no tiene ARCA"),
+    TicketRechazadoDeEjemplo("401"),
+], ids=["rechazo", "nodo_sin_arca", "marcado"])
+def test_un_rechazo_del_central_es_422_y_no_va_a_la_bandeja(con_arca, ventas, red, falla):
+    ventas.alta(1, 100.0)
+    puerto = _con_ticket(ventas, red, falla)
+    with pytest.raises(NodoSinArca):
+        asyncio.run(vf.facturar_venta(puerto, 1))
+    r = _app(puerto).post("/api/ventas/1/facturar")
+    assert r.status_code == 422 and r.json()["detail"]["codigo"] == "nodo_sin_arca"
+    assert _bandeja() == [] and _facturas() == 0
+    # Y la tanda al volver no la toma por un corte: la informa y corta.
+    with pytest.raises(FacturaPendiente):
+        asyncio.run(vf.facturar_venta(_puerto(ventas, Red(en_linea=False)), 1))
+    hecho = asyncio.run(vf.facturar_pendientes_del_nodo(puerto))
+    assert hecho["facturadas"] == [] and hecho["errores"][0]["venta_id"] == 1 and hecho["quedan"] == 1
+
+
+def test_otro_error_del_ticket_no_se_disfraza_de_corte(con_arca, ventas, red):
+    ventas.alta(1, 100.0)
+    with pytest.raises(ValueError, match="mal armado"):
+        asyncio.run(vf.facturar_venta(_con_ticket(ventas, red, ValueError("mal armado")), 1))
+    with pytest.raises(type(_status(401))):
+        asyncio.run(vf.facturar_venta(_con_ticket(ventas, red, _status(401)), 1))
+    assert _bandeja() == [] and _facturas() == 0
