@@ -7,6 +7,13 @@ migración antes de actualizar el pin. Se empieza a mantener con esta entrada;
 las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
+
+## [Unreleased] — La bandeja no deja descartar a mano una venta del nodo (propuesta: v1.186.1)
+
+Completa el ADR-074. **Sin migración.** `POST /api/comprobantes-pendientes/{id}/descartar` contesta 409 si la fila es
+una venta cobrada sin conexión en un nodo (`origen_tipo = "venta"`): descartarla la dejaría cobrada y sin factura. Se
+factura desde la venta o sola al volver la conexión. La tanda del nodo sigue descartando las ventas anuladas (llama a
+`db.descartar` directo). La pantalla ya oculta el botón (contalibra#526).
 ## [Unreleased] — Facturar en un nodo offline: con conexión como siempre; sin conexión, ticket y bandeja (propuesta: v1.186.0)
 
 ADR-074. **Sin migración y sin cambio de schema.** Ítem E4 de la fase 1 de LibraEdge.

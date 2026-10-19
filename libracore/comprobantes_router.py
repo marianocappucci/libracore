@@ -229,8 +229,18 @@ def build_comprobantes_bandeja_router(usuario_actual=None) -> APIRouter:
     @router.post("/{comprobante_id}/descartar")
     def descartar(comprobante_id: int, payload: DescartarPayload,
                   request: Request):
-        if not db.get_comprobante(comprobante_id):
+        comprobante = db.get_comprobante(comprobante_id)
+        if not comprobante:
             raise HTTPException(404, "Comprobante no encontrado")
+        # Una venta cobrada en un nodo sin conexión (ADR-074) no se descarta a mano: quedaría cobrada y sin factura
+        # para siempre. Se factura desde la venta o sola al volver la conexión. La tanda del nodo sí descarta las que
+        # se anularon, pero llama a `db.descartar` directo, no a esta ruta.
+        if comprobante.get("origen_tipo") == db.ORIGEN_VENTA:
+            raise HTTPException(
+                409,
+                "Las ventas cobradas sin conexión no se descartan: se facturan desde la venta "
+                "o solas al volver la conexión.",
+            )
         if not db.descartar(comprobante_id, payload.motivo, _usuario(request)):
             raise HTTPException(409, "El comprobante ya estaba resuelto")
         return db.get_comprobante(comprobante_id)
