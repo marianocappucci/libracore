@@ -8,6 +8,22 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — La barra de estado del pie: `GET /api/estado-del-sistema` (propuesta: v1.187.0)
+
+ADR-075. **Sin migración.** `libracore.estado_del_sistema` (nuevo): `build_estado_del_sistema_router(usuario_actual=, …)`
+monta `GET /api/estado-del-sistema` con lo que muestra la barra del pie de libra-ui (`BarraDeEstado`, ADR-083 del kit):
+LibraEdge (en un nodo: en línea, operaciones por subir del archivo de estado y ventas por facturar; en el central, los
+nodos sin noticias), usuario y sucursal, versión (`LIBRA_VERSION` y la del motor), el certificado de ARCA que vence en
+menos de 30 días o venció (facturación y servicios) y el último respaldo (viejo a las 36 h; la copia externa que falló).
+ARCA, respaldo, nodos del central y versión del motor, sólo para el administrador; al resto, el certificado vencido
+resumido. Nada de rutas, CUIT ni textos de error.
+
+### Para los productos
+- Montar `build_estado_del_sistema_router(usuario_actual=<el de siempre>, backups_dir=<el de build_backup_router>)`.
+  Los tres con LibraEdge: `ventas=<su PuertoDeVentas>` y `nodos_del_central=` (con `nodos_de_la_instancia`). Si el
+  rol de administrador no es `role == "admin"`, `es_admin=`; si la sucursal no viene en el usuario, `sucursal=`.
+- En el frontend, `createLayout({ barraDeEstado: true })` (libra-ui ≥ la versión del ADR-083).
+
 ## [Unreleased] — El motor se puede importar en Windows (propuesta: v1.186.2)
 
 **Sin migración.** El nodo de LibraEdge corre el motor en Windows (instalador E7, ADR-010 de libraedge), y

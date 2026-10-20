@@ -177,6 +177,8 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
   configuración de la instancia y SMTP, expuestos como router.
 - **`errores.py`**: registro de errores propio (ADR-045, `docs/errores.md`): handler de
   `Exception`, `capturar`, `POST /api/errores-cliente`, limpieza de datos personales.
+- **`estado_del_sistema.py`** (ADR-075): `GET /api/estado-del-sistema`, lo que muestra la barra de estado del pie de
+  los ocho productos (LibraEdge, usuario y sucursal, versión, certificado de ARCA y último respaldo) en una consulta.
 - **`security_headers.py`**, **`modules_gate.py`** (gating de módulos por
   instancia, `db/modulos`), **`feriados.py`**, **`geografia.py`**,
   **`medios_pago.py`**, **`registro_de_clientes.py`**,
