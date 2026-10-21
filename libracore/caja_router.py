@@ -23,11 +23,19 @@ El de turnos recibe `resumen_turno` y `cerrar_turno` porque dependen de **dónde
 viven las ventas**: los de `libracore.db.turnos` leen la tabla `ventas` de este
 motor; un producto cuyas ventas están en LibraCommerce pasa los de
 `libracommerce.erp.ventas`, y VentaLibra los que arquean sobre la caja.
+
+**La caja de un nodo de LibraEdge (ADR-076).** Los tres routers aceptan `ganchos_de_caja=`
+(`libracore.ganchos_de_caja.GanchosDeCaja`): abrir y cerrar un turno, anotar o anular un movimiento y cerrar el
+día llaman al gancho **dentro de la misma transacción** del cambio, para que el producto encole la operación en el
+outbox del nodo. Sin ganchos —el central, una instalación común— no cambia nada. El de turnos, si recibe ganchos,
+exige que su `cerrar_turno` acepte `ganchos=` (los de `libracore.db.turnos` lo aceptan): un cierre que no lo
+aceptara dejaría el turno cerrado en el nodo y abierto en el central, y se prefiere que el producto no arranque.
 """
 
 from __future__ import annotations
 
 import datetime
+import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +50,7 @@ from libracore.db import cierre_diario as db_cierre_diario
 from libracore.db import turnos as db_turnos
 from libracore.db.caja import ExternalIdMercadoPagoInvalido, PuntoDeVentaRepetido
 from libracore.db.cierre_diario import DiaCerradoError
+from libracore.ganchos_de_caja import GanchosDeCaja
 from libracore.validacion import sin_booleanos
 
 # ── Caja: los movimientos ────────────────────────────────────────────────
@@ -65,7 +74,8 @@ def _periodo_actual():
     return hoy.replace(day=1).isoformat(), hoy.isoformat()
 
 
-def build_caja_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api/caja") -> APIRouter:
+def build_caja_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api/caja",
+                      ganchos_de_caja: GanchosDeCaja | None = None) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["caja"])
 
     @router.get("")
@@ -97,7 +107,7 @@ def build_caja_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api
                     mov_id = db_caja.create_caja_movimiento(
                         payload.fecha, payload.tipo, concepto, payload.monto, payload.referencia.strip(),
                         payload.factura_id, user.get("id"), caja_id=payload.caja_id,
-                        medio_pago=payload.medio_pago, conn=conn,
+                        medio_pago=payload.medio_pago, conn=conn, ganchos=ganchos_de_caja,
                     )
             except CobroNoPermitido as exc:
                 raise HTTPException(404 if exc.codigo == CobroNoPermitido.NO_EXISTE else 409, str(exc)) from exc
@@ -105,7 +115,7 @@ def build_caja_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api
         mov_id = db_caja.create_caja_movimiento(
             payload.fecha, payload.tipo, concepto, payload.monto, payload.referencia.strip(),
             payload.factura_id, user.get("id"), caja_id=payload.caja_id,
-            medio_pago=payload.medio_pago,
+            medio_pago=payload.medio_pago, ganchos=ganchos_de_caja,
         )
         return {"id": mov_id}
 
@@ -114,7 +124,7 @@ def build_caja_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api
         """Anula el movimiento. **La fila queda.** La ruta sigue siendo `DELETE`
         para no romper al frontend, pero lo que hace es marcar `anulado=1`:
         sale de los totales del arqueo y la lista lo sigue mostrando."""
-        db_caja.anular_caja_movimiento(mov_id)
+        db_caja.anular_caja_movimiento(mov_id, ganchos=ganchos_de_caja)
         return {"ok": True}
 
     return router
@@ -299,6 +309,15 @@ class CerrarPayload(BaseModel):
     _no_son_booleanos = sin_booleanos("monto_declarado")
 
 
+def _acepta_ganchos(funcion: Callable[..., Any]) -> bool:
+    """Si `funcion` acepta el argumento `ganchos` (por nombre o por `**kwargs`)."""
+    try:
+        parametros = inspect.signature(funcion).parameters
+    except (TypeError, ValueError):  # un callable sin firma (de C): no se puede saber, se rechaza
+        return False
+    return "ganchos" in parametros or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parametros.values())
+
+
 def _puede_ver(turno: dict, user: dict) -> bool:
     return user.get("role") == "admin" or turno["usuario_id"] == user.get("id")
 
@@ -311,6 +330,7 @@ def build_turnos_router(
     validar_apertura: Callable[[AbrirPayload, dict], None] | None = None,
     enriquecer: Callable[[dict], dict] | None = None,
     prefix: str = "/api/turnos",
+    ganchos_de_caja: GanchosDeCaja | None = None,
 ) -> APIRouter:
     """Los turnos de caja.
 
@@ -322,7 +342,15 @@ def build_turnos_router(
       (lo de siempre); un producto que no lo quiere idempotente lo rechaza acá.
     - `enriquecer(turno) -> turno`: campos de más en cada turno de la respuesta
       (la caja y la sucursal donde está abierto).
+    - `ganchos_de_caja` (ADR-076): `al_abrir_turno` y `al_cerrar_turno` corren dentro de la transacción de
+      cada cambio. `cerrar_turno` tiene que aceptar `ganchos=` (el default y `db.turnos.cerrar_turno_caja` lo
+      aceptan): si no, `TypeError` al armar el router y no al cerrar el primer turno.
     """
+    if ganchos_de_caja is not None and not _acepta_ganchos(cerrar_turno):
+        raise TypeError(
+            "build_turnos_router: con ganchos_de_caja, cerrar_turno tiene que aceptar `ganchos=` "
+            "(si no, el cierre del turno no subiría al central)."
+        )
     router = APIRouter(prefix=prefix, tags=["turnos"])
 
     def _e(turno: dict) -> dict:
@@ -356,7 +384,7 @@ def build_turnos_router(
             return _e(turno_activo)
         try:
             tid = db_turnos.create_turno(user["id"], payload.monto_inicial, payload.notas.strip(),
-                                         caja_id=payload.caja_id)
+                                         caja_id=payload.caja_id, ganchos=ganchos_de_caja)
         except DiaCerradoError as exc:
             # El día de esa sucursal ya se cerró: no es un dato mal escrito sino
             # un estado, como el 409 del punto de venta repetido.
@@ -381,7 +409,10 @@ def build_turnos_router(
             raise HTTPException(403, "No autorizado")
         if turno["estado"] != "abierto":
             raise HTTPException(422, "El turno ya está cerrado.")
-        cerrar_turno(tid, payload.monto_declarado, payload.notas.strip())
+        if ganchos_de_caja is not None:
+            cerrar_turno(tid, payload.monto_declarado, payload.notas.strip(), ganchos=ganchos_de_caja)
+        else:
+            cerrar_turno(tid, payload.monto_declarado, payload.notas.strip())
         return _e(db_turnos.get_turno(tid))
 
     return router
@@ -422,6 +453,7 @@ def build_cierre_diario_router(
     autorizar_cierre: Callable[..., Any] | None = None,
     autorizar_reabrir: Any = None,
     prefix: str = "/api/cierre-diario",
+    ganchos_de_caja: GanchosDeCaja | None = None,
 ) -> APIRouter:
     """Vista previa, cierre, reapertura, listado y tickets del cierre diario.
 
@@ -464,6 +496,10 @@ def build_cierre_diario_router(
     (viven en la base del producto, ver `db/cierre_diario.py`): sin esto los
     endpoints de listado/detalle/ticket no podrían mostrar más que el
     `sucursal_id` crudo.
+
+    `ganchos_de_caja` (ADR-076): `al_cerrar_dia` corre dentro de la transacción del cierre. **Reabrir un día
+    no tiene gancho**: un nodo que lo reabriera dejaría al central con el día cerrado. Hasta que se decida cómo
+    sube, el producto del nodo no debería montar `autorizar_reabrir` (o debería ponerle `solo_en_el_central`).
     """
     router = APIRouter(prefix=prefix, tags=["cierre-diario"])
     # `autorizar_cierre`/`autorizar_reabrir` ya vienen envueltos en
@@ -482,7 +518,7 @@ def build_cierre_diario_router(
         try:
             cierre = db_cierre_diario.cerrar_dia(
                 usuario_id=user["id"], sucursal_id=payload.sucursal_id,
-                fecha=payload.fecha or None, notas=payload.notas.strip(),
+                fecha=payload.fecha or None, notas=payload.notas.strip(), ganchos=ganchos_de_caja,
             )
         except db_cierre_diario.TurnosAbiertosError as e:
             raise HTTPException(422, str(e)) from e

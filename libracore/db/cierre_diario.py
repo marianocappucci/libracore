@@ -87,6 +87,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 
+from libracore import ganchos_de_caja
 from libracore.db.caja import sql_no_anulado, sql_no_es_cuenta_corriente
 from libracore.db.core import Conexion, _ar_now, get_connection
 
@@ -163,7 +164,10 @@ _DDL_TABLAS = """
         created_at              TEXT DEFAULT (datetime('now','-3 hours')),
         anulado_en              TEXT,
         anulado_por             INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
-        motivo_anulacion        TEXT
+        motivo_anulacion        TEXT,
+        -- De qué nodo de LibraEdge vino este cierre y cuál era su id allá (ADR-076). NULL en el propio.
+        origen                  TEXT,
+        origen_id               INTEGER
     );
 
     -- Parcial desde v1.107.0 (reabrir día): un cierre ANULADO no cuenta para
@@ -220,6 +224,13 @@ _DDL_TABLAS = """
 """
 
 
+#: Un cierre del nodo se aplica una sola vez. Parcial: los cierres propios no tienen origen y dos NULL no se pisan.
+INDICE_DE_ORIGEN = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_cierres_diarios_origen "
+    "ON cierres_diarios (origen, origen_id) WHERE origen IS NOT NULL"
+)
+
+
 def crear_tablas(conn: Conexion) -> None:
     """Crea las tres tablas de este módulo si no existen. Idempotente, como
     `init_core_schema()`. La llama la migración `0009_cierre_diario` (contra
@@ -229,6 +240,12 @@ def crear_tablas(conn: Conexion) -> None:
     `libracore.db.logs.get_actividad_log()` con sus partes por default, que
     desde esta versión incluyen `cierres_diarios`."""
     conn.executescript(_DDL_TABLAS)
+    # El índice del origen (ADR-076) va aparte, y sólo si la tabla ya tiene las columnas: una base de antes de la
+    # `0028` las recibe con esa migración, y esto se llama en cada arranque de LibraClub. Con el índice dentro de
+    # `_DDL_TABLAS`, el `CREATE INDEX` de una tabla vieja moriría con «no such column».
+    columnas = {fila[1] for fila in conn.execute("PRAGMA table_info(cierres_diarios)").fetchall()}
+    if {"origen", "origen_id"} <= columnas:
+        conn.execute(INDICE_DE_ORIGEN)
 
 
 def _fmt_fecha_ar(fecha: str) -> str:
@@ -528,7 +545,8 @@ def _mensaje_turnos_abiertos(fecha: str, abiertos: list[dict]) -> str:
 
 
 def _cerrar_dia_en_transaccion(conn: Conexion, fecha: str, sucursal_id: int | None,
-                               usuario_id: int, notas: str) -> int:
+                               usuario_id: int, notas: str, ganchos: ganchos_de_caja.GanchosDeCaja | None = None,
+                               origen: str | None = None, origen_id: int | None = None) -> int:
     turnos = _turnos_del_dia(conn, fecha, sucursal_id)
     abiertos = [t for t in turnos if t["estado"] == "abierto"]
     if abiertos:
@@ -546,14 +564,24 @@ def _cerrar_dia_en_transaccion(conn: Conexion, fecha: str, sucursal_id: int | No
         (numero_sucursal,),
     ).fetchone()[0]
 
-    cur = conn.execute(
-        """INSERT INTO cierres_diarios
-           (sucursal_id, numero, fecha, usuario_id, monto_esperado_total,
-            monto_declarado_total, diferencia_total, notas)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (sucursal_id, numero, fecha, usuario_id, snap["monto_esperado_total"],
-         snap["monto_declarado_total"], snap["diferencia_total"], notas),
-    )
+    if origen is None:
+        cur = conn.execute(
+            """INSERT INTO cierres_diarios
+               (sucursal_id, numero, fecha, usuario_id, monto_esperado_total,
+                monto_declarado_total, diferencia_total, notas)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (sucursal_id, numero, fecha, usuario_id, snap["monto_esperado_total"],
+             snap["monto_declarado_total"], snap["diferencia_total"], notas),
+        )
+    else:
+        cur = conn.execute(
+            """INSERT INTO cierres_diarios
+               (sucursal_id, numero, fecha, usuario_id, monto_esperado_total,
+                monto_declarado_total, diferencia_total, notas, origen, origen_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (sucursal_id, numero, fecha, usuario_id, snap["monto_esperado_total"],
+             snap["monto_declarado_total"], snap["diferencia_total"], notas, origen, origen_id),
+        )
     cierre_id = cur.lastrowid
 
     for t in snap["turnos"]:
@@ -599,11 +627,19 @@ def _cerrar_dia_en_transaccion(conn: Conexion, fecha: str, sucursal_id: int | No
             (cierre_id, medio, acc["ingresos"], acc["egresos"], acc["neto"]),
         )
 
+    if ganchos is not None:
+        cabecera = conn.execute("SELECT * FROM cierres_diarios WHERE id=?", (cierre_id,)).fetchone()
+        ganchos.al_cerrar_dia(conn, ganchos_de_caja.datos_de_cierre_diario(
+            cabecera, snap["turnos"],
+            [{"medio_pago": medio, **acc} for medio, acc in snap["medios_dia"].items()]))
+
     return cierre_id
 
 
 def cerrar_dia(usuario_id: int, sucursal_id: int | None = None, fecha: str | None = None,
-              notas: str = "") -> dict:
+              notas: str = "", *, conn: Conexion | None = None,
+              ganchos: ganchos_de_caja.GanchosDeCaja | None = None, origen: str | None = None,
+              origen_id: int | None = None) -> dict:
     """Cierra el día operativo `fecha` (default: hoy en hora AR) de
     `sucursal_id`. Admin lo decide el LLAMADOR — este motor recibe
     `usuario_id` y no pregunta rol; ver `caja_router.build_cierre_diario_router`.
@@ -612,12 +648,25 @@ def cerrar_dia(usuario_id: int, sucursal_id: int | None = None, fecha: str | Non
     si ese día ya se cerró para esta sucursal. Reintenta ante una colisión de
     numeración (ver el docstring del módulo); las otras dos excepciones NO se
     reintentan, porque no son una carrera transitoria.
+
+    **La caja de un nodo (ADR-076).** Los cuatro opcionales y, sin ellos, todo queda como estaba. `ganchos`
+    (`GanchosDeCaja`) corre `al_cerrar_dia(conn, datos)` **dentro de la misma transacción**, con el arqueo de cada
+    turno y los medios del día: si levanta, el día no queda cerrado. `origen` y `origen_id` (juntos): el nodo y el
+    id del cierre en su base, cuando el central aplica uno que subió el nodo (`get_cierre_de_origen` dice si ya
+    está). `conn` escribe en la transacción de quien llama, que confirma: sin una conexión propia no hay con qué
+    reintentar una colisión de numeración, así que ahí un `IntegrityError` sale tal cual.
     """
+    ganchos_de_caja.validar_origen(origen, origen_id)
     fecha = fecha or _ar_now()[:10]
+    if conn is not None:
+        cierre_id = _cerrar_dia_en_transaccion(conn, fecha, sucursal_id, usuario_id, notas, ganchos, origen,
+                                               origen_id)
+        return get_cierre(cierre_id, conn=conn)
     for intento in range(_MAX_INTENTOS_NUMERACION):
         try:
             with get_connection() as conn:
-                cierre_id = _cerrar_dia_en_transaccion(conn, fecha, sucursal_id, usuario_id, notas)
+                cierre_id = _cerrar_dia_en_transaccion(conn, fecha, sucursal_id, usuario_id, notas, ganchos,
+                                                       origen, origen_id)
             return get_cierre(cierre_id)
         except sqlite3.IntegrityError:
             if intento == _MAX_INTENTOS_NUMERACION - 1:
@@ -701,6 +750,16 @@ def reabrir_dia(cierre_id: int, usuario_id: int, motivo: str) -> dict:
     return get_cierre(cierre_id)
 
 
+def get_cierre_de_origen(origen: str, origen_id: int, conn: Conexion | None = None) -> dict | None:
+    """El cierre diario que subió ese nodo con ese id (ADR-076), o `None` si todavía no se aplicó."""
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        fila = c.execute(
+            "SELECT id FROM cierres_diarios WHERE origen=? AND origen_id=?", (origen, origen_id)
+        ).fetchone()
+    return get_cierre(fila["id"], conn=conn) if fila else None
+
+
 def listar_cierres(sucursal_id: int | None = None, *, todas: bool = False,
                    limit: int = 50) -> list[dict]:
     """Los cierres de `sucursal_id`, o de TODAS si `todas=True`.
@@ -737,11 +796,15 @@ def listar_cierres(sucursal_id: int | None = None, *, todas: bool = False,
     return [dict(r) for r in rows]
 
 
-def get_cierre(cierre_id: int) -> dict | None:
+def get_cierre(cierre_id: int, conn: Conexion | None = None) -> dict | None:
     """El cierre completo: su cabecera, sus turnos (con sus medios), sus
     cajas (agrupando los turnos y con el subtotal por caja) y los medios de
-    la sucursal. Es la FOTO — nada de esto vuelve a leer `caja_movimientos`."""
-    with get_connection() as conn:
+    la sucursal. Es la FOTO — nada de esto vuelve a leer `caja_movimientos`.
+
+    Con `conn`, lo ve como lo ve esa transacción (ADR-076: `cerrar_dia(conn=)` devuelve el cierre que acaba
+    de grabar, todavía sin confirmar)."""
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as conn:
         fila = conn.execute(
             """SELECT cd.*, COALESCE(u.nombre, 'usuario #' || cd.usuario_id) AS cerrado_por_nombre
                  FROM cierres_diarios cd

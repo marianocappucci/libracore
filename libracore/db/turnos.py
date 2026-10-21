@@ -5,13 +5,23 @@ parte de la migración real a libracore.db (Fase 3 de LibraCore, ver
 wiki/entities/libracore.md).
 """
 import contextlib
+from collections.abc import Callable
 
+from libracore import ganchos_de_caja
 from libracore.db import cierre_diario
 from libracore.db.core import Conexion, _ar_now, get_connection
 
 
+def _conexion(conn: Conexion | None):
+    """La conexión de quien llama (sin confirmar ni cerrar nada) o una propia, que confirma al salir."""
+    return contextlib.nullcontext(conn) if conn is not None else get_connection()
+
+
 def create_turno(usuario_id: int, monto_inicial: float, notas: str = "",
-                 caja_id: int | None = None) -> int:
+                 caja_id: int | None = None, *, conn: Conexion | None = None,
+                 ganchos: ganchos_de_caja.GanchosDeCaja | None = None,
+                 apertura: str | None = None, origen: str | None = None,
+                 origen_id: int | None = None) -> int:
     """Abre el turno. `caja_id` dice **sobre qué mostrador**.
 
     🔑 Opcional a propósito: los productos que no tienen cajas múltiples abren el
@@ -26,17 +36,41 @@ def create_turno(usuario_id: int, monto_inicial: float, notas: str = "",
     —esa tabla queda vacía si nadie llama a `cerrar_dia()`— así que no cambia
     nada. Levanta `cierre_diario.DiaCerradoError` si el día operativo de la
     sucursal de esa caja ya se cerró.
+
+    **La caja de un nodo (ADR-076).** Todo lo que sigue es opcional y sin nada de
+    eso la función se comporta como siempre:
+
+    - `conn`: escribe en la transacción de quien llama, que confirma (como el
+      resto de `libracore.db`). Sin `conn`, abre la suya y confirma al salir.
+    - `ganchos`: `GanchosDeCaja`. Corre `al_abrir_turno(conn, datos)` **dentro de
+      la misma transacción**, después del `INSERT`: si levanta, el turno no queda.
+    - `apertura`: la fecha y hora de apertura (`AAAA-MM-DD HH:MM:SS`, hora de
+      Argentina). Sin ella, ahora. El central que aplica un turno del nodo pasa
+      la que escribió el nodo: la guarda del cierre diario mira ese día.
+    - `origen` y `origen_id`: el nodo y el id del turno en su base. Van juntos.
     """
-    apertura = _ar_now()
-    with get_connection() as conn:
-        sucursal_id = cierre_diario.sucursal_de_caja(caja_id, conn=conn) if caja_id is not None else None
-        cierre_diario.verificar_dia_abierto(apertura[:10], sucursal_id, conn=conn)
-        cur = conn.execute(
-            """INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial, notas, caja_id)
-               VALUES (?,?,?,?,?)""",
-            (usuario_id, apertura, monto_inicial, notas, caja_id),
-        )
-        return cur.lastrowid
+    ganchos_de_caja.validar_origen(origen, origen_id)
+    apertura = apertura or _ar_now()
+    with _conexion(conn) as c:
+        sucursal_id = cierre_diario.sucursal_de_caja(caja_id, conn=c) if caja_id is not None else None
+        cierre_diario.verificar_dia_abierto(apertura[:10], sucursal_id, conn=c)
+        if origen is None:
+            cur = c.execute(
+                """INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial, notas, caja_id)
+                   VALUES (?,?,?,?,?)""",
+                (usuario_id, apertura, monto_inicial, notas, caja_id),
+            )
+        else:
+            cur = c.execute(
+                """INSERT INTO turnos_caja (usuario_id, apertura, monto_inicial, notas, caja_id, origen, origen_id)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (usuario_id, apertura, monto_inicial, notas, caja_id, origen, origen_id),
+            )
+        turno_id = cur.lastrowid
+        if ganchos is not None:
+            turno = c.execute("SELECT * FROM turnos_caja WHERE id=?", (turno_id,)).fetchone()
+            ganchos.al_abrir_turno(c, ganchos_de_caja.datos_de_turno_abierto(turno, sucursal_id=sucursal_id))
+        return turno_id
 
 
 def get_turno_activo(usuario_id: int, conn: Conexion | None = None) -> dict | None:
@@ -110,9 +144,9 @@ def get_all_turnos(usuario_id: int | None = None, limit: int = 50) -> list[dict]
     return [dict(r) for r in rows]
 
 
-def get_turno(tid: int) -> dict | None:
-    with get_connection() as conn:
-        row = conn.execute(
+def get_turno(tid: int, conn: Conexion | None = None) -> dict | None:
+    with _conexion(conn) as c:
+        row = c.execute(
             """SELECT t.*, u.nombre AS usuario_nombre
                FROM turnos_caja t JOIN usuarios u ON u.id = t.usuario_id
                WHERE t.id=?""",
@@ -121,15 +155,28 @@ def get_turno(tid: int) -> dict | None:
     return dict(row) if row else None
 
 
-def get_resumen_turno(tid: int) -> dict:
+def get_turno_de_origen(origen: str, origen_id: int, conn: Conexion | None = None) -> dict | None:
+    """El turno que subió ese nodo con ese id (ADR-076), o `None` si todavía no se aplicó. Es la pregunta de
+    idempotencia del central: antes de aplicar «turno abierto» o «turno cerrado» de un nodo, ¿ya está?"""
+    with _conexion(conn) as c:
+        row = c.execute(
+            """SELECT t.*, u.nombre AS usuario_nombre
+               FROM turnos_caja t JOIN usuarios u ON u.id = t.usuario_id
+               WHERE t.origen=? AND t.origen_id=?""",
+            (origen, origen_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_resumen_turno(tid: int, conn: Conexion | None = None) -> dict:
     """Devuelve ventas y totales por medio de pago del turno."""
-    with get_connection() as conn:
-        ventas = conn.execute(
+    with _conexion(conn) as c:
+        ventas = c.execute(
             """SELECT v.id, v.numero, v.fecha, v.cliente_nombre, v.total, v.estado
                FROM ventas v WHERE v.turno_id=? ORDER BY v.id""",
             (tid,),
         ).fetchall()
-        pagos = conn.execute(
+        pagos = c.execute(
             """SELECT vp.medio, SUM(vp.monto) AS total
                FROM ventas_pagos vp
                JOIN ventas v ON v.id = vp.venta_id
@@ -145,7 +192,7 @@ def get_resumen_turno(tid: int) -> dict:
     }
 
 
-def get_resumen_turno_caja(tid: int) -> dict:
+def get_resumen_turno_caja(tid: int, conn: Conexion | None = None) -> dict:
     """Resumen del turno calculado sobre `caja_movimientos`, no sobre
     `ventas`.
 
@@ -155,18 +202,21 @@ def get_resumen_turno_caja(tid: int) -> dict:
     devolvería siempre vacío y el arqueo daría cero.
 
     Contar sobre la caja además es más fiel a lo que se arquea: entra todo lo
-    que pasó por el cajón, incluidos ingresos y egresos que no son ventas."""
-    with get_connection() as conn:
+    que pasó por el cajón, incluidos ingresos y egresos que no son ventas.
+
+    Con `conn`, lo ve como lo ve esa transacción (ADR-076: el cierre del turno arquea sobre la misma
+    transacción que lo cierra)."""
+    with _conexion(conn) as c:
         # 🔑 **La lista los trae TODOS, con su marca; los totales NO.** Es la
         # razón de ser de `anulado`: el arqueo tiene que dar lo que hay en el
         # cajón, y la pantalla tiene que poder mostrar qué se dio de baja. Una
         # lista que esconde los anulados no se distingue de una que los borra.
-        movimientos = conn.execute(
+        movimientos = c.execute(
             """SELECT id, fecha, tipo, concepto, monto, medio_pago, referencia, anulado
                FROM caja_movimientos WHERE turno_id=? ORDER BY id""",
             (tid,),
         ).fetchall()
-        por_medio = conn.execute(
+        por_medio = c.execute(
             """SELECT medio_pago, SUM(CASE WHEN tipo='egreso' THEN -monto ELSE monto END) AS total
                FROM caja_movimientos WHERE turno_id=? AND anulado=0 GROUP BY medio_pago""",
             (tid,),
@@ -182,42 +232,57 @@ def get_resumen_turno_caja(tid: int) -> dict:
     }
 
 
-def cerrar_turno_caja(tid: int, monto_declarado: float, notas: str = "") -> dict | None:
-    """Cierra el turno arqueando contra `caja_movimientos`
-    (ver get_resumen_turno_caja). Devuelve el turno cerrado, con el esperado
-    y la diferencia ya calculados, para no obligar al caller a releerlo."""
-    turno = get_turno(tid)
+def _cerrar_en(c: Conexion, tid: int, resumen: Callable[[int, Conexion], dict], monto_declarado: float,
+               notas: str, monto_esperado: float | None, cierre: str | None,
+               ganchos: ganchos_de_caja.GanchosDeCaja | None) -> dict | None:
+    """El cierre de un turno sobre la conexión `c`: lo que comparten `cerrar_turno_caja` y `cerrar_turno`, que sólo
+    difieren en de dónde sale el efectivo cobrado (`resumen`). Devuelve el turno cerrado o `None` si no existe."""
+    turno = get_turno(tid, conn=c)
     if not turno:
         return None
-    resumen = get_resumen_turno_caja(tid)
-    monto_esperado = round(turno["monto_inicial"] + resumen["efectivo_ventas"], 2)
-    cierre = _ar_now()
-    with get_connection() as conn:
-        conn.execute(
-            """UPDATE turnos_caja
-               SET estado='cerrado', cierre=?, monto_declarado_cierre=?,
-                   monto_esperado_cierre=?, notas=?
-               WHERE id=?""",
-            (cierre, monto_declarado, monto_esperado, notas, tid),
-        )
-    return get_turno(tid)
+    if monto_esperado is None:
+        monto_esperado = round(turno["monto_inicial"] + resumen(tid, c)["efectivo_ventas"], 2)
+    cierre = cierre or _ar_now()
+    c.execute(
+        """UPDATE turnos_caja
+           SET estado='cerrado', cierre=?, monto_declarado_cierre=?,
+               monto_esperado_cierre=?, notas=?
+           WHERE id=?""",
+        (cierre, monto_declarado, monto_esperado, notas, tid),
+    )
+    cerrado = get_turno(tid, conn=c)
+    if ganchos is not None:
+        sucursal_id = cierre_diario.sucursal_de_caja(cerrado["caja_id"], conn=c)
+        ganchos.al_cerrar_turno(c, ganchos_de_caja.datos_de_turno_cerrado(
+            cerrado, sucursal_id=sucursal_id, medios=cierre_diario._medios_de_turno(c, tid)))
+    return cerrado
 
 
-def cerrar_turno(tid: int, monto_declarado: float, notas: str = ""):
-    turno = get_turno(tid)
-    if not turno:
-        return
-    resumen = get_resumen_turno(tid)
-    monto_esperado = round(turno["monto_inicial"] + resumen["efectivo_ventas"], 2)
-    cierre = _ar_now()
-    with get_connection() as conn:
-        conn.execute(
-            """UPDATE turnos_caja
-               SET estado='cerrado', cierre=?, monto_declarado_cierre=?,
-                   monto_esperado_cierre=?, notas=?
-               WHERE id=?""",
-            (cierre, monto_declarado, monto_esperado, notas, tid),
-        )
+def cerrar_turno_caja(tid: int, monto_declarado: float, notas: str = "", *, conn: Conexion | None = None,
+                      ganchos: ganchos_de_caja.GanchosDeCaja | None = None, cierre: str | None = None,
+                      monto_esperado: float | None = None) -> dict | None:
+    """Cierra el turno arqueando contra `caja_movimientos`
+    (ver get_resumen_turno_caja). Devuelve el turno cerrado, con el esperado
+    y la diferencia ya calculados, para no obligar al caller a releerlo.
+
+    **La caja de un nodo (ADR-076).** Opcionales, y sin ellos todo queda como estaba: `conn` (la transacción de
+    quien llama, que confirma), `ganchos` (corre `al_cerrar_turno(conn, datos)` **adentro de la misma
+    transacción**, con el arqueo y los medios: si levanta, el turno sigue abierto), `cierre` (la hora de cierre que
+    escribió el nodo) y `monto_esperado` (el que vio el cajero en el nodo: el central lo guarda tal cual y no lo
+    recalcula, porque puede no haber recibido todavía todos los movimientos)."""
+    with _conexion(conn) as c:
+        return _cerrar_en(c, tid, lambda t, cx: get_resumen_turno_caja(t, conn=cx), monto_declarado, notas,
+                          monto_esperado, cierre, ganchos)
+
+
+def cerrar_turno(tid: int, monto_declarado: float, notas: str = "", *, conn: Conexion | None = None,
+                 ganchos: ganchos_de_caja.GanchosDeCaja | None = None, cierre: str | None = None,
+                 monto_esperado: float | None = None):
+    """Cierra el turno arqueando contra la tabla `ventas` del motor (`get_resumen_turno`). Los opcionales son los
+    de `cerrar_turno_caja` (ADR-076). Devuelve `None`, como siempre."""
+    with _conexion(conn) as c:
+        _cerrar_en(c, tid, lambda t, cx: get_resumen_turno(t, conn=cx), monto_declarado, notas, monto_esperado,
+                   cierre, ganchos)
 
 
 def vincular_venta_turno(venta_id: int, turno_id: int, conn: Conexion | None = None):

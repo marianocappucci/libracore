@@ -8,6 +8,34 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — La caja del nodo sube al central: ganchos de caja, origen de las filas y `solo_en_el_central` (propuesta: v1.188.0)
+
+ADR-076. **Con migración: `0028_caja_del_nodo`** (aditiva, idempotente, no se baja). Decisión del humano (2026-10-21): la
+caja y los turnos de caja de un nodo de LibraEdge suben al central. Esta es la mitad del motor; `libracommerce` arma las
+operaciones y los aplicadores.
+- `libracore.ganchos_de_caja` (nuevo): `GanchosDeCaja` (dataclass inmutable, un no-op por defecto en cada uno) con
+  `al_abrir_turno`, `al_cerrar_turno`, `al_registrar_movimiento`, `al_anular_movimiento` y `al_cerrar_dia`, todos
+  `(conn, datos)`. Cada uno corre **dentro de la misma transacción** del cambio y, si levanta, el cambio no queda. Los
+  `datos` son JSON (`VERSION = 1`) con los ids locales, montos, fechas, usuario, sucursal y el arqueo. `SIN_GANCHOS`,
+  `validar_origen`.
+- `db.turnos.create_turno`, `cerrar_turno_caja` y `cerrar_turno`; `db.caja.create_caja_movimiento` y
+  `anular_caja_movimiento`; `db.cierre_diario.cerrar_dia`: `conn=` y `ganchos=` opcionales (y `get_turno`,
+  `get_resumen_turno*`, `get_cierre` aceptan `conn=`). Para el central que aplica lo que subió un nodo: `apertura=`,
+  `cierre=`, `monto_esperado=` y `origen=`/`origen_id=`, y `get_turno_de_origen`, `get_movimiento_de_origen` y
+  `get_cierre_de_origen` para la idempotencia. Sin nada de eso, las funciones se comportan igual que antes.
+- `origen` (texto) y `origen_id` (entero), nullable, en `turnos_caja`, `caja_movimientos` y `cierres_diarios`, con un
+  índice único parcial sobre el par. `NULL` es una fila propia.
+- `build_caja_router`, `build_turnos_router` y `build_cierre_diario_router` reciben `ganchos_de_caja=`. Con ganchos,
+  `build_turnos_router` exige que su `cerrar_turno` acepte `ganchos=` (`TypeError` al armarlo).
+- `nodo_offline.solo_en_el_central` (dependencia de FastAPI) y `guarda_solo_en_el_central(nodo=, mensaje=)`: 409
+  `{"codigo": "solo_en_el_central", "mensaje"}` si el proceso corre en un nodo. Sin aplicar a ninguna ruta todavía: es la
+  costura para la agenda (MedLibra, GestioLibra).
+
+### Para los productos
+- Correr `libracore-migrar` (la `0028`) antes de usar `origen`; un producto que no lo use no necesita nada.
+- Los productos con nodo: armar `GanchosDeCaja` que encole en su outbox y pasarlo a los tres routers (`libracommerce`:
+  las operaciones y los aplicadores del central).
+
 ## [Unreleased] — La barra de estado del pie: `GET /api/estado-del-sistema` (propuesta: v1.187.0)
 
 ADR-075. **Sin migración.** `libracore.estado_del_sistema` (nuevo): `build_estado_del_sistema_router(usuario_actual=, …)`

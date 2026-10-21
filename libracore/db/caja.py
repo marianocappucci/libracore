@@ -8,7 +8,7 @@ import contextlib
 import json
 import re
 
-from libracore import medios_pago
+from libracore import ganchos_de_caja, medios_pago
 from libracore.db.core import get_connection
 from libracore.fechas import rango_por_dia
 
@@ -307,7 +307,18 @@ def delete_caja_config(cid: int):
 
 def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_id=None,
                            usuario_id=None, caja_id=None, medio_pago="", turno_id=None,
-                           conn: Conexion | None = None, cc_pago_id=None):
+                           conn: Conexion | None = None, cc_pago_id=None, *,
+                           ganchos: ganchos_de_caja.GanchosDeCaja | None = None,
+                           origen: str | None = None, origen_id: int | None = None):
+    """Anota un movimiento de caja y devuelve su id (el del que ya existía, si la referencia se repite).
+
+    **La caja de un nodo (ADR-076).** `ganchos` y `origen`/`origen_id` son opcionales y, sin ellos, todo queda
+    como estaba. `ganchos` (`GanchosDeCaja`) corre `al_registrar_movimiento(conn, datos)` **dentro de la misma
+    transacción**, después del `INSERT`: si levanta, el movimiento no queda. **No corre si la referencia ya existía**
+    (no hubo fila nueva que subir). `origen` y `origen_id` (juntos): el nodo y el id del movimiento en su base,
+    cuando el central aplica uno que subió el nodo (`get_movimiento_de_origen` dice si ya está).
+    """
+    ganchos_de_caja.validar_origen(origen, origen_id)
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         # Idempotencia: si ya existe un movimiento con la misma referencia PARA LA MISMA
@@ -348,17 +359,49 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
             _caja_id = fila_turno[0] if fila_turno and fila_turno[0] else get_default_caja_id()
         else:
             _caja_id = get_default_caja_id()
-        cur = c.execute(
-            """INSERT INTO caja_movimientos
-               (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id,
-                medio_pago, turno_id, cc_pago_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id,
-             medio_pago, turno_id, cc_pago_id),
-        )
+        if origen is None:
+            cur = c.execute(
+                """INSERT INTO caja_movimientos
+                   (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id,
+                    medio_pago, turno_id, cc_pago_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id,
+                 medio_pago, turno_id, cc_pago_id),
+            )
+        else:
+            cur = c.execute(
+                """INSERT INTO caja_movimientos
+                   (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id,
+                    medio_pago, turno_id, cc_pago_id, origen, origen_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id,
+                 medio_pago, turno_id, cc_pago_id, origen, origen_id),
+            )
         if factura_id is not None and tipo == "ingreso":
             al_libro_de_clientes(c, [cur.lastrowid])
+        if ganchos is not None:
+            ganchos.al_registrar_movimiento(c, _datos_de_movimiento(c, cur.lastrowid))
         return cur.lastrowid
+
+
+def _datos_de_movimiento(c: Conexion, mov_id) -> dict:
+    """Lo que viaja de un movimiento (`ganchos_de_caja.datos_de_movimiento`), leído con la conexión del cambio, con la
+    sucursal de su caja."""
+    from libracore.db.cierre_diario import sucursal_de_caja
+
+    mov = c.execute("SELECT * FROM caja_movimientos WHERE id=?", (mov_id,)).fetchone()
+    return ganchos_de_caja.datos_de_movimiento(mov, sucursal_id=sucursal_de_caja(mov["caja_id"], conn=c))
+
+
+def get_movimiento_de_origen(origen: str, origen_id: int, conn: Conexion | None = None) -> dict | None:
+    """El movimiento que subió ese nodo con ese id (ADR-076), o `None` si todavía no se aplicó. La pregunta de
+    idempotencia del central: antes de aplicar «movimiento registrado» o «movimiento anulado», ¿ya está?"""
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        row = c.execute(
+            "SELECT * FROM caja_movimientos WHERE origen=? AND origen_id=?", (origen, origen_id)
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def get_caja_movimientos(desde=None, hasta=None, limit=500, caja_id=None):
@@ -487,7 +530,8 @@ def delete_caja_movimiento(mov_id):
         al_libro_de_clientes(conn, [mov_id])
 
 
-def anular_caja_movimiento(mov_id):
+def anular_caja_movimiento(mov_id, conn: Conexion | None = None, *,
+                           ganchos: ganchos_de_caja.GanchosDeCaja | None = None):
     """Marca el movimiento como anulado. La fila **queda**.
 
     🔴 **Un movimiento de caja se anula, no se borra.** Borrarlo deja un agujero
@@ -502,15 +546,26 @@ def anular_caja_movimiento(mov_id):
     `get_resumen_turno_caja`—, que es lo que permite auditar qué se cargó y se
     dio de baja. Idempotente: anular dos veces deja lo mismo.
 
+    **La caja de un nodo (ADR-076).** `conn` escribe en la transacción de quien llama (que confirma). `ganchos`
+    corre `al_anular_movimiento(conn, datos)` **dentro de la misma transacción**: si levanta, el movimiento sigue
+    vigente. Sólo corre cuando la anulación **cambió algo**: un movimiento ya anulado, o que no existe, no vuelve a
+    subir.
+
     ⚠️ **Esta explicación no puede ir adentro del `CREATE TABLE`.** El
     `executescript()` del adaptador PostgreSQL parte el script por el punto y
     coma, así que un `--` con un `;` adentro corta la sentencia al medio: el
     volcado muere con *"syntax error at end of input"*. Está avisado en el
     bloque de `usuarios.activo` de `schema.py`, y volvió a pasar acá.
     """
-    with get_connection() as conn:
-        conn.execute("UPDATE caja_movimientos SET anulado=1 WHERE id=?", (mov_id,))
-        al_libro_de_clientes(conn, [mov_id])
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        antes = None
+        if ganchos is not None:
+            antes = c.execute("SELECT anulado FROM caja_movimientos WHERE id=?", (mov_id,)).fetchone()
+        c.execute("UPDATE caja_movimientos SET anulado=1 WHERE id=?", (mov_id,))
+        al_libro_de_clientes(c, [mov_id])
+        if ganchos is not None and antes is not None and not antes["anulado"]:
+            ganchos.al_anular_movimiento(c, _datos_de_movimiento(c, mov_id))
 
 
 def al_libro_de_clientes(conn, movimientos) -> None:

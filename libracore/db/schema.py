@@ -1199,6 +1199,21 @@ def init_core_schema(conn: Conexion):
     if tc_cols and "caja_id" not in tc_cols:
         conn.execute("ALTER TABLE turnos_caja ADD COLUMN caja_id INTEGER REFERENCES cajas(id) ON DELETE SET NULL")
 
+    # De qué nodo de LibraEdge vino la fila y cuál era su id allá (ADR-076): la caja del nodo sube al central y el
+    # central tiene que saber que ese turno o ese movimiento ya lo aplicó. Los dos son NULL en toda fila propia (el
+    # central y cualquier instalación común). `origen` es el id del nodo y `origen_id` el de la fila en su base:
+    # sin FK, porque son ids de otra base. Con el índice único parcial de más abajo, aplicar dos veces la misma
+    # operación no duplica la fila.
+    if tc_cols and "origen" not in tc_cols:
+        conn.execute("ALTER TABLE turnos_caja ADD COLUMN origen TEXT")
+    if tc_cols and "origen_id" not in tc_cols:
+        conn.execute("ALTER TABLE turnos_caja ADD COLUMN origen_id INTEGER")
+    cm_cols_origen = [r[1] for r in conn.execute("PRAGMA table_info(caja_movimientos)").fetchall()]
+    if cm_cols_origen and "origen" not in cm_cols_origen:
+        conn.execute("ALTER TABLE caja_movimientos ADD COLUMN origen TEXT")
+    if cm_cols_origen and "origen_id" not in cm_cols_origen:
+        conn.execute("ALTER TABLE caja_movimientos ADD COLUMN origen_id INTEGER")
+
     # 🔴 **El relleno va FUERA del `if`, y ese es el arreglo.** Estaba adentro
     # —corría sólo cuando la columna se acababa de crear—, así que en toda base
     # donde `caja_id` **ya existía** las filas viejas se quedaban en `NULL` para
@@ -1273,6 +1288,12 @@ def init_core_schema(conn: Conexion):
             ON cc_asientos(origen_legado) WHERE origen_legado IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_cc_asientos_origen
             ON cc_asientos(origen) WHERE origen IS NOT NULL;
+        -- La caja que subió un nodo (ADR-076): una fila del nodo se aplica una sola vez. Parcial porque
+        -- las filas propias no tienen origen y dos NULL no se pisan.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_turnos_caja_origen
+            ON turnos_caja(origen, origen_id) WHERE origen IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_caja_movimientos_origen
+            ON caja_movimientos(origen, origen_id) WHERE origen IS NOT NULL;
         -- La numeración interna de la pre factura (ADR-030): correlativa por producto
         -- e instancia. Parcial porque las filas de la bandeja que no son pre facturas
         -- no tienen número, y dos `NULL` no se pisan.
