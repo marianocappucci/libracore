@@ -179,6 +179,10 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
   `Exception`, `capturar`, `POST /api/errores-cliente`, limpieza de datos personales.
 - **`estado_del_sistema.py`** (ADR-075): `GET /api/estado-del-sistema`, lo que muestra la barra de estado del pie de
   los ocho productos (LibraEdge, usuario y sucursal, versión, certificado de ARCA y último respaldo) en una consulta.
+- **`ganchos_de_caja.py`** (ADR-076): `GanchosDeCaja` (abrir y cerrar turno, registrar y anular movimiento, cerrar día),
+  con la conexión del cambio y los datos que el central necesita; con `nodo_offline.solo_en_el_central` y las columnas
+  `origen`/`origen_id` de `turnos_caja`, `caja_movimientos` y `cierres_diarios`, es lo que deja subir la caja de un
+  nodo de LibraEdge al central.
 - **`security_headers.py`**, **`modules_gate.py`** (gating de módulos por
   instancia, `db/modulos`), **`feriados.py`**, **`geografia.py`**,
   **`medios_pago.py`**, **`registro_de_clientes.py`**,

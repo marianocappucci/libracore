@@ -140,6 +140,10 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
+        # 424 desde el 2026-10-21 (era 420), cuando entraron `origen` y `origen_id` en `turnos_caja` y en
+        # `caja_movimientos` (4 columnas): de qué nodo de LibraEdge vino la fila y cuál era su id allá, para que el
+        # central aplique una sola vez la caja que sube un nodo (ADR-076).
+        #
         # 420 desde el 2026-10-18 (era 415), cuando entró `reintegros_pendientes` (5 columnas): el destino
         # de la plata de una nota de crédito que salió sin CAE, para moverla cuando se autorice (ADR-067).
         #
@@ -200,7 +204,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # que venía de 367).
         # Que este número haya que moverlo a mano **es la señal**: si cambia sin
         # que nadie lo decida, el gate se pone rojo y obliga a mirarlo.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (420)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (424)"}
     finally:
         conn.close()
         _liberar()

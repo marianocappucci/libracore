@@ -21,6 +21,8 @@ internet usa el ticket de acceso que presta el central (`ta_para_el_nodo`), así
 mismo y pasa a importarla de acá. El motor de abajo es el que no puede depender del de arriba.
 
 Fuera de un nodo (el central, una instalación común) `FUERA_DE_NODO` dice siempre «en línea» y nada cambia.
+
+`solo_en_el_central` (ADR-076) es la guarda de lo que el nodo no tiene: 409 `solo_en_el_central` en un nodo.
 """
 
 from __future__ import annotations
@@ -48,6 +50,8 @@ CODIGO_SIN_CONEXION = "sin_conexion"
 CODIGO_FACTURA_PENDIENTE = "factura_pendiente"
 #: `detail.codigo` de un 422: el nodo no tiene con qué facturar (sin `arca_config` espejada o sin credenciales).
 CODIGO_NODO_SIN_ARCA = "nodo_sin_arca"
+#: `detail.codigo` de un 409: la función no existe en un nodo (ADR-076), sólo en el central.
+CODIGO_SOLO_EN_EL_CENTRAL = "solo_en_el_central"
 
 MENSAJE_FACTURA_PENDIENTE = (
     "Sin conexión: la venta quedó con su ticket (no válido como factura) y se factura sola al volver la conexión."
@@ -56,6 +60,7 @@ MENSAJE_QR_SIN_CONEXION = (
     "Sin conexión: el cobro con QR de MercadoPago no está disponible. Cobrá con otro medio."
 )
 MENSAJE_SIN_CONEXION = "Sin conexión con el central: esta operación necesita internet."
+MENSAJE_SOLO_EN_EL_CENTRAL = "Esta función sólo está disponible en el central, no en el equipo del local."
 
 
 class SinConexion(Exception):
@@ -233,6 +238,53 @@ def conexion_desde_entorno(*, nodo: Callable[[], str | None] | None = None, ruta
     sale a ARCA. `nodo` reemplaza la lectura de la identidad (p. ej. `lambda: nodo_actual("ventalibra")`)."""
     ruta = ruta_estado if ruta_estado is not None else (os.environ.get(VARIABLE_ESTADO) or "").strip() or None
     return ConexionDelNodo(nodo=nodo or nodo_desde_entorno(), en_linea=en_linea_segun_estado(ruta, vigencia))
+
+
+# ── Lo que sólo se hace en el central ───────────────────────────────────────────────────────────
+
+
+class SoloEnElCentral(Exception):
+    """La función no existe en un nodo: se hace en el central. La API la contesta 409 con `detalle()`."""
+
+    codigo = CODIGO_SOLO_EN_EL_CENTRAL
+
+    def __init__(self, mensaje: str = MENSAJE_SOLO_EN_EL_CENTRAL):
+        super().__init__(mensaje)
+        self.mensaje = mensaje
+
+    def detalle(self) -> dict:
+        """El `detail` de la respuesta: `{"codigo", "mensaje"}` (la pantalla muestra `mensaje`)."""
+        return {"codigo": self.codigo, "mensaje": self.mensaje}
+
+
+def guarda_solo_en_el_central(*, nodo: Callable[[], str | None] | None = None,
+                              mensaje: str = MENSAJE_SOLO_EN_EL_CENTRAL) -> Callable[[], None]:
+    """Una dependencia de FastAPI que contesta **409** `{"codigo": "solo_en_el_central", "mensaje"}` si el proceso
+    corre en un nodo, y no hace nada en el central ni en una instalación común (ADR-076).
+
+    Es la costura para lo que el nodo no puede hacer porque su verdad vive en el central (la agenda de MedLibra y
+    GestioLibra, que varios puestos comparten y que no se reconcilia sin red)::
+
+        @router.post("/turnos", dependencies=[Depends(solo_en_el_central)])
+
+    A diferencia de `SinConexion` (409 `sin_conexion`: «probá cuando vuelva internet»), esto no se arregla
+    esperando: el nodo **no tiene** esa función, esté en línea o no. La pantalla lo muestra distinto.
+
+    `nodo` es la lectura de la identidad (default: `LIBRAEDGE_NODE_ID`); un producto que además lee su variable
+    vieja pasa la suya, como en `conexion_desde_entorno`. Se lee **en cada pedido**, no al montar la ruta."""
+    es_nodo = nodo or nodo_desde_entorno()
+
+    def solo_en_el_central() -> None:
+        if es_nodo() is not None:
+            from fastapi import HTTPException
+
+            raise HTTPException(409, SoloEnElCentral(mensaje).detalle())
+
+    return solo_en_el_central
+
+
+#: La guarda con la lectura de siempre (`LIBRAEDGE_NODE_ID`): `Depends(solo_en_el_central)`.
+solo_en_el_central = guarda_solo_en_el_central()
 
 
 # ── Facturar con internet sin la clave en el nodo: el ticket de acceso prestado ─────────────────

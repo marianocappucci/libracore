@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (419)
+## tablas (423)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -41,6 +41,8 @@ caja_movimientos|fecha|TEXT|NN|
 caja_movimientos|id|INTEGER||
 caja_movimientos|medio_pago|TEXT||''
 caja_movimientos|monto|REAL|NN|
+caja_movimientos|origen_id|INTEGER||
+caja_movimientos|origen|TEXT||
 caja_movimientos|referencia|TEXT||''
 caja_movimientos|tipo|TEXT|NN|
 caja_movimientos|turno_id|INTEGER||
@@ -386,6 +388,8 @@ turnos_caja|monto_declarado_cierre|REAL||
 turnos_caja|monto_esperado_cierre|REAL||
 turnos_caja|monto_inicial|REAL|NN|0
 turnos_caja|notas|TEXT||''
+turnos_caja|origen_id|INTEGER||
+turnos_caja|origen|TEXT||
 turnos_caja|usuario_id|INTEGER|NN|
 usuarios|activo|BOOLEAN|NN|TRUE
 usuarios|created_at|TEXT||datetime('now','-3 hours')
@@ -510,10 +514,11 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (36)
+## índices (38)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
 arca_credenciales_servicio|sqlite_autoindex_arca_credenciales_servicio_1|UNIQUE implícito (empresa,servicio,ambiente)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
+caja_movimientos|idx_caja_movimientos_origen|CREATE UNIQUE INDEX idx_caja_movimientos_origen ON caja_movimientos(origen, origen_id) WHERE origen IS NOT NULL
 categorias_egreso|sqlite_autoindex_categorias_egreso_1|UNIQUE implícito (nombre)
 categorias_producto|sqlite_autoindex_categorias_producto_1|UNIQUE implícito (nombre)
 cc_asientos|idx_cc_asientos_cuenta|CREATE INDEX idx_cc_asientos_cuenta ON cc_asientos(tercero_id, rol, fecha)
@@ -544,6 +549,7 @@ recibos|idx_recibos_cliente|CREATE INDEX idx_recibos_cliente ON recibos(cliente_
 recibos|idx_recibos_numero_unico|CREATE UNIQUE INDEX idx_recibos_numero_unico ON recibos(punto_venta, numero)
 recibos|idx_recibos_origen|CREATE INDEX idx_recibos_origen ON recibos(origen_tipo, origen_id)
 remitos|sqlite_autoindex_remitos_1|UNIQUE implícito (number)
+turnos_caja|idx_turnos_caja_origen|CREATE UNIQUE INDEX idx_turnos_caja_origen ON turnos_caja(origen, origen_id) WHERE origen IS NOT NULL
 usuarios|sqlite_autoindex_usuarios_1|UNIQUE implícito (username)
 ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON ventas(fecha)
 ventas|sqlite_autoindex_ventas_1|UNIQUE implícito (numero)

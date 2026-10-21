@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (419)
+## tablas (423)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -41,6 +41,8 @@ caja_movimientos|fecha|text|NN|
 caja_movimientos|id|bigint|NN|nextval('caja_movimientos_id_seq'::regclass)
 caja_movimientos|medio_pago|text||''::text
 caja_movimientos|monto|numeric|NN|
+caja_movimientos|origen_id|integer||
+caja_movimientos|origen|text||
 caja_movimientos|referencia|text||''::text
 caja_movimientos|tipo|text|NN|
 caja_movimientos|turno_id|integer||
@@ -386,6 +388,8 @@ turnos_caja|monto_declarado_cierre|numeric||
 turnos_caja|monto_esperado_cierre|numeric||
 turnos_caja|monto_inicial|numeric|NN|0
 turnos_caja|notas|text||''::text
+turnos_caja|origen_id|integer||
+turnos_caja|origen|text||
 turnos_caja|usuario_id|integer|NN|
 usuarios|activo|boolean|NN|true
 usuarios|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
@@ -510,7 +514,7 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (71)
+## índices (73)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 arca_credenciales_servicio|arca_credenciales_servicio_empresa_servicio_ambiente_key|CREATE UNIQUE INDEX arca_credenciales_servicio_empresa_servicio_ambiente_key ON public.arca_credenciales_servicio USING btree (empresa, servicio, ambiente)
@@ -518,6 +522,7 @@ arca_credenciales_servicio|arca_credenciales_servicio_pkey|CREATE UNIQUE INDEX a
 auth_log|auth_log_pkey|CREATE UNIQUE INDEX auth_log_pkey ON public.auth_log USING btree (id)
 caja_movimientos|caja_movimientos_pkey|CREATE UNIQUE INDEX caja_movimientos_pkey ON public.caja_movimientos USING btree (id)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON public.caja_movimientos USING btree (fecha)
+caja_movimientos|idx_caja_movimientos_origen|CREATE UNIQUE INDEX idx_caja_movimientos_origen ON public.caja_movimientos USING btree (origen, origen_id) WHERE (origen IS NOT NULL)
 cajas|cajas_pkey|CREATE UNIQUE INDEX cajas_pkey ON public.cajas USING btree (id)
 categorias_egreso|categorias_egreso_nombre_key|CREATE UNIQUE INDEX categorias_egreso_nombre_key ON public.categorias_egreso USING btree (nombre)
 categorias_egreso|categorias_egreso_pkey|CREATE UNIQUE INDEX categorias_egreso_pkey ON public.categorias_egreso USING btree (id)
@@ -575,6 +580,7 @@ recibos|recibos_pkey|CREATE UNIQUE INDEX recibos_pkey ON public.recibos USING bt
 reintegros_pendientes|reintegros_pendientes_pkey|CREATE UNIQUE INDEX reintegros_pendientes_pkey ON public.reintegros_pendientes USING btree (nota_id)
 remitos|remitos_number_key|CREATE UNIQUE INDEX remitos_number_key ON public.remitos USING btree (number)
 remitos|remitos_pkey|CREATE UNIQUE INDEX remitos_pkey ON public.remitos USING btree (id)
+turnos_caja|idx_turnos_caja_origen|CREATE UNIQUE INDEX idx_turnos_caja_origen ON public.turnos_caja USING btree (origen, origen_id) WHERE (origen IS NOT NULL)
 turnos_caja|turnos_caja_pkey|CREATE UNIQUE INDEX turnos_caja_pkey ON public.turnos_caja USING btree (id)
 usuarios|usuarios_pkey|CREATE UNIQUE INDEX usuarios_pkey ON public.usuarios USING btree (id)
 usuarios|usuarios_username_key|CREATE UNIQUE INDEX usuarios_username_key ON public.usuarios USING btree (username)
