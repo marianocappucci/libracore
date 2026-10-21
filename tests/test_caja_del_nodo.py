@@ -594,3 +594,25 @@ def test_la_0028_agrega_las_columnas_a_una_base_de_antes_y_no_se_baja(tmp_path):
     assert _alembic(destino, "upgrade", "head").returncode == 0
     bajar = _alembic(destino, "downgrade", "0027_reintegros_pendientes")
     assert bajar.returncode != 0 and "No se baja" in bajar.stderr
+
+
+# ── `cerrar_turno_con` (v1.188.1): el cierre común, con el resumen de quien llama ──
+
+def test_cerrar_turno_con_arquea_con_el_resumen_de_quien_llama_y_corre_el_gancho(caja_id):
+    reg = Registro()
+    tid = db_turnos.create_turno(7, 100, caja_id=caja_id, apertura=APERTURA)
+
+    cerrado = db_turnos.cerrar_turno_con(tid, 130, "fin", resumen=lambda t, c: {"efectivo_ventas": 25.0},
+                                         ganchos=reg.ganchos, cierre=CIERRE)
+
+    assert reg.nombres() == ["al_cerrar_turno"]
+    datos = reg.llamadas[0][1]
+    assert (datos["turno_id"], datos["monto_esperado"], datos["monto_declarado"]) == (tid, 125.0, 130.0)
+    assert cerrado["estado"] == "cerrado" and cerrado["monto_esperado_cierre"] == 125.0
+
+
+def test_cerrar_turno_con_un_turno_que_no_existe_da_none_y_no_corre_el_gancho(caja_id):
+    reg = Registro()
+    assert db_turnos.cerrar_turno_con(999999, 1, resumen=lambda t, c: {"efectivo_ventas": 0.0},
+                                      ganchos=reg.ganchos) is None
+    assert reg.nombres() == []
