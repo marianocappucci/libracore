@@ -258,6 +258,18 @@ def _cerrar_en(c: Conexion, tid: int, resumen: Callable[[int, Conexion], dict], 
     return cerrado
 
 
+def cerrar_turno_con(tid: int, monto_declarado: float, notas: str = "", *,
+                     resumen: Callable[[int, Conexion], dict], conn: Conexion | None = None,
+                     ganchos: ganchos_de_caja.GanchosDeCaja | None = None, cierre: str | None = None,
+                     monto_esperado: float | None = None) -> dict | None:
+    """El cierre común de un turno para quien arquea contra su propio resumen (`resumen(tid, conn)` con
+    `efectivo_ventas`), como `libracommerce.erp.ventas.cerrar_turno`. Los opcionales son los de `cerrar_turno_caja`
+    (ADR-076): así el cierre de un turno de otra capa también corre `al_cerrar_turno` y sube desde un nodo. Devuelve el
+    turno cerrado o `None` si no existe."""
+    with _conexion(conn) as c:
+        return _cerrar_en(c, tid, resumen, monto_declarado, notas, monto_esperado, cierre, ganchos)
+
+
 def cerrar_turno_caja(tid: int, monto_declarado: float, notas: str = "", *, conn: Conexion | None = None,
                       ganchos: ganchos_de_caja.GanchosDeCaja | None = None, cierre: str | None = None,
                       monto_esperado: float | None = None) -> dict | None:

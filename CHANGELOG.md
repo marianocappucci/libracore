@@ -8,6 +8,14 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## v1.188.1 — `cerrar_turno_con`: el cierre común de un turno, público
+
+Sin migración. `db.turnos.cerrar_turno_con(tid, monto_declarado, notas, *, resumen, conn, ganchos, cierre,
+monto_esperado)` expone el cierre que comparten `cerrar_turno_caja` y `cerrar_turno`, para quien arquea contra su propio
+resumen (`libracommerce.erp.ventas.cerrar_turno`). Así un producto no importa el privado `_cerrar_en` para que el cierre
+de su turno suba desde un nodo (ADR-076; lo encontró el cableado de ContaLibra).
+
+
 ## [Unreleased] — La caja del nodo sube al central: ganchos de caja, origen de las filas y `solo_en_el_central` (propuesta: v1.188.0)
 
 ADR-076. **Con migración: `0028_caja_del_nodo`** (aditiva, idempotente, no se baja). Decisión del humano (2026-10-21): la
