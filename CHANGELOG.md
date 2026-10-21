@@ -8,6 +8,28 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — Las altas de clientes en un nodo offline: id provisorio y gancho dentro de la transacción (propuesta: v1.189.0)
+
+ADR-077. **Sin migración y sin tocar el esquema** (la fixture congelada no cambia). Decisión del humano (2026-10-21): las altas de
+referencia en el nodo se permiten y suben como operación; el central asigna su id y reescribe las referencias. Esta entrega es
+**sólo clientes**. Esta es la mitad del motor; `libraedge` v0.18.0 (ADR-021) tiene el id provisorio, el mapeo y el reapuntado, y
+`libracommerce` v0.70.0 (ADR-070) la operación `cliente.alta` y su aplicador.
+- `libracore.altas_en_nodo` (nuevo): `AltasEnNodo(nodo, id_provisorio, al_crear_cliente)` y `configurar()` (global del proceso, una
+  vez al armar la app). En un nodo, `db.clients.create_client`, `crear_cliente` y `resolver_cliente_externo` guardan al cliente
+  con un **id provisorio negativo** (y a su `parties` espejo con el mismo id) y, al final del alta —después del espejo, el libro y
+  la auditoría—, avisan a `al_crear_cliente(conn, datos)` **dentro de la misma transacción**: si levanta, el alta no queda.
+  Fuera de un nodo, o sin `configurar()`, nada cambia.
+- `datos_de_cliente(fila)` (JSON, `VERSION = 1`): `{"version", "cliente_id", **columnas}` con `COLUMNAS_DE_CLIENTE`.
+  `REFERENCIAS_DE_CLIENTES`: lo que guarda un cliente **sin clave foránea** (hoy `cc_asientos.tercero_id` con `rol = 'cliente'`),
+  para que `libraedge` lo reapunte; un test lo fija contra el esquema del motor.
+- `db.clients.crear_cliente(datos, conn=None)` y `get_client_by_cuit(cuit, conn=None)`: con una conexión, en la transacción de quien
+  llama y el commit es suyo (el central aplica el alta de un nodo con su mapeo en una sola transacción).
+
+### Para los productos
+- Con nodo: `altas_en_nodo.configurar(libracommerce.erp.offline_clientes.altas_en_nodo(OUTBOX))` al armar la app (nodo y
+  central), y en el `Aprovisionamiento` `altas_en_nodo=[("clients", REFERENCIAS_DE_CLIENTES), "parties"]`.
+- Sin nodo: nada.
+
 ## v1.188.1 — `cerrar_turno_con`: el cierre común de un turno, público
 
 Sin migración. `db.turnos.cerrar_turno_con(tid, monto_declarado, notas, *, resumen, conn, ganchos, cierre,

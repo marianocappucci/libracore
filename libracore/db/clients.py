@@ -12,10 +12,16 @@ la de después), **dentro de la misma transacción**. Sin registrador configurad
 hace nada ni lee nada de más. Un test (`tests/test_auditoria_de_escrituras.py`) recorre
 el AST del motor y falla si una función con `INSERT`/`UPDATE`/`DELETE` sobre `clients`
 no emite el cambio: una escritura nueva que se olvide de auditar no pasa el CI.
+
+**Altas en un nodo offline (ADR-077).** Los tres caminos que insertan en `clients` (`create_client`, `crear_cliente` y
+`resolver_cliente_externo`) guardan al cliente con un **id provisorio negativo** si la instancia es un nodo de LibraEdge, y
+después de escribirlo —con su `parties`, el libro y la auditoría— avisan a `libracore.altas_en_nodo` en la misma
+transacción. Fuera de un nodo, o sin `altas_en_nodo.configurar()`, todo queda como estaba.
 """
+import contextlib
 import json
 
-from libracore import auditoria
+from libracore import altas_en_nodo, auditoria
 from libracore.db.core import get_connection
 
 _TABLA = "clients"
@@ -157,6 +163,24 @@ def _antes(conn, client_id) -> dict | None:
     return _fila_cliente(conn, client_id) if auditoria.auditando() else None
 
 
+def _con_id_provisorio(conn, columnas: list[str], valores: list) -> int | None:
+    """Si esta instancia es un nodo, pone el `id` provisorio (negativo) al principio de lo que se va a insertar y lo
+    devuelve; si no, `None` y la base asigna el suyo. **El id explícito es también el `client_id` del alta**: el
+    `lastrowid` de un `INSERT` con id propio no es confiable en PostgreSQL (`RETURNING id` sí, pero acá ya se sabe)."""
+    provisorio = altas_en_nodo.id_provisorio_de_cliente(conn)
+    if provisorio is not None:
+        columnas.insert(0, "id")
+        valores.insert(0, provisorio)
+    return provisorio
+
+
+def _avisar_alta(conn, client_id) -> None:
+    """Le avisa a `altas_en_nodo` del alta, **adentro de la transacción** y al final: después del espejo en `parties`, del
+    libro y de la auditoría, así que si el gancho levanta se cae todo junto. Sólo lee la fila si la instancia es un nodo."""
+    if altas_en_nodo.en_un_nodo():
+        altas_en_nodo.avisar_alta_de_cliente(conn, _fila_cliente(conn, client_id))
+
+
 def _registrar_cambio(conn, accion: str, client_id, antes: dict | None = None) -> None:
     """Le pasa el cambio al registrador, con la fila de después leída acá, en la misma
     conexión. Va al final de la escritura, después del espejo y del libro: si el registro
@@ -190,17 +214,19 @@ def create_client(name, address="", cuit_dni="", email="", phone="", iva_conditi
             if col in presentes:
                 columnas.append(col)
                 valores.append(nuevas[col])
+        provisorio = _con_id_provisorio(conn, columnas, valores)
         cur = conn.execute(
             f"INSERT INTO clients ({', '.join(columnas)})"
             f" VALUES ({', '.join(['?'] * len(columnas))})",
             tuple(valores),
         )
-        client_id = cur.lastrowid
+        client_id = provisorio if provisorio is not None else cur.lastrowid
         # En la MISMA transacción que el alta: un cliente sin su party es
         # un cliente al que no se le puede vender.
         _espejar_party(conn, client_id, name, cuit_dni, email, phone)
         _al_libro(conn, client_id)
         _registrar_cambio(conn, auditoria.CREAR, client_id)
+        _avisar_alta(conn, client_id)
         return client_id
 
 
@@ -225,7 +251,7 @@ def _columnas_a_escribir(conn, datos: dict, que: str) -> list[str]:
     return list(datos)
 
 
-def crear_cliente(datos: dict) -> int:
+def crear_cliente(datos: dict, conn=None) -> int:
     """Alta de un cliente con **exactamente** las columnas de `datos` (`None` = NULL).
 
     Es la costura para lo que `create_client` no conoce: una columna propia de un
@@ -239,21 +265,29 @@ def crear_cliente(datos: dict) -> int:
     en `parties` (si la instancia lo tiene), el asiento al libro de clientes y el aviso a
     `libracore.auditoria`. **No** valida CUIT duplicado: eso lo decide quien llama con
     `validar_cuit_no_duplicado`, que existe aparte justamente para esto.
+
+    **`conn=` (ADR-077).** Con una conexión, el alta se escribe **en la transacción de quien llama** y el commit es
+    suyo (el patrón de `create_caja_movimiento(conn=)`): es lo que necesita el central para aplicar el alta de un
+    cliente que subió un nodo junto con su mapeo, o las dos cosas quedan o ninguna. Sin ella, abre la suya.
     """
-    with get_connection() as conn:
-        columnas = _columnas_a_escribir(conn, datos, "crear_cliente")
-        cur = conn.execute(
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        columnas = _columnas_a_escribir(c, datos, "crear_cliente")
+        valores = [datos[col] for col in columnas]
+        provisorio = _con_id_provisorio(c, columnas, valores)
+        cur = c.execute(
             f"INSERT INTO clients ({', '.join(columnas)})"
             f" VALUES ({', '.join(['?'] * len(columnas))})",
-            tuple(datos[c] for c in columnas),
+            tuple(valores),
         )
-        client_id = cur.lastrowid
+        client_id = provisorio if provisorio is not None else cur.lastrowid
         _espejar_party(
-            conn, client_id, datos.get("name"), datos.get("cuit_dni"), datos.get("email"),
+            c, client_id, datos.get("name"), datos.get("cuit_dni"), datos.get("email"),
             datos.get("phone"), bool(datos.get("activo", 1)),
         )
-        _al_libro(conn, client_id)
-        _registrar_cambio(conn, auditoria.CREAR, client_id)
+        _al_libro(c, client_id)
+        _registrar_cambio(c, auditoria.CREAR, client_id)
+        _avisar_alta(c, client_id)
         return client_id
 
 
@@ -326,14 +360,18 @@ def resolver_cliente_externo(external_ref: str, name: str, cuit_dni: str = "",
             conn.execute("UPDATE clients SET name = ? WHERE id = ?", (name, row["id"]))
             _registrar_cambio(conn, auditoria.EDITAR, row["id"], antes)
             return row["id"]
+        columnas = ["name", "cuit_dni", "email", "phone", "external_ref"]
+        valores = [name, cuit_dni or "", email or "", phone or "", external_ref]
+        provisorio = _con_id_provisorio(conn, columnas, valores)
         cur = conn.execute(
-            """INSERT INTO clients (name, cuit_dni, email, phone, external_ref)
-               VALUES (?,?,?,?,?)""",
-            (name, cuit_dni or "", email or "", phone or "", external_ref),
+            f"INSERT INTO clients ({', '.join(columnas)}) VALUES ({', '.join(['?'] * len(columnas))})",
+            tuple(valores),
         )
-        _al_libro(conn, cur.lastrowid)
-        _registrar_cambio(conn, auditoria.CREAR, cur.lastrowid)
-        return cur.lastrowid
+        client_id = provisorio if provisorio is not None else cur.lastrowid
+        _al_libro(conn, client_id)
+        _registrar_cambio(conn, auditoria.CREAR, client_id)
+        _avisar_alta(conn, client_id)
+        return client_id
 
 
 def _al_libro(conn, client_id: int) -> None:
@@ -541,15 +579,19 @@ def get_client_by_email(email: str):
         return dict(row) if row else None
 
 
-def get_client_by_cuit(cuit: str):
+def get_client_by_cuit(cuit: str, conn=None):
     """Busca cliente por CUIT normalizando guiones (ej: 20317819162 == 20-31781916-2).
     Si hay más de un cliente con el mismo CUIT (duplicado), prioriza el activo
-    y, entre iguales, el más reciente."""
+    y, entre iguales, el más reciente.
+
+    `conn=` (ADR-077): lee con la conexión de quien llama —en el central que aplica el alta de un nodo, la de su
+    transacción, que es donde está lo que escribió un alta anterior de la misma tanda—."""
     normalized = (cuit or "").replace("-", "").strip()
     if not normalized:
         return None
-    with get_connection() as conn:
-        row = conn.execute(
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        row = c.execute(
             "SELECT * FROM clients WHERE REPLACE(cuit_dni, '-', '') = ? ORDER BY activo DESC, id DESC LIMIT 1",
             (normalized,),
         ).fetchone()

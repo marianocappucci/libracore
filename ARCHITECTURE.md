@@ -183,6 +183,10 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
   con la conexión del cambio y los datos que el central necesita; con `nodo_offline.solo_en_el_central` y las columnas
   `origen`/`origen_id` de `turnos_caja`, `caja_movimientos` y `cierres_diarios`, es lo que deja subir la caja de un
   nodo de LibraEdge al central.
+- **`altas_en_nodo.py`** (ADR-077): `AltasEnNodo` y `configurar()`; en un nodo de LibraEdge, `create_client`,
+  `crear_cliente` y `resolver_cliente_externo` guardan al cliente con un id provisorio negativo y avisan al gancho
+  `al_crear_cliente` en la misma transacción; el central asigna el id definitivo (`libracommerce` ADR-070, `libraedge`
+  ADR-021). `crear_cliente(conn=)` y `get_client_by_cuit(conn=)` son lo que necesita para aplicar el alta.
 - **`security_headers.py`**, **`modules_gate.py`** (gating de módulos por
   instancia, `db/modulos`), **`feriados.py`**, **`geografia.py`**,
   **`medios_pago.py`**, **`registro_de_clientes.py`**,
