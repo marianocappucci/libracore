@@ -93,6 +93,8 @@ local_scheme = "no-local-version"
 libracore-migrar = "libracore.migrar:main"
 # Conserva demo_codigos a traves del reset nocturno de las demos (ADR-039).
 libracore-demo-codigos = "libracore.provisioning.demo_codigos:main"
+# Une la base core de un producto dentro de la de su dominio (ADR-078): verificar, unir, revertir.
+libracore-unir-bases = "libracore.unir_bases:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["libracore"]

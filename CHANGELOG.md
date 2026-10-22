@@ -8,6 +8,19 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — Unir las dos bases de un producto: `libracore-unir-bases` (propuesta: v1.190.0)
+
+ADR-078. **Sin migración y sin tocar el esquema.** Un console script y un módulo nuevos; ningún producto cambia hasta que lo corra. Es el PR 1 del plan de LibraCargo y LibraClub en la versión de escritorio: LibraClub lo usa ahora; GestioLibra y MedLibra, después.
+- `libracore-unir-bases --prefijo <p> [--core URL] [--dominio URL] verificar|unir|revertir [--informe union.json]` (`libracore.unir_bases`). Las URL salen de `<PREFIJO>_LIBRACORE_DATABASE_URL` y `<PREFIJO>_DATABASE_URL`, o de `--core`/`--dominio` (`env:NOMBRE`); nunca se imprime usuario ni contraseña. Sale 0 (bien), 1 (algo impide unir, o la unión se deshizo) o 2 (uso o conexión).
+- `verificar` (sólo lectura): choques de nombres de tablas (salvo `usuarios`, `auth_log` y las de `libraauth`, donde manda el dominio), tablas de versión repetidas (`alembic_version` del producto contra la del motor), core fuera de la cabeza de `libracore`/`libracommerce`, claves foráneas del core hacia filas que no existen en el dominio (`usuario_id` sin `usuarios`, o con otro `username`), ciclos de claves foráneas, destino con datos que no son semillas, y conteos, sumas de dinero, `max(id)` y huella por tabla.
+- `unir` (con la app detenida): crea en el dominio las tablas del motor con sus cadenas, y en una transacción vacía las semillas y copia las filas del core **conservando los ids** (`COPY`, en orden topológico), `setval` a `max(id)`, valida claves foráneas y compara contra el core; deja `union.json` y una marca en el dominio. Idempotente.
+- `revertir`: devuelve al core las filas con `id` mayor al del informe, mientras el core viejo siga intacto. Los límites, en el README y en el ADR.
+
+### Para los productos
+- Antes de unir: la tabla de versión del producto tiene su nombre propio (`alembic_version_<producto>`), el core está en la cabeza y, si tiene la cadena de `libracommerce`, la imagen lo trae. El procedimiento (detener la app, respaldar y probar la restauración, verificar, unir, cambiar el compose, levantar, comparar) está en el README, «Unir las dos bases de un producto».
+- No hay que cambiar `_UNA_SOLA_BASE` todavía: va en otro PR, después de unir las instancias.
+
+
 ## [Unreleased] — Las altas de clientes en un nodo offline: id provisorio y gancho dentro de la transacción (propuesta: v1.189.0)
 
 ADR-077. **Sin migración y sin tocar el esquema** (la fixture congelada no cambia). Decisión del humano (2026-10-21): las altas de
