@@ -8,6 +8,14 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — LibraCargo y LibraClub, de una sola base (propuesta: v1.190.1)
+
+ADR-078 (consecuencias). **Sin migración.** `_UNA_SOLA_BASE` suma `libracargo` y `libraclub`: sin `<PREFIJO>_LIBRACORE_DATABASE_URL`, `libracore-migrar` (y `libraauth-migrar --base core`) caen a la base del dominio en vez de fallar. LibraCargo es una sola base desde el 2026-10-05; LibraClub, desde que `libracore-unir-bases` unió `libraclub-dev` y `libraclub-demo` el 2026-10-22. Con la variable puesta no cambia nada. GestioLibra y MedLibra siguen con el core aparte.
+
+### Para los productos
+- LibraCargo y LibraClub ya pueden sacar la variable del core de sus composes y de su configuración (PR 4 del plan).
+
+
 ## [Unreleased] — Unir las dos bases de un producto: `libracore-unir-bases` (propuesta: v1.190.0)
 
 ADR-078. **Sin migración y sin tocar el esquema.** Un console script y un módulo nuevos; ningún producto cambia hasta que lo corra. Es el PR 1 del plan de LibraCargo y LibraClub en la versión de escritorio: LibraClub lo usa ahora; GestioLibra y MedLibra, después.

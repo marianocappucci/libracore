@@ -127,7 +127,8 @@ def test_los_de_una_sola_base_son_exactamente_los_medidos():
     todos = ["contalibra", "restolibra", "ventalibra", "libradesk",
              "gestiolibra", "medlibra", "libracargo", "libraclub"]
     una_sola = {p for p in todos if comparte_base_con_el_dominio(p)}
-    assert una_sola == {"contalibra", "restolibra", "ventalibra", "libradesk"}
+    # 2026-10-22: LibraCargo y LibraClub, unidas (ADR-078).
+    assert una_sola == {"contalibra", "restolibra", "ventalibra", "libradesk", "libracargo", "libraclub"}
     # un prefijo desconocido NO comparte base: el default es fallar, no adivinar
     assert comparte_base_con_el_dominio("productonuevo") is False
     assert comparte_base_con_el_dominio("") is False

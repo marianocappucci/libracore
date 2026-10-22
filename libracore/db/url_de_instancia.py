@@ -46,8 +46,8 @@ _HISTORICOS = {
     ("libradesk", False): ("DATABASE_URL",),
     ("gestiolibra", False): ("DATABASE_URL",),
     ("medlibra", False): ("DATABASE_URL",),
-    # 2026-09-16. Solo el DOMINIO: en estos dos el core va en una base aparte, y
-    # `DATABASE_URL` nunca puede resolverlo. Ver `_UNA_SOLA_BASE`.
+    # 2026-09-16. Solo el DOMINIO: `DATABASE_URL` nunca resuelve el core por nombre. Desde el 2026-10-22 los dos son
+    # de una sola base y el core cae al dominio por `_UNA_SOLA_BASE`, no por este histórico.
     ("libracargo", False): ("DATABASE_URL",),
     ("libraclub", False): ("DATABASE_URL",),
     ("ventalibra", False): ("VENTALIBRA_DB_PATH",),
@@ -72,7 +72,11 @@ _HISTORICOS = {
 #:
 #: Un producto que no esté acá **falla**: agregarlo es una decisión explícita, no
 #: un default. Medido el 2026-09-16 contra las bases reales de cada instancia.
-_UNA_SOLA_BASE = frozenset({"contalibra", "restolibra", "ventalibra", "libradesk"})
+#:
+#: **2026-10-22: se suman LibraCargo y LibraClub** (ADR-078, decisión del humano «una sola base por producto»). LibraCargo
+#: es una sola base desde el 2026-10-05 (ADR-029 de LibraCargo) y LibraClub desde que `libracore-unir-bases` unió
+#: `libraclub-dev` y `libraclub-demo`. Quedan con el core aparte GestioLibra y MedLibra, hasta que se unan.
+_UNA_SOLA_BASE = frozenset({"contalibra", "restolibra", "ventalibra", "libradesk", "libracargo", "libraclub"})
 
 
 def comparte_base_con_el_dominio(prefijo: str) -> bool:
