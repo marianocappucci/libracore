@@ -100,6 +100,27 @@ dijiste contra qué base" de "no hay cadena que aplicar".
 > reventaban sólo porque `db/clients` introspecta la tabla en cada alta y escribe
 > únicamente las columnas presentes. Empaquetarlas cerró esa fuga.
 
+### `libracore.unir_bases` — unir la base core de un producto en la de su dominio
+
+Console script `libracore-unir-bases` (ADR-078), con `verificar`, `unir` y `revertir`. Es el único código del motor que mueve filas
+entre dos bases; todo el resto trabaja sobre una conexión. Cómo está armado:
+
+- **Lectura del esquema** (`tablas_de`, `columnas_de`, `claves_foraneas_de`, `secuencias_de`): desde `pg_catalog`, no desde los
+  modelos; la herramienta tiene que servir con las tablas de cualquier producto y de `libracommerce`, que el motor no conoce.
+- **`verificar`** devuelve una `Verificacion` con `hallazgos` (error o aviso, con un código estable que usa el README), el orden de
+  copia (`orden_topologico`, con las autorreferencias aparte), qué tablas se vacían por ser semillas (`SEMILLAS`), y el resumen de
+  cada tabla (`resumen_de`: filas, sumas de las columnas `NUMERIC` y de `COLUMNAS_DE_DINERO`, `max(id)` y una huella de contenido que
+  no depende del orden ni del *collation*). Las dos conexiones son de sólo lectura y `REPEATABLE READ`.
+- **`unir`**: marca `iniciada` en el dominio (con la foto de sus tablas) → `libracore-migrar upgrade` y, si el core tiene la cadena,
+  la de `libracommerce` (`Cadena.subir`; `libracore.db.core` queda como estaba) → **una transacción** que bloquea las tablas destino,
+  vacía semillas, copia con `COPY` en orden topológico, ajusta secuencias, valida claves foráneas, compara cada tabla contra el
+  core y marca `unida` con el informe → `union.json`.
+- **`revertir`**: lo inverso, sobre el core, para las filas con `id` mayor al del informe.
+- **Estado**: ninguno fuera de las dos bases y del `union.json`. La marca del dominio (`libracore_union_bases`) es lo que hace
+  idempotente a `unir` y lo que recuerda qué tablas eran del dominio antes de la corrida.
+
+Qué toca y qué no: ni el compose, ni la app, ni los respaldos (son del procedimiento, README), ni las tablas del producto.
+
 ### `libracore.provisioning` — aprovisionamiento de instancias
 
 - **`provisioning/panel_admin.py`** (1645 líneas): operación de las instancias

@@ -117,6 +117,92 @@ Alembic y SQLAlchemy **no son dependencias de runtime**: viven en el extra
 > `alembic revision --autogenerate` **no sirve en este repo**: no hay modelos
 > SQLAlchemy de los que generar. Las revisiones se escriben a mano.
 
+## Unir las dos bases de un producto
+
+Los productos de la familia corren con **una** base (ContaLibra, RestoLibra, VentaLibra, LibraDesk, LibraCargo) o con **dos**: la
+del dominio y la del core (`<producto>_core`, con el esquema de este motor). `libracore-unir-bases` pasa de dos a una (ADR-078): crea
+en la base del dominio las tablas del motor, copia las filas del core **conservando los ids** y deja un informe con el que se
+compara. Lo usa LibraClub; GestioLibra y MedLibra, cuando resuelvan lo que les falta (ADR-078, «Consecuencias»).
+
+```
+libracore-unir-bases --prefijo libraclub verificar --informe verificacion.json   # sólo lectura
+libracore-unir-bases --prefijo libraclub unir      --informe union.json          # con la app detenida
+libracore-unir-bases --prefijo libraclub revertir  --informe union.json          # la red de los primeros días
+```
+
+Las URL salen de las variables de la instancia (`LIBRACLUB_DATABASE_URL` y `LIBRACLUB_LIBRACORE_DATABASE_URL`, los nombres de
+`url_de_instancia`), o de `--core`/`--dominio` (una URL, o `env:NOMBRE` para leer otra variable: una URL con contraseña en la línea
+de comandos queda en el historial y en `ps`). **Nunca se imprime usuario ni contraseña**, sólo `host:puerto/base`. Sale 0 (bien),
+1 (algo impide unir, o la unión se deshizo) o 2 (uso o conexión). Se corre **dentro de la imagen del producto**, que tiene
+`libracore` y, si el core usa su cadena, `libracommerce`.
+
+### Procedimiento de operación
+
+Instancia por instancia, cada una con su OK. Nada de esto se hace desde el motor: es lo que se ejecuta en el servidor de la instancia.
+
+1. **Antes de empezar.** El producto ya tiene su tabla de versión propia (`alembic_version_<producto>`; si su cadena todavía usa
+   `alembic_version`, `verificar` lo corta), la imagen trae `libracore` ≥ v1.190.0 (y `libracommerce` si el core tiene
+   `alembic_version_libracommerce`), y el core está en la cabeza (`libracore-migrar upgrade --prefijo <p>`, y `libracommerce-migrar`).
+2. **Detener la app** (sólo la app; las bases siguen arriba): `docker compose stop <servicio-app>`. Sin la app no hay conexiones
+   abiertas; `unir` y `revertir` cortan si las hay (`--aunque-haya-conexiones` lo saltea: sólo con una razón).
+3. **Respaldar las dos bases con `pg_dump -Fc` y probar la restauración.** Un respaldo que no se restauró no es un respaldo:
+
+   ```
+   pg_dump -Fc -f dominio.dump  "$DOMINIO_URL"          # y lo mismo con el core
+   createdb prueba_dominio && pg_restore -d prueba_dominio dominio.dump
+   # comparar conteos de las tablas grandes contra la base viva, y borrar la de prueba
+   ```
+4. **Verificar**: `libracore-unir-bases --prefijo <p> verificar --informe verificacion.json`. Hasta que no diga `[OK] Se puede unir`,
+   no se sigue. Los impedimentos más comunes:
+
+   | Código | Qué quiere decir | Qué se hace |
+   |---|---|---|
+   | `version_repetida` | la `alembic_version` del dominio es de la cadena del producto | el producto la renombra (`alembic_version_<producto>`) y se despliega |
+   | `choque_de_tablas` | una tabla del producto tiene el nombre de una del motor (`modulos`, `depositos`) | se renombra en el producto |
+   | `fk_colgada` | filas del core apuntan a algo que no estará en el dominio (típico: `usuario_id` sin fila en `usuarios`) | se resuelve el dato antes; no se borra el core |
+   | `usuario_distinto` | un id de usuario es otra persona en el dominio | se revisa a mano: no se mezclan usuarios |
+   | `core_desactualizado` / `core_sin_version` | el core no está en la cabeza de `libracore` | `libracore-migrar upgrade --prefijo <p>` sobre el core |
+   | `falta_libracommerce` | el core usa la cadena de `libracommerce` y el entorno no la tiene | correr desde la imagen del producto |
+   | `conversion_fallida` / `auditoria_no_entra` | un `ts` de `actividad_log` que no se parsea, o un valor más largo que el `varchar(n)` del dominio | se corrige la fila en el core (con respaldo) y se vuelve a verificar |
+   | `destino_con_datos` | el dominio ya tiene filas en una tabla del motor que no son las semillas | alguien ya usó el dominio con el motor: se mira antes de seguir |
+5. **Unir**: `libracore-unir-bases --prefijo <p> unir --informe union.json`. Guardar `union.json` junto a los respaldos. Es
+   idempotente: correrlo de nuevo sobre una base ya unida no cambia nada y lo dice. Si se corta a mitad, la transacción no deja
+   nada copiado y se reintenta.
+6. **Cambiar el compose** (con una copia del anterior): la variable del core (`<PREFIJO>_LIBRACORE_DATABASE_URL`) apunta a la base
+   **del dominio**. Cuando el producto figure en `_UNA_SOLA_BASE` (otro PR), la variable se saca.
+7. **Levantar** la app y **comparar con el informe**: los conteos y las sumas de `union.json` contra las tablas del dominio, la
+   pantalla de inicio sin errores, y una operación de caja de prueba en una transacción que se revierte.
+8. **El core viejo se conserva intacto** (es la red de `revertir`). Se borra recién con un OK aparte, tras un ciclo de uso.
+
+### Qué copia y qué no (ADR-078)
+
+- **Se copian todas las tablas del core** menos las de versión de Alembic y las de auth. Las tablas del motor y de `libracommerce` se
+  crean en el dominio con sus cadenas (`libracore-migrar`, `libracommerce-migrar`), y las filas se copian con `COPY`: el texto exacto,
+  sin redondear `NUMERIC` ni reescribir fechas. Después, `setval` de cada secuencia a `max(id)`.
+- **`usuarios`, `auth_log` y las tablas de `libraauth` no se copian: manda el dominio** (en ContaLibra y VentaLibra es una sola
+  tabla, la que llegó primero). Se exige que cada `usuario_id` del core exista en el dominio y sea la misma persona (mismo
+  `username`).
+- **`actividad_log` (auditoría compartida): se agrega, no se copia.** Si está en las dos bases (el listener de `libraauth` la crea en
+  el dominio con `ts TIMESTAMP` y `entidad_id VARCHAR`; `libracommerce-migrar` en el core con `ts TEXT` y `entidad_id INTEGER`),
+  manda la forma del dominio: las filas del core se **agregan** convirtiendo los tipos y con ids nuevos (nada los referencia),
+  en la misma transacción, y se compara por conteo (previas del dominio + las del core). `verificar` informa cuántas se agregan y
+  corta si una conversión falla (`conversion_fallida`, `auditoria_no_entra`, `auditoria_incompatible`) o si una clave foránea
+  apunta a la tabla (`auditoria_referenciada`). Un `ts` con huso se avisa: queda la hora escrita.
+- **Semillas.** `cajas` («Caja Principal»), `depositos` («Depósito Principal») y `categorias_egreso` (diez) las siembra la baseline
+  al crear las tablas en el dominio: si lo único que hay son esas filas, se vacían antes de copiar las del core. Cualquier otra
+  fila en el destino es un dato y corta la unión.
+- **Una marca en el dominio**, `libracore_union_bases` (una fila): `iniciada` con la foto de las tablas que tenía, y `unida` con
+  el informe. Los `alembic revision --autogenerate` de los productos tienen que ignorarla, como ya ignoran las del motor.
+
+### `revertir`: qué hace y qué no
+
+Devuelve al core las filas que el dominio recibió **después** de unir (las de `id` mayor al máximo del informe), con los mismos ids,
+en una transacción y ajustando las secuencias del core. Antes comprueba que el core viejo sigue **idéntico** al informe; si alguien
+lo usó, se niega. Límites: lo que se *cambió o borró* en una fila vieja después de unir no vuelve; en las tablas sin `id` vuelven las
+filas con clave nueva, no los cambios; las filas que apunten a un usuario creado después de unir hacen fallar la clave foránea del
+core y **no se devuelve nada** (se crea antes ese usuario en el core); **no devuelve auditoría** (`actividad_log` queda en el dominio, como `auth_log`; el core conserva la suya); no deshace nada en el dominio, así que después se vuelve a
+apuntar el compose a las dos bases. Es una red para los primeros días, no un modo de operar con dos bases.
+
 ## Versionado
 
 Semver via tags de Git (`vX.Y.Z`), version derivada automaticamente del tag

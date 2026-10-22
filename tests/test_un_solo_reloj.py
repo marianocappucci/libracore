@@ -157,6 +157,7 @@ MARCAS_TECNICAS = {
     "provisioning/__init__.py": "etiqueta de versión de la imagen y su `built-at`",
     "provisioning/panel_admin.py": "nombres de volcados, corte de retención y `desplegado_at` del panel",
     "provisioning/resguardo_externo.py": "marca de la subida a la nube y retención de copias",
+    "unir_bases.py": "hora del informe y de la marca de la unión (ADR-078)",
 }
 
 
