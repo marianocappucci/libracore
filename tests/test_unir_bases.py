@@ -27,6 +27,16 @@ from libracore.respaldo_postgres import base_de, con_base
 from libracore.unir_bases import Cadena
 
 PREFIJO = "libraclub"
+#: Lo que cambia de tipo al pasar `actividad_log` de la forma del motor comercial a la de `libraauth`. Las que importan son
+#: `ts` y `entidad_id`; las de texto a `varchar(n)` se informan igual porque el largo puede no entrar.
+CONVERSIONES = {
+    "ts": "text → timestamp without time zone",
+    "usuario": "text → character varying(100)",
+    "accion": "text → character varying(20)",
+    "entidad": "text → character varying(50)",
+    "entidad_id": "integer → character varying(100)",
+    "descripcion": "text → character varying(500)",
+}
 
 
 # --- Bases sintéticas -------------------------------------------------------------------------------------------------
@@ -536,7 +546,9 @@ def test_con_libracommerce_de_verdad(par, tmp_path):
     from libracommerce import migrar as commerce
 
     core, dominio = par
-    commerce.upgrade(core)
+    commerce.upgrade(core)  # crea `actividad_log` con la forma del motor comercial; el dominio no la tiene y la crea la misma cadena
+    _ejecutar(core, ["INSERT INTO actividad_log (id, ts, usuario, accion, entidad, entidad_id, descripcion) VALUES "
+                     "(40, '2026-10-01 10:00:00', 'cajero', 'crear', 'venta', 12, 'Venta 12')"])
     informe = tmp_path / "u.json"
 
     assert _correr(core, dominio, "unir", informe) == 0
@@ -544,8 +556,162 @@ def test_con_libracommerce_de_verdad(par, tmp_path):
     datos = json.loads(informe.read_text())
     assert datos["cadenas"]["libracommerce"]["core"] == datos["cadenas"]["libracommerce"]["dominio"]
     assert "schema_migrations" in datos["cadenas_numeradas"] and "sales" in datos["tablas"]
-    for t in ("sales", "sale_items", "catalog_items", "parties"):
+    assert "actividad_log" in datos["tablas"] and datos["auditoria_agregada"] == {}  # el dominio no la tenía: se copia como es
+    for t in ("sales", "sale_items", "catalog_items", "parties", "actividad_log"):
         assert _foto(core, [t]) == _foto(dominio, [t]), t
+
+
+# --- actividad_log: auditoría compartida ------------------------------------------------------------------------------
+
+
+#: La forma que le da `libraauth` en el dominio (`ActividadLog`, y lo que deja `0012_actividad_log` de LibraClub).
+DDL_ACTIVIDAD_LIBRAAUTH = [
+    "CREATE TABLE actividad_log (id SERIAL PRIMARY KEY, ts TIMESTAMP NOT NULL, usuario VARCHAR(100) NOT NULL, "
+    "accion VARCHAR(20) NOT NULL, entidad VARCHAR(50) NOT NULL, entidad_id VARCHAR(100), descripcion VARCHAR(500) NOT NULL, "
+    "cambios TEXT)",
+    "CREATE INDEX ix_actividad_log_ts ON actividad_log (ts)",
+    "CREATE INDEX ix_actividad_log_accion ON actividad_log (accion)",
+    "CREATE INDEX ix_actividad_log_entidad ON actividad_log (entidad)",
+]
+#: La que le da `libracommerce-migrar` en el core (`db/schema.py`, tal como queda en PostgreSQL; medido con `libracommerce` 0.57.0).
+DDL_ACTIVIDAD_COMMERCE = [
+    "CREATE TABLE actividad_log (id BIGSERIAL PRIMARY KEY, ts TEXT NOT NULL, usuario TEXT NOT NULL DEFAULT 'Sistema', "
+    "accion TEXT NOT NULL, entidad TEXT NOT NULL, entidad_id INTEGER, descripcion TEXT NOT NULL DEFAULT '', cambios TEXT)",
+    "CREATE INDEX ix_actividad_log_ts ON actividad_log (ts)",
+    "CREATE INDEX ix_actividad_log_accion ON actividad_log (accion)",
+    "CREATE INDEX ix_actividad_log_entidad ON actividad_log (entidad)",
+]
+
+
+@pytest.fixture
+def con_actividad(par):
+    """El par de siempre, con `actividad_log` en las dos bases y con formas distintas (lo que midió LibraClub en dev y demo)."""
+    core, dominio = par
+    _ejecutar(dominio, DDL_ACTIVIDAD_LIBRAAUTH + [
+        "INSERT INTO actividad_log (ts, usuario, accion, entidad, entidad_id, descripcion) VALUES "
+        "('2026-09-01 08:00:00', 'admin', 'crear', 'reserva', '1', 'Reserva 1'), "
+        "('2026-09-01 09:00:00', 'admin', 'editar', 'cancha', 'c-7', 'Cancha de texto')"])
+    _ejecutar(core, DDL_ACTIVIDAD_COMMERCE + [
+        "INSERT INTO actividad_log (id, ts, usuario, accion, entidad, entidad_id, descripcion, cambios) VALUES "
+        "(40, '2026-10-01 10:00:00', 'cajero', 'crear', 'venta', 12, 'Venta 12', '{\"total\": 1250.5}'), "
+        "(41, '2026-10-01T11:30:15', 'Sistema', 'anular', 'caja_movimiento', NULL, 'Anulado', NULL), "
+        "(42, '2026-10-02', 'cajero', 'crear', 'venta', 7, 'Venta 7', NULL)"])
+    return core, dominio
+
+
+def _actividad(url):
+    return _fila(url, "SELECT id, ts, usuario, accion, entidad, entidad_id, descripcion, cambios FROM actividad_log ORDER BY id")
+
+
+def test_actividad_log_en_las_dos_bases_no_es_un_choque_y_se_informa_lo_que_se_agrega(con_actividad, tmp_path, capsys):
+    core, dominio = con_actividad
+    informe = tmp_path / "v.json"
+
+    assert _correr(core, dominio, "verificar", informe) == 0
+
+    datos = json.loads(informe.read_text())
+    assert "actividad_log" not in datos["tablas_a_copiar"] and "actividad_log" not in datos["dominio_previo"]
+    a = datos["auditoria"]["actividad_log"]
+    assert (a["filas_core"], a["filas_dominio"]) == (3, 2)
+    assert a["conversiones"] == CONVERSIONES
+    assert any(h["codigo"] == "auditoria_se_agrega" for h in datos["avisos"])
+    out = capsys.readouterr().out
+    assert "Se agregan al dominio (auditoría, ids nuevos): actividad_log: 3 fila(s) del core a las 2 del dominio" in out
+    assert _actividad(dominio)[0][0] == 1 and _fila(dominio, "SELECT count(*) FROM actividad_log") == [(2,)]  # no escribió nada
+
+
+def test_unir_agrega_la_auditoria_del_core_con_los_tipos_del_dominio(con_actividad, tmp_path):
+    from datetime import datetime
+
+    core, dominio = con_actividad
+    del_dominio = _actividad(dominio)
+    del_core = _actividad(core)
+    informe = tmp_path / "union.json"
+
+    assert _correr(core, dominio, "unir", informe) == 0
+
+    ahora = _actividad(dominio)
+    assert ahora[:2] == del_dominio  # lo que ya había, igual y con sus ids
+    nuevas = ahora[2:]
+    assert [f[0] for f in nuevas] == [3, 4, 5]  # ids nuevos de la secuencia del dominio: no se conservan los del core (40, 41, 42)
+    assert [f[1] for f in nuevas] == [datetime(2026, 10, 1, 10, 0, 0), datetime(2026, 10, 1, 11, 30, 15), datetime(2026, 10, 2, 0, 0)]
+    assert [f[5] for f in nuevas] == ["12", None, "7"]  # el entero pasa a texto; el NULL sigue NULL
+    assert [(f[2], f[3], f[4], f[6], f[7]) for f in nuevas] == [(f[2], f[3], f[4], f[6], f[7]) for f in del_core]
+    assert _actividad(core) == del_core  # el core, intacto
+
+    datos = json.loads(informe.read_text())
+    assert "actividad_log" not in datos["tablas"]
+    assert datos["auditoria_agregada"]["actividad_log"] == {
+        "filas_core": 3, "filas_dominio_antes": 2, "filas_dominio_despues": 5, "max_id_antes": 2,
+        "conversiones": CONVERSIONES,
+    }
+    # El resto de la unión, como siempre.
+    assert _foto(core, ["clients", "caja_movimientos"]) == _foto(dominio, ["clients", "caja_movimientos"])
+
+    # Y re-unir no agrega nada.
+    assert _correr(core, dominio, "unir", informe) == 0
+    assert _fila(dominio, "SELECT count(*) FROM actividad_log") == [(5,)]
+
+
+def test_revertir_no_devuelve_la_auditoria(con_actividad, tmp_path, capsys):
+    core, dominio = con_actividad
+    informe = tmp_path / "union.json"
+    assert _correr(core, dominio, "unir", informe) == 0
+    _ejecutar(dominio, ["INSERT INTO actividad_log (ts, usuario, accion, entidad, descripcion) VALUES (now(), 'admin', 'crear', 'x', 'nueva')"])
+    del_core = _actividad(core)
+    capsys.readouterr()
+
+    assert _correr(core, dominio, "revertir", informe) == 0
+
+    assert "actividad_log" in capsys.readouterr().out
+    assert _actividad(core) == del_core  # ni lo agregado en la unión ni lo nuevo vuelve: es auditoría, como `auth_log`
+
+
+def test_corta_si_un_ts_no_se_puede_convertir(con_actividad, tmp_path):
+    core, dominio = con_actividad
+    _ejecutar(core, ["UPDATE actividad_log SET ts = 'ayer a la tarde' WHERE id = 41"])
+
+    codigos, v = _codigos(core, dominio)
+
+    assert codigos == {"conversion_fallida"}
+    assert "actividad_log.ts" in v.errores[0].mensaje and "ayer a la tarde" in v.errores[0].mensaje
+    antes = _tablas(dominio)
+    assert _correr(core, dominio, "unir", tmp_path / "u.json") == 1
+    assert _tablas(dominio) == antes  # cortó antes de tocar nada
+
+
+def test_corta_si_un_valor_no_entra_en_el_largo_del_dominio(con_actividad):
+    core, dominio = con_actividad
+    _ejecutar(core, ["UPDATE actividad_log SET accion = 'una acción de más de veinte caracteres' WHERE id = 40"])
+    codigos, v = _codigos(core, dominio)
+    assert codigos == {"auditoria_no_entra"}
+    assert "accion" in v.errores[0].mensaje and "character varying(20)" in v.errores[0].mensaje
+
+
+def test_corta_si_algo_referencia_a_actividad_log(con_actividad):
+    core, dominio = con_actividad
+    _ejecutar(dominio, ["CREATE TABLE revisiones (id SERIAL PRIMARY KEY, actividad_id INTEGER REFERENCES actividad_log(id))"])
+    codigos, v = _codigos(core, dominio)
+    assert codigos == {"auditoria_referenciada"}
+    assert "revisiones.actividad_id" in v.errores[0].mensaje
+
+
+def test_corta_si_el_core_tiene_columnas_que_el_dominio_no(con_actividad):
+    core, dominio = con_actividad
+    _ejecutar(core, ["ALTER TABLE actividad_log ADD COLUMN sucursal_id INTEGER"])
+    codigos, v = _codigos(core, dominio)
+    assert codigos == {"auditoria_incompatible"} and "sucursal_id" in v.errores[0].mensaje
+
+
+def test_un_ts_con_huso_avisa_y_queda_la_hora_escrita(con_actividad, tmp_path):
+    from datetime import datetime
+
+    core, dominio = con_actividad
+    _ejecutar(core, ["UPDATE actividad_log SET ts = '2026-10-01T10:00:00+00:00' WHERE id = 40"])
+    v = unir_bases.verificar(core, dominio, PREFIJO)
+    assert v.ok and "auditoria_con_huso" in {h.codigo for h in v.avisos}
+    assert _correr(core, dominio, "unir", tmp_path / "u.json") == 0
+    assert _fila(dominio, "SELECT ts FROM actividad_log WHERE descripcion = 'Venta 12'") == [(datetime(2026, 10, 1, 10, 0, 0),)]
 
 
 # --- revertir ----------------------------------------------------------------------------------------------------------

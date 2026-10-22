@@ -163,6 +163,7 @@ Instancia por instancia, cada una con su OK. Nada de esto se hace desde el motor
    | `usuario_distinto` | un id de usuario es otra persona en el dominio | se revisa a mano: no se mezclan usuarios |
    | `core_desactualizado` / `core_sin_version` | el core no está en la cabeza de `libracore` | `libracore-migrar upgrade --prefijo <p>` sobre el core |
    | `falta_libracommerce` | el core usa la cadena de `libracommerce` y el entorno no la tiene | correr desde la imagen del producto |
+   | `conversion_fallida` / `auditoria_no_entra` | un `ts` de `actividad_log` que no se parsea, o un valor más largo que el `varchar(n)` del dominio | se corrige la fila en el core (con respaldo) y se vuelve a verificar |
    | `destino_con_datos` | el dominio ya tiene filas en una tabla del motor que no son las semillas | alguien ya usó el dominio con el motor: se mira antes de seguir |
 5. **Unir**: `libracore-unir-bases --prefijo <p> unir --informe union.json`. Guardar `union.json` junto a los respaldos. Es
    idempotente: correrlo de nuevo sobre una base ya unida no cambia nada y lo dice. Si se corta a mitad, la transacción no deja
@@ -181,6 +182,12 @@ Instancia por instancia, cada una con su OK. Nada de esto se hace desde el motor
 - **`usuarios`, `auth_log` y las tablas de `libraauth` no se copian: manda el dominio** (en ContaLibra y VentaLibra es una sola
   tabla, la que llegó primero). Se exige que cada `usuario_id` del core exista en el dominio y sea la misma persona (mismo
   `username`).
+- **`actividad_log` (auditoría compartida): se agrega, no se copia.** Si está en las dos bases (el listener de `libraauth` la crea en
+  el dominio con `ts TIMESTAMP` y `entidad_id VARCHAR`; `libracommerce-migrar` en el core con `ts TEXT` y `entidad_id INTEGER`),
+  manda la forma del dominio: las filas del core se **agregan** convirtiendo los tipos y con ids nuevos (nada los referencia),
+  en la misma transacción, y se compara por conteo (previas del dominio + las del core). `verificar` informa cuántas se agregan y
+  corta si una conversión falla (`conversion_fallida`, `auditoria_no_entra`, `auditoria_incompatible`) o si una clave foránea
+  apunta a la tabla (`auditoria_referenciada`). Un `ts` con huso se avisa: queda la hora escrita.
 - **Semillas.** `cajas` («Caja Principal»), `depositos` («Depósito Principal») y `categorias_egreso` (diez) las siembra la baseline
   al crear las tablas en el dominio: si lo único que hay son esas filas, se vacían antes de copiar las del core. Cualquier otra
   fila en el destino es un dato y corta la unión.
@@ -193,7 +200,7 @@ Devuelve al core las filas que el dominio recibió **después** de unir (las de 
 en una transacción y ajustando las secuencias del core. Antes comprueba que el core viejo sigue **idéntico** al informe; si alguien
 lo usó, se niega. Límites: lo que se *cambió o borró* en una fila vieja después de unir no vuelve; en las tablas sin `id` vuelven las
 filas con clave nueva, no los cambios; las filas que apunten a un usuario creado después de unir hacen fallar la clave foránea del
-core y **no se devuelve nada** (se crea antes ese usuario en el core); no deshace nada en el dominio, así que después se vuelve a
+core y **no se devuelve nada** (se crea antes ese usuario en el core); **no devuelve auditoría** (`actividad_log` queda en el dominio, como `auth_log`; el core conserva la suya); no deshace nada en el dominio, así que después se vuelve a
 apuntar el compose a las dos bases. Es una red para los primeros días, no un modo de operar con dos bases.
 
 ## Versionado

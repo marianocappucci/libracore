@@ -27,22 +27,30 @@ siguen **sí tienen datos en el core**; LibraCargo sólo tenía semillas.
    que sí se exige es que las filas del core **apunten a usuarios que existen en el dominio y son los mismos** (mismo id,
    mismo `username`): una `usuario_id` colgada, o que en el dominio sea otra persona, impide unir. El `auth_log` del core no se
    lleva (es el log de accesos del motor viejo): si tiene filas se avisa y queda sólo en el respaldo.
-2. **Cualquier otro nombre de tabla repetido entre las dos bases impide unir.** El caso real es el de `modulos` de GestioLibra
+2. **`actividad_log` es auditoría compartida: manda la forma del dominio y las filas del core se agregan.** Cuando está en las dos
+   bases cada una la creó un escritor distinto (`libraauth` en el dominio: `ts TIMESTAMP`, `entidad_id VARCHAR`; `libracommerce` en
+   el core: `ts TEXT`, `entidad_id INTEGER`). Las filas del core se **agregan** al dominio convirtiendo los tipos (el `COPY` de
+   texto parsea igual que `USING ts::timestamp` de la `0012_actividad_log` de LibraClub), **sin conservar el `id`** (nada lo
+   referencia: `verificar` corta si una clave foránea apunta a la tabla) y dentro de la misma transacción. `verificar` dice cuántas
+   se agregan y corta si una conversión falla (un `ts` que no se parsea, un valor que no entra en `varchar(n)`, un NULL contra
+   un NOT NULL, una columna del core que el dominio no tiene). Se compara por conteo: lo que tenía el dominio más lo del core.
+   `revertir` **no devuelve auditoría**, como `auth_log`.
+3. **Cualquier otro nombre de tabla repetido entre las dos bases impide unir.** El caso real es el de `modulos` de GestioLibra
    y MedLibra, o `depositos` de LibraDesk: una tabla del producto con el nombre de una del motor. Se renombra en el producto
    *antes*, no se resuelve acá.
-3. **Una tabla de versión de Alembic con el mismo nombre impide unir** cuando son de cadenas distintas. LibraClub usa
+4. **Una tabla de versión de Alembic con el mismo nombre impide unir** cuando son de cadenas distintas. LibraClub usa
    `alembic_version` para su cadena y el motor también: el producto la renombra a `alembic_version_<producto>` primero (como
    LibraCargo con su revisión `0015`). Si la del dominio ya es de la cadena del motor (se migró a mano antes), no hay choque.
-4. **El core tiene que estar en la cabeza** de `libracore` (y de `libracommerce`, si usa su cadena): con el mismo esquema en
+5. **El core tiene que estar en la cabeza** de `libracore` (y de `libracommerce`, si usa su cadena): con el mismo esquema en
    las dos puntas se copia columna por columna sin traducir nada. Si no lo está, `libracore-migrar upgrade` sobre el core.
-5. **«Sólo semillas».** Al crear las tablas del motor en el dominio, la baseline siembra tres: `cajas` («Caja Principal»),
+6. **«Sólo semillas».** Al crear las tablas del motor en el dominio, la baseline siembra tres: `cajas` («Caja Principal»),
    `depositos` («Depósito Principal») y `categorias_egreso` (diez). Una tabla del destino se vacía antes de copiar si y sólo si
    (a) es una de esas tres, (b) **todas** sus filas son del conjunto sembrado (por `nombre`), y (c) ninguna tabla hija del
    destino tiene filas que la referencien. Cualquier otra fila en el destino es un dato: la unión se corta, no se pisa.
-6. **Una marca en el dominio** (`libracore_union_bases`, una fila): `iniciada` con la foto de las tablas que el dominio tenía
+7. **Una marca en el dominio** (`libracore_union_bases`, una fila): `iniciada` con la foto de las tablas que el dominio tenía
    *antes* (para decidir después qué tabla es «del dominio» aunque una corrida cortada haya creado las del motor) y `unida` con
    el informe. Es lo que hace que `unir` sea idempotente y lo diga.
-7. **Los ids se conservan.** Se copia con `COPY` (texto exacto: ni redondeo de `NUMERIC` ni reescritura de fechas), en orden
+8. **Los ids se conservan** (salvo los de `actividad_log`, punto 2). Se copia con `COPY` (texto exacto: ni redondeo de `NUMERIC` ni reescritura de fechas), en orden
    topológico por claves foráneas (una autorreferencia como `cc_asientos.contrapartida_de` no pide orden: la clave foránea se
    comprueba al terminar el `COPY`). Después `setval` de cada secuencia a `max(id)`.
 
@@ -69,6 +77,7 @@ import contextlib
 import datetime
 import json
 import os
+import re
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -129,6 +138,13 @@ SEMILLAS = {
 #: un dato: no se copia, y se exige que el dominio tenga aplicadas todas las versiones que tiene el core (ensayado contra
 #: `libracommerce` real: sin esto la corrida cortaba por «el destino tiene filas que no son semillas»). Nombre → columna.
 TABLAS_DE_CADENA_NUMERADA = {"schema_migrations": "version"}
+
+
+#: Tablas de **auditoría compartida**: el producto y el motor escriben en la misma, y cuando están en las dos bases cada una la
+#: creó un escritor distinto con una forma distinta (ADR-078, punto 4). Hoy es `actividad_log`: en el dominio la crea el listener
+#: de `libraauth` (`ts TIMESTAMP`, `entidad_id VARCHAR`) y en el core `libracommerce` (`ts TEXT`, `entidad_id INTEGER`). Manda la
+#: forma del dominio; las filas del core se **agregan** (sin conservar el `id`, que nadie referencia) convirtiendo los tipos.
+TABLAS_DE_AUDITORIA = ("actividad_log",)
 
 
 class ErrorDeUso(Exception):
@@ -471,6 +487,7 @@ class Verificacion:
     a_vaciar: list[str] = field(default_factory=list)
     tablas: dict = field(default_factory=dict)
     dominio_previo: dict = field(default_factory=dict)
+    auditoria: dict = field(default_factory=dict)
     previas: list[str] = field(default_factory=list)
     conexiones: dict = field(default_factory=dict)
 
@@ -630,10 +647,12 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
 
     # 2. Choques de nombres.
     comunes = (t_core & t_dom_propias) - versiones_core - versiones_dom - numeradas
-    dominio_manda, tolerados = [], []
+    dominio_manda, tolerados, auditoria = [], [], []
     for t in sorted(comunes):
         if t in TABLAS_DE_AUTH and t in previas:
             dominio_manda.append(t)
+        elif t in TABLAS_DE_AUDITORIA and t in previas:
+            auditoria.append(t)
         elif t in previas and not dominio_con_cadena:
             v.error(
                 "choque_de_tablas",
@@ -645,7 +664,7 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
             tolerados.append(t)
 
     # 3. Qué se copia, en qué orden.
-    a_copiar = sorted(t_core - versiones_core - numeradas - set(dominio_manda))
+    a_copiar = sorted(t_core - versiones_core - numeradas - set(dominio_manda) - set(auditoria))
     fks_core = claves_foraneas_de(core)
     try:
         v.a_copiar = orden_topologico(a_copiar, fks_core)
@@ -657,6 +676,10 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
         v.no_copiadas[t] = {"motivo": "dominio_manda", "filas_core": filas}
         if filas and t != "usuarios":
             v.aviso("no_se_copia", f"{t}: {filas} fila(s) del core no se copian (manda la del dominio); quedan en el respaldo.")
+
+    # 3b. Auditoría compartida: se agrega al dominio, convirtiendo tipos.
+    for t in auditoria:
+        _verificar_auditoria(v, core, dom, t, fks_core)
 
     # 4. Claves foráneas del core que apuntan a una tabla que no se copia.
     _verificar_claves_foraneas(v, core, dom, fks_core, dominio_manda)
@@ -679,9 +702,123 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
     for t in v.a_copiar:
         v.tablas[t] = resumen_de(core, t, columnas_de(core, t))
     for t in sorted(t_dom_propias - set(v.a_copiar) - {TABLA_MARCA}):
-        if t in versiones_dom or t in dominio_manda or t in numeradas:
+        if t in versiones_dom or t in dominio_manda or t in numeradas or t in auditoria:
             continue
         v.dominio_previo[t] = dom.execute(sql.SQL("SELECT count(*) FROM {}").format(_ident(t))).fetchone()[0]
+
+
+def _reglas_de_columnas(conn, tabla: str) -> dict:
+    """`{columna: (tipo, not_null, tiene_default)}` de las columnas propias (no generadas) de una tabla."""
+    filas = conn.execute(
+        "SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull, a.atthasdef FROM pg_attribute a "
+        "WHERE a.attrelid = to_regclass(%s) AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = '' ORDER BY a.attnum",
+        (_regclass(tabla),),
+    ).fetchall()
+    return {f[0]: (f[1], f[2], f[3]) for f in filas}
+
+
+_LARGO = re.compile(r"^(?:character varying|character|varchar|char)\((\d+)\)$")
+_CON_HUSO = r"[0-9]:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}(:?[0-9]{2})?)$"
+
+
+def _verificar_auditoria(v: Verificacion, core, dom, tabla: str, fks_core: list[ClaveForanea]) -> None:
+    """Una tabla de auditoría que está en las dos bases: qué se agrega, y si cada conversión de tipo entra.
+
+    Se corta por lo que haría fallar el `COPY` (o, peor, lo dejaría pasar cambiado), no al final con la transacción deshecha.
+    """
+    en_core, en_dom = _reglas_de_columnas(core, tabla), _reglas_de_columnas(dom, tabla)
+    propias = [c for c in en_core if c != "id"]
+    info = {
+        "filas_core": core.execute(sql.SQL("SELECT count(*) FROM {}").format(_ident(tabla))).fetchone()[0],
+        "filas_dominio": dom.execute(sql.SQL("SELECT count(*) FROM {}").format(_ident(tabla))).fetchone()[0],
+        "columnas": propias,
+        "conversiones": {},
+    }
+    v.auditoria[tabla] = info
+    # Nadie tiene que referenciarla: sin conservar los ids, una FK hacia acá quedaría apuntando a otra fila.
+    for fk in fks_core + claves_foraneas_de(dom):
+        if fk.destino == tabla:
+            v.error("auditoria_referenciada", f"{fk.tabla}.{','.join(fk.columnas)} tiene una clave foránea hacia {tabla}: sus ids no se conservan.")
+    sobran = [c for c in propias if c not in en_dom]
+    if sobran:
+        v.error("auditoria_incompatible", f"{tabla}: el core tiene columnas que el dominio no tiene ({', '.join(sobran)}).")
+    faltan = [c for c, (_, no_nula, con_default) in en_dom.items() if c != "id" and c not in en_core and no_nula and not con_default]
+    if faltan:
+        v.error("auditoria_incompatible", f"{tabla}: el dominio exige columnas que el core no tiene ({', '.join(faltan)}).")
+    for c in (c for c in propias if c in en_dom):
+        tipo_core, tipo_dom, no_nula = en_core[c][0], en_dom[c][0], en_dom[c][1]
+        col = _ident(c)
+        if tipo_core != tipo_dom:
+            info["conversiones"][c] = f"{tipo_core} → {tipo_dom}"
+        if no_nula:
+            nulas = core.execute(sql.SQL("SELECT count(*) FROM {} WHERE {} IS NULL").format(_ident(tabla), col)).fetchone()[0]
+            if nulas:
+                v.error("auditoria_no_entra", f"{tabla}.{c}: {nulas} fila(s) del core tienen NULL y en el dominio la columna es NOT NULL.")
+        if tipo_core == tipo_dom:
+            continue
+        largo = _LARGO.match(tipo_dom)
+        if largo:
+            largos = core.execute(
+                sql.SQL("SELECT count(*), max(length({}::text)) FROM {} WHERE length({}::text) > %s").format(col, _ident(tabla), col),
+                (int(largo.group(1)),),
+            ).fetchone()
+            if largos[0]:
+                v.error(
+                    "auditoria_no_entra",
+                    f"{tabla}.{c}: {largos[0]} fila(s) del core no entran en {tipo_dom} (la más larga tiene {largos[1]} caracteres).",
+                )
+        elif tipo_dom != "text":
+            malas, ejemplos = _no_convertibles(core, tabla, c, tipo_dom)
+            if malas:
+                v.error(
+                    "conversion_fallida",
+                    f"{tabla}.{c}: {malas} valor(es) del core no se pueden convertir a {tipo_dom} (p. ej. {ejemplos}).",
+                )
+            elif tipo_dom.startswith("timestamp"):
+                con_huso = core.execute(
+                    sql.SQL("SELECT count(*) FROM {} WHERE {}::text ~ %s").format(_ident(tabla), col), (_CON_HUSO,)
+                ).fetchone()[0]
+                if con_huso:
+                    v.aviso(
+                        "auditoria_con_huso",
+                        f"{tabla}.{c}: {con_huso} valor(es) traen huso horario; al pasar a {tipo_dom} se descarta y queda la hora escrita.",
+                    )
+    if info["filas_core"]:
+        v.aviso(
+            "auditoria_se_agrega",
+            f"{tabla}: se agregan {info['filas_core']} fila(s) del core a las {info['filas_dominio']} del dominio (ids nuevos).",
+        )
+
+
+def _no_convertibles(conn, tabla: str, columna: str, tipo: str) -> tuple[int, str]:
+    """Cuántos valores de una columna no entran en `tipo`, y unos ejemplos. Sin `pg_input_is_valid` (PostgreSQL < 16), se prueba
+    la conversión entera y, si falla, se informa el error del servidor."""
+    col = _ident(columna)
+    try:
+        with conn.transaction():
+            malas = conn.execute(
+                sql.SQL("SELECT count(*) FROM {} WHERE {} IS NOT NULL AND NOT pg_input_is_valid({}::text, %s)").format(
+                    _ident(tabla), col, col
+                ),
+                (tipo,),
+            ).fetchone()[0]
+            ejemplos = conn.execute(
+                sql.SQL("SELECT {}::text FROM {} WHERE {} IS NOT NULL AND NOT pg_input_is_valid({}::text, %s) LIMIT 3").format(
+                    col, _ident(tabla), col, col
+                ),
+                (tipo,),
+            ).fetchall()
+        return malas, ", ".join(repr(e[0]) for e in ejemplos)
+    except psycopg.errors.UndefinedFunction:
+        pass
+    try:
+        with conn.transaction():
+            conn.execute(
+                sql.SQL("SELECT count({}::{}) FROM {}").format(col, sql.SQL(tipo), _ident(tabla))
+            ).fetchone()
+    except psycopg.Error as e:
+        return 1, " ".join(str(e).split())[:120]
+    return 0, ""
 
 
 def _verificar_claves_foraneas(v: Verificacion, core, dom, fks_core, dominio_manda) -> None:
@@ -816,6 +953,7 @@ def _datos_de_verificacion(v: Verificacion) -> dict:
         "no_copiadas": v.no_copiadas,
         "tablas": v.tablas,
         "dominio_previo": v.dominio_previo,
+        "auditoria": v.auditoria,
     }
 
 
@@ -844,6 +982,10 @@ def imprimir(v: Verificacion, salida=None) -> None:
         sumas = "  ".join(f"{c}={s}" for c, s in r["sumas"].items())
         marca = "  (vaciar semillas)" if t in v.a_vaciar else ""
         p(f"  {t:<28} {r['filas']:>8} fila(s)  {sumas}{marca}")
+    for t, a in v.auditoria.items():
+        conv = "; ".join(f"{c}: {d}" for c, d in a["conversiones"].items()) or "sin conversiones"
+        p(f"Se agregan al dominio (auditoría, ids nuevos): {t}: {a['filas_core']} fila(s) del core a las {a['filas_dominio']} "
+          f"del dominio ({conv})")
     if v.no_copiadas:
         p("No se copian (manda el dominio): " + ", ".join(f"{t} ({d['filas_core']} fila(s) en el core)" for t, d in v.no_copiadas.items()))
     p("")
@@ -902,7 +1044,7 @@ def _esquemas_iguales(core, dom, tablas: list[str]) -> None:
             )
 
 
-def _copiar_tabla(origen, destino, tabla: str, nombres: list[str], donde=None) -> int:
+def _copiar_tabla(origen, destino, tabla: str, nombres: list[str], donde=None, ordenar_por: str | None = None) -> int:
     """`COPY` de una tabla de una base a la otra, con los ids como vienen. Devuelve las filas copiadas.
 
     `donde` (opcional, con la tabla como `t`) deja sólo algunas filas: lo usa `revertir`. Una autorreferencia
@@ -913,6 +1055,8 @@ def _copiar_tabla(origen, destino, tabla: str, nombres: list[str], donde=None) -
     consulta = sql.SQL("SELECT {} FROM {} t").format(cols, _ident(tabla))
     if donde is not None:
         consulta = consulta + sql.SQL(" WHERE ") + donde
+    if ordenar_por:
+        consulta = consulta + sql.SQL(" ORDER BY t.{}").format(_ident(ordenar_por))
     cuerpo = sql.SQL("COPY ({}) TO STDOUT").format(consulta)
     entrada = sql.SQL("COPY {} ({}) FROM STDIN").format(_ident(tabla), _lista(nombres))
     with origen.cursor() as co, destino.cursor() as cd:
@@ -1033,11 +1177,12 @@ def _copiar_todo(core_url, dominio_url, v: Verificacion, prefijo: str, out) -> d
         faltan = [t for t in v.a_copiar if t not in en_dominio]
         if faltan:
             raise ErrorDeUnion("El upgrade no creó en el dominio: " + ", ".join(faltan))
-        if v.a_copiar:
+        con_lock = v.a_copiar + list(v.auditoria)
+        if con_lock:
             # Nadie escribe en estas tablas mientras dura la unión (la app está detenida). Si alguien las tiene tomadas,
             # se espera un rato y se corta: una unión colgada del candado de otro es peor que una que dice por qué no pudo.
             dom.execute("SET LOCAL lock_timeout = '30s'")
-            dom.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE").format(_lista(v.a_copiar)))
+            dom.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE").format(_lista(con_lock)))
         _esquemas_iguales(core, dom, v.a_copiar)
         numeradas = {}
         for t, col in TABLAS_DE_CADENA_NUMERADA.items():
@@ -1072,6 +1217,7 @@ def _copiar_todo(core_url, dominio_url, v: Verificacion, prefijo: str, out) -> d
             if copiadas != en_core["filas"] or en_core != en_dom:
                 raise ErrorDeUnion(f"{t}: lo copiado no coincide con el core (core {en_core}, dominio {en_dom}, copiadas {copiadas}).")
             tablas[t] = {**en_core, "secuencias": secuencias}
+        auditoria = _agregar_auditoria(core, dom, list(v.auditoria), out)
         _validar_claves_foraneas(dom, v.a_copiar)
 
         en_dominio = set(tablas_de(dom))
@@ -1094,6 +1240,7 @@ def _copiar_todo(core_url, dominio_url, v: Verificacion, prefijo: str, out) -> d
             "cadenas": cadenas,
             "cadenas_numeradas": numeradas,
             "tablas": tablas,
+            "auditoria_agregada": auditoria,
             "tablas_vaciadas": sorted(vaciar),
             "no_copiadas": v.no_copiadas,
             "dominio_previo": v.dominio_previo,
@@ -1104,6 +1251,42 @@ def _copiar_todo(core_url, dominio_url, v: Verificacion, prefijo: str, out) -> d
         )
         dom.commit()
         return informe
+
+
+def _agregar_auditoria(core, dom, tablas: list[str], out) -> dict:
+    """Agrega al dominio las filas de las tablas de auditoría del core, con ids nuevos y los tipos del dominio.
+
+    El `COPY` de texto convierte solo (`'2026-10-01 10:00:00'` a `timestamp`, `12` a `varchar`): es el mismo parseo que
+    `USING ts::timestamp` de la `0012_actividad_log` de LibraClub. La comparación es por conteo: lo que tenía el dominio más
+    lo que tenía el core, y las filas nuevas son exactamente las del core (ids por encima del máximo de antes).
+    """
+    informe = {}
+    for t in tablas:
+        reglas_core, reglas_dom = _reglas_de_columnas(core, t), _reglas_de_columnas(dom, t)
+        nombres = [c for c in reglas_core if c != "id"]
+        tabla = _ident(t)
+        del_core = core.execute(sql.SQL("SELECT count(*) FROM {}").format(tabla)).fetchone()[0]
+        antes = dom.execute(sql.SQL("SELECT count(*) FROM {}").format(tabla)).fetchone()[0]
+        con_id = "id" in reglas_dom
+        maximo = dom.execute(sql.SQL("SELECT COALESCE(MAX(id), 0) FROM {}").format(tabla)).fetchone()[0] if con_id else None
+        print(f"  agregando {del_core} fila(s) de {t}…", file=out)
+        copiadas = _copiar_tabla(core, dom, t, nombres, ordenar_por="id" if "id" in reglas_core else None)
+        despues = dom.execute(sql.SQL("SELECT count(*) FROM {}").format(tabla)).fetchone()[0]
+        nuevas = (
+            dom.execute(sql.SQL("SELECT count(*) FROM {} WHERE id > %s").format(tabla), (maximo,)).fetchone()[0] if con_id else del_core
+        )
+        if copiadas != del_core or despues != antes + del_core or nuevas != del_core:
+            raise ErrorDeUnion(
+                f"{t}: lo agregado no coincide (core {del_core}, copiadas {copiadas}, dominio antes {antes} y después {despues})."
+            )
+        informe[t] = {
+            "filas_core": del_core,
+            "filas_dominio_antes": antes,
+            "filas_dominio_despues": despues,
+            "max_id_antes": maximo,
+            "conversiones": {c: f"{reglas_core[c][0]} → {reglas_dom[c][0]}" for c in nombres if reglas_core[c][0] != reglas_dom[c][0]},
+        }
+    return informe
 
 
 # --- Revertir ------------------------------------------------------------------------------------------------------------
@@ -1200,6 +1383,8 @@ def revertir(core_url: str, dominio_url: str, prefijo: str, informe: Path, *, au
         )
         return 1
     total = sum(d["filas"] for d in devueltas.values())
+    for t, a in datos.get("auditoria_agregada", {}).items():
+        print(f"  {t:<28} no se devuelve: la auditoría agregada ({a['filas_core']} fila(s) del core + las nuevas) queda en el dominio", file=out)
     for t, d in devueltas.items():
         if d["filas"] or d.get("aviso"):
             print(f"  {t:<28} {d['filas']:>8} fila(s) devueltas {d.get('aviso', '')}".rstrip(), file=out)
