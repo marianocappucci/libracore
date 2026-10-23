@@ -8,6 +8,23 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — La cola de comprobantes del nodo offline: `cola_arca` (propuesta: v1.191.0)
+
+ADR-079. **Migración `0029`, aditiva** (tabla `cola_arca` e índices, vacíos; no se baja). Es el PR 5 del plan de LibraCargo y LibraClub en la versión de escritorio. Una cola genérica de comprobantes para lo que ADR-074 no cubre: una factura que no nace de una venta del punto de venta (`documento`: la de LibraCargo desde una orden, la «conjunta» de LibraClub) y la carta de porte electrónica (`cpe`). El producto deja el pedido sin red, el nodo lo emite solo al volver y el central recibe el resultado. **Fuera de un nodo no cambia nada.**
+- `libracore.cola_arca` (nuevo): `ColaDeArca(producto, emisores, conexion, obtener_ta, emisor_id, numerar_comprobante, al_cambiar)`; `encolar` (idempotente por origen; con `conn`, en la transacción del producto), `encolar_y_emitir`, `emitir_pedido` (un candado por pedido: dos a la vez, una emisión), `procesar_cola` (más viejos primero; un error de red no consume el pedido, un rechazo de ARCA lo deja `a_revisar` con el mensaje, una emisión incierta —`arca_wscpe.EmisionIncierta`— no se reintenta), `arrancar_cola_al_volver` (el hilo hermano de `arrancar_facturacion_al_volver`), `reintentar` / `descartar` / `marcar_emitido` (lo que decide una persona), `resumen`, y `payload_de_pedido` / `aplicar_pedido_del_nodo` (la copia de consulta del central, idempotente y a prueba de desorden por `revision`). El emisor de cada tipo es del producto: `async def emisor(pedido, ctx) -> dict`, con `ctx.numerar` (**jamás numera local**), `ctx.ticket("wscpe")`, `ctx.fecha_de_la_factura` y `ctx.ahora`.
+- `libracore.db.cola_arca` (nuevo): las filas y sus transiciones (`esperando → emitiendo → emitido | a_revisar | incierto`, `descartado`); un solo escritor de `estado`. `emitiendo` se confirma antes de llamar al emisor: un pedido que quedó a medias pasa a `incierto`, no se emite a ciegas.
+- `libracore.cola_arca_router` (nuevo): `build_cola_del_nodo_router` (`GET /api/nodo/cola`, `POST /emitir`, `/{id}/reintentar`, `/descartar`, `/emitido`; `resolver_con` es la guarda de las tres últimas).
+- `nodo_offline.ta_para_el_nodo(emisor_id, *, servicio="wsfe", empresa=None, ambiente=None)`: con `wscpe` el par sale de `arca_credenciales_servicio` (hace falta `empresa`), no del de facturación; `SERVICIOS_PRESTABLES = ("wsfe", "wscpe")`; el resultado suma `servicio`. Del lado del nodo, `ticket_prestado(obtener_ta, emisor_id, servicio=)` (y `numerador_con_ta` sobre él, sin cambios de comportamiento) comprueba qué ticket volvió: uno de otro servicio es un `RechazoDelCentral`, no una llamada a ARCA con el ticket equivocado. `es_corte` y `es_rechazo` hacen públicas las clasificaciones de ADR-074.
+- `venta_facturacion.fecha_de_la_factura_en_la_serie` (nuevo) y `_ultima_fecha_de_la_serie(…, emisor_id=)`: el piso de la serie ahora respeta el emisor (el default es el de siempre).
+- Esquema: `cola_arca` en `init_core_schema()` (16 columnas, 423 → 439 en las fixtures congeladas).
+
+### Para los productos
+- LibraCargo (PR 9) y LibraClub (PR 11): armar `ColaDeArca` con sus emisores `documento` y `cpe`, montar `build_cola_del_nodo_router` y arrancar el hilo. El contrato completo, en el ADR-079.
+- Sin nodo: nada.
+
+### Para `libraedge` (PR 6)
+- `POST /sync/v1/ticket-arca` recibe `servicio` y llama `prestar_ticket(emisor_id, servicio=)`; la caché de `ClienteDeTicket` pasa a ser por `(emisor_id, servicio)` (si no, sirve el ticket de `wsfe` a quien pide `wscpe`). Ver el ADR-079.
+
 ## [Unreleased] — LibraCargo y LibraClub, de una sola base (propuesta: v1.190.1)
 
 ADR-078 (consecuencias). **Sin migración.** `_UNA_SOLA_BASE` suma `libracargo` y `libraclub`: sin `<PREFIJO>_LIBRACORE_DATABASE_URL`, `libracore-migrar` (y `libraauth-migrar --base core`) caen a la base del dominio en vez de fallar. LibraCargo es una sola base desde el 2026-10-05; LibraClub, desde que `libracore-unir-bases` unió `libraclub-dev` y `libraclub-demo` el 2026-10-22. Con la variable puesta no cambia nada. GestioLibra y MedLibra siguen con el core aparte.

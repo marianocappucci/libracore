@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (423)
+## tablas (439)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -104,6 +104,22 @@ clients|id|bigint|NN|nextval('clients_id_seq'::regclass)
 clients|iva_condition|text||''::text
 clients|name|text|NN|
 clients|phone|text||
+cola_arca|concepto|integer|NN|1
+cola_arca|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+cola_arca|datos|text|NN|'{}'::text
+cola_arca|estado|text|NN|'esperando'::text
+cola_arca|fecha_ref|text|NN|''::text
+cola_arca|id|bigint|NN|nextval('cola_arca_id_seq'::regclass)
+cola_arca|intentos|integer|NN|0
+cola_arca|origen_id|text|NN|
+cola_arca|origen_instancia|text|NN|''::text
+cola_arca|origen_producto|text|NN|
+cola_arca|origen_tipo|text|NN|
+cola_arca|resuelto_at|text||''::text
+cola_arca|resultado|text|NN|''::text
+cola_arca|revision|integer|NN|1
+cola_arca|ultimo_error|text|NN|''::text
+cola_arca|updated_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
 comprobantes_pendientes|aceptado_at|text||
 comprobantes_pendientes|aceptado_por|text||
 comprobantes_pendientes|cliente_cuit|text||''::text
@@ -425,7 +441,7 @@ ventas|total|numeric|NN|0
 ventas|turno_id|integer||
 ventas|usuario_id|integer||
 
-## claves primarias (36)
+## claves primarias (37)
 arca_config|PRIMARY KEY (id)
 arca_credenciales_servicio|PRIMARY KEY (id)
 auth_log|PRIMARY KEY (id)
@@ -437,6 +453,7 @@ cc_asientos|PRIMARY KEY (id)
 cc_debitos|PRIMARY KEY (id)
 cc_pagos|PRIMARY KEY (id)
 clients|PRIMARY KEY (id)
+cola_arca|PRIMARY KEY (id)
 comprobantes_pendientes|PRIMARY KEY (id)
 cuentas_tesoreria|PRIMARY KEY (id)
 depositos|PRIMARY KEY (id)
@@ -514,7 +531,7 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (73)
+## índices (76)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 arca_credenciales_servicio|arca_credenciales_servicio_empresa_servicio_ambiente_key|CREATE UNIQUE INDEX arca_credenciales_servicio_empresa_servicio_ambiente_key ON public.arca_credenciales_servicio USING btree (empresa, servicio, ambiente)
@@ -541,6 +558,9 @@ cc_pagos|idx_cc_pagos_cliente|CREATE INDEX idx_cc_pagos_cliente ON public.cc_pag
 clients|clients_pkey|CREATE UNIQUE INDEX clients_pkey ON public.clients USING btree (id)
 clients|idx_clients_cuit_norm|CREATE INDEX idx_clients_cuit_norm ON public.clients USING btree (replace(cuit_dni, '-'::text, ''::text))
 clients|idx_clients_external_ref|CREATE UNIQUE INDEX idx_clients_external_ref ON public.clients USING btree (external_ref) WHERE (external_ref IS NOT NULL)
+cola_arca|cola_arca_pkey|CREATE UNIQUE INDEX cola_arca_pkey ON public.cola_arca USING btree (id)
+cola_arca|idx_cola_arca_estado|CREATE INDEX idx_cola_arca_estado ON public.cola_arca USING btree (estado, id)
+cola_arca|idx_cola_arca_origen|CREATE UNIQUE INDEX idx_cola_arca_origen ON public.cola_arca USING btree (origen_producto, origen_instancia, origen_tipo, origen_id)
 comprobantes_pendientes|comprobantes_pendientes_pkey|CREATE UNIQUE INDEX comprobantes_pendientes_pkey ON public.comprobantes_pendientes USING btree (id)
 comprobantes_pendientes|idx_comprobantes_pendientes_estado|CREATE INDEX idx_comprobantes_pendientes_estado ON public.comprobantes_pendientes USING btree (estado, created_at)
 comprobantes_pendientes|idx_comprobantes_pendientes_numero_interno|CREATE UNIQUE INDEX idx_comprobantes_pendientes_numero_interno ON public.comprobantes_pendientes USING btree (origen_producto, origen_instancia, numero_interno) WHERE (numero_interno IS NOT NULL)
@@ -589,12 +609,13 @@ ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON public.ventas USING btr
 ventas|ventas_numero_key|CREATE UNIQUE INDEX ventas_numero_key ON public.ventas USING btree (numero)
 ventas|ventas_pkey|CREATE UNIQUE INDEX ventas_pkey ON public.ventas USING btree (id)
 
-## checks (10)
+## checks (11)
 arca_credenciales_servicio|arca_credenciales_servicio_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
 arca_credenciales_servicio|arca_credenciales_servicio_servicio_check|CHECK ((servicio <> ''::text))
 cc_asientos|cc_asientos_check1|CHECK (((((debe)::double precision > (0)::double precision) AND ((haber)::double precision = (0)::double precision)) OR (((haber)::double precision > (0)::double precision) AND ((debe)::double precision = (0)::double precision)) OR (origen_legado IS NOT NULL)))
 cc_asientos|cc_asientos_check|CHECK ((((debe)::double precision >= (0)::double precision) AND ((haber)::double precision >= (0)::double precision)))
 cc_asientos|cc_asientos_rol_check|CHECK ((rol <> ''::text))
+cola_arca|cola_arca_estado_check|CHECK ((estado = ANY (ARRAY['esperando'::text, 'emitiendo'::text, 'emitido'::text, 'a_revisar'::text, 'incierto'::text, 'descartado'::text])))
 facturacion_alias|facturacion_alias_tipo_check|CHECK ((tipo = ANY (ARRAY['cuit'::text, 'email'::text])))
 facturas|facturas_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
 productos|productos_tipo_check|CHECK ((tipo = ANY (ARRAY['producto'::text, 'servicio'::text])))

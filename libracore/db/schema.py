@@ -869,6 +869,42 @@ def init_core_schema(conn: Conexion):
             medio_pago  TEXT NOT NULL DEFAULT '',
             created_at  TEXT DEFAULT (datetime('now','-3 hours'))
         );
+
+        -- La cola de comprobantes de un nodo offline de LibraEdge (ADR-079): lo que el producto pidió emitir
+        -- sin red y el nodo emite solo al volver. Una factura que no nace de una venta del punto de venta
+        -- (`documento`, la de LibraCargo desde una orden o la conjunta de LibraClub) o una carta de porte
+        -- electrónica (`cpe`). Es del nodo y no se espeja, sube como operación. En el central sólo existe la copia
+        -- que aplica `aplicar_pedido_del_nodo`, con la `revision` del nodo para no retroceder.
+        --
+        -- No es `comprobantes_pendientes`: aquella es una bandeja para que una persona arme un formulario, con
+        -- cliente, ítems y total. Esto es una cola de máquina, con un candado y un estado por pedido. `datos` es
+        -- JSON opaco para el motor (lo arma y lo lee el emisor del producto). `origen_id` es TEXT porque es un id
+        -- de otro sistema. `revision` sube con cada cambio de estado. `fecha_ref` es la fecha del hecho (la de la
+        -- reserva, la de la orden) o, en una `cpe`, la de partida. Ojo: este script se parte por el punto y coma,
+        -- así que ningún comentario puede llevar uno.
+        CREATE TABLE IF NOT EXISTS cola_arca (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            origen_producto   TEXT NOT NULL,
+            origen_instancia  TEXT NOT NULL DEFAULT '',
+            origen_tipo       TEXT NOT NULL,
+            origen_id         TEXT NOT NULL,
+            estado            TEXT NOT NULL DEFAULT 'esperando'
+                CHECK (estado IN ('esperando', 'emitiendo', 'emitido', 'a_revisar', 'incierto', 'descartado')),
+            datos             TEXT NOT NULL DEFAULT '{}',
+            fecha_ref         TEXT NOT NULL DEFAULT '',
+            concepto          INTEGER NOT NULL DEFAULT 1,
+            intentos          INTEGER NOT NULL DEFAULT 0,
+            ultimo_error      TEXT NOT NULL DEFAULT '',
+            resultado         TEXT NOT NULL DEFAULT '',
+            revision          INTEGER NOT NULL DEFAULT 1,
+            created_at        TEXT DEFAULT (datetime('now','-3 hours')),
+            updated_at        TEXT DEFAULT (datetime('now','-3 hours')),
+            resuelto_at       TEXT DEFAULT ''
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_cola_arca_origen
+            ON cola_arca(origen_producto, origen_instancia, origen_tipo, origen_id);
+        CREATE INDEX IF NOT EXISTS idx_cola_arca_estado
+            ON cola_arca(estado, id);
     """)
 
     if is_postgres():

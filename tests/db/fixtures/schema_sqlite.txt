@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (423)
+## tablas (439)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -104,6 +104,22 @@ clients|id|INTEGER||
 clients|iva_condition|TEXT||''
 clients|name|TEXT|NN|
 clients|phone|TEXT||
+cola_arca|concepto|INTEGER|NN|1
+cola_arca|created_at|TEXT||datetime('now','-3 hours')
+cola_arca|datos|TEXT|NN|'{}'
+cola_arca|estado|TEXT|NN|'esperando'
+cola_arca|fecha_ref|TEXT|NN|''
+cola_arca|id|INTEGER||
+cola_arca|intentos|INTEGER|NN|0
+cola_arca|origen_id|TEXT|NN|
+cola_arca|origen_instancia|TEXT|NN|''
+cola_arca|origen_producto|TEXT|NN|
+cola_arca|origen_tipo|TEXT|NN|
+cola_arca|resuelto_at|TEXT||''
+cola_arca|resultado|TEXT|NN|''
+cola_arca|revision|INTEGER|NN|1
+cola_arca|ultimo_error|TEXT|NN|''
+cola_arca|updated_at|TEXT||datetime('now','-3 hours')
 comprobantes_pendientes|aceptado_at|TEXT||
 comprobantes_pendientes|aceptado_por|TEXT||
 comprobantes_pendientes|cliente_cuit|TEXT||''
@@ -425,7 +441,7 @@ ventas|total|REAL|NN|0
 ventas|turno_id|INTEGER||
 ventas|usuario_id|INTEGER||
 
-## claves primarias (36)
+## claves primarias (37)
 arca_config|id
 arca_credenciales_servicio|id
 auth_log|id
@@ -437,6 +453,7 @@ cc_asientos|id
 cc_debitos|id
 cc_pagos|id
 clients|id
+cola_arca|id
 comprobantes_pendientes|id
 cuentas_tesoreria|id
 depositos|id
@@ -514,7 +531,7 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (38)
+## índices (40)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
 arca_credenciales_servicio|sqlite_autoindex_arca_credenciales_servicio_1|UNIQUE implícito (empresa,servicio,ambiente)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
@@ -530,6 +547,8 @@ cc_debitos|idx_cc_debitos_referencia|CREATE UNIQUE INDEX idx_cc_debitos_referenc
 cc_pagos|idx_cc_pagos_cliente|CREATE INDEX idx_cc_pagos_cliente ON cc_pagos(cliente_id)
 clients|idx_clients_cuit_norm|CREATE INDEX idx_clients_cuit_norm ON clients(REPLACE(cuit_dni, '-', ''))
 clients|idx_clients_external_ref|CREATE UNIQUE INDEX idx_clients_external_ref ON clients(external_ref) WHERE external_ref IS NOT NULL
+cola_arca|idx_cola_arca_estado|CREATE INDEX idx_cola_arca_estado ON cola_arca(estado, id)
+cola_arca|idx_cola_arca_origen|CREATE UNIQUE INDEX idx_cola_arca_origen ON cola_arca(origen_producto, origen_instancia, origen_tipo, origen_id)
 comprobantes_pendientes|idx_comprobantes_pendientes_estado|CREATE INDEX idx_comprobantes_pendientes_estado ON comprobantes_pendientes(estado, created_at)
 comprobantes_pendientes|idx_comprobantes_pendientes_numero_interno|CREATE UNIQUE INDEX idx_comprobantes_pendientes_numero_interno ON comprobantes_pendientes(origen_producto, origen_instancia, numero_interno) WHERE numero_interno IS NOT NULL
 comprobantes_pendientes|idx_comprobantes_pendientes_origen|CREATE UNIQUE INDEX idx_comprobantes_pendientes_origen ON comprobantes_pendientes(origen_producto, origen_instancia, origen_tipo, origen_id)

@@ -208,6 +208,11 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
   `crear_cliente` y `resolver_cliente_externo` guardan al cliente con un id provisorio negativo y avisan al gancho
   `al_crear_cliente` en la misma transacción; el central asigna el id definitivo (`libracommerce` ADR-070, `libraedge`
   ADR-021). `crear_cliente(conn=)` y `get_client_by_cuit(conn=)` son lo que necesita para aplicar el alta.
+- **`cola_arca.py`** (ADR-079): la cola de comprobantes del nodo offline (`documento` y `cpe`). El producto registra un
+  emisor por tipo (`ColaDeArca`) y deja el pedido sin red; el motor lo emite solo al volver, con un candado por pedido, los
+  más viejos primero y sin numerar nunca local, y deja el estado (`emitido`, `a_revisar`, `incierto`). `db/cola_arca.py`
+  son las filas y las transiciones (tabla `cola_arca`, migración `0029`); `cola_arca_router.py`, la API del nodo; y
+  `nodo_offline.ta_para_el_nodo(servicio=)` presta el ticket de `wscpe`.
 - **`security_headers.py`**, **`modules_gate.py`** (gating de módulos por
   instancia, `db/modulos`), **`feriados.py`**, **`geografia.py`**,
   **`medios_pago.py`**, **`registro_de_clientes.py`**,
