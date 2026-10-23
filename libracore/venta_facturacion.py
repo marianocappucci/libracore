@@ -133,14 +133,28 @@ def fecha_de_la_factura(fecha_venta, *, concepto: int = 1, hoy: datetime.date | 
     return elegida
 
 
-def _ultima_fecha_de_la_serie(punto_venta: int, tipo: int, ambiente: str) -> datetime.date | None:
+def _ultima_fecha_de_la_serie(punto_venta: int, tipo: int, ambiente: str, emisor_id: int | None = None
+                              ) -> datetime.date | None:
+    """La fecha del último comprobante de la serie. `emisor_id` es el de `facturas.emisor_id` (`None` o 0: el emisor
+    por defecto, que es el de `arca_config` sin id)."""
     with get_connection() as conn:
         fila = conn.execute(
             "SELECT MAX(fecha) FROM facturas WHERE punto_venta=? AND tipo=? AND ambiente=? "
-            "AND COALESCE(emisor_id, 0) = 0",
-            (punto_venta, tipo, ambiente),
+            "AND COALESCE(emisor_id, 0) = ?",
+            (punto_venta, tipo, ambiente, int(emisor_id or 0)),
         ).fetchone()
     return fechas.dia_iso(str(fila[0])[:10]) if fila and fila[0] else None
+
+
+def fecha_de_la_factura_en_la_serie(fecha_hecho, punto_venta: int, tipo: int, ambiente: str, *, concepto: int = 1,
+                                    emisor_id: int | None = None, hoy: datetime.date | None = None) -> datetime.date:
+    """`fecha_de_la_factura` con el `piso` de la serie `(punto_venta, tipo, ambiente, emisor)` ya resuelto.
+
+    Es lo que necesita quien emite una factura **al volver la conexión** y conoce la serie recién cuando numera: la cola
+    de comprobantes del nodo (`libracore.cola_arca`, ADR-079) la usa para los `documento` que no nacen de una venta."""
+    return fecha_de_la_factura(fecha_hecho, concepto=concepto, hoy=hoy,
+                               piso=_ultima_fecha_de_la_serie(punto_venta, tipo, ambiente, emisor_id))
+
 
 # Los ids son los de `medios_pago.ELEGIBLES`; los valores, los de
 # `CONDICIONES_VENTA` de `facturas_router` (lo que acepta ARCA).

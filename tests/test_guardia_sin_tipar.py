@@ -371,6 +371,11 @@ CONOCIDOS_DEL_MOTOR = [
     # El reporte de errores del navegador (ADR-045) lee el cuerpo a mano y a propósito: es público, y lo único que lo defiende es poder rechazar por tamaño (4 KB) y por forma ANTES de que
     # nadie lo interprete. Con un modelo tipado FastAPI lo parsearía entero primero. Nunca 500; de lo recibido se guardan campos fijos, limpios, no el JSON.
     ("POST /api/errores-cliente", "request", "request-sin-cuerpo-tipado"),
+    # La cola de comprobantes del nodo (ADR-079): `datos` (los datos del pedido, que el producto corrige antes de reabrirlo) y `resultado` (el CTG o el `factura_id` de lo que una persona comprobó en ARCA)
+    # son JSON del producto que el motor guarda tal cual y no interpreta: la forma la fija el emisor de cada producto. Son `dict[str, JsonValue]`, no un `dict` suelto: lo que no es JSON se rechaza (422).
+    # Las dos rutas son de quien resuelve el pedido (`resolver_con`) y `db.cola_arca` guarda `datos` y `resultado` como texto JSON.
+    ("POST /api/nodo/cola/{pedido_id}/emitido", "resultado", "dict[str, JsonValue]"),
+    ("POST /api/nodo/cola/{pedido_id}/reintentar", "datos", "dict[str, JsonValue] | None"),
 ]
 
 
@@ -381,8 +386,8 @@ def test_los_cuerpos_sin_tipar_del_motor_son_los_conocidos(tmp_path):
 
 
 def test_ignorar_los_conocidos_deja_la_app_del_motor_en_blanco(tmp_path):
-    """La otra forma de usarla: `ignorar` con los conocidos y un `== []`. Las dos mitades: sin `ignorar` hay ocho, con él ninguno."""
+    """La otra forma de usarla: `ignorar` con los conocidos y un `== []`. Las dos mitades: sin `ignorar` hay diez, con él ninguno."""
     app = _app_del_motor(tmp_path)
-    assert len(cuerpos_sin_tipar(app)) == len(CONOCIDOS_DEL_MOTOR) == 8
+    assert len(cuerpos_sin_tipar(app)) == len(CONOCIDOS_DEL_MOTOR) == 10
     assert cuerpos_sin_tipar(app, ignorar={(sitio, campo) for sitio, campo, _ in CONOCIDOS_DEL_MOTOR}) == []
 

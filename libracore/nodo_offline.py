@@ -135,6 +135,16 @@ def _es_de_red(error: BaseException) -> bool:
     return isinstance(status, int) and status >= 500
 
 
+def es_rechazo(error: BaseException) -> bool:
+    """¿El central **contestó** y no presta el ticket (`NodoSinArca`, `RechazoDelCentral` o `rechazo_del_central = True`)?"""
+    return _es_rechazo(error)
+
+
+def es_corte(error: BaseException) -> bool:
+    """¿Es un corte —la red, un tiempo agotado, un 5xx del central— y por lo tanto se reintenta al volver?"""
+    return _es_de_red(error)
+
+
 # ── El estado del nodo ──────────────────────────────────────────────────────
 
 
@@ -289,33 +299,117 @@ solo_en_el_central = guarda_solo_en_el_central()
 
 # ── Facturar con internet sin la clave en el nodo: el ticket de acceso prestado ─────────────────
 
+#: Los servicios de ARCA cuyo ticket de acceso (WSAA) el central le presta a un nodo. Una lista cerrada a propósito: un
+#: servicio nuevo del catálogo (`arca_servicios.CATALOGO`) no se presta solo, porque un nodo robado pediría con él
+#: tickets de lo que nadie decidió prestar.
+SERVICIOS_PRESTABLES = ("wsfe", "wscpe")
 
-async def ta_para_el_nodo(emisor_id=None, *, servicio: str = "wsfe") -> dict:
-    """**En el central.** El ticket de acceso (WSAA) vigente del emisor, para prestárselo a un nodo.
+#: Los ambientes en el orden en que se busca el par de un servicio que no es la facturación: producción si está cargado,
+#: si no homologación (la misma regla que LibraCargo usa para `wscpe`).
+_AMBIENTES = ("produccion", "homologacion")
 
-    Devuelve `{"token", "sign", "expiracion", "ambiente", "cuit", "emisor_id"}`. Es el **mismo** ticket que usa el
-    central (`arca_wsaa.autenticar` lo reusa de su caché): ARCA no da un segundo ticket para el mismo certificado y
+
+async def ta_para_el_nodo(emisor_id=None, *, servicio: str = "wsfe", empresa: str | None = None,
+                          ambiente: str | None = None) -> dict:
+    """**En el central.** El ticket de acceso (WSAA) vigente de un servicio, para prestárselo a un nodo.
+
+    Devuelve `{"token", "sign", "expiracion", "ambiente", "servicio", "cuit", "emisor_id"}`. Es el **mismo** ticket que usa
+    el central (`arca_wsaa.autenticar` lo reusa de su caché): ARCA no da un segundo ticket para el mismo certificado y
     servicio mientras el primero vale, así que el nodo no puede autenticarse por su cuenta con el certificado del
     central aunque tuviera la clave. El ticket dura 12 horas como máximo; la clave privada nunca sale del central.
 
+    - **`servicio="wsfe"`** (el de siempre): el par es el de `arca_config` del `emisor_id`, y `cuit` es el del emisor.
+    - **`servicio="wscpe"`** (la carta de porte): el par no está en `arca_config` sino en `arca_credenciales_servicio`
+      (ADR-032), una fila por `(empresa, servicio, ambiente)`. Por eso hace falta **`empresa`** (el nombre con el que el
+      producto cargó el par: `"agencia"` en LibraCargo). Sin `ambiente` se usa producción si el par está cargado y, si
+      no, homologación. `cuit` y `emisor_id` son `None`: **el CUIT representado de una CPE es el de su titular**, se elige
+      en cada emisión y ARCA lo valida contra las relaciones que trae el propio token (`arca_wscpe.cuits_habilitados`).
+
     🔴 **Se sirve sólo a un nodo autenticado** (el secreto de LibraEdge del nodo), por HTTPS, y nunca se registra en un
-    log. Levanta `NodoSinArca` si el central no tiene ARCA configurada para ese emisor, y `RuntimeError` si ARCA no
+    log. Levanta `NodoSinArca` si el central no tiene ese par cargado, `ValueError` si el servicio no se presta (o falta
+    `empresa` para uno que la necesita: es un error de quien arma la ruta, no del nodo) y `RuntimeError` si ARCA no
     autentica."""
     from libracore import arca_credenciales, arca_wsaa
     from libracore.db import arca_config as db_arca
 
-    arca = db_arca.config_del_emisor(emisor_id)
-    if not arca:
-        raise NodoSinArca("El central no tiene la configuración de ARCA de este emisor.")
-    cert, clave = arca_credenciales.paths_en_disco(arca)
-    if not (cert and clave):
-        raise NodoSinArca("El central no tiene el certificado y la clave de ARCA de este emisor.")
-    ta = await arca_wsaa.autenticar(cert, clave, arca["ambiente"], servicio)
-    return {"token": ta["token"], "sign": ta["sign"], "expiracion": ta.get("expiracion"),
-            "ambiente": arca["ambiente"], "cuit": arca["cuit"], "emisor_id": arca.get("id")}
+    servicio = (servicio or "").strip().lower()
+    if servicio not in SERVICIOS_PRESTABLES:
+        raise ValueError(f"El servicio {servicio!r} no se presta a un nodo (se prestan {SERVICIOS_PRESTABLES}).")
+    if servicio == "wsfe":
+        arca = db_arca.config_del_emisor(emisor_id)
+        if not arca:
+            raise NodoSinArca("El central no tiene la configuración de ARCA de este emisor.")
+        cert, clave = arca_credenciales.paths_en_disco(arca)
+        if not (cert and clave):
+            raise NodoSinArca("El central no tiene el certificado y la clave de ARCA de este emisor.")
+        ta = await arca_wsaa.autenticar(cert, clave, arca["ambiente"], servicio)
+        return {"token": ta["token"], "sign": ta["sign"], "expiracion": ta.get("expiracion"),
+                "ambiente": arca["ambiente"], "servicio": servicio, "cuit": arca["cuit"],
+                "emisor_id": arca.get("id")}
+
+    if not (empresa or "").strip():
+        raise ValueError(f"ta_para_el_nodo({servicio!r}) necesita la `empresa` con la que está cargado el par.")
+    for amb in ((ambiente,) if ambiente else _AMBIENTES):
+        cert, clave = arca_credenciales.paths_en_disco_de_servicio(empresa, servicio, amb)
+        if cert and clave:
+            break
+    else:
+        raise NodoSinArca(f"El central no tiene el certificado y la clave de {servicio} cargados.")
+    ta = await arca_wsaa.autenticar(cert, clave, amb, servicio)
+    return {"token": ta["token"], "sign": ta["sign"], "expiracion": ta.get("expiracion"), "ambiente": amb,
+            "servicio": servicio, "cuit": None, "emisor_id": None}
 
 
-ObtenerTa = Callable[[dict], Awaitable[dict]]
+ObtenerTa = Callable[..., Awaitable[dict]]
+
+
+async def _pedir_ta(obtener_ta: ObtenerTa, arca: dict, servicio: str) -> dict:
+    """**En el nodo.** Trae el ticket del central y clasifica lo que pase: corte, rechazo u otro error (ver
+    `numerador_con_ta`). `obtener_ta(arca)` para `wsfe` (como siempre) y `obtener_ta(arca, servicio=...)` para los demás.
+
+    Y comprueba **qué ticket volvió**: uno sin el campo `servicio` es de `wsfe` (un LibraEdge viejo no lo manda). Si hace
+    falta el de otro servicio y el central devolvió el de facturación, no se sigue: ARCA contestaría con un error de
+    autenticación que no explica nada. Es un rechazo, no un corte: actualizar LibraEdge es lo que lo arregla."""
+    try:
+        ta = await (obtener_ta(arca) if servicio == "wsfe" else obtener_ta(arca, servicio=servicio))
+    except Exception as e:
+        if _es_rechazo(e):
+            # El central dijo que no: no es un corte, no va a la bandeja (422 `nodo_sin_arca`).
+            if isinstance(e, NodoSinArca):
+                raise
+            raise RechazoDelCentral(
+                "El central no presta el ticket de ARCA a este equipo (nodo revocado o sin credencial).") from e
+        if _es_de_red(e):
+            logger.error("Nodo: el central no respondió al pedir el ticket de ARCA: %s", type(e).__name__)
+            raise SinConexion(
+                "El central no respondió: la venta se factura al volver la conexión.") from e
+        raise  # cualquier otra cosa es un error, no un corte: que se vea
+    dado = str((ta or {}).get("servicio") or "wsfe").strip().lower()
+    if dado != servicio:
+        raise RechazoDelCentral(
+            f"El central devolvió un ticket de {dado} y hace falta uno de {servicio}: actualizá LibraEdge.")
+    return ta
+
+
+def ticket_prestado(obtener_ta: ObtenerTa, emisor_id=None, *, servicio: str = "wsfe"
+                    ) -> Callable[[], Awaitable[tuple[dict, dict]]]:
+    """**En el nodo.** Una función `async () -> (ta, arca)` que pide el ticket prestado de `servicio` al central.
+
+    `arca` es la `arca_config` espejada del emisor (`emisor_id`). Para `wsfe` es obligatoria: sin ella `NodoSinArca`. Para
+    otro servicio puede faltar y se le pasa a `obtener_ta` `{"id": emisor_id}`: lo único que el central necesita para
+    saber de quién es. Los errores son los de `numerador_con_ta`."""
+    from libracore.db import arca_config as db_arca
+
+    async def ticket() -> tuple[dict, dict]:
+        arca = db_arca.config_del_emisor(emisor_id)
+        if not arca:
+            if servicio == "wsfe":
+                raise NodoSinArca(
+                    "Este equipo no tiene la configuración de ARCA del central (falta espejar arca_config).")
+            arca = {"id": emisor_id}
+        return await _pedir_ta(obtener_ta, arca, servicio), arca
+
+    return ticket
 
 
 def numerador_con_ta(obtener_ta: ObtenerTa, emisor_id=None) -> Callable[[int, int], Awaitable[tuple]]:
@@ -334,26 +428,11 @@ def numerador_con_ta(obtener_ta: ObtenerTa, emisor_id=None) -> Callable[[int, in
 
     Si ARCA no da el número, `SinConexion`. Sin `arca_config` espejada, `NodoSinArca`."""
     from libracore import arca_wsfe
-    from libracore.db import arca_config as db_arca
+
+    ticket = ticket_prestado(obtener_ta, emisor_id)
 
     async def numerar(punto_venta: int, tipo: int) -> tuple:
-        arca = db_arca.config_del_emisor(emisor_id)
-        if not arca:
-            raise NodoSinArca("Este equipo no tiene la configuración de ARCA del central (falta espejar arca_config).")
-        try:
-            ta = await obtener_ta(arca)
-        except Exception as e:
-            if _es_rechazo(e):
-                # El central dijo que no: no es un corte, no va a la bandeja (422 `nodo_sin_arca`).
-                if isinstance(e, NodoSinArca):
-                    raise
-                raise RechazoDelCentral(
-                    "El central no presta el ticket de ARCA a este equipo (nodo revocado o sin credencial).") from e
-            if _es_de_red(e):
-                logger.error("Nodo: el central no respondió al pedir el ticket de ARCA: %s", type(e).__name__)
-                raise SinConexion(
-                    "El central no respondió: la venta se factura al volver la conexión.") from e
-            raise  # cualquier otra cosa es un error, no un corte: que se vea
+        ta, arca = await ticket()
         try:
             ultimo = await arca_wsfe.ultimo_numero_autorizado(
                 punto_venta, tipo, arca["cuit"], ta["token"], ta["sign"], arca["ambiente"])

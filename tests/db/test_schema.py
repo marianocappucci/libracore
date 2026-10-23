@@ -16,7 +16,7 @@ CORE_TABLES = {
     "auth_log", "listas_precio", "lista_precio_items", "cc_pagos",
     "cc_debitos", "recibos", "cc_asientos",
     "comprobantes_pendientes", "arca_credenciales_servicio", "envios_email",
-    "reintegros_pendientes",
+    "reintegros_pendientes", "cola_arca",
 }
 
 
