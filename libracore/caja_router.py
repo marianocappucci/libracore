@@ -89,13 +89,10 @@ def build_caja_router(*, usuario_actual: Callable[..., Any], prefix: str = "/api
 
     @router.post("")
     def crear(payload: MovimientoPayload, user: dict = Depends(usuario_actual)):
-        concepto = payload.concepto.strip()
-        if not concepto:
-            raise HTTPException(422, "El concepto es obligatorio.")
-        if payload.tipo not in ("ingreso", "egreso"):
-            raise HTTPException(422, "Tipo inválido.")
-        if payload.monto <= 0:
-            raise HTTPException(422, "El monto debe ser mayor a cero.")
+        try:
+            concepto = db_caja.validar_movimiento(payload.concepto, payload.tipo, payload.monto)
+        except db_caja.MovimientoInvalido as exc:  # las mismas reglas que la corrección (`corregir_caja_movimiento`)
+            raise HTTPException(422, str(exc)) from exc
         if (payload.tipo == "ingreso" and payload.factura_id is not None
                 and not es_medio_cuenta_corriente(payload.medio_pago)):
             # 🔴 Un ingreso ligado a una factura ES un cobro de esa factura (así lo cuenta

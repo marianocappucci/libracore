@@ -48,10 +48,17 @@ Todos los `datos` son JSON (`dict` de textos, números, `None`, listas): los mon
 `create_caja_movimiento`) y los ids son **los locales del nodo**. El central los guarda como `origen_id` junto con el
 `origen` (el id del nodo): ver las columnas de `turnos_caja`, `caja_movimientos` y `cierres_diarios` y
 `validar_origen`. `VERSION` sube si cambia la forma de algún `datos`.
+
+🔑 **Lo propio del producto viaja en `extra` (ADR-080).** `create_caja_movimiento(..., extra=)` y
+`anular_caja_movimiento(..., extra=)` aceptan un `dict` JSON que el motor no lee ni interpreta: va en `datos["extra"]` de
+`al_registrar_movimiento` / `al_anular_movimiento` y, del otro lado, lo recibe el gancho del central
+(`libracore.caja_del_nodo`). Sin `extra` el `datos` es **idéntico** al de antes (la clave ni aparece), así que `VERSION`
+sigue en 1: un central anterior ignora la clave.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -89,6 +96,27 @@ def validar_origen(origen: str | None, origen_id: int | None) -> None:
         raise ValueError("origen y origen_id van juntos: o los dos o ninguno.")
     if origen is not None and not str(origen).strip():
         raise ValueError("origen no puede estar vacío.")
+
+
+def validar_extra(extra: Mapping | None) -> dict | None:
+    """El `extra` de un movimiento, listo para viajar: un `dict` JSON, o `None` si no hay nada que llevar.
+
+    `None` y un mapeo vacío son lo mismo: no viaja. Levanta `ValueError` si no es un mapeo de claves de texto o si algo
+    adentro no entra en JSON (un `Decimal`, una fecha, un `set`): se avisa **antes** de escribir, no cuando el gancho
+    lo serializa con el movimiento ya insertado."""
+    if extra is None:
+        return None
+    if not isinstance(extra, Mapping):
+        raise ValueError("extra tiene que ser un diccionario (JSON).")
+    if not extra:
+        return None
+    if not all(isinstance(clave, str) for clave in extra):
+        raise ValueError("las claves de extra tienen que ser texto.")
+    try:
+        json.dumps(extra, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"extra tiene que ser JSON (textos, números, None, listas y diccionarios): {exc}") from exc
+    return dict(extra)
 
 
 # ── Los datos que viajan ─────────────────────────────────────────────────
@@ -136,13 +164,14 @@ def datos_de_turno_cerrado(turno: Mapping, *, sucursal_id: int | None, medios: l
     }
 
 
-def datos_de_movimiento(mov: Mapping, *, sucursal_id: int | None) -> dict:
+def datos_de_movimiento(mov: Mapping, *, sucursal_id: int | None, extra: Mapping | None = None) -> dict:
     """`{"version", "movimiento_id", "fecha", "tipo", "concepto", "monto", "referencia", "factura_id", "usuario_id",
-    "caja_id", "sucursal_id", "medio_pago", "turno_id", "cc_pago_id", "anulado"}`.
+    "caja_id", "sucursal_id", "medio_pago", "turno_id", "cc_pago_id", "anulado"}`, más `"extra"` si el producto llevó algo.
 
     `tipo` es `"ingreso"` o `"egreso"` (un retiro es un egreso). `anulado` es `0` al registrar y `1` al anular. Los
-    `factura_id` y `cc_pago_id` son ids **del nodo**: el central puede no tener esa factura o ese pago."""
-    return {
+    `factura_id` y `cc_pago_id` son ids **del nodo**: el central puede no tener esa factura o ese pago. `extra` (ADR-080)
+    es lo propio del producto, tal cual lo pasó (`validar_extra`); sin él la clave no está."""
+    datos = {
         "version": VERSION,
         "movimiento_id": mov["id"],
         "fecha": mov["fecha"],
@@ -159,6 +188,10 @@ def datos_de_movimiento(mov: Mapping, *, sucursal_id: int | None) -> dict:
         "cc_pago_id": mov["cc_pago_id"],
         "anulado": int(mov["anulado"] or 0),
     }
+    llevado = validar_extra(extra)
+    if llevado is not None:
+        datos["extra"] = llevado
+    return datos
 
 
 def datos_de_cierre_diario(cierre: Mapping, turnos: list[Mapping], medios: list[Mapping]) -> dict:

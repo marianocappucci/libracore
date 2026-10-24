@@ -7,8 +7,11 @@ wiki/entities/libracore.md).
 import contextlib
 import json
 import re
+import sqlite3
+from collections.abc import Callable, Mapping
+from decimal import Decimal
 
-from libracore import ganchos_de_caja, medios_pago
+from libracore import ganchos_de_caja, medios_pago, nodo_offline
 from libracore.db.core import get_connection
 from libracore.fechas import rango_por_dia
 
@@ -309,16 +312,27 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
                            usuario_id=None, caja_id=None, medio_pago="", turno_id=None,
                            conn: Conexion | None = None, cc_pago_id=None, *,
                            ganchos: ganchos_de_caja.GanchosDeCaja | None = None,
-                           origen: str | None = None, origen_id: int | None = None):
+                           origen: str | None = None, origen_id: int | None = None,
+                           extra: Mapping | None = None):
     """Anota un movimiento de caja y devuelve su id (el del que ya existía, si la referencia se repite).
+
+    **El monto** puede ser `int`, `float` o `Decimal`. Un `Decimal` se guarda **exacto** donde la columna lo permite
+    (`NUMERIC` en PostgreSQL, ADR-024; sin pasar por `float`, que desde la cifra 16 pierde); en SQLite la columna es
+    `REAL` y va como el `float` más cercano. `int` y `float` se guardan como siempre (ADR-080).
 
     **La caja de un nodo (ADR-076).** `ganchos` y `origen`/`origen_id` son opcionales y, sin ellos, todo queda
     como estaba. `ganchos` (`GanchosDeCaja`) corre `al_registrar_movimiento(conn, datos)` **dentro de la misma
     transacción**, después del `INSERT`: si levanta, el movimiento no queda. **No corre si la referencia ya existía**
     (no hubo fila nueva que subir). `origen` y `origen_id` (juntos): el nodo y el id del movimiento en su base,
     cuando el central aplica uno que subió el nodo (`get_movimiento_de_origen` dice si ya está).
+
+    **Lo propio del producto (ADR-080).** `extra` es un `dict` JSON que el motor no lee: viaja en `datos["extra"]` del
+    gancho `al_registrar_movimiento`, para que el central pueda crear lo propio del producto (su fila hija, con el mismo
+    id) al aplicar el movimiento (`libracore.caja_del_nodo`). Sin `ganchos` no se guarda en ningún lado, y sin `extra`
+    el `datos` es el de siempre. Se valida antes de escribir (`ganchos_de_caja.validar_extra`).
     """
     ganchos_de_caja.validar_origen(origen, origen_id)
+    ganchos_de_caja.validar_extra(extra)
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         # Idempotencia: si ya existe un movimiento con la misma referencia PARA LA MISMA
@@ -365,7 +379,7 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
                    (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id,
                     medio_pago, turno_id, cc_pago_id)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id,
+                (fecha, tipo, concepto, _monto_para_la_base(c, monto), referencia, factura_id, usuario_id, _caja_id,
                  medio_pago, turno_id, cc_pago_id),
             )
         else:
@@ -374,23 +388,37 @@ def create_caja_movimiento(fecha, tipo, concepto, monto, referencia="", factura_
                    (fecha, tipo, concepto, monto, referencia, factura_id, usuario_id, caja_id,
                     medio_pago, turno_id, cc_pago_id, origen, origen_id)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (fecha, tipo, concepto, float(monto), referencia, factura_id, usuario_id, _caja_id,
+                (fecha, tipo, concepto, _monto_para_la_base(c, monto), referencia, factura_id, usuario_id, _caja_id,
                  medio_pago, turno_id, cc_pago_id, origen, origen_id),
             )
         if factura_id is not None and tipo == "ingreso":
             al_libro_de_clientes(c, [cur.lastrowid])
         if ganchos is not None:
-            ganchos.al_registrar_movimiento(c, _datos_de_movimiento(c, cur.lastrowid))
+            ganchos.al_registrar_movimiento(c, _datos_de_movimiento(c, cur.lastrowid, extra))
         return cur.lastrowid
 
 
-def _datos_de_movimiento(c: Conexion, mov_id) -> dict:
+def _monto_para_la_base(c: Conexion, monto):
+    """El monto como lo recibe la columna: `float` (lo de siempre) o, para un `Decimal` contra PostgreSQL, el `Decimal`.
+
+    🔑 `float(Decimal("12345678901234.56"))` ya perdió el último dígito antes de llegar a la columna `NUMERIC`
+    (ADR-024), que lo habría guardado exacto. `sqlite3` no sabe atar un `Decimal` y su columna es `REAL`, así que ahí
+    va el `float` más cercano. Un `Decimal` que no es finito (`NaN`, `Infinity`) se rechaza: `NUMERIC` lo aceptaría."""
+    if isinstance(monto, Decimal):
+        if not monto.is_finite():
+            raise ValueError("el monto tiene que ser un número finito.")
+        if not isinstance(c, sqlite3.Connection):
+            return monto
+    return float(monto)
+
+
+def _datos_de_movimiento(c: Conexion, mov_id, extra: Mapping | None = None) -> dict:
     """Lo que viaja de un movimiento (`ganchos_de_caja.datos_de_movimiento`), leído con la conexión del cambio, con la
-    sucursal de su caja."""
+    sucursal de su caja y lo propio del producto (`extra`)."""
     from libracore.db.cierre_diario import sucursal_de_caja
 
     mov = c.execute("SELECT * FROM caja_movimientos WHERE id=?", (mov_id,)).fetchone()
-    return ganchos_de_caja.datos_de_movimiento(mov, sucursal_id=sucursal_de_caja(mov["caja_id"], conn=c))
+    return ganchos_de_caja.datos_de_movimiento(mov, sucursal_id=sucursal_de_caja(mov["caja_id"], conn=c), extra=extra)
 
 
 def get_movimiento_de_origen(origen: str, origen_id: int, conn: Conexion | None = None) -> dict | None:
@@ -531,7 +559,8 @@ def delete_caja_movimiento(mov_id):
 
 
 def anular_caja_movimiento(mov_id, conn: Conexion | None = None, *,
-                           ganchos: ganchos_de_caja.GanchosDeCaja | None = None):
+                           ganchos: ganchos_de_caja.GanchosDeCaja | None = None,
+                           extra: Mapping | None = None):
     """Marca el movimiento como anulado. La fila **queda**.
 
     🔴 **Un movimiento de caja se anula, no se borra.** Borrarlo deja un agujero
@@ -549,7 +578,8 @@ def anular_caja_movimiento(mov_id, conn: Conexion | None = None, *,
     **La caja de un nodo (ADR-076).** `conn` escribe en la transacción de quien llama (que confirma). `ganchos`
     corre `al_anular_movimiento(conn, datos)` **dentro de la misma transacción**: si levanta, el movimiento sigue
     vigente. Sólo corre cuando la anulación **cambió algo**: un movimiento ya anulado, o que no existe, no vuelve a
-    subir.
+    subir. `extra` (ADR-080) viaja en `datos["extra"]` de ese gancho, como en el alta: lo propio de la anulación
+    (un motivo, quién la pidió) que el central necesita para rehacer lo suyo.
 
     ⚠️ **Esta explicación no puede ir adentro del `CREATE TABLE`.** El
     `executescript()` del adaptador PostgreSQL parte el script por el punto y
@@ -557,6 +587,7 @@ def anular_caja_movimiento(mov_id, conn: Conexion | None = None, *,
     volcado muere con *"syntax error at end of input"*. Está avisado en el
     bloque de `usuarios.activo` de `schema.py`, y volvió a pasar acá.
     """
+    ganchos_de_caja.validar_extra(extra)
     cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
     with cm as c:
         antes = None
@@ -565,7 +596,163 @@ def anular_caja_movimiento(mov_id, conn: Conexion | None = None, *,
         c.execute("UPDATE caja_movimientos SET anulado=1 WHERE id=?", (mov_id,))
         al_libro_de_clientes(c, [mov_id])
         if ganchos is not None and antes is not None and not antes["anulado"]:
-            ganchos.al_anular_movimiento(c, _datos_de_movimiento(c, mov_id))
+            ganchos.al_anular_movimiento(c, _datos_de_movimiento(c, mov_id, extra))
+
+
+class MovimientoInvalido(ValueError):
+    """Los datos de un movimiento no valen (concepto vacío, tipo o monto inválidos). La API los contesta 422."""
+
+
+class MovimientoInexistente(LookupError):
+    """No hay un movimiento de caja con ese id. La API lo contesta 404."""
+
+
+class CorreccionNoPermitida(RuntimeError):
+    """Un movimiento que no se corrige en este estado o en este lugar. La API lo contesta 409 con `detalle()`.
+
+    Con `codigo` fijo por clase, para que la pantalla distinga el porqué sin leer el texto (como
+    `nodo_offline.SoloEnElCentral`, que es lo que se levanta en un nodo)."""
+
+    codigo = "correccion_no_permitida"
+
+    def __init__(self, mensaje: str):
+        super().__init__(mensaje)
+        self.mensaje = mensaje
+
+    def detalle(self) -> dict:
+        """El `detail` de la respuesta: `{"codigo", "mensaje"}`."""
+        return {"codigo": self.codigo, "mensaje": self.mensaje}
+
+
+class MovimientoAnulado(CorreccionNoPermitida):
+    """El movimiento está anulado: una anulación no se deshace ni se edita (se carga uno nuevo)."""
+
+    codigo = "movimiento_anulado"
+
+
+class MovimientoDeUnNodo(CorreccionNoPermitida):
+    """El movimiento subió de un nodo (`origen` no nulo): es del nodo, y el central no lo edita."""
+
+    codigo = "movimiento_del_nodo"
+
+
+#: Los tipos de un movimiento de caja (un retiro es un egreso).
+TIPOS_DE_MOVIMIENTO = ("ingreso", "egreso")
+
+
+def validar_movimiento(concepto, tipo, monto) -> str:
+    """Las reglas de un movimiento que anota una persona, y el `concepto` ya sin espacios. Levanta `MovimientoInvalido`.
+
+    Son las del alta de `caja_router` (concepto obligatorio, tipo `ingreso` o `egreso`, monto mayor a cero), puestas acá
+    para que el alta y la corrección (`corregir_caja_movimiento`) las compartan: dos listas del mismo criterio es cómo
+    una edición termina aceptando lo que el alta rechaza. **`create_caja_movimiento` no las aplica** (lo llaman los
+    flujos del motor con sus propias reglas, y cambiarlas ahí sería otro cambio): las aplica quien anota o corrige a
+    mano. El orden —concepto, tipo, monto— es el del router, que contesta con el primero que falla."""
+    concepto = (concepto or "").strip()
+    if not concepto:
+        raise MovimientoInvalido("El concepto es obligatorio.")
+    if tipo not in TIPOS_DE_MOVIMIENTO:
+        raise MovimientoInvalido("Tipo inválido.")
+    if not monto > 0:  # no `<= 0`: un NaN tampoco es mayor a cero
+        raise MovimientoInvalido("El monto debe ser mayor a cero.")
+    return concepto
+
+
+def corregir_caja_movimiento(mov_id, *, fecha=None, tipo=None, concepto=None, monto=None, medio_pago=None,
+                             conn: Conexion | None = None,
+                             nodo: Callable[[], str | None] | None = None) -> dict:
+    """Corrige en el lugar un movimiento de caja **del central** y devuelve la fila como quedó (ADR-080).
+
+    Se pueden corregir `fecha` (texto ISO), `tipo`, `concepto`, `monto` y `medio_pago`; lo que no se pasa (`None`) queda
+    como estaba. No se corrigen la factura, la caja, el turno, el usuario ni la referencia: un movimiento que cambia de
+    esas cosas es otro, y para eso se anula y se carga de nuevo. Las reglas del resultado son las del alta
+    (`validar_movimiento`), más el tope de cobro de una factura (ADR-058; ver abajo).
+
+    **Dónde y cuándo se corrige** (todos son errores que la API contesta 409):
+    - **No en un nodo** (`SoloEnElCentral`, la de `guarda_solo_en_el_central`: se lee `LIBRAEDGE_NODE_ID` en cada
+      llamada; `nodo` es para el producto que lee su propia variable). En un nodo corregir es **anular y cargar de
+      nuevo** (decisión del humano, 2026-10-22): el motor sube la caja con ganchos de alta y de anulación, y una
+      edición en el nodo no tiene cómo llegar al central.
+    - **No si subió de un nodo** (`MovimientoDeUnNodo`, `origen` no nulo): es del nodo. Editarlo en el central lo
+      dejaría distinto de su original sin que el nodo se entere.
+    - **No si está anulado** (`MovimientoAnulado`).
+
+    Un movimiento que no existe levanta `MovimientoInexistente`; datos inválidos, `MovimientoInvalido`.
+
+    🔑 **No hay gancho de modificación**, a propósito: los ganchos de `GanchosDeCaja` existen para que lo que ocurre en
+    un nodo suba al central, y acá lo que se corrige es siempre una fila **propia del central** (sin `origen`, y en un
+    nodo ni siquiera se puede). No hay a quién avisar. Si algún día un nodo pudiera corregir, sería otra operación
+    del outbox, y esa decisión es de ese día.
+
+    **Lo que mueve.** El libro de clientes (`al_libro_de_clientes`): si el movimiento era un ingreso a cuenta
+    corriente con factura, el cambio de monto, de tipo o de medio lo reasienta o lo revierte. Un cobro de factura
+    (ingreso con `factura_id` y medio que no es cuenta corriente) no puede dejarla cobrada de más: el monto nuevo se
+    compara con lo que falta cobrar **sin contar este mismo cobro**, y si lo supera levanta `CobroNoPermitido`
+    (`libracore.cobros`), como el alta. Con `conn`, escribe en la transacción de quien llama (que confirma); sin él, en
+    una propia.
+
+    ⚠️ No mira si el turno o el día del movimiento ya se cerraron: ni el alta ni la anulación lo miran. Un arqueo ya
+    cerrado guarda lo que vio el cajero (`monto_esperado_cierre`) y no se recalcula."""
+    from libracore.cobros import es_medio_cuenta_corriente  # import tardío: `cobros` importa este módulo
+
+    es_nodo = nodo or nodo_offline.nodo_desde_entorno()
+    if es_nodo() is not None:
+        raise nodo_offline.SoloEnElCentral(
+            "En el nodo un movimiento de caja no se corrige: anulalo y cargalo de nuevo.")
+    cm = contextlib.nullcontext(conn) if conn is not None else get_connection()
+    with cm as c:
+        actual = c.execute("SELECT * FROM caja_movimientos WHERE id=?", (mov_id,)).fetchone()
+        if actual is None:
+            raise MovimientoInexistente(f"No existe el movimiento de caja {mov_id}.")
+        if actual["anulado"]:
+            raise MovimientoAnulado("El movimiento está anulado: no se puede modificar.")
+        if actual["origen"] is not None:
+            raise MovimientoDeUnNodo(
+                "El movimiento vino de un nodo: se corrige ahí, anulándolo y cargándolo de nuevo.")
+        nuevo = {
+            "fecha": actual["fecha"] if fecha is None else fecha,
+            "tipo": actual["tipo"] if tipo is None else tipo,
+            "concepto": actual["concepto"] if concepto is None else concepto,
+            "monto": actual["monto"] if monto is None else monto,
+            "medio_pago": actual["medio_pago"] if medio_pago is None else medio_pago,
+        }
+        nuevo["concepto"] = validar_movimiento(nuevo["concepto"], nuevo["tipo"], nuevo["monto"])
+        if (actual["factura_id"] is not None and nuevo["tipo"] == "ingreso"
+                and not es_medio_cuenta_corriente(nuevo["medio_pago"])):
+            _exigir_cobro_posible(c, actual, nuevo["monto"])
+        # Sólo lo que se pidió: reescribir el monto que no cambió lo pasaría por `float` (la lectura lo devuelve así)
+        # y perdería lo que `NUMERIC` guardaba exacto.
+        cambia = {"fecha": fecha, "tipo": tipo, "concepto": nuevo["concepto"] if concepto is not None else None,
+                  "monto": monto, "medio_pago": medio_pago}
+        columnas = [k for k, v in cambia.items() if v is not None]
+        valores = [_monto_para_la_base(c, nuevo[k]) if k == "monto" else nuevo[k] for k in columnas]
+        if columnas:
+            c.execute(
+                f"UPDATE caja_movimientos SET {', '.join(f'{k}=?' for k in columnas)} WHERE id=?",
+                (*valores, mov_id),
+            )
+        al_libro_de_clientes(c, [mov_id])
+        return dict(c.execute("SELECT * FROM caja_movimientos WHERE id=?", (mov_id,)).fetchone())
+
+
+def _exigir_cobro_posible(c: Conexion, actual, monto) -> None:
+    """El tope de cobro de la factura (ADR-058) para un cobro que ya existe y cambia de monto: lo que falta cobrar se
+    calcula **sin este cobro** (si ya contaba), y se bloquea la factura como en el alta."""
+    from libracore import cobros
+    from libracore.cobros import es_medio_cuenta_corriente
+
+    era_un_cobro = actual["tipo"] == "ingreso" and not es_medio_cuenta_corriente(actual["medio_pago"])
+    propio = cobros.centavos(actual["monto"]) if era_un_cobro else 0
+
+    def sin_este_cobro(factura_id, conn):
+        estado = cobros.estado_de_cobro(factura_id, conn=conn)
+        if estado is None or not propio:
+            return estado
+        cobrado = max(cobros.centavos(estado["cobrado"]) - propio, 0) / 100
+        return {**estado, **cobros.saldo_de_cobro({"total": estado["total"]}, [{"monto": cobrado}],
+                                                  estado["acreditado"]), "cobrado": cobrado}
+
+    cobros.exigir_cobro_posible(actual["factura_id"], monto, conn=c, leer_estado=sin_este_cobro)
 
 
 def al_libro_de_clientes(conn, movimientos) -> None:

@@ -203,7 +203,10 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
 - **`ganchos_de_caja.py`** (ADR-076): `GanchosDeCaja` (abrir y cerrar turno, registrar y anular movimiento, cerrar día),
   con la conexión del cambio y los datos que el central necesita; con `nodo_offline.solo_en_el_central` y las columnas
   `origen`/`origen_id` de `turnos_caja`, `caja_movimientos` y `cierres_diarios`, es lo que deja subir la caja de un
-  nodo de LibraEdge al central.
+  nodo de LibraEdge al central. Desde ADR-080 `extra` lleva lo propio del producto en `datos`.
+- **`caja_del_nodo.py`** (ADR-080): el aplicador del central de un `caja.movimiento` y de su anulación, sin
+  `libracommerce` ni `libraedge`: idempotente por `(origen, origen_id)`, con `al_aplicar(conn, mov_id, datos)` para
+  que el producto cree su fila hija con el mismo id en la misma transacción.
 - **`altas_en_nodo.py`** (ADR-077): `AltasEnNodo` y `configurar()`; en un nodo de LibraEdge, `create_client`,
   `crear_cliente` y `resolver_cliente_externo` guardan al cliente con un id provisorio negativo y avisan al gancho
   `al_crear_cliente` en la misma transacción; el central asigna el id definitivo (`libracommerce` ADR-070, `libraedge`

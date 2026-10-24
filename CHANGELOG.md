@@ -8,6 +8,21 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — Tres costuras de la caja para LibraCargo: corregir, `extra` y el gancho del central (propuesta: v1.192.0)
+
+ADR-080. **Sin migración.** Es lo que dejó anotado el PR 8 de LibraCargo (la caja al motor, ADR-055). **Sin `extra`, sin gancho del central y sin llamar a la función nueva, nada cambia.**
+- `db.caja.corregir_caja_movimiento(mov_id, *, fecha, tipo, concepto, monto, medio_pago, conn=, nodo=)`: corrige en el lugar un movimiento **del central**, con las reglas del alta (`db.caja.validar_movimiento`, que ahora comparte `caja_router.crear`: mismos textos, mismo orden) y el tope de cobro de una factura (ADR-058, sin contar el mismo cobro). En un nodo levanta `nodo_offline.SoloEnElCentral` (se anula y se carga de nuevo); un movimiento con `origen` (subió de un nodo), `MovimientoDeUnNodo`; uno anulado, `MovimientoAnulado` (las dos son `CorreccionNoPermitida`, con `detalle()` para el 409). Reasienta el libro de clientes. **Sin gancho de modificación**, a propósito (ADR-080).
+- `create_caja_movimiento(..., extra=)` y `anular_caja_movimiento(..., extra=)`: un `dict` JSON del producto que viaja en `datos["extra"]` de `al_registrar_movimiento` / `al_anular_movimiento` (`ganchos_de_caja.validar_extra`). Sin `extra` la clave no está y `VERSION` sigue en 1.
+- `libracore.caja_del_nodo` (nuevo): `aplicar_movimiento_del_nodo` y `aplicar_anulacion_del_nodo`, el aplicador del central **sin `libracommerce` ni `libraedge`**, idempotente por `(origen, origen_id)`, con `al_aplicar(conn, mov_id, datos)` para que el producto cree su fila hija con el mismo id en la misma transacción (si levanta, no queda nada). Errores `CajaDelNodoError(ValueError)`.
+- El monto `Decimal` de `create_caja_movimiento` se guarda exacto en PostgreSQL (`NUMERIC`) y como el `float` más cercano en SQLite; `int` y `float`, como siempre; `NaN` e `Infinity` se rechazan.
+
+### Para los productos
+- LibraCargo (PR 9): `extra` en el alta y la anulación del nodo, `aplicar_*_del_nodo(al_aplicar=)` en su `Despachador` del central y `corregir_caja_movimiento` en `servicios/caja.corregir`. El contrato, en el ADR-080.
+- Los demás: nada.
+
+### Para `libracommerce`
+- `offline_caja` puede delegar en `libracore.caja_del_nodo` y exponer `al_aplicar` en `registrar_en`, como `al_materializar`. No es urgente: `caja_con_outbox` ya encola `datos` entero, con `extra`.
+
 ## [Unreleased] — La cola de comprobantes del nodo offline: `cola_arca` (propuesta: v1.191.0)
 
 ADR-079. **Migración `0029`, aditiva** (tabla `cola_arca` e índices, vacíos; no se baja). Es el PR 5 del plan de LibraCargo y LibraClub en la versión de escritorio. Una cola genérica de comprobantes para lo que ADR-074 no cubre: una factura que no nace de una venta del punto de venta (`documento`: la de LibraCargo desde una orden, la «conjunta» de LibraClub) y la carta de porte electrónica (`cpe`). El producto deja el pedido sin red, el nodo lo emite solo al volver y el central recibe el resultado. **Fuera de un nodo no cambia nada.**
