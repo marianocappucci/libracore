@@ -22,7 +22,7 @@ la respuesta —la otra es escribir los archivos de forma atómica—, y tiene t
 |---|---|---|
 | `candado_de_base` | `pg_try_advisory_xact_lock`, dura hasta el fin de la transacción de `conn` | `flock` sobre un archivo de `DATA_DIR` (con `conn`), o un candado del proceso (sin `conn`); dura lo que el `with` |
 | `una_vez_al_arrancar` | `pg_try_advisory_lock` en un bucle, con una conexión propia | `flock` sobre un archivo de `DATA_DIR` |
-| `esperar_candado_de_transaccion` | `pg_try_advisory_xact_lock` en un bucle, en la conexión de quien llama | no hace nada (SQLite serializa a sus escritores solo) |
+| `esperar_candado_de_transaccion` | `pg_try_advisory_xact_lock` y, si está ocupado, `pg_advisory_xact_lock` **bloqueante** con `lock_timeout`, en la conexión de quien llama | no hace nada (SQLite serializa a sus escritores solo) |
 
 La clave de un candado asesor de PostgreSQL es un entero de 64 bits; se deriva del nombre con SHA-256 (56 bits),
 igual que `libracommerce` (`erp/compras.py`, `erp/reposicion_ordenes.py`), y no con `hashtext()`: es la misma en cualquier
@@ -75,30 +75,51 @@ def _ruta_del_archivo(nombre: str) -> str:
     return os.path.join(base, f".libracore-candado-{hashlib.sha256(nombre.encode()).hexdigest()[:16]}.lock")
 
 
+def _es_postgres(conn: Any) -> bool:
+    """Si `conn` es una conexión a PostgreSQL. Acepta las que circulan en la familia: el `ConnectionWrapper` de
+    `libracore.db`, un `psycopg.Connection`, y una `Session` o `Connection` de SQLAlchemy (LibraCargo, LibraClub,
+    LibraDesk). `sqlite3` y SQLAlchemy sobre otro motor dan `False`; cualquier otra cosa, `TypeError`."""
+    if isinstance(conn, sqlite3.Connection):
+        return False
+    if hasattr(conn, "get_bind") or hasattr(conn, "exec_driver_sql"):          # SQLAlchemy: Session / Connection
+        motor = conn.get_bind() if hasattr(conn, "get_bind") else conn
+        return motor.dialect.name == "postgresql"
+    from .db._postgres import ConnectionWrapper
+
+    if isinstance(conn, ConnectionWrapper) or type(conn).__module__.startswith("psycopg"):
+        return True
+    raise TypeError(f"candado_de_base: no sé qué conexión es {type(conn).__name__!r} "
+                    "(espero la de libracore.db, psycopg, SQLAlchemy o sqlite3)")
+
+
+def _ejecutar(conn: Any, sql: str, params: tuple = ()) -> Any:
+    """Ejecuta `sql` (con `?` como marcador) en la conexión PostgreSQL `conn` y devuelve la primera fila, o `None` si la
+    sentencia no devuelve filas. El `sql` es un texto fijo del código, nunca un dato."""
+    if hasattr(conn, "get_bind") or hasattr(conn, "exec_driver_sql"):          # SQLAlchemy
+        from sqlalchemy import text
+
+        consulta = sql
+        valores = {}
+        for i, valor in enumerate(params):
+            consulta = consulta.replace("?", f":p{i}", 1)
+            valores[f"p{i}"] = valor
+        resultado = conn.execute(text(consulta), valores)
+        return resultado.first() if resultado.returns_rows else None
+    if type(conn).__module__.startswith("psycopg"):
+        cur = conn.execute(sql.replace("?", "%s"), params)
+    else:                                                                       # ConnectionWrapper (ya traduce `?`)
+        cur = conn.execute(sql, params)
+    return cur.fetchone() if cur.description is not None else None
+
+
 def _pedir_en_postgres(conn: Any, sentencia: str, clave: int) -> bool | None:
     """Ejecuta `SELECT <sentencia>(<clave>)` en `conn` y devuelve el booleano; `None` si `conn` no es PostgreSQL.
 
-    Acepta las conexiones que circulan en la familia: el `ConnectionWrapper` de `libracore.db`, un `psycopg.Connection`,
-    y una `Session` o `Connection` de SQLAlchemy (LibraCargo, LibraClub, LibraDesk). La `sentencia` es un nombre de
-    función fijo del código, nunca un dato.
+    La `sentencia` es un nombre de función fijo del código, nunca un dato.
     """
-    if isinstance(conn, sqlite3.Connection):
+    if not _es_postgres(conn):
         return None
-    if hasattr(conn, "get_bind") or hasattr(conn, "exec_driver_sql"):          # SQLAlchemy: Session / Connection
-        from sqlalchemy import text
-
-        motor = conn.get_bind() if hasattr(conn, "get_bind") else conn
-        if motor.dialect.name != "postgresql":
-            return None
-        return bool(conn.execute(text(f"SELECT {sentencia}(:clave)"), {"clave": clave}).scalar())
-    from .db._postgres import ConnectionWrapper
-
-    if isinstance(conn, ConnectionWrapper):
-        return bool(conn.execute(f"SELECT {sentencia}(?)", (clave,)).fetchone()[0])
-    if type(conn).__module__.startswith("psycopg"):
-        return bool(conn.execute(f"SELECT {sentencia}(%s)", (clave,)).fetchone()[0])
-    raise TypeError(f"candado_de_base: no sé qué conexión es {type(conn).__name__!r} "
-                    "(espero la de libracore.db, psycopg, SQLAlchemy o sqlite3)")
+    return bool(_ejecutar(conn, f"SELECT {sentencia}(?)", (clave,))[0])
 
 
 def _en_postgres(conn: Any, sentencia: str, nombre: str) -> bool | None:
@@ -194,12 +215,12 @@ def esperar_candado_de_transaccion(conn: Any, nombre: str, *, espera: float = ES
     conn.commit()                                           # acá se suelta, y entra el que esperaba
     ```
 
-    Es la cara bloqueante de `candado_de_base`: la misma clave y el mismo `pg_try_advisory_xact_lock`, pero reintentado
-    cada 0,1 s en lugar de contestar «ocupado». No hay `with` porque PostgreSQL no suelta un candado de transacción antes
-    del `commit` o el `rollback` de `conn`. Sirve para **una transacción larga que dos procesos no pueden correr a la
-    vez**: `init_core_schema()` mezcla DDL y escrituras en una sola transacción y, corrida por dos workers juntos, da
-    `deadlock detected` (cada uno se queda con un `ROW EXCLUSIVE` de la tabla que el otro quiere indexar) o una clave
-    duplicada del catálogo (dos `CREATE TABLE IF NOT EXISTS` de la misma tabla).
+    Es la cara bloqueante de `candado_de_base`: la misma clave, pero esperando en lugar de contestar «ocupado». No hay
+    `with` porque PostgreSQL no suelta un candado de transacción antes del `commit` o el `rollback` de `conn`. Sirve para
+    **una transacción larga que dos procesos no pueden correr a la vez**: `init_core_schema()` mezcla DDL y escrituras
+    en una sola transacción y, corrida por dos workers juntos, da `deadlock detected` (cada uno se queda con un
+    `ROW EXCLUSIVE` de la tabla que el otro quiere indexar) o una clave duplicada del catálogo (dos `CREATE TABLE IF NOT
+    EXISTS` de la misma tabla).
 
     - Devuelve `True` si lo tomó (PostgreSQL) y `False` si `conn` no es PostgreSQL: SQLite serializa a sus escritores
       con el bloqueo de la base y no tiene este problema, así que **no se inventa un `flock`**.
@@ -207,20 +228,73 @@ def esperar_candado_de_transaccion(conn: Any, nombre: str, *, espera: float = ES
       se tocó. Y la conexión tiene que estar en una transacción (no `autocommit`): con `autocommit` PostgreSQL lo suelta
       al terminar el `SELECT` que lo pidió y no excluye nada.
     - Tomarlo dos veces con la misma conexión no espera (los candados asesores son reentrantes por sesión).
+    - 🔴 **Si está ocupado espera dentro de PostgreSQL, no en un bucle de Python** (ADR-081): `pg_advisory_xact_lock`
+      bloqueante con un `lock_timeout` de lo que le queda a `espera`. Así el que espera está **en la cola de bloqueos**
+      y el detector de deadlocks de PostgreSQL lo ve: si el que tiene el candado espera algo que tiene éste (una tabla,
+      otro candado), a ~1 s PostgreSQL aborta a uno con `deadlock detected` —un error claro, con los dos procesos y lo
+      que pide cada uno— en lugar de dejar a los dos callados hasta `espera`. Con el bucle de `pg_try_advisory_xact_lock`
+      que había PostgreSQL no veía nada (el que espera no espera ningún bloqueo, duerme) y un ciclo real duraba los 120 s
+      completos (medido el 2026-10-24 en LibraClub: `TimeoutError ... 120 s`).
     - Si pasan `espera` segundos sin conseguirlo levanta `TimeoutError`: quien lo tiene está colgado, y un arranque que
-      se queda esperando en silencio es peor que uno que falla diciendo por qué.
+      se queda esperando en silencio es peor que uno que falla diciendo por qué. La transacción de `conn` **sigue sana**
+      (la espera corre dentro de un `SAVEPOINT` que se deshace) y el `lock_timeout` de la sesión queda como estaba.
+    - Si PostgreSQL detecta un deadlock, el error es el de PostgreSQL (`psycopg.errors.DeadlockDetected`, o el de
+      SQLAlchemy que lo envuelve) con una nota que dice qué candado se esperaba. Esa transacción ya está abortada: quien
+      llama tiene que hacer `rollback`.
     """
-    limite = time.monotonic() + espera
-    while True:
-        obtenido = _en_postgres(conn, "pg_try_advisory_xact_lock", nombre)
-        if obtenido is None:
+    if not _es_postgres(conn):
+        return False
+    clave = _clave(nombre)
+    if _ejecutar(conn, "SELECT pg_try_advisory_xact_lock(?)", (clave,))[0]:      # el caso normal: libre, una sola ida
+        return True
+    espera_ms = int(espera * 1000)
+    if espera_ms >= 1 and _esperar_bloqueando(conn, nombre, clave, espera_ms):
+        return True
+    raise TimeoutError(f"{nombre!r}: no se pudo tomar el candado en {espera:.0f} s: "
+                       "otra conexión lo tiene y no termina su transacción.")
+
+
+#: Los `SQLSTATE` de PostgreSQL que distingue `esperar_candado_de_transaccion`.
+_LOCK_NOT_AVAILABLE = "55P03"     # `lock_timeout` vencido
+_DEADLOCK_DETECTED = "40P01"
+
+
+def _sqlstate(error: BaseException) -> str | None:
+    """El `SQLSTATE` de un error de la base: el de `psycopg`, o el de la excepción que lo envuelve (`orig` en SQLAlchemy;
+    `__cause__` en el `ConnectionWrapper` de `libracore.db`, que lo traduce a una excepción de `sqlite3`)."""
+    for e in (error, getattr(error, "orig", None), error.__cause__):
+        estado = getattr(e, "sqlstate", None)
+        if estado:
+            return estado
+    return None
+
+
+def _esperar_bloqueando(conn: Any, nombre: str, clave: int, ms: int) -> bool:
+    """`pg_advisory_xact_lock` con `lock_timeout` de `ms`: `True` si lo tomó, `False` si venció el tope.
+
+    Un `SAVEPOINT` para que el tope vencido no aborte la transacción de quien llama (en PostgreSQL cualquier error la
+    deja inservible hasta el `rollback`) y para que el `SET LOCAL` se deshaga con él. Si lo toma, el `lock_timeout` previo
+    se restituye: `set_config(..., true)` dura hasta el fin de la transacción y, sin restituirlo, el DDL que sigue
+    heredaría un tope que nunca pidió.
+    """
+    previo = _ejecutar(conn, "SELECT current_setting('lock_timeout')")[0]
+    _ejecutar(conn, "SAVEPOINT libracore_candado")
+    try:
+        _ejecutar(conn, "SELECT set_config('lock_timeout', ?, true)", (f"{ms}ms",))
+        _ejecutar(conn, "SELECT pg_advisory_xact_lock(?)", (clave,))
+    except Exception as e:
+        estado = _sqlstate(e)
+        if estado == _LOCK_NOT_AVAILABLE:
+            _ejecutar(conn, "ROLLBACK TO SAVEPOINT libracore_candado")
+            _ejecutar(conn, "RELEASE SAVEPOINT libracore_candado")
             return False
-        if obtenido:
-            return True
-        if time.monotonic() >= limite:
-            raise TimeoutError(f"{nombre!r}: no se pudo tomar el candado en {espera:.0f} s: "
-                               "otra conexión lo tiene y no termina su transacción.")
-        time.sleep(_PASO)
+        if estado == _DEADLOCK_DETECTED:
+            e.add_note(f"Esperaba el candado {nombre!r} (libracore.candados.esperar_candado_de_transaccion): otra conexión "
+                       "lo tiene y espera algo que tiene ésta. La transacción quedó abortada: hacé rollback.")
+        raise
+    _ejecutar(conn, "RELEASE SAVEPOINT libracore_candado")
+    _ejecutar(conn, "SELECT set_config('lock_timeout', ?, true)", (previo,))
+    return True
 
 
 @contextlib.contextmanager
