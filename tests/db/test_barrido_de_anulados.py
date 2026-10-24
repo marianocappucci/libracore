@@ -38,6 +38,9 @@ SIN_FILTRO_A_PROPOSITO = {
         "webhook volveria a crear el movimiento que alguien dio de baja.",
     ("caja.py", "SELECT id FROM caja_movimientos WHERE referencia=? AND factura_id IS NULL LIMIT 1"):
         "idem, para el movimiento sin factura.",
+    ("caja.py", "SELECT * FROM caja_movimientos WHERE id=?"):
+        "lee UNA fila por su id: la que viaja en los datos de un gancho y la que `corregir_caja_movimiento` mira "
+        "para decidir (ella misma rechaza la anulada). No suma nada.",
     ("caja.py", "FROM caja_movimientos cm"):
         "`get_caja_movimientos`: es LA lista que ve el operador, y la que tiene "
         "que mostrar los anulados con su marca.",
