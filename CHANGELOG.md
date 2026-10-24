@@ -8,6 +8,13 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — Un ciclo de bloqueos con el candado del esquema falla en 1 s con `deadlock detected`, no a los 120 s (propuesta: v1.192.1)
+
+ADR-081. **Sin migración, sin API nueva.** Medido en LibraClub con `WEB_CONCURRENCY=2`: un worker murió con `TimeoutError: 'libracommerce.esquema' ... 120 s`.
+- `candados.esperar_candado_de_transaccion` espera **dentro de PostgreSQL** (`pg_advisory_xact_lock` con `lock_timeout`, en un `SAVEPOINT`) en lugar de reintentar `pg_try_advisory_xact_lock` con `sleep`. El que espera entra en la cola de bloqueos y el detector de deadlocks lo ve: un ciclo con una tabla da `deadlock detected` a ~1 s (con una nota que dice qué candado se esperaba) y no 120 s de silencio. El `TimeoutError` por un candado colgado es el mismo (mismo mensaje), la transacción de quien llama sigue sana y su `lock_timeout` queda como estaba. Libre, sigue siendo una sola ida.
+- `init_core_schema`: el relleno de `caja_id` (`UPDATE caja_movimientos|turnos_caja ... WHERE caja_id IS NULL`) sólo escribe si hay filas; antes tomaba un `ROW EXCLUSIVE` hasta el commit aunque no tocara nada.
+- **Para los productos:** nada, salvo subir el pin. El orden de los candados (core primero, `libracommerce.esquema` después) lo hace `libracommerce` v0.73.1 (ADR-073).
+
 ## [Unreleased] — Tres costuras de la caja para LibraCargo: corregir, `extra` y el gancho del central (propuesta: v1.192.0)
 
 ADR-080. **Sin migración.** Es lo que dejó anotado el PR 8 de LibraCargo (la caja al motor, ADR-055). **Sin `extra`, sin gancho del central y sin llamar a la función nueva, nada cambia.**

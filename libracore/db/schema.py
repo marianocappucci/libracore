@@ -1263,14 +1263,19 @@ def init_core_schema(conn: Conexion):
     #
     # Idempotente y barato: el `WHERE ... IS NULL` no toca ninguna fila cuando
     # no quedan, que es el caso normal a partir de la primera corrida.
-    conn.execute(
-        "UPDATE caja_movimientos SET caja_id=? WHERE caja_id IS NULL",
-        (_default_caja_id,),
-    )
-    conn.execute(
-        "UPDATE turnos_caja SET caja_id=? WHERE caja_id IS NULL",
-        (_default_caja_id,),
-    )
+    #
+    # 🔴 **Pero un `UPDATE` que no toca ninguna fila igual toma `ROW EXCLUSIVE` sobre
+    # la tabla, y lo guarda hasta el `commit`** (ADR-081). Esa transacción es larga
+    # (el resto de esta función, más lo que el producto haga después) y las dos
+    # tablas son las que referencian por FK las de LibraCommerce y de los productos:
+    # un `CREATE TABLE ... REFERENCES turnos_caja` de otro proceso pide
+    # `SHARE ROW EXCLUSIVE` y se queda esperando todo ese tiempo. Se mira primero
+    # (un `SELECT` sólo toma `ACCESS SHARE`, que no choca con nada de eso) y se
+    # escribe únicamente si hay algo que rellenar: en el caso normal, ningún candado
+    # de tabla.
+    for tabla in ("caja_movimientos", "turnos_caja"):
+        if conn.execute(f"SELECT 1 FROM {tabla} WHERE caja_id IS NULL LIMIT 1").fetchone() is not None:
+            conn.execute(f"UPDATE {tabla} SET caja_id=? WHERE caja_id IS NULL", (_default_caja_id,))
 
     ms_cols = [r[1] for r in conn.execute("PRAGMA table_info(movimientos_stock)").fetchall()]
     if ms_cols and "deposito_id" not in ms_cols:

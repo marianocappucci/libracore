@@ -37,8 +37,10 @@ with una_vez_al_arrancar("sembrar-admin"):                   # bloquea hasta que
   / `Connection` de SQLAlchemy.
 - `una_vez_al_arrancar`: conexión propia, `pg_try_advisory_lock` reintentado hasta `espera` (120 s) y `TimeoutError` si no
   se consigue. Si el proceso muere con el candado, PostgreSQL lo suelta con la sesión.
-- `esperar_candado_de_transaccion(conn, nombre)`: la cara **bloqueante** de `candado_de_base` (PostgreSQL, `pg_try_advisory_xact_lock`
-  reintentado hasta `espera`, 120 s, y `TimeoutError`). Dura hasta el `commit`/`rollback` de `conn`; va lo primero de la
+- `esperar_candado_de_transaccion(conn, nombre)`: la cara **bloqueante** de `candado_de_base` (PostgreSQL: `pg_try_advisory_xact_lock`
+  y, si está ocupado, `pg_advisory_xact_lock` con `lock_timeout` hasta `espera`, 120 s, y `TimeoutError`; ADR-081). Como espera
+  *dentro* de PostgreSQL, un ciclo con otra cosa tomada (una tabla, otro candado) se ve como `deadlock detected` a ~1 s y no como
+  120 s de silencio. Quien toma **dos** candados los toma siempre en el mismo orden (el del core primero). Dura hasta el `commit`/`rollback` de `conn`; va lo primero de la
   transacción y `conn` no puede estar en `autocommit`. Devuelve `False` (y no hace nada) si `conn` no es PostgreSQL. Lo usa
   `init_core_schema()`; un producto sólo lo necesita para una transacción larga propia que dos procesos no puedan correr a la vez.
 - La clave es un entero de 56 bits derivado del nombre con SHA-256 (como en `libracommerce`). Los candados asesores son **por
