@@ -4,7 +4,10 @@ de base, con fallback a los historicos mientras se actualizan las instancias.
 import pytest
 
 from libracore.db.url_de_instancia import (
+    _EXIGEN_LA_VARIABLE_DEL_CORE,
+    _UNA_SOLA_BASE,
     comparte_base_con_el_dominio,
+    escribe_la_variable_del_core,
     nombre_normalizado,
     nombres_aceptados,
     url_de_instancia,
@@ -43,10 +46,11 @@ def test_el_historico_sigue_andando_mientras_no_este_el_nuevo():
 
 @pytest.mark.parametrize("prefijo", ["gestiolibra", "medlibra"])
 def test_los_historicos_del_core_de_gestiolibra_y_medlibra_siguen_hasta_que_los_productos_saquen_la_variable(prefijo):
-    """ADR-083: son de una sola base, pero sus composes de dev y demo todavía traen `<PREFIJO>_LIBRACORE_DB_PATH` y su
-    `app/config.py` lo lee con `url_de_instancia(..., core=True)`. Sacar el histórico antes del PR 6 haría que una instancia
-    todavía no unida cayera al dominio EN SILENCIO. Si este test se pone rojo porque alguien borró la línea de `_HISTORICOS`,
-    primero hay que confirmar que ningún compose ni `app/config.py` de los dos productos lo use."""
+    """ADR-083 y ADR-084: son de una sola base, pero sus `app/config.py` lo leen con `url_de_instancia(..., core=True)` y, el
+    2026-10-25, sus tests (`test_una_sola_base.py`) y `scripts/reset_demo.sh` todavía lo nombran. Sacar el histórico antes de que
+    el producto lo saque haría que una instancia todavía no unida cayera al dominio EN SILENCIO. Si este test se pone rojo porque
+    alguien borró la línea de `_HISTORICOS`, primero hay que confirmar, sobre `origin/main` de los dos productos, que ningún
+    compose, test ni script lo use."""
     var = f"{prefijo.upper()}_LIBRACORE_DB_PATH"
     assert var in nombres_aceptados(prefijo, core=True)
     assert url_de_instancia(prefijo, core=True, entorno={var: f"postgresql://x/{prefijo}_core"}) \
@@ -146,3 +150,18 @@ def test_los_de_una_sola_base_son_exactamente_los_medidos():
     # un prefijo desconocido NO comparte base: el default es fallar, no adivinar
     assert comparte_base_con_el_dominio("productonuevo") is False
     assert comparte_base_con_el_dominio("") is False
+
+
+def test_el_alta_escribe_la_variable_del_core_solo_donde_hace_falta():
+    """ADR-084. Los productos de `_UNA_SOLA_BASE` no la reciben, salvo los que todavía la exigen (VentaLibra, medido sobre su
+    `origin/main` el 2026-10-25); un producto fuera de la lista (core aparte) sí. Cambiar esto es una decisión: se fija entero."""
+    assert _EXIGEN_LA_VARIABLE_DEL_CORE == {"ventalibra"}
+    assert _EXIGEN_LA_VARIABLE_DEL_CORE <= _UNA_SOLA_BASE, "uno que exige la variable y no es de una sola base no necesita la excepción"
+    reciben = {p for p in _UNA_SOLA_BASE if escribe_la_variable_del_core(p)}
+    assert reciben == {"ventalibra"}
+    for p in ("contalibra", "restolibra", "libradesk", "libracargo", "libraclub", "gestiolibra", "medlibra"):
+        assert escribe_la_variable_del_core(p) is False, p
+    assert escribe_la_variable_del_core("productonuevo") is True
+    assert escribe_la_variable_del_core("") is True
+    # mayúsculas y espacios: igual que `comparte_base_con_el_dominio`
+    assert escribe_la_variable_del_core(" GestioLibra ") is False

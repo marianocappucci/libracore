@@ -8,6 +8,23 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — `GET /api/nodo/conexion` sin `PuertoDeVentas`, una sola forma del 202 «en cola» y el alta sin la variable del core (propuesta: v1.195.0)
+
+ADR-084. **Sin migración y sin tocar el esquema.** Tres pendientes del nodo de LibraCargo y LibraClub. Ninguna instancia existente cambia por subir el pin; cambia lo que hace el alta de una instancia **nueva** (tercer punto).
+- **`libracore.nodo_conexion_router.build_conexion_del_nodo_router(conexion=, usuario_actual=, a_facturar=, prefix=)`:** `GET /api/nodo/conexion` (`{es_nodo, en_linea, node_id, a_facturar}`) para el producto sin punto de venta. No importa `venta_facturacion` ni `libracommerce`. `ConexionDelNodo.estado(a_facturar=0)` arma el cuerpo y `build_facturacion_del_nodo_router` lo usa también: **su interfaz y su respuesta no cambian**. Un producto monta uno u otro por prefijo.
+- **`libracore.cola_arca_respuesta`:** `respuesta_en_cola(pedido, mensaje=)` (202) y `cuerpo_en_cola(pedido, mensaje=)`, la forma única de «quedó en la cola»: `{en_cola: true, codigo: "en_cola" | "cpe_en_cola", estado, pedido_id, mensaje, motivo}`. Es la unión de las tres que mandaban LibraCargo, LibraClub y GestioLibra, así que **libra-ui no cambia** (`esRespuestaEnCola`, `esCpeEnCola`). `cpe` → `cpe_en_cola` con el aviso legal por defecto; sólo pedidos abiertos (`ValueError` para uno `emitido` o `descartado`); en una revisión el `mensaje` por defecto es lo que dijo ARCA.
+- **El alta no escribe más `<P>_LIBRACORE_DATABASE_URL` ni `<P>_LIBRACORE_DB_PATH`** para los productos de `_UNA_SOLA_BASE` que arrancan sin ellas (ContaLibra, RestoLibra, LibraDesk, LibraCargo, LibraClub, GestioLibra y MedLibra, medidos sobre su `origin/main`). `url_de_instancia.escribe_la_variable_del_core(prefijo)`; **VentaLibra la sigue recibiendo** (`_EXIGEN_LA_VARIABLE_DEL_CORE`): su `app/main.py` resuelve el core con un default SQLite que `billing.configure` rechaza. Un producto fuera de la lista (core aparte) la sigue recibiendo. Las del dominio se escriben siempre. Requiere `libracore` ≥ v1.190.1 (LibraCargo, LibraClub) o ≥ v1.194.0 (GestioLibra, MedLibra) en la imagen.
+- **No se sacan** los históricos `GESTIOLIBRA_LIBRACORE_DB_PATH` y `MEDLIBRA_LIBRACORE_DB_PATH` de `_HISTORICOS`: `scripts/reset_demo.sh` y los tests de los dos productos todavía los nombran. Se sacan en un patch cuando el producto borre esas líneas.
+
+### Para los productos
+- **LibraCargo:** `respuesta_en_cola(pedido)` en `comprobantes._respuesta_del_pedido` y `cartas_porte._emitir_en_el_nodo`; montar `build_conexion_del_nodo_router(conexion=COLA.conexion, …)` y sacar `RUTA_DE_LA_CONEXION = '/api/nodo/cola?limite=1'` de `Layout.tsx`.
+- **LibraClub:** `respuesta_en_cola(pedido, mensaje=resultado["mensaje"])` en `reservas._facturar_en_el_nodo`; el router de conexión y sacar el `ruta` de la cola en `Layout.tsx`; fila de roles nueva.
+- **GestioLibra:** `respuesta.update(cuerpo_en_cola(pedido, mensaje=…))` en `appointments` (sigue siendo 200); el router de conexión y sacar el `ruta` de `Layout.tsx`; fila de roles; borrar `GESTIOLIBRA_LIBRACORE_DB_PATH` de `reset_demo.sh` y de los tests.
+- **MedLibra:** `app/routers/nodo.py` → `build_conexion_del_nodo_router(conexion=ConexionDelNodo(nodo=offline.nodo, en_linea=offline.en_linea), …)` (no urgente); borrar `MEDLIBRA_LIBRACORE_DB_PATH` de `reset_demo.sh` y de los tests.
+- **VentaLibra:** que su app caiga al dominio sin la variable; entonces sale de `_EXIGEN_LA_VARIABLE_DEL_CORE`.
+- **ContaLibra, RestoLibra, LibraDesk:** nada.
+
+
 ## [Unreleased] — GestioLibra y MedLibra de una sola base; la tabla de módulos del alta es del producto (propuesta: v1.194.0)
 
 ADR-083. **Sin migración y sin tocar el esquema.** PR 5 del plan de GestioLibra, MedLibra y LibraDesk en la versión de escritorio. Ninguna instancia existente cambia por subir el pin; cambia lo que hace el alta de una instancia nueva de esos dos productos y la caída de `libracore-migrar`.

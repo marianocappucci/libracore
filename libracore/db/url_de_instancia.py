@@ -52,10 +52,13 @@ _HISTORICOS = {
     ("libracargo", False): ("DATABASE_URL",),
     ("libraclub", False): ("DATABASE_URL",),
     ("ventalibra", False): ("VENTALIBRA_DB_PATH",),
-    # 🔴 GestioLibra y MedLibra siguen acá a propósito (ADR-083): son de una sola base, pero sus composes de dev y demo
-    # todavía traen `<PREFIJO>_LIBRACORE_DB_PATH` y su `app/config.py` lo lee por `url_de_instancia(..., core=True)`.
-    # Sacarlos antes de que los productos saquen la variable (PR 6) haría que una instancia que todavía no se unió caiga
-    # al dominio en silencio. Se borran juntos, en el PR que saca la variable de los composes.
+    # 🔴 GestioLibra y MedLibra siguen acá a propósito (ADR-083, vuelto a medir en ADR-084 el 2026-10-25): son de una sola
+    # base y sus instancias de dev y demo ya están unidas y sin la variable (no tienen clientes reales), pero sobre
+    # `origin/main` de los dos productos `<PREFIJO>_LIBRACORE_DB_PATH` todavía se nombra en `scripts/reset_demo.sh` (lo lee
+    # con `printenv`) y en `tests/test_una_sola_base.py` (que afirma que el histórico se respeta), y su `app/config.py` lo
+    # resuelve por `url_de_instancia(..., core=True)`. Sacarlo de acá antes de que el producto saque esas líneas pondría
+    # rojos sus tests al subir el pin, y una instancia que todavía lo llevara caería al dominio en silencio. Se borran
+    # juntos: primero el producto (sin tocar su `config.py`, que sigue andando), después esta línea en un patch.
     ("gestiolibra", True): ("GESTIOLIBRA_LIBRACORE_DB_PATH",),
     ("medlibra", True): ("MEDLIBRA_LIBRACORE_DB_PATH",),
     ("ventalibra", True): ("VENTALIBRA_LIBRACORE_DB_PATH",),
@@ -97,6 +100,30 @@ _UNA_SOLA_BASE = frozenset({
 def comparte_base_con_el_dominio(prefijo: str) -> bool:
     """Si el schema de LibraCore de este producto vive en la base del dominio."""
     return (prefijo or "").strip().lower() in _UNA_SOLA_BASE
+
+
+#: 🔴 Los productos de `_UNA_SOLA_BASE` cuya app todavía **necesita** la variable del core en su entorno (ADR-084).
+#:
+#: El alta de una instancia nueva deja de escribir `<PREFIJO>_LIBRACORE_DATABASE_URL` (y el histórico
+#: `<PREFIJO>_LIBRACORE_DB_PATH`) para los productos de `_UNA_SOLA_BASE`: apuntaban a la misma base que la del dominio y
+#: no decían nada. Se midió sobre `origin/main` de cada producto (2026-10-25) que arrancan sin ellas, **salvo
+#: VentaLibra**: `app/main.py` resuelve el core con `url_de_instancia("ventalibra", core=True, default="./data/ventalibra_libracore.db")`
+#: y, sin la variable, `billing.configure` recibe una ruta SQLite que rechaza. Mientras VentaLibra no deje de pedirla
+#: (el día que lo haga se saca de acá y listo), su alta sigue escribiéndola.
+#:
+#: Un producto que figure acá **y** en `_UNA_SOLA_BASE` conserva el comportamiento de siempre; uno que no figura en
+#: `_UNA_SOLA_BASE` tiene el core aparte y la variable es la que dice cuál es.
+_EXIGEN_LA_VARIABLE_DEL_CORE = frozenset({"ventalibra"})
+
+
+def escribe_la_variable_del_core(prefijo: str) -> bool:
+    """Si el alta de este producto tiene que escribir `<PREFIJO>_LIBRACORE_DATABASE_URL` (y su histórico) en el compose.
+
+    - Producto con el core **aparte** (no figura en `_UNA_SOLA_BASE`): sí, la variable dice cuál es esa base.
+    - Producto de **una sola base**: no, la ausencia significa «la del dominio» (`libracore.migrar.url_de_core`, las
+      apps). Salvo los que todavía la exigen (`_EXIGEN_LA_VARIABLE_DEL_CORE`)."""
+    p = (prefijo or "").strip().lower()
+    return p not in _UNA_SOLA_BASE or p in _EXIGEN_LA_VARIABLE_DEL_CORE
 
 
 def nombre_normalizado(prefijo: str, *, core: bool = False) -> str:

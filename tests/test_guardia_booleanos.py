@@ -47,6 +47,7 @@ from libracore import (
     mp_bandeja_router,
     mp_config_router,
     mp_webhook,
+    nodo_conexion_router,
     pre_facturas_router,
     presupuestos_router,
     recibos_router,
@@ -60,6 +61,7 @@ from libracore import (
     ventas_cobro_router,
 )
 from libracore.cola_arca import ColaDeArca
+from libracore.nodo_offline import FUERA_DE_NODO
 from libracore.respaldo import Instancia
 from libracore.testing import campos_numericos_que_aceptan_booleano
 from libracore.validacion import sin_booleanos
@@ -160,6 +162,7 @@ def _routers_del_motor(carpeta: pathlib.Path):
         tesoreria_router.build_tesoreria_router(usuario_actual=_usuario),
         ventas_cobro_router.build_cobro_de_ventas_router(ventas=MagicMock(spec=PuertoDeVentas), usuario_actual=_usuario),
         cola_arca_router.build_cola_del_nodo_router(cola=MagicMock(spec=ColaDeArca), usuario_actual=_usuario),
+        nodo_conexion_router.build_conexion_del_nodo_router(conexion=FUERA_DE_NODO, usuario_actual=_usuario),
         geografia.build_geo_router(),
         feriados.build_feriados_router(),
         resguardo_enlace.build_resguardo_enlace_router(carpeta / "backups"),

@@ -235,6 +235,15 @@ class ConexionDelNodo:
         if self.sin_conexion():
             raise SinConexion(mensaje)
 
+    def estado(self, a_facturar: int = 0) -> dict:
+        """Lo que contesta `GET /api/nodo/conexion` y lee el cartel «sin conexión» de libra-ui (ADR-077 del kit):
+        `{"es_nodo", "en_linea", "node_id", "a_facturar"}`. Fuera de un nodo `en_linea` es `True` y `node_id` `None`.
+
+        `a_facturar` lo pone quien sabe qué espera salir (la bandeja de ventas del `PuertoDeVentas`); una instancia sin
+        bandeja de ventas deja el 0."""
+        return {"es_nodo": self.es_nodo(), "en_linea": not self.sin_conexion(), "node_id": self.node_id(),
+                "a_facturar": a_facturar}
+
 
 #: El central y una instalación común: siempre en línea, nada cambia.
 FUERA_DE_NODO = ConexionDelNodo()

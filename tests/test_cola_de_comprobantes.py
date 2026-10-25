@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from libracore import arca_facturacion, arca_wsaa, arca_wsfe, candados, cola_arca, nodo_offline
@@ -953,6 +955,168 @@ def test_la_api_fuera_de_un_nodo_contesta_y_no_hace_nada(producto):
     r = api.get("/api/nodo/cola").json()
     assert r["es_nodo"] is False and r["pedidos"] == [] and r["a_revisar"] == 0
     assert api.post("/api/nodo/cola/emitir").json()["es_nodo"] is False
+
+
+# ── `GET /api/nodo/conexion` de un producto con cola y sin ventas (ADR-084) ────────────────────────────────────────
+
+
+def test_la_conexion_sin_puerto_de_ventas_cuenta_lo_que_espera_en_la_cola(producto, red, con_arca):
+    from libracore.nodo_conexion_router import build_conexion_del_nodo_router
+
+    cola = producto.cola()
+    red.en_linea = False
+    app = FastAPI()
+    app.include_router(build_conexion_del_nodo_router(
+        conexion=cola.conexion, usuario_actual=lambda: USUARIO, a_facturar=lambda: cola_arca.pedidos_a_emitir(cola)))
+    api = TestClient(app)
+    assert api.get("/api/nodo/conexion").json() == {"es_nodo": True, "en_linea": False, "node_id": NODO, "a_facturar": 0}
+    _doc(cola, "A-1")
+    _cpe(cola, "1")
+    assert api.get("/api/nodo/conexion").json() == {"es_nodo": True, "en_linea": False, "node_id": NODO, "a_facturar": 2}
+    red.en_linea = True
+    _correr(cola)
+    assert api.get("/api/nodo/conexion").json() == {"es_nodo": True, "en_linea": True, "node_id": NODO, "a_facturar": 0}
+
+
+def test_la_conexion_sin_puerto_de_ventas_dice_lo_mismo_que_la_cola(producto, red):
+    """Lo que hoy averiguan LibraCargo y LibraClub con `/api/nodo/cola?limite=1`: `es_nodo`, `en_linea` y `node_id` son
+    los mismos en las dos rutas, en un nodo con y sin conexión y fuera de un nodo."""
+    from libracore.nodo_conexion_router import build_conexion_del_nodo_router
+
+    for cola in (producto.cola(), ColaDeArca(producto=PRODUCTO, emisores={"cpe": producto.emitir_cpe})):
+        for en_linea in (True, False):
+            red.en_linea = en_linea
+            app = FastAPI()
+            app.include_router(build_conexion_del_nodo_router(conexion=cola.conexion, usuario_actual=lambda: USUARIO))
+            app.include_router(build_cola_del_nodo_router(cola=cola, usuario_actual=lambda: USUARIO))
+            api = TestClient(app)
+            conexion, de_la_cola = api.get("/api/nodo/conexion").json(), api.get("/api/nodo/cola?limite=1").json()
+            assert {k: conexion[k] for k in ("es_nodo", "en_linea", "node_id")} == {
+                k: de_la_cola[k] for k in ("es_nodo", "en_linea", "node_id")}
+
+
+# ── Una sola forma del 202 «en cola» (ADR-084) ─────────────────────────────────────────────────────────────────────
+
+
+def _pedido_en_cola(cola, tipo="documento", origen_id="A-1"):
+    pedido, _ = (_doc if tipo == "documento" else _cpe)(cola, origen_id)
+    return pedido
+
+
+def test_el_202_de_una_factura_en_cola_tiene_una_sola_forma(producto, red):
+    from libracore.cola_arca_respuesta import MENSAJE_FACTURA_EN_COLA, respuesta_en_cola
+
+    red.en_linea = False
+    cola = producto.cola()
+    pedido = _pedido_en_cola(cola)
+    r = respuesta_en_cola(pedido)
+    assert r.status_code == 202
+    assert json.loads(r.body) == {
+        "en_cola": True, "codigo": "en_cola", "estado": "esperando", "pedido_id": pedido["id"],
+        "mensaje": MENSAJE_FACTURA_EN_COLA, "motivo": ""}
+
+
+def test_el_202_de_una_carta_de_porte_es_cpe_en_cola_y_dice_que_el_camion_no_puede_viajar(producto, red):
+    from libracore.cola_arca_respuesta import respuesta_en_cola
+
+    red.en_linea = False
+    pedido = _pedido_en_cola(producto.cola(), "cpe", "1")
+    cuerpo = json.loads(respuesta_en_cola(pedido).body)
+    assert cuerpo["codigo"] == "cpe_en_cola" and cuerpo["en_cola"] is True and cuerpo["estado"] == "esperando"
+    assert "NO hay una CPE válida" in cuerpo["mensaje"] and "no puede viajar" in cuerpo["mensaje"]
+
+
+def test_el_cuerpo_unico_cubre_las_tres_formas_que_los_productos_mandaban_hasta_ahora(producto, red):
+    """Cada producto leía su forma: LibraCargo `{codigo, mensaje, pedido_id, estado, motivo}`, LibraClub `{en_cola, estado,
+    pedido_id, mensaje}` y GestioLibra `{en_cola, estado, pedido_id, motivo, mensaje}`. La única es la unión: cambiar a
+    ella no le quita a ninguna pantalla un campo que lee."""
+    from libracore.cola_arca_respuesta import cuerpo_en_cola
+
+    red.en_linea = False
+    cola = producto.cola()
+    for tipo, codigo in (("documento", "en_cola"), ("cpe", "cpe_en_cola")):
+        cuerpo = cuerpo_en_cola(_pedido_en_cola(cola, tipo, "7"))
+        assert {"codigo", "mensaje", "pedido_id", "estado", "motivo"} <= set(cuerpo)          # LibraCargo
+        assert {"en_cola", "estado", "pedido_id", "mensaje"} <= set(cuerpo)                   # LibraClub
+        assert {"en_cola", "estado", "pedido_id", "motivo", "mensaje"} <= set(cuerpo)         # GestioLibra
+        assert cuerpo["codigo"] == codigo
+        # y lo que libra-ui reconoce (`esRespuestaEnCola`) por los dos caminos
+        assert cuerpo["en_cola"] is True and cuerpo["codigo"] in ("en_cola", "cpe_en_cola")
+
+
+def test_el_mensaje_lo_puede_poner_el_producto_y_el_motivo_sale_del_pedido(producto, red):
+    from libracore.cola_arca_respuesta import cuerpo_en_cola
+
+    red.en_linea = False
+    cola = producto.cola()
+    pedido = _pedido_en_cola(cola)
+    assert cuerpo_en_cola(pedido, mensaje="La factura sale al volver la conexión.")["mensaje"] == \
+        "La factura sale al volver la conexión."
+    pedido["ultimo_error"] = "Sin conexión con el central."
+    cuerpo = cuerpo_en_cola(pedido)
+    assert cuerpo["motivo"] == "Sin conexión con el central." and cuerpo["mensaje"] != cuerpo["motivo"]
+    pedido["ultimo_error"] = None
+    assert cuerpo_en_cola(pedido)["motivo"] == ""
+
+
+@pytest.mark.parametrize("estado", ["a_revisar", "incierto"])
+def test_un_pedido_para_revisar_lleva_lo_que_dijo_arca_como_mensaje(producto, red, estado):
+    """El kit muestra `mensaje` antes que `motivo` en una revisión: con el texto genérico, la persona no vería qué dijo ARCA."""
+    from libracore.cola_arca_respuesta import MENSAJE_PARA_REVISAR, cuerpo_en_cola
+
+    pedido = {"id": 4, "estado": estado, "origen_tipo": "documento", "ultimo_error": "ARCA rechazó: CUIT inválido"}
+    cuerpo = cuerpo_en_cola(pedido)
+    assert cuerpo["estado"] == estado and cuerpo["mensaje"] == cuerpo["motivo"] == "ARCA rechazó: CUIT inválido"
+    assert cuerpo_en_cola({**pedido, "ultimo_error": ""})["mensaje"] == MENSAJE_PARA_REVISAR
+
+
+@pytest.mark.parametrize("estado", ["emitido", "descartado", "volando", None])
+def test_un_pedido_que_ya_no_esta_en_la_cola_no_se_contesta_como_en_cola(estado):
+    from libracore.cola_arca_respuesta import cuerpo_en_cola, respuesta_en_cola
+
+    pedido = {"id": 4, "estado": estado, "origen_tipo": "documento", "ultimo_error": ""}
+    with pytest.raises(ValueError, match="no está en la cola"):
+        cuerpo_en_cola(pedido)
+    with pytest.raises(ValueError):
+        respuesta_en_cola(pedido)
+
+
+def test_un_pedido_que_se_emite_con_red_no_pasa_por_el_202(producto, red, con_arca):
+    """Con conexión `encolar_y_emitir` devuelve el pedido `emitido`: el producto contesta el comprobante, y el helper se
+    niega a decir «en cola»."""
+    from libracore.cola_arca_respuesta import respuesta_en_cola
+
+    cola = producto.cola()
+    pedido = asyncio.run(cola_arca.encolar_y_emitir(cola, "documento", "A-9", datos={"total": 1210.0}))
+    assert pedido["estado"] == "emitido"
+    with pytest.raises(ValueError):
+        respuesta_en_cola(pedido)
+
+
+def test_el_flujo_completo_sin_red_contesta_202_desde_un_endpoint_y_con_red_ya_no(producto, red, con_arca):
+    """Lo que hace el endpoint de un producto: pide el comprobante a la cola y, según cómo quedó, contesta el 202 o el 201."""
+    from libracore.cola_arca_respuesta import respuesta_en_cola
+
+    cola = producto.cola()
+    app = FastAPI()
+
+    @app.post("/facturar/{orden}")
+    def facturar(orden: str):
+        pedido = asyncio.run(cola_arca.encolar_y_emitir(cola, "documento", orden, datos={"total": 500.0}))
+        if pedido["estado"] == "emitido":
+            return JSONResponse(status_code=201, content=pedido["resultado"])
+        return respuesta_en_cola(pedido)
+
+    api = TestClient(app)
+    red.en_linea = False
+    r = api.post("/facturar/A-1")
+    assert r.status_code == 202 and r.json()["en_cola"] is True and r.json()["estado"] == "esperando"
+    assert r.json()["pedido_id"] == db.listar()[0]["id"]
+    # Pedirla de nuevo no la duplica y vuelve a decir lo mismo.
+    assert api.post("/facturar/A-1").json()["pedido_id"] == r.json()["pedido_id"] and len(db.listar()) == 1
+    red.en_linea = True
+    sale = api.post("/facturar/A-2")
+    assert sale.status_code == 201 and sale.json()["cae"]
 
 
 # ── La migración ─────────────────────────────────────────────────────────────

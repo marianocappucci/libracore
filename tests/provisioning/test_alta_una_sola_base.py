@@ -8,8 +8,9 @@ alta creara una base que la migración no mira, la instancia nacería con un cor
 Lo que se fija:
 - con `base_core_separada=True` (lo que los productos todavía pasan hasta su PR 6) **o** con `False`, el alta crea una sola base y NO
   escribe el `CREATE DATABASE <producto>_core`;
-- las variables del compose (la del dominio, la del core y el histórico `*_LIBRACORE_DB_PATH` que todavía lee una imagen vieja) apuntan
-  a la MISMA URL;
+- el compose lleva sólo las variables del dominio (`<P>_DATABASE_URL` y el histórico `DATABASE_URL`): **desde ADR-084 el alta no
+  escribe más `<P>_LIBRACORE_DATABASE_URL` ni `<P>_LIBRACORE_DB_PATH`** para un producto de una sola base (apuntaban a la misma
+  URL y no decían nada), salvo VentaLibra, cuya app todavía las exige;
 - con ese entorno, `libracore-migrar` resuelve el core en la base del dominio y migra **ahí**, de verdad, contra PostgreSQL;
 - un producto que NO figura en la lista y declara el core aparte sigue naciendo con dos bases (el control).
 """
@@ -83,25 +84,25 @@ def test_el_alta_crea_una_sola_base_aunque_el_producto_siga_pidiendo_el_core_apa
 
 
 @pytest.mark.parametrize("prefijo", PRODUCTOS)
-def test_las_variables_del_dominio_y_del_core_apuntan_a_la_misma_url(tmp_path, sin_docker, prefijo):
-    """Incluido el histórico `<PREFIJO>_LIBRACORE_DB_PATH`: el compose nuevo con una imagen vieja (que lo lee) tiene que ir
-    a la misma base, o la app cae a SQLite y el sidecar queda vacío sin avisar (medido el 2026-08-11 en VentaLibra)."""
-    cfg, _, _, pares = _alta(tmp_path, prefijo, base_core_separada=True)
+def test_el_alta_ya_no_escribe_las_variables_del_core_y_si_las_del_dominio(tmp_path, sin_docker, prefijo):
+    """ADR-084. Antes (ADR-083) las escribía apuntando a la misma URL que la del dominio. Un producto de una sola base no las
+    necesita: sin ellas `libracore-migrar`, `libraauth-migrar --base core` y la app caen a la base del dominio."""
+    cfg, carpeta, _, pares = _alta(tmp_path, prefijo, base_core_separada=True)
     p = prefijo.upper()
     dominio = pares[f"{p}_DATABASE_URL"]
     assert dominio.startswith("postgresql+psycopg://") and dominio.endswith(f"/{prefijo}")
-    assert pares["DATABASE_URL"] == dominio, "el histórico del dominio"
-    assert pares[f"{p}_LIBRACORE_DATABASE_URL"] == dominio
-    assert pares[f"{p}_LIBRACORE_DB_PATH"] == dominio, "el histórico del core, que una imagen vieja todavía lee"
+    assert pares["DATABASE_URL"] == dominio, "el histórico del dominio sigue: lo lee migrations/env.py de los productos"
+    assert not [k for k in pares if "LIBRACORE" in k], sorted(pares)
+    assert "LIBRACORE" not in (carpeta / "docker-compose.yml").read_text()
+    # `db_urls` sigue diciendo las dos (el plan de módulos usa la primera): lo que cambia es lo que se escribe
+    assert [var for var, _ in cfg.db_urls] == [f"{p}_DATABASE_URL", f"{p}_LIBRACORE_DATABASE_URL"]
 
 
 @pytest.mark.parametrize("prefijo", PRODUCTOS)
 def test_con_el_entorno_del_alta_el_core_se_resuelve_en_la_base_del_dominio(tmp_path, sin_docker, prefijo):
     _, _, _, pares = _alta(tmp_path, prefijo, base_core_separada=True)
+    assert not [k for k in pares if "LIBRACORE" in k], "el alta no escribe la variable del core (ADR-084)"
     assert migrar.url_de_core(prefijo, entorno=pares) == pares[f"{prefijo.upper()}_DATABASE_URL"]
-    # y aunque se perdiera la variable del core (el día que los productos la saquen), cae al dominio y no falla
-    sin_core = {k: v for k, v in pares.items() if "LIBRACORE" not in k}
-    assert migrar.url_de_core(prefijo, entorno=sin_core) == pares[f"{prefijo.upper()}_DATABASE_URL"]
 
 
 def test_un_producto_fuera_de_la_lista_que_pide_el_core_aparte_sigue_naciendo_con_dos_bases(tmp_path, sin_docker):
@@ -119,6 +120,33 @@ def test_los_que_ya_eran_de_una_sola_base_no_cambian(tmp_path, sin_docker, prefi
     assert cfg.bases_postgres == (prefijo,)
     assert not (carpeta / "postgres-init").exists()
     assert cfg.tabla_modulos == "modulos"
+
+
+@pytest.mark.parametrize("prefijo", ["contalibra", "restolibra", "libradesk", "libracargo", "libraclub", "gestiolibra", "medlibra"])
+def test_ningun_producto_de_una_sola_base_que_arranca_sin_ella_recibe_la_variable_del_core(tmp_path, sin_docker, prefijo):
+    """ADR-084. Los siete se midieron sobre `origin/main` (2026-10-25): sin la variable arrancan con el core en la base del
+    dominio. El del dominio se escribe siempre."""
+    _, _, _, pares = _alta(tmp_path, prefijo)
+    assert [k for k in pares if "LIBRACORE" in k] == []
+    assert pares[f"{prefijo.upper()}_DATABASE_URL"].endswith(f"/{prefijo}")
+
+
+def test_ventalibra_sigue_recibiendo_la_variable_del_core_porque_su_app_todavia_la_exige(tmp_path, sin_docker):
+    """`app/main.py` de VentaLibra resuelve el core con `url_de_instancia("ventalibra", core=True, default="./data/ventalibra_libracore.db")`:
+    sin la variable le pasa una ruta SQLite a `billing.configure`, que la rechaza. Mientras sea así su alta las escribe, las dos
+    (la normalizada y el histórico `_DB_PATH`), a la misma URL que la del dominio."""
+    _, _, _, pares = _alta(tmp_path, "ventalibra")
+    dominio = pares["VENTALIBRA_DATABASE_URL"]
+    assert pares["VENTALIBRA_LIBRACORE_DATABASE_URL"] == dominio
+    assert pares["VENTALIBRA_LIBRACORE_DB_PATH"] == dominio
+
+
+def test_un_producto_nuevo_con_el_core_aparte_sigue_recibiendo_la_variable_del_core(tmp_path, sin_docker):
+    """El control del otro lado: fuera de `_UNA_SOLA_BASE` la variable es la que dice cuál es la base del core."""
+    for separada, base in ((True, "productonuevo_core"), (False, "productonuevo")):
+        provisioning._cfg = None
+        _, _, _, pares = _alta(tmp_path / str(separada), "productonuevo", base_core_separada=separada)
+        assert pares["PRODUCTONUEVO_LIBRACORE_DATABASE_URL"].endswith(f"/{base}")
 
 
 @pytest.mark.parametrize("prefijo", PRODUCTOS)
