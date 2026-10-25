@@ -21,7 +21,8 @@ siguen **sí tienen datos en el core**; LibraCargo sólo tenía semillas.
 
 ## Qué se decide acá (y por qué)
 
-1. **`usuarios`, `auth_log` y las demás tablas de `libraauth` no se copian: el dominio manda.** Son las únicas que declaran dos
+1. **`usuarios`, `auth_log` y las demás tablas de `libraauth` no se copian: el dominio manda** (salvo que `libraauth` viva en el
+   core y el dominio no la tenga: ver «Cuando `libraauth` vive en el core»). Son las únicas que declaran dos
    motores (`libracore.db.schema` las crea con columnas de texto; `libraauth` las mapea con tipos reales) y, como en ContaLibra
    y VentaLibra, queda **una** tabla, la que ya estaba en el dominio (`CREATE TABLE IF NOT EXISTS` del motor no la pisa). Lo
    que sí se exige es que las filas del core **apunten a usuarios que existen en el dominio y son los mismos** (mismo id,
@@ -68,6 +69,33 @@ historial y en `ps`, así que no se recomienda). Nada de lo que se imprime lleva
 
 Salida: 0 todo bien; 1 algo impide unir (o la unión se deshizo: la transacción no deja nada a medias); 2 error de uso o de
 conexión.
+
+## Cuando `libraauth` vive en el core (GestioLibra y MedLibra)
+
+La decisión 1 supone que los usuarios están en el dominio. En GestioLibra y MedLibra es al revés: `libraauth-migrar --base core`
+crea sus tablas **en la base del core** y el dominio (el de `libragenda` y el producto) no tiene ni una. La señal es
+`alembic_version_libraauth` en el core y no en el dominio. En ese caso:
+
+- **`libraauth` se copia, no «manda el dominio»**: sus tablas (`TABLAS_DE_LIBRAAUTH`: `usuarios`, `auth_log`,
+  `password_reset_tokens`, `smtp_settings`, `demo_codigos`, `aceptaciones_terminos`, `secretos_instancia`,
+  `libraauth_captcha_usados`) y su `alembic_version_libraauth` se llevan al dominio con los ids, las secuencias, las claves
+  primarias y foráneas, los índices y los valores por defecto. La estructura **se clona del catálogo del core** (no se corre la
+  cadena de `libraauth`): `usuarios` y `auth_log` las declaran dos motores y en cada base tienen la forma de quien llegó primero,
+  así que clonar es lo único que garantiza que `_esquemas_iguales` y la huella coincidan. Se crean **antes** de la cadena del
+  motor, para que su `CREATE TABLE IF NOT EXISTS` no las pise. Después, `libraauth-migrar upgrade --base dominio` las sigue.
+- **Si las dos bases tienen `libraauth` (su tabla de versión o sus tablas), no se une** (`auth_en_los_dos`): son dos juegos de
+  usuarios y esta herramienta no los mezcla. Antes, la tabla de versión repetida era un aviso y «mandaba el dominio»; con el
+  core de GestioLibra y MedLibra eso dejaba afuera usuarios que alguien sí usa.
+- **No se conoce la cabeza de `libraauth`** (no es dependencia del motor): se copia la revisión que tiene el core, y `verificar`
+  corta si la estructura no se puede clonar (`auth_ddl_no_soportado`: identidad, columnas generadas, exclusiones) o si una tabla
+  de auth apunta a una que no se copia (`auth_fk_externa`).
+
+## `clients` de `libragenda`
+
+`libragenda` (hasta v0.13) declara su propia `clients`, con `id VARCHAR(100)`, y el motor la suya con `id INTEGER` y nueve claves
+foráneas que la apuntan: no pueden vivir juntas. `libragenda` ≥ v0.14.0 la renombra a `agenda_clients` y pasa su tabla de versión
+a `alembic_version_libragenda`. Si en el dominio sigue la vieja, `verificar` lo dice con su propio código
+(`clients_de_libragenda`) y pide correr antes `libragenda-migrar upgrade`, en lugar de cortar con un choque de nombres genérico.
 """
 
 from __future__ import annotations
@@ -104,6 +132,11 @@ TABLAS_DE_AUTH = (
     "demo_codigos",
     "aceptaciones_terminos",
 )
+
+#: Las tablas que crea `libraauth-migrar` (cadena `alembic_version_libraauth`): las de `TABLAS_DE_AUTH` más las que sumaron la
+#: `0002` y la `0003`. Cuando `libraauth` vive en el core, **estas** se clonan y se copian al dominio. Si `libraauth` suma una
+#: tabla, se agrega acá: una que falte se nota porque «el upgrade no creó en el dominio» una tabla del core.
+TABLAS_DE_LIBRAAUTH = (*TABLAS_DE_AUTH, "secretos_instancia", "libraauth_captcha_usados")
 
 #: La tabla de versión de cada cadena que esta herramienta sabe crear en el dominio.
 TABLA_DE_VERSION = {"libracore": "alembic_version", "libracommerce": "alembic_version_libracommerce"}
@@ -490,6 +523,10 @@ class Verificacion:
     auditoria: dict = field(default_factory=dict)
     previas: list[str] = field(default_factory=list)
     conexiones: dict = field(default_factory=dict)
+    #: `libraauth` vive en el core y el dominio no la tiene: sus tablas se clonan y se copian (ver «Cuando `libraauth` vive en el core»).
+    auth_en_el_core: bool = False
+    #: Las tablas de `libraauth` del core a clonar en el dominio, con sus padres primero (sin la tabla de versión).
+    auth_a_clonar: list[str] = field(default_factory=list)
 
     def error(self, codigo: str, mensaje: str) -> None:
         self.hallazgos.append(Hallazgo("error", codigo, mensaje))
@@ -598,6 +635,7 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
                 f"La tabla {t} del dominio no tiene aplicadas las versiones {sorted(faltan)} que sí tiene la del core: "
                 "no es la cadena numerada de libracommerce, o está atrasada.",
             )
+    libragenda_vieja = "clients" in previas and "clients" in t_dom_propias and _clients_de_libragenda(dom)
     for nombre, cadena in cadenas.items():
         tabla = TABLA_DE_VERSION[nombre]
         en_core = version_de(core, tabla) if tabla in t_core else None
@@ -632,13 +670,14 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
             v.error(
                 "version_repetida",
                 f"La tabla {tabla} del dominio no es de la cadena de {nombre} (guarda {en_dom!r}): choca con la del motor. "
-                f"El producto tiene que renombrar la suya (p. ej. alembic_version_{v.prefijo}) antes de unir.",
+                f"El producto tiene que renombrar la suya (p. ej. alembic_version_{v.prefijo}) antes de unir."
+                + (" Parece la de libragenda: ver clients_de_libragenda." if libragenda_vieja else ""),
             )
     dominio_con_cadena = v.cadenas["libracore"]["dominio"] in cadenas["libracore"].revisiones
     conocidas = set(TABLA_DE_VERSION.values())
     for tabla in sorted(versiones_core - conocidas):
-        if tabla == TABLA_DE_VERSION_AUTH and tabla in versiones_dom:
-            v.aviso("version_auth_en_los_dos", f"{tabla} está en las dos bases: manda la del dominio.")
+        if tabla == TABLA_DE_VERSION_AUTH:
+            _verificar_libraauth_en_el_core(v, core, tabla, previas)
         else:
             v.error(
                 "cadena_desconocida",
@@ -653,6 +692,14 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
             dominio_manda.append(t)
         elif t in TABLAS_DE_AUDITORIA and t in previas:
             auditoria.append(t)
+        elif t == "clients" and t in previas and _clients_de_libragenda(dom):
+            v.error(
+                "clients_de_libragenda",
+                "La tabla clients del dominio es la de libragenda (id de texto) y choca con la clients del motor (id entero, con "
+                "claves foráneas que la apuntan): no pueden vivir en la misma base. Corré antes `libragenda-migrar upgrade` "
+                "(libragenda ≥ v0.14.0 la renombra a agenda_clients y pasa su tabla de versión a alembic_version_libragenda), "
+                "subí el pin del producto y volvé a verificar.",
+            )
         elif t in previas and not dominio_con_cadena:
             v.error(
                 "choque_de_tablas",
@@ -671,6 +718,8 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
     except ErrorDeUnion as e:
         v.a_copiar = a_copiar
         v.error("ciclo_de_fks", str(e))
+    if v.auth_en_el_core:
+        _verificar_clonado_de_libraauth(v, core, t_core, fks_core)
     for t in dominio_manda:
         filas = core.execute(sql.SQL("SELECT count(*) FROM {}").format(_ident(t))).fetchone()[0]
         v.no_copiadas[t] = {"motivo": "dominio_manda", "filas_core": filas}
@@ -705,6 +754,59 @@ def _verificar(v: Verificacion, core, dom) -> None:  # noqa: C901 - es una lista
         if t in versiones_dom or t in dominio_manda or t in numeradas or t in auditoria:
             continue
         v.dominio_previo[t] = dom.execute(sql.SQL("SELECT count(*) FROM {}").format(_ident(t))).fetchone()[0]
+
+
+def _clients_de_libragenda(dom) -> bool:
+    """La `clients` del dominio es la de `libragenda` (hasta v0.13): su `id` no es entero. La del motor es `INTEGER`."""
+    tipos = {c.nombre: c.tipo for c in columnas_de(dom, "clients")}
+    return "id" in tipos and tipos["id"] not in ("integer", "bigint", "smallint")
+
+
+def _verificar_libraauth_en_el_core(v: Verificacion, core, tabla: str, previas: set) -> None:
+    """El core tiene `alembic_version_libraauth`: ¿el dominio no tiene nada de `libraauth`? Entonces se clona y se copia.
+
+    Si el dominio ya tiene su tabla de versión o alguna de sus tablas **de antes** de la unión (`previas`, no lo que haya dejado
+    una corrida cortada), hay dos juegos de usuarios y no se mezclan.
+    """
+    en_dominio = sorted(previas & (set(TABLAS_DE_LIBRAAUTH) | {tabla}))
+    if en_dominio:
+        v.error(
+            "auth_en_los_dos",
+            f"libraauth tiene su cadena en el core ({tabla}={version_de(core, tabla)}) y el dominio ya tiene {', '.join(en_dominio)}: "
+            "son dos juegos de usuarios y esta herramienta no los mezcla. Decidí cuál es el que vale y retirá el otro (con respaldo) "
+            "antes de unir.",
+        )
+        return
+    v.auth_en_el_core = True
+    v.cadenas["libraauth"] = {"tabla": tabla, "core": version_de(core, tabla), "dominio": None, "cabeza": None}
+
+
+def _verificar_clonado_de_libraauth(v: Verificacion, core, t_core: set, fks_core: list[ClaveForanea]) -> None:
+    """Que las tablas de `libraauth` del core se puedan clonar en el dominio y copiar sin dejar nada colgado."""
+    propias = [t for t in TABLAS_DE_LIBRAAUTH if t in t_core]
+    try:
+        v.auth_a_clonar = orden_topologico(propias, fks_core)
+    except ErrorDeUnion:
+        v.auth_a_clonar = propias  # el ciclo ya lo informa `ciclo_de_fks`
+    adentro = set(propias)
+    for fk in fks_core:
+        if fk.tabla in adentro and fk.destino not in adentro:
+            v.error(
+                "auth_fk_externa",
+                f"{fk.tabla}.{','.join(fk.columnas)} → {fk.destino}: una tabla de libraauth apunta a una que no es de libraauth; "
+                "no se clona.",
+            )
+    for t in [*propias, TABLA_DE_VERSION_AUTH]:
+        try:
+            _ddl_de(core, t)
+        except ErrorDeUnion as e:
+            v.error("auth_ddl_no_soportado", str(e))
+    usuarios = core.execute(sql.SQL("SELECT count(*) FROM {}").format(_ident("usuarios"))).fetchone()[0] if "usuarios" in adentro else 0
+    v.aviso(
+        "auth_se_copia",
+        f"libraauth vive en el core ({TABLA_DE_VERSION_AUTH}={v.cadenas['libraauth']['core']}): se clonan y se copian "
+        f"{len(propias)} tabla(s) de auth ({usuarios} usuario(s)) y su tabla de versión al dominio.",
+    )
 
 
 def _reglas_de_columnas(conn, tabla: str) -> dict:
@@ -949,6 +1051,7 @@ def _datos_de_verificacion(v: Verificacion) -> dict:
         "avisos": [{"codigo": h.codigo, "mensaje": h.mensaje} for h in v.avisos],
         "cadenas": v.cadenas,
         "tablas_a_copiar": v.a_copiar,
+        "libraauth_en_el_core": v.auth_en_el_core,
         "tablas_a_vaciar": v.a_vaciar,
         "no_copiadas": v.no_copiadas,
         "tablas": v.tablas,
@@ -974,6 +1077,9 @@ def imprimir(v: Verificacion, salida=None) -> None:
     for nombre, c in v.cadenas.items():
         p(f"  {nombre:<14} core={c['core'] or '-'}  dominio={c['dominio'] or '-'}  cabeza={c['cabeza'] or '?'}")
     p("")
+    if v.auth_en_el_core:
+        p("libraauth vive en el core: sus tablas se clonan en el dominio antes de la cadena del motor y se copian con las demás, "
+          f"con su {TABLA_DE_VERSION_AUTH}.")
     p(f"Tablas a copiar ({len(v.a_copiar)}), en este orden:")
     for t in v.a_copiar:
         r = v.tablas.get(t)
@@ -1016,8 +1122,115 @@ def _crear_marca(url: str, prefijo: str, previas: list[str]) -> None:
         dom.commit()
 
 
-def _preparar_destino(dominio_url: str, cadenas: dict[str, Cadena | None], salida) -> None:
-    """Crea las tablas del motor (y de libracommerce) en el dominio con sus cadenas. Idempotente."""
+# --- Clonar la estructura de `libraauth` ----------------------------------------------------------------------------------
+
+
+@dataclass
+class Ddl:
+    """La estructura de una tabla del core, leída del catálogo: lo justo para crearla igual en el dominio."""
+
+    tabla: str
+    #: `(nombre, tipo, no_nula, default, secuencia)`; la secuencia es el nombre de la que llena la columna (serial), o `None`.
+    columnas: list
+    #: `(nombre, tipo, definición)` de las claves primarias, únicas, checks (`p`, `u`, `c`) y foráneas (`f`).
+    restricciones: list
+    #: `CREATE [UNIQUE] INDEX …` de los índices que no respaldan una restricción.
+    indices: list
+
+
+def _ddl_de(conn, tabla: str) -> Ddl:
+    """Lee la estructura de `tabla`. Levanta `ErrorDeUnion` ante lo que no se sabe clonar: identidad, columnas generadas, exclusiones."""
+    nombre = _regclass(tabla)
+    columnas = []
+    for col, tipo, no_nula, default, identidad, generada, secuencia in conn.execute(
+        "SELECT a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull, pg_get_expr(d.adbin, d.adrelid), "
+        "a.attidentity, a.attgenerated, "
+        "(SELECT s.relname FROM pg_class s WHERE s.oid = pg_get_serial_sequence(%s, a.attname)::regclass) "
+        "FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+        "WHERE a.attrelid = to_regclass(%s) AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
+        (nombre, nombre),
+    ).fetchall():
+        if identidad or generada:
+            raise ErrorDeUnion(f"{tabla}.{col}: columna de identidad o generada: esta herramienta no sabe clonarla.")
+        columnas.append((col, tipo, no_nula, default, secuencia))
+    restricciones = []
+    for con, tipo, definicion in conn.execute(
+        "SELECT conname, contype, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = to_regclass(%s) "
+        "AND contype <> 'n' ORDER BY conname",
+        (nombre,),
+    ).fetchall():
+        if tipo not in ("p", "u", "c", "f"):
+            raise ErrorDeUnion(f"{tabla}: la restricción {con} es de un tipo ({tipo!r}) que esta herramienta no sabe clonar.")
+        restricciones.append((con, tipo, definicion))
+    indices = [
+        r[0]
+        for r in conn.execute(
+            "SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i WHERE i.indrelid = to_regclass(%s) AND NOT i.indisprimary "
+            "AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid AND c.conrelid = i.indrelid) ORDER BY 1",
+            (nombre,),
+        ).fetchall()
+    ]
+    return Ddl(tabla, columnas, restricciones, indices)
+
+
+def _clonar_estructura(core_url: str, dominio_url: str, tablas: list[str], salida) -> list[str]:
+    """Crea en el dominio las tablas de `tablas` (con sus padres primero) iguales a las del core, **vacías**. Idempotente.
+
+    Una sola transacción: o quedan todas o no queda ninguna. Una tabla que el dominio ya tiene (una corrida cortada) no se
+    toca; que sea igual a la del core lo comprueba `_esquemas_iguales` al copiar. Las secuencias se crean con el mismo nombre y
+    quedan atadas a su columna (`OWNED BY`), que es lo que busca `pg_get_serial_sequence` para ajustarlas después. Las claves
+    foráneas y los índices van al final, cuando ya están todas las tablas. Devuelve las que creó.
+    """
+    with contextlib.closing(conectar(core_url, solo_lectura=True, repeatable=True)) as core, contextlib.closing(
+        conectar(dominio_url)
+    ) as dom:
+        existentes = set(tablas_de(dom))
+        nuevas = [t for t in tablas if t not in existentes]
+        ddls = {t: _ddl_de(core, t) for t in nuevas}
+        for t in nuevas:
+            d = ddls[t]
+            partes = []
+            for col, tipo, no_nula, default, secuencia in d.columnas:
+                if secuencia:
+                    entero = tipo if tipo in ("smallint", "integer", "bigint") else None
+                    dom.execute(
+                        sql.SQL("CREATE SEQUENCE IF NOT EXISTS {}").format(_ident(secuencia))
+                        + (sql.SQL(" AS ") + sql.SQL(entero) if entero else sql.SQL(""))
+                    )
+                linea = sql.SQL("{} {}").format(_ident(col), sql.SQL(tipo))
+                if default is not None:
+                    linea += sql.SQL(" DEFAULT ") + sql.SQL(default)
+                if no_nula:
+                    linea += sql.SQL(" NOT NULL")
+                partes.append(linea)
+            for con, tipo, definicion in d.restricciones:
+                if tipo != "f":  # las foráneas, al final: pueden apuntar a una tabla que todavía no se creó
+                    partes.append(sql.SQL("CONSTRAINT {} {}").format(_ident(con), sql.SQL(definicion)))
+            dom.execute(sql.SQL("CREATE TABLE {} ({})").format(_ident(t), sql.SQL(", ").join(partes)))
+            for col, _, _, _, secuencia in d.columnas:
+                if secuencia:
+                    dom.execute(sql.SQL("ALTER SEQUENCE {} OWNED BY {}.{}").format(_ident(secuencia), _ident(t), _ident(col)))
+        for t in nuevas:
+            for con, tipo, definicion in ddls[t].restricciones:
+                if tipo == "f":
+                    dom.execute(sql.SQL("ALTER TABLE {} ADD CONSTRAINT {} {}").format(_ident(t), _ident(con), sql.SQL(definicion)))
+            for indice in ddls[t].indices:
+                dom.execute(sql.SQL(indice))
+        dom.commit()
+    if nuevas:
+        print(f"  libraauth: {len(nuevas)} tabla(s) clonadas del core en el dominio.", file=salida)
+    return nuevas
+
+
+def _preparar_destino(
+    dominio_url: str, cadenas: dict[str, Cadena | None], salida, *, core_url: str | None = None, v: Verificacion | None = None
+) -> None:
+    """Crea las tablas del motor (y de libracommerce) en el dominio con sus cadenas. Idempotente.
+
+    Si `libraauth` vive en el core, **antes** clona sus tablas: así el `CREATE TABLE IF NOT EXISTS usuarios` del motor no las pisa
+    con la otra forma."""
+    if v is not None and v.auth_en_el_core:
+        _clonar_estructura(core_url, dominio_url, [*v.auth_a_clonar, TABLA_DE_VERSION_AUTH], salida)
     for nombre in ("libracore", "libracommerce"):
         cadena = cadenas.get(nombre)
         if cadena is None:
@@ -1135,11 +1348,11 @@ def unir(core_url: str, dominio_url: str, prefijo: str, informe: Path, *, aunque
         _crear_marca(dominio_url, prefijo, v.previas)
     cadenas = _cadenas_a_correr(v)
     try:
-        _preparar_destino(dominio_url, cadenas, out)
+        _preparar_destino(dominio_url, cadenas, out, core_url=core_url, v=v)
     except Exception as e:  # noqa: BLE001 - alembic puede levantar casi cualquier cosa
         print(
-            f"[ERROR] No se pudieron crear las tablas del motor en el dominio: {type(e).__name__}: {_error_de_base(e, core_url, dominio_url)}\n"
-            "        No se copió nada. Las tablas del motor que hayan quedado creadas están vacías; se puede reintentar.",
+            f"[ERROR] No se pudieron crear las tablas en el dominio: {type(e).__name__}: {_error_de_base(e, core_url, dominio_url)}\n"
+            "        No se copió nada. Las tablas del motor y de libraauth que hayan quedado creadas están vacías; se puede reintentar.",
             file=sys.stderr,
         )
         return 1
@@ -1174,16 +1387,17 @@ def _copiar_todo(core_url, dominio_url, v: Verificacion, prefijo: str, out) -> d
         conectar(dominio_url)
     ) as dom:
         en_dominio = set(tablas_de(dom))
-        faltan = [t for t in v.a_copiar if t not in en_dominio]
+        versiones_auth = [TABLA_DE_VERSION_AUTH] if v.auth_en_el_core else []
+        faltan = [t for t in v.a_copiar + versiones_auth if t not in en_dominio]
         if faltan:
             raise ErrorDeUnion("El upgrade no creó en el dominio: " + ", ".join(faltan))
-        con_lock = v.a_copiar + list(v.auditoria)
+        con_lock = v.a_copiar + list(v.auditoria) + versiones_auth
         if con_lock:
             # Nadie escribe en estas tablas mientras dura la unión (la app está detenida). Si alguien las tiene tomadas,
             # se espera un rato y se corta: una unión colgada del candado de otro es peor que una que dice por qué no pudo.
             dom.execute("SET LOCAL lock_timeout = '30s'")
             dom.execute(sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE").format(_lista(con_lock)))
-        _esquemas_iguales(core, dom, v.a_copiar)
+        _esquemas_iguales(core, dom, v.a_copiar + versiones_auth)
         numeradas = {}
         for t, col in TABLAS_DE_CADENA_NUMERADA.items():
             if t in set(tablas_de(core)):
@@ -1219,6 +1433,7 @@ def _copiar_todo(core_url, dominio_url, v: Verificacion, prefijo: str, out) -> d
             tablas[t] = {**en_core, "secuencias": secuencias}
         auditoria = _agregar_auditoria(core, dom, list(v.auditoria), out)
         _validar_claves_foraneas(dom, v.a_copiar)
+        versiones_copiadas = _copiar_versiones_de_auth(core, dom, versiones_auth)
 
         en_dominio = set(tablas_de(dom))
         cadenas = {
@@ -1240,6 +1455,10 @@ def _copiar_todo(core_url, dominio_url, v: Verificacion, prefijo: str, out) -> d
             "cadenas": cadenas,
             "cadenas_numeradas": numeradas,
             "tablas": tablas,
+            #: Las tablas de versión de Alembic que se llevaron enteras (hoy, la de libraauth cuando vive en el core). Aparte de
+            #: `tablas` a propósito: `revertir` devuelve al core lo nuevo de cada tabla de `tablas`, y no tiene que tocar la
+            #: tabla de versión del core.
+            "versiones_copiadas": versiones_copiadas,
             "auditoria_agregada": auditoria,
             "tablas_vaciadas": sorted(vaciar),
             "no_copiadas": v.no_copiadas,
@@ -1251,6 +1470,22 @@ def _copiar_todo(core_url, dominio_url, v: Verificacion, prefijo: str, out) -> d
         )
         dom.commit()
         return informe
+
+
+def _copiar_versiones_de_auth(core, dom, tablas: list[str]) -> dict:
+    """Copia la tabla de versión de `libraauth` (una fila) del core al dominio, donde `_clonar_estructura` la dejó vacía."""
+    salida = {}
+    for t in tablas:
+        ya = dom.execute(sql.SQL("SELECT count(*) FROM {}").format(_ident(t))).fetchone()[0]
+        if ya:
+            raise ErrorDeUnion(f"La tabla de versión {t} del dominio ya tiene {ya} fila(s): no se pisa.")
+        cols_core = columnas_de(core, t)
+        copiadas = _copiar_tabla(core, dom, t, [c.nombre for c in cols_core if not c.generada])
+        en_core, en_dom = resumen_de(core, t, cols_core), resumen_de(dom, t, columnas_de(dom, t))
+        if copiadas != en_core["filas"] or en_core != en_dom:
+            raise ErrorDeUnion(f"{t}: lo copiado no coincide con el core (core {en_core}, dominio {en_dom}, copiadas {copiadas}).")
+        salida[t] = {**en_core, "version": version_de(dom, t)}
+    return salida
 
 
 def _agregar_auditoria(core, dom, tablas: list[str], out) -> dict:

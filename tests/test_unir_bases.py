@@ -12,6 +12,9 @@ Lo que se fija, y por qué cada cosa:
 - **Lo que corta**: una `usuario_id` colgada, un usuario que es otra persona, una tabla del producto con el nombre de una
   del motor, la tabla de versión repetida, un core desactualizado. Cada una **antes de tocar nada**.
 - **Una unión que falla a mitad no deja nada a medias**, y se puede reintentar.
+- **`libraauth` en el core** (GestioLibra y MedLibra): dominio con tablas tipo `libragenda` + producto y sin usuarios, core con
+  el motor y `libraauth`. Se clonan y copian sus tablas y su `alembic_version_libraauth`; si el dominio también tiene
+  `libraauth` no se une; y una `clients` de `libragenda` todavía sin renombrar corta con un mensaje que pide migrar `libragenda`.
 """
 
 import json
@@ -887,3 +890,398 @@ def test_subir_el_motor_no_deja_el_estado_global_de_la_app(bases):
     antes = (core_db._db_path, core_db._database_url, core_db._timeout, core_db._extra_pragmas)
     unir_bases._subir_libracore(bases.nueva())
     assert (core_db._db_path, core_db._database_url, core_db._timeout, core_db._extra_pragmas) == antes
+
+
+# --- libraauth vive en el core (GestioLibra y MedLibra) ----------------------------------------------------------------------
+
+#: `libraauth-migrar upgrade` (0001 + 0002 + 0003) escrito a mano, por tabla y en orden de claves foráneas: libraauth no es
+#: dependencia del motor. Las formas (`SERIAL`, `VARCHAR(n)`, `LOCALTIMESTAMP`, los índices que no son restricciones, `ON DELETE`)
+#: son las del DDL que emite SQLAlchemy.
+LIBRAAUTH = {
+    "usuarios": [
+        "CREATE TABLE usuarios (id SERIAL PRIMARY KEY, username VARCHAR(100) NOT NULL UNIQUE, nombre VARCHAR(200) NOT NULL, "
+        "email VARCHAR(200) NOT NULL, password_hash VARCHAR(200) NOT NULL, role VARCHAR(20) NOT NULL, activo BOOLEAN NOT NULL, "
+        "created_at TIMESTAMP NOT NULL DEFAULT now())",
+    ],
+    "password_reset_tokens": [
+        "CREATE TABLE password_reset_tokens (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE, "
+        "token_hash VARCHAR(64) NOT NULL UNIQUE, created_at TIMESTAMP NOT NULL DEFAULT now(), expires_at TIMESTAMP NOT NULL, "
+        "used_at TIMESTAMP)",
+        "CREATE INDEX ix_password_reset_tokens_user_id ON password_reset_tokens (user_id)",
+    ],
+    "auth_log": [
+        "CREATE TABLE auth_log (id SERIAL PRIMARY KEY, ts TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP, evento VARCHAR(50) NOT NULL, "
+        "username VARCHAR(100) NOT NULL, ip VARCHAR(64), detalle VARCHAR(500))",
+    ],
+    "smtp_settings": [
+        'CREATE TABLE smtp_settings (id SERIAL PRIMARY KEY, host VARCHAR(200) NOT NULL, port INTEGER NOT NULL, "user" VARCHAR(200) NOT NULL, '
+        "password_cifrada TEXT NOT NULL, from_email VARCHAR(200) NOT NULL, from_name VARCHAR(200) NOT NULL, "
+        "updated_at TIMESTAMP NOT NULL DEFAULT now())",
+    ],
+    "demo_codigos": [
+        "CREATE TABLE demo_codigos (id SERIAL PRIMARY KEY, codigo_hash VARCHAR(64) NOT NULL, prefijo VARCHAR(8) NOT NULL, "
+        "etiqueta VARCHAR(200) NOT NULL, emitido_por VARCHAR(100) NOT NULL, creado_at TIMESTAMP NOT NULL DEFAULT now(), "
+        "expires_at TIMESTAMP NOT NULL, usos_max INTEGER NOT NULL, usos INTEGER NOT NULL, ultimo_uso TIMESTAMP, revocado BOOLEAN NOT NULL)",
+        "CREATE UNIQUE INDEX ix_demo_codigos_codigo_hash ON demo_codigos (codigo_hash)",
+    ],
+    "aceptaciones_terminos": [
+        "CREATE TABLE aceptaciones_terminos (id SERIAL PRIMARY KEY, usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL, "
+        "username VARCHAR(100) NOT NULL, nombre VARCHAR(200) NOT NULL, version VARCHAR(20) NOT NULL, hash_texto VARCHAR(64) NOT NULL, "
+        "aceptado_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP, ip VARCHAR(64) NOT NULL, user_agent VARCHAR(400) NOT NULL)",
+        "CREATE INDEX ix_aceptaciones_terminos_usuario_id ON aceptaciones_terminos (usuario_id)",
+        "CREATE INDEX ix_aceptaciones_terminos_version ON aceptaciones_terminos (version)",
+    ],
+    "secretos_instancia": [
+        "CREATE TABLE secretos_instancia (clave VARCHAR(100) PRIMARY KEY, valor_cifrado TEXT NOT NULL, "
+        "actualizado_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP)",
+    ],
+    "libraauth_captcha_usados": [
+        "CREATE TABLE libraauth_captcha_usados (firma VARCHAR(128) PRIMARY KEY, vence DOUBLE PRECISION NOT NULL)",
+        "CREATE INDEX ix_libraauth_captcha_usados_vence ON libraauth_captcha_usados (vence)",
+    ],
+}
+VERSION_LIBRAAUTH = [
+    "CREATE TABLE alembic_version_libraauth (version_num VARCHAR(32) NOT NULL, CONSTRAINT alembic_version_libraauth_pkc PRIMARY KEY (version_num))",
+    "INSERT INTO alembic_version_libraauth VALUES ('0003_captcha_usados')",
+]
+TABLAS_LIBRAAUTH = list(LIBRAAUTH)
+
+
+def _crear_libraauth(url, *, salvo=()):
+    _ejecutar(url, [d for t, ddl in LIBRAAUTH.items() if t not in salvo for d in ddl] + VERSION_LIBRAAUTH)
+
+
+@pytest.fixture(scope="module")
+def plantilla_con_auth(bases_del_modulo):
+    """Un core como el de GestioLibra: `libraauth-migrar --base core` primero (las tablas con SU forma) y después el motor, que
+    no pisa `usuarios` ni `auth_log`. Se migra una vez y cada test clona."""
+    url = bases_del_modulo.nueva()
+    _crear_libraauth(url)
+    unir_bases._subir_libracore(url)
+    return url
+
+
+@pytest.fixture(scope="module")
+def bases_del_modulo():
+    b = Bases()
+    try:
+        yield b
+    finally:
+        b.limpiar()
+
+
+def _armar_auth_del_core(url):
+    """Lo que `libraauth` tiene de uso en el core, sobre los usuarios que ya puso `_armar_core` (ids 1 y 2)."""
+    _ejecutar(
+        url,
+        [
+            "SELECT setval('usuarios_id_seq', 7)",
+            "SELECT setval('auth_log_id_seq', 30)",
+            "INSERT INTO password_reset_tokens (id, user_id, token_hash, expires_at) VALUES (4, 2, 'tok-a', '2026-12-01 10:00:00')",
+            "INSERT INTO smtp_settings (id, host, port, \"user\", password_cifrada, from_email, from_name) VALUES "
+            "(1, 'smtp.ejemplo.test', 587, 'avisos', 'cifrada==', 'avisos@ejemplo.test', 'Avisos')",
+            "INSERT INTO demo_codigos (id, codigo_hash, prefijo, etiqueta, emitido_por, expires_at, usos_max, usos, revocado) VALUES "
+            "(9, 'hash-demo', 'gl', 'Demo de prueba', 'admin', '2026-12-31 00:00:00', 5, 1, FALSE)",
+            "INSERT INTO aceptaciones_terminos (id, usuario_id, username, nombre, version, hash_texto, ip, user_agent) VALUES "
+            "(3, 1, 'admin', 'Admin', '1.1', 'h', '10.0.0.1', 'test'), (4, 2, 'cajero', 'Cajero', '1.1', 'h', '10.0.0.2', 'test')",
+            "INSERT INTO secretos_instancia (clave, valor_cifrado) VALUES ('mp_access_token', 'cifrado==')",
+            "INSERT INTO libraauth_captcha_usados (firma, vence) VALUES ('firma-1', 1790000000.5)",
+        ],
+    )
+
+
+def _armar_dominio_gestiolibra(url, *, libragenda_nueva=True):
+    """El dominio de GestioLibra: tablas de `libragenda` + del producto, y **ni una de libraauth**.
+
+    `libragenda_nueva` es la v0.14.0 (`agenda_clients` y `alembic_version_libragenda`); sin ella, la v0.13.0 (`clients` de texto
+    y `alembic_version`, la misma tabla de versión que usa el motor).
+    """
+    clientes, version = ("agenda_clients", "alembic_version_libragenda") if libragenda_nueva else ("clients", "alembic_version")
+    _ejecutar(
+        url,
+        [
+            "CREATE TABLE branches (id VARCHAR(100) PRIMARY KEY, name VARCHAR(200) NOT NULL)",
+            f"CREATE TABLE {clientes} (id VARCHAR(100) PRIMARY KEY, name VARCHAR(200) NOT NULL, phone VARCHAR(50), "
+            "email VARCHAR(254), active BOOLEAN NOT NULL DEFAULT TRUE)",
+            "CREATE TABLE services (id VARCHAR(100) PRIMARY KEY, name VARCHAR(200) NOT NULL, price NUMERIC(12, 2) NOT NULL)",
+            f"CREATE TABLE appointments (id VARCHAR(100) PRIMARY KEY, branch_id VARCHAR(100) REFERENCES branches(id), "
+            f"client_id VARCHAR(100) NOT NULL REFERENCES {clientes}(id), service_id VARCHAR(100) NOT NULL REFERENCES services(id), "
+            "starts_at TIMESTAMP NOT NULL, status VARCHAR(20) NOT NULL)",
+            f"CREATE TABLE client_billing (client_id VARCHAR(100) PRIMARY KEY REFERENCES {clientes}(id), cuit VARCHAR(20))",
+            f"CREATE TABLE {version} (version_num VARCHAR(32) PRIMARY KEY)",
+            f"INSERT INTO {version} VALUES ('lg_0014')" if libragenda_nueva else f"INSERT INTO {version} VALUES ('lg_0013')",
+            "CREATE TABLE alembic_version_gestiolibra (version_num VARCHAR(32) PRIMARY KEY)",
+            "INSERT INTO alembic_version_gestiolibra VALUES ('gl_0008')",
+            "INSERT INTO branches VALUES ('b1', 'Central')",
+            f"INSERT INTO {clientes} (id, name, phone) VALUES ('c-1', 'Ana', '1111'), ('c-2', 'Beto', NULL)",
+            "INSERT INTO services VALUES ('s-1', 'Corte', 8500.50), ('s-2', 'Color', 24999.99)",
+            "INSERT INTO appointments VALUES ('a-1', 'b1', 'c-1', 's-1', '2026-10-30 10:00', 'confirmed'), "
+            "('a-2', 'b1', 'c-2', 's-2', '2026-10-30 11:00', 'completed')",
+            "INSERT INTO client_billing VALUES ('c-1', '20111111112')",
+        ],
+    )
+
+
+@pytest.fixture
+def par_gestiolibra(bases, plantilla_con_auth):
+    """`(core, dominio)` con la forma de GestioLibra, listos para unir."""
+    core, dominio = _clon(bases, plantilla_con_auth), bases.nueva()
+    _armar_core(core)
+    _armar_auth_del_core(core)
+    _armar_dominio_gestiolibra(dominio)
+    return core, dominio
+
+
+def _estructura(url, tablas):
+    with conectar(url) as c:
+        return {t: unir_bases._ddl_de(c, t) for t in tablas}
+
+
+def test_libraauth_en_el_core_verificar_ok_y_no_escribe_nada(par_gestiolibra, tmp_path, capsys):
+    core, dominio = par_gestiolibra
+    antes_core, antes_dominio, tablas_antes = _foto(core), _foto(dominio), _tablas(dominio)
+    informe = tmp_path / "verificacion.json"
+
+    assert _correr(core, dominio, "verificar", informe) == 0
+
+    out = capsys.readouterr().out
+    assert "[OK] Se puede unir" in out and "libraauth vive en el core" in out
+    assert _tablas(dominio) == tablas_antes  # ni la marca, ni una tabla del motor, ni una de libraauth clonada
+    assert _foto(core) == antes_core and _foto(dominio) == antes_dominio
+    datos = json.loads(informe.read_text())
+    assert datos["ok"] is True and datos["libraauth_en_el_core"] is True
+    # Las de libraauth se copian como cualquier otra (no son «el dominio manda»), con los padres primero.
+    copiar = datos["tablas_a_copiar"]
+    assert set(TABLAS_LIBRAAUTH) <= set(copiar) and "alembic_version_libraauth" not in copiar
+    assert copiar.index("usuarios") < copiar.index("password_reset_tokens") and copiar.index("usuarios") < copiar.index("aceptaciones_terminos")
+    assert copiar.index("usuarios") < copiar.index("turnos_caja") < copiar.index("caja_movimientos")
+    assert datos["no_copiadas"] == {}
+    assert datos["cadenas"]["libraauth"] == {"tabla": "alembic_version_libraauth", "core": "0003_captcha_usados", "dominio": None, "cabeza": None}
+    assert [h["codigo"] for h in datos["avisos"]] == ["auth_se_copia"]
+    assert "2 usuario(s)" in next(h["mensaje"] for h in datos["avisos"] if h["codigo"] == "auth_se_copia")
+
+
+def test_libraauth_en_el_core_unir_copia_todo_y_la_estructura_es_la_misma(par_gestiolibra, tmp_path, capsys):
+    core, dominio = par_gestiolibra
+    foto_core, foto_dominio = _foto(core), _foto(dominio)
+    estructura_core = _estructura(core, [*TABLAS_LIBRAAUTH, "alembic_version_libraauth"])
+    informe = tmp_path / "union.json"
+
+    assert _correr(core, dominio, "unir", informe) == 0
+    assert "[OK] Unida" in capsys.readouterr().out
+
+    datos = json.loads(informe.read_text())
+    en_dominio = _foto(dominio)
+    # Conteos, sumas y huella de TODAS las tablas del core (las de libraauth incluidas) y de la tabla de versión.
+    for t, d in datos["tablas"].items():
+        assert {k: d[k] for k in ("filas", "sumas", "huella", "max_id")} == en_dominio[t] == foto_core[t], t
+    assert set(TABLAS_LIBRAAUTH) <= set(datos["tablas"]) and "alembic_version_libraauth" not in datos["tablas"]
+    assert en_dominio["alembic_version_libraauth"] == foto_core["alembic_version_libraauth"]
+    assert _fila(dominio, "SELECT version_num FROM alembic_version_libraauth") == [("0003_captcha_usados",)]
+    assert datos["versiones_copiadas"]["alembic_version_libraauth"]["version"] == "0003_captcha_usados"
+    assert datos["cadenas"]["libraauth"]["core"] == datos["cadenas"]["libraauth"]["dominio"] == "0003_captcha_usados"
+    assert datos["tablas"]["usuarios"]["filas"] == 2 and datos["tablas"]["password_reset_tokens"]["filas"] == 1
+
+    # Lo que era del dominio (libragenda y el producto, con sus dos tablas de versión) no se tocó.
+    for t in ("branches", "agenda_clients", "services", "appointments", "client_billing", "alembic_version_libragenda", "alembic_version_gestiolibra"):
+        assert en_dominio[t] == foto_dominio[t], t
+    assert _fila(dominio, "SELECT version_num FROM alembic_version_gestiolibra") == [("gl_0008",)]
+    # El motor en su cabeza, en la tabla de siempre: la de libraauth no se confunde con ella.
+    assert _fila(dominio, "SELECT version_num FROM alembic_version")[0][0] == datos["cadenas"]["libracore"]["cabeza"]
+    # El core, intacto.
+    assert _foto(core) == foto_core
+
+    # La estructura de libraauth es la del core (no la que habría creado el motor): columnas, tipos, defaults, restricciones, índices.
+    assert _estructura(dominio, [*TABLAS_LIBRAAUTH, "alembic_version_libraauth"]) == estructura_core
+    with conectar(dominio) as c:
+        assert dict(c.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'usuarios'").fetchall())["activo"] == "boolean"
+        assert c.execute("SELECT data_type FROM information_schema.columns WHERE table_name = 'auth_log' AND column_name = 'ts'").fetchone()[0].startswith("timestamp")
+
+    with conectar(dominio) as c:
+        # Secuencias: la próxima fila sigue a la última copiada (no a la del core: la herramienta las deja en max(id)).
+        assert c.execute("INSERT INTO usuarios (username, nombre, email, password_hash, role, activo) VALUES ('nuevo', 'Nuevo', '', 'h', 'operador', TRUE) RETURNING id").fetchone()[0] == 3
+        assert c.execute("INSERT INTO auth_log (evento, username) VALUES ('login', 'nuevo') RETURNING id").fetchone()[0] == 2
+        assert c.execute("INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (3, 'tok-b', '2026-12-02') RETURNING id").fetchone()[0] == 5
+        c.rollback()
+    with conectar(dominio) as c:
+        # Restricciones: lo único, las claves foráneas con su `ON DELETE` y los índices.
+        with pytest.raises(errors.UniqueViolation):
+            c.execute("INSERT INTO usuarios (username, nombre, email, password_hash, role, activo) VALUES ('admin', 'Otro', '', 'h', 'operador', TRUE)")
+        c.rollback()
+        with pytest.raises(errors.UniqueViolation):
+            c.execute("INSERT INTO demo_codigos (codigo_hash, prefijo, etiqueta, emitido_por, expires_at, usos_max, usos, revocado) "
+                      "VALUES ('hash-demo', 'gl', 'x', 'admin', '2026-12-31', 1, 0, FALSE)")
+        c.rollback()
+        c.execute("DELETE FROM usuarios WHERE id = 2")  # cascada en los tokens, `SET NULL` en las aceptaciones
+        assert c.execute("SELECT count(*) FROM password_reset_tokens").fetchone()[0] == 0
+        assert c.execute("SELECT usuario_id FROM aceptaciones_terminos WHERE id = 4").fetchone()[0] is None
+        c.rollback()
+        indices = {r[0] for r in c.execute("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'").fetchall()}
+        assert {"ix_password_reset_tokens_user_id", "ix_demo_codigos_codigo_hash", "ix_aceptaciones_terminos_version", "ix_libraauth_captcha_usados_vence"} <= indices
+        # La secuencia es del dominio y está atada a su columna (es lo que busca `_ajustar_secuencias` y `libraauth`).
+        assert c.execute("SELECT pg_get_serial_sequence('usuarios', 'id')").fetchone()[0] == "public.usuarios_id_seq"
+        # Todas las claves foráneas, sin huérfanas.
+        for fk in unir_bases.claves_foraneas_de(c):
+            assert unir_bases._huerfanas(c, fk) == 0, fk
+        # `libraauth-migrar --base dominio` va a encontrar su tabla de versión y no va a querer crear nada de nuevo.
+        assert c.execute("SELECT to_regclass('alembic_version_libraauth')").fetchone()[0] is not None
+
+
+def test_libraauth_en_el_core_reunir_no_cambia_nada(par_gestiolibra, tmp_path, capsys):
+    core, dominio = par_gestiolibra
+    informe = tmp_path / "union.json"
+    assert _correr(core, dominio, "unir", informe) == 0
+    capsys.readouterr()
+    antes, bytes_antes = _foto(dominio), informe.read_bytes()
+
+    assert _correr(core, dominio, "unir", informe) == 0
+
+    assert "Ya estaba unida: no se cambió nada" in capsys.readouterr().out
+    assert _foto(dominio) == antes and informe.read_bytes() == bytes_antes
+
+
+def test_libraauth_en_el_core_una_union_que_falla_se_deshace_y_se_reintenta(par_gestiolibra, tmp_path, monkeypatch, capsys):
+    core, dominio = par_gestiolibra
+    informe = tmp_path / "union.json"
+    original = unir_bases._copiar_tabla
+    llamadas = []
+
+    def falla_en_la_tabla_de_version(origen, destino, tabla, *a, **k):
+        llamadas.append(tabla)
+        if tabla == "alembic_version_libraauth":
+            raise errors.UniqueViolation("simulada: se cayó la red")
+        return original(origen, destino, tabla, *a, **k)
+
+    monkeypatch.setattr(unir_bases, "_copiar_tabla", falla_en_la_tabla_de_version)
+    assert _correr(core, dominio, "unir", informe) == 1
+    assert "se deshizo" in capsys.readouterr().err and not informe.exists()
+    assert "usuarios" in llamadas  # llegó hasta el final: lo copiado antes se deshizo con la transacción
+    # Quedaron las tablas clonadas, vacías, y la tabla de versión sin la fila: nada «a medias» que parezca unido.
+    assert _fila(dominio, "SELECT count(*) FROM usuarios") == [(0,)] and _fila(dominio, "SELECT count(*) FROM clients") == [(0,)]
+    assert _fila(dominio, "SELECT count(*) FROM alembic_version_libraauth") == [(0,)]
+    assert _fila(dominio, f"SELECT estado FROM {unir_bases.TABLA_MARCA}") == [("iniciada",)]
+
+    # Reintentar: lo que dejó la corrida cortada no cuenta como «el dominio ya tenía libraauth».
+    monkeypatch.setattr(unir_bases, "_copiar_tabla", original)
+    assert _correr(core, dominio, "unir", informe) == 0
+    assert _foto(dominio, TABLAS_LIBRAAUTH + ["alembic_version_libraauth"]) == _foto(core, TABLAS_LIBRAAUTH + ["alembic_version_libraauth"])
+
+
+def test_libraauth_en_el_core_revertir_devuelve_lo_nuevo_y_no_toca_la_version(par_gestiolibra, tmp_path, capsys):
+    core, dominio = par_gestiolibra
+    informe = tmp_path / "union.json"
+    assert _correr(core, dominio, "unir", informe) == 0
+    with conectar(dominio) as c:
+        c.execute("INSERT INTO usuarios (username, nombre, email, password_hash, role, activo) VALUES ('recepcion', 'Recepción', '', 'h', 'operador', TRUE)")
+        c.execute("INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES (3, 'tok-c', '2026-12-03')")
+        c.execute("UPDATE alembic_version_libraauth SET version_num = '0004_futura'")  # libraauth-migrar upgrade --base dominio
+        c.commit()
+    capsys.readouterr()
+
+    assert _correr(core, dominio, "revertir", informe) == 0
+
+    assert _fila(core, "SELECT id, username FROM usuarios WHERE id > 2") == [(3, "recepcion")]
+    assert _fila(core, "SELECT id, user_id FROM password_reset_tokens WHERE id > 4") == [(5, 3)]
+    # La tabla de versión del core queda como estaba: no es un dato que se devuelva.
+    assert _fila(core, "SELECT version_num FROM alembic_version_libraauth") == [("0003_captcha_usados",)]
+
+
+def test_libraauth_en_el_core_con_usuarios_en_la_forma_del_motor(bases, plantilla, tmp_path):
+    """El otro orden de llegada: el motor creó `usuarios` y `auth_log` (texto) y `libraauth` sólo las que faltaban."""
+    core, dominio = _clon(bases, plantilla), bases.nueva()
+    _crear_libraauth(core, salvo=("usuarios", "auth_log"))
+    _armar_core(core)
+    _armar_dominio_gestiolibra(dominio)
+    estructura_core = _estructura(core, ["usuarios", "auth_log"])
+    assert estructura_core["usuarios"].columnas[1][1] == "text"
+
+    assert _correr(core, dominio, "unir", tmp_path / "u.json") == 0
+
+    assert _estructura(dominio, ["usuarios", "auth_log"]) == estructura_core
+    assert _foto(dominio, ["usuarios", "auth_log"]) == _foto(core, ["usuarios", "auth_log"])
+    assert _fila(dominio, "SELECT username FROM usuarios ORDER BY id") == [("admin",), ("cajero",)]
+
+
+@pytest.mark.parametrize(
+    "sentencias",
+    [
+        # Las dos cadenas de libraauth: la tabla de versión Y las tablas.
+        [*VERSION_LIBRAAUTH, *LIBRAAUTH["usuarios"]],
+        # Sólo la tabla de versión.
+        VERSION_LIBRAAUTH,
+        # Sólo los usuarios (el caso de siempre de un dominio de dos bases, pero con el core de libraauth).
+        LIBRAAUTH["usuarios"] + ["INSERT INTO usuarios VALUES (1, 'admin', 'Admin', '', 'h', 'admin', TRUE, now())"],
+    ],
+    ids=["version-y-tablas", "solo-version", "solo-usuarios"],
+)
+def test_libraauth_en_los_dos_no_se_une(par_gestiolibra, tmp_path, capsys, sentencias):
+    core, dominio = par_gestiolibra
+    _ejecutar(dominio, sentencias)
+    tablas_antes = _tablas(dominio)
+
+    codigos, v = _codigos(core, dominio)
+    assert "auth_en_los_dos" in codigos and not v.auth_en_el_core
+    mensaje = next(h.mensaje for h in v.errores if h.codigo == "auth_en_los_dos")
+    assert "dos juegos de usuarios" in mensaje and "no los mezcla" in mensaje
+
+    assert _correr(core, dominio, "unir", tmp_path / "u.json") == 1
+    assert "auth_en_los_dos" in capsys.readouterr().out
+    assert _tablas(dominio) == tablas_antes  # cortó antes de tocar: ni la marca ni el motor
+
+
+def test_clients_de_libragenda_sin_renombrar_pide_migrar_libragenda_y_no_toca_nada(bases, plantilla_con_auth, tmp_path, capsys):
+    core, dominio = _clon(bases, plantilla_con_auth), bases.nueva()
+    _armar_core(core)
+    _armar_dominio_gestiolibra(dominio, libragenda_nueva=False)
+    tablas_antes, foto_antes = _tablas(dominio), _foto(dominio)
+
+    codigos, v = _codigos(core, dominio)
+    assert codigos == {"clients_de_libragenda", "version_repetida"}
+    mensaje = next(h.mensaje for h in v.errores if h.codigo == "clients_de_libragenda")
+    assert "libragenda-migrar upgrade" in mensaje and "agenda_clients" in mensaje and "alembic_version_libragenda" in mensaje
+    assert "ver clients_de_libragenda" in next(h.mensaje for h in v.errores if h.codigo == "version_repetida")
+
+    assert _correr(core, dominio, "unir", tmp_path / "u.json") == 1
+    err = capsys.readouterr()
+    assert "clients_de_libragenda" in err.out and "libragenda-migrar upgrade" in err.out
+    assert _tablas(dominio) == tablas_antes and _foto(dominio) == foto_antes  # nada a mitad: ni la marca
+
+
+def test_una_clients_entera_en_el_dominio_sigue_siendo_un_choque_comun(bases, plantilla_con_auth):
+    """Sólo la de texto es «la de libragenda»: una `clients` con id entero es una tabla del producto con el nombre de la del motor."""
+    core, dominio = _clon(bases, plantilla_con_auth), bases.nueva()
+    _armar_core(core)
+    _ejecutar(
+        dominio,
+        ["CREATE TABLE clients (id SERIAL PRIMARY KEY, name TEXT)", "CREATE TABLE alembic_version_otra (version_num VARCHAR(32) PRIMARY KEY)"],
+    )
+    codigos, _ = _codigos(core, dominio)
+    assert codigos == {"choque_de_tablas"}
+
+
+def test_la_libragenda_renombrada_pasa_con_el_core_de_gestiolibra(par_gestiolibra):
+    core, dominio = par_gestiolibra
+    codigos, v = _codigos(core, dominio)
+    assert codigos == set() and v.ok and v.auth_en_el_core
+    assert v.auth_a_clonar.index("usuarios") < v.auth_a_clonar.index("password_reset_tokens")
+
+
+def test_libraauth_con_una_columna_de_identidad_no_se_clona(par_gestiolibra):
+    core, dominio = par_gestiolibra
+    _ejecutar(core, ["ALTER TABLE smtp_settings ALTER COLUMN id DROP DEFAULT", "ALTER TABLE smtp_settings ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY"])
+    codigos, v = _codigos(core, dominio)
+    assert codigos == {"auth_ddl_no_soportado"}
+    assert "smtp_settings.id" in v.errores[0].mensaje
+
+
+def test_libraauth_con_una_clave_foranea_a_una_tabla_que_no_es_suya_no_se_clona(par_gestiolibra):
+    core, dominio = par_gestiolibra
+    _ejecutar(core, ["ALTER TABLE smtp_settings ADD COLUMN cliente_id INTEGER REFERENCES clients(id)"])
+    codigos, v = _codigos(core, dominio)
+    assert codigos == {"auth_fk_externa"}
+    assert "smtp_settings.cliente_id → clients" in v.errores[0].mensaje
+
+
+def test_las_tablas_de_libraauth_incluyen_las_de_auth_del_motor():
+    assert set(unir_bases.TABLAS_DE_AUTH) <= set(unir_bases.TABLAS_DE_LIBRAAUTH)
+    assert set(unir_bases.TABLAS_DE_LIBRAAUTH) == set(TABLAS_LIBRAAUTH)
