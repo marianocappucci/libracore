@@ -601,9 +601,9 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
     #
     # 🔴 **La del core no se escribe para un producto de una sola base** (`url_de_instancia._UNA_SOLA_BASE`, ADR-084):
     # apuntaba a la misma URL que la del dominio y no decía nada, y `libracore-migrar`, `libraauth-migrar --base core` y las
-    # apps caen a la del dominio cuando falta. La excepción es el producto que todavía la exige
-    # (`_EXIGEN_LA_VARIABLE_DEL_CORE`, hoy VentaLibra). El histórico `*_LIBRACORE_DB_PATH` va con ella: sin la normalizada
-    # no tiene sentido. El del dominio (`DATABASE_URL` y compañía) se escribe siempre.
+    # apps caen a la del dominio cuando falta (VentaLibra también desde ventalibra#693; la excepción que la cubría se borró en
+    # v1.195.1). El histórico `*_LIBRACORE_DB_PATH` va con ella: sin la normalizada no tiene sentido. El del dominio
+    # (`DATABASE_URL` y compañía) se escribe siempre.
     lineas = []
     for (var, base), core in zip(cfg.db_urls, (False, True)):
         if core and not escribe_la_variable_del_core(cfg.container_prefix):

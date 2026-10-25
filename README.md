@@ -131,9 +131,9 @@ en vez de adivinar. Si el producto renombró su tabla de módulos (GestioLibra: 
 motor en la base unida), lo declara en `provisioning.configure(tabla_modulos="gestiolibra_modulos")`; sin declararlo es `modulos`.
 
 **El alta no escribe más la variable del core** para un producto de la lista (ADR-084): el compose de una instancia nueva lleva sólo
-las del dominio (`<PREFIJO>_DATABASE_URL` y su histórico), porque la del core apuntaba a la misma URL y no decía nada. La excepción es
-`url_de_instancia._EXIGEN_LA_VARIABLE_DEL_CORE` (hoy VentaLibra, cuya app todavía la exige); `escribe_la_variable_del_core(prefijo)`
-dice cuál es el caso. Un producto fuera de la lista (core aparte) la sigue recibiendo.
+las del dominio (`<PREFIJO>_DATABASE_URL` y su histórico), porque la del core apuntaba a la misma URL y no decía nada (VentaLibra
+incluida desde v1.195.1, ventalibra#693). `escribe_la_variable_del_core(prefijo)` dice cuál es el caso. Un producto fuera de la lista
+(core aparte) la sigue recibiendo.
 
 ```
 libracore-unir-bases --prefijo libraclub verificar --informe verificacion.json   # sólo lectura

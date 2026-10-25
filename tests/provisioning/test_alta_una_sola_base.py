@@ -10,7 +10,7 @@ Lo que se fija:
   escribe el `CREATE DATABASE <producto>_core`;
 - el compose lleva sólo las variables del dominio (`<P>_DATABASE_URL` y el histórico `DATABASE_URL`): **desde ADR-084 el alta no
   escribe más `<P>_LIBRACORE_DATABASE_URL` ni `<P>_LIBRACORE_DB_PATH`** para un producto de una sola base (apuntaban a la misma
-  URL y no decían nada), salvo VentaLibra, cuya app todavía las exige;
+  URL y no decían nada); VentaLibra incluida desde v1.195.1 (ventalibra#693: su app cae al dominio sin la variable);
 - con ese entorno, `libracore-migrar` resuelve el core en la base del dominio y migra **ahí**, de verdad, contra PostgreSQL;
 - un producto que NO figura en la lista y declara el core aparte sigue naciendo con dos bases (el control).
 """
@@ -122,23 +122,13 @@ def test_los_que_ya_eran_de_una_sola_base_no_cambian(tmp_path, sin_docker, prefi
     assert cfg.tabla_modulos == "modulos"
 
 
-@pytest.mark.parametrize("prefijo", ["contalibra", "restolibra", "libradesk", "libracargo", "libraclub", "gestiolibra", "medlibra"])
+@pytest.mark.parametrize("prefijo", ["contalibra", "restolibra", "ventalibra", "libradesk", "libracargo", "libraclub", "gestiolibra", "medlibra"])
 def test_ningun_producto_de_una_sola_base_que_arranca_sin_ella_recibe_la_variable_del_core(tmp_path, sin_docker, prefijo):
-    """ADR-084. Los siete se midieron sobre `origin/main` (2026-10-25): sin la variable arrancan con el core en la base del
+    """ADR-084. Los ocho se midieron sobre `origin/main` (2026-10-25): sin la variable arrancan con el core en la base del
     dominio. El del dominio se escribe siempre."""
     _, _, _, pares = _alta(tmp_path, prefijo)
     assert [k for k in pares if "LIBRACORE" in k] == []
     assert pares[f"{prefijo.upper()}_DATABASE_URL"].endswith(f"/{prefijo}")
-
-
-def test_ventalibra_sigue_recibiendo_la_variable_del_core_porque_su_app_todavia_la_exige(tmp_path, sin_docker):
-    """`app/main.py` de VentaLibra resuelve el core con `url_de_instancia("ventalibra", core=True, default="./data/ventalibra_libracore.db")`:
-    sin la variable le pasa una ruta SQLite a `billing.configure`, que la rechaza. Mientras sea así su alta las escribe, las dos
-    (la normalizada y el histórico `_DB_PATH`), a la misma URL que la del dominio."""
-    _, _, _, pares = _alta(tmp_path, "ventalibra")
-    dominio = pares["VENTALIBRA_DATABASE_URL"]
-    assert pares["VENTALIBRA_LIBRACORE_DATABASE_URL"] == dominio
-    assert pares["VENTALIBRA_LIBRACORE_DB_PATH"] == dominio
 
 
 def test_un_producto_nuevo_con_el_core_aparte_sigue_recibiendo_la_variable_del_core(tmp_path, sin_docker):
