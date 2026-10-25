@@ -111,10 +111,12 @@ entre dos bases; todo el resto trabaja sobre una conexión. Cómo está armado:
   copia (`orden_topologico`, con las autorreferencias aparte), qué tablas se vacían por ser semillas (`SEMILLAS`), y el resumen de
   cada tabla (`resumen_de`: filas, sumas de las columnas `NUMERIC` y de `COLUMNAS_DE_DINERO`, `max(id)` y una huella de contenido que
   no depende del orden ni del *collation*). Las dos conexiones son de sólo lectura y `REPEATABLE READ`.
-- **`unir`**: marca `iniciada` en el dominio (con la foto de sus tablas) → `libracore-migrar upgrade` y, si el core tiene la cadena,
+- **`unir`**: marca `iniciada` en el dominio (con la foto de sus tablas) → si `libraauth` vive en el core (`Verificacion.auth_en_el_core`,
+  ADR-082), `_clonar_estructura` crea antes en el dominio las tablas de auth con la estructura leída del catálogo del core (`_ddl_de`:
+  una transacción aparte) → `libracore-migrar upgrade` y, si el core tiene la cadena,
   la de `libracommerce` (`Cadena.subir`; `libracore.db.core` queda como estaba) → **una transacción** que bloquea las tablas destino,
   vacía semillas, copia con `COPY` en orden topológico, ajusta secuencias, valida claves foráneas, compara cada tabla contra el
-  core y marca `unida` con el informe → `union.json`.
+  core (y copia `alembic_version_libraauth`, aparte de las tablas) y marca `unida` con el informe → `union.json`.
 - **`revertir`**: lo inverso, sobre el core, para las filas con `id` mayor al del informe.
 - **Estado**: ninguno fuera de las dos bases y del `union.json`. La marca del dominio (`libracore_union_bases`) es lo que hace
   idempotente a `unir` y lo que recuerda qué tablas eran del dominio antes de la corrida.

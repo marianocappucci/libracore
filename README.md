@@ -122,7 +122,8 @@ Alembic y SQLAlchemy **no son dependencias de runtime**: viven en el extra
 Los productos de la familia corren con **una** base (ContaLibra, RestoLibra, VentaLibra, LibraDesk, LibraCargo) o con **dos**: la
 del dominio y la del core (`<producto>_core`, con el esquema de este motor). `libracore-unir-bases` pasa de dos a una (ADR-078): crea
 en la base del dominio las tablas del motor, copia las filas del core **conservando los ids** y deja un informe con el que se
-compara. Lo usa LibraClub; GestioLibra y MedLibra, cuando resuelvan lo que les falta (ADR-078, «Consecuencias»).
+compara. Lo usa LibraClub; GestioLibra y MedLibra, cuando resuelvan lo que les falta (ADR-078, «Consecuencias»; ADR-082: en ellos
+`libraauth` vive en el core).
 
 ```
 libracore-unir-bases --prefijo libraclub verificar --informe verificacion.json   # sólo lectura
@@ -161,6 +162,9 @@ Instancia por instancia, cada una con su OK. Nada de esto se hace desde el motor
    | `choque_de_tablas` | una tabla del producto tiene el nombre de una del motor (`modulos`, `depositos`) | se renombra en el producto |
    | `fk_colgada` | filas del core apuntan a algo que no estará en el dominio (típico: `usuario_id` sin fila en `usuarios`) | se resuelve el dato antes; no se borra el core |
    | `usuario_distinto` | un id de usuario es otra persona en el dominio | se revisa a mano: no se mezclan usuarios |
+   | `auth_en_los_dos` | `libraauth` tiene su cadena en el core **y** el dominio ya tiene su tabla de versión o sus tablas: dos juegos de usuarios | se decide cuál vale y se retira el otro (con respaldo); no se mezclan |
+   | `clients_de_libragenda` | el dominio todavía tiene la `clients` de `libragenda` (id de texto, hasta v0.13) y choca con la del motor | `libragenda-migrar upgrade` (≥ v0.14.0: `agenda_clients` y `alembic_version_libragenda`) y subir el pin del producto |
+   | `auth_ddl_no_soportado` / `auth_fk_externa` | una tabla de `libraauth` del core tiene columna de identidad o generada, o apunta a una tabla que no es de auth | se mira a mano: esta herramienta no la sabe clonar |
    | `core_desactualizado` / `core_sin_version` | el core no está en la cabeza de `libracore` | `libracore-migrar upgrade --prefijo <p>` sobre el core |
    | `falta_libracommerce` | el core usa la cadena de `libracommerce` y el entorno no la tiene | correr desde la imagen del producto |
    | `conversion_fallida` / `auditoria_no_entra` | un `ts` de `actividad_log` que no se parsea, o un valor más largo que el `varchar(n)` del dominio | se corrige la fila en el core (con respaldo) y se vuelve a verificar |
@@ -181,7 +185,15 @@ Instancia por instancia, cada una con su OK. Nada de esto se hace desde el motor
   sin redondear `NUMERIC` ni reescribir fechas. Después, `setval` de cada secuencia a `max(id)`.
 - **`usuarios`, `auth_log` y las tablas de `libraauth` no se copian: manda el dominio** (en ContaLibra y VentaLibra es una sola
   tabla, la que llegó primero). Se exige que cada `usuario_id` del core exista en el dominio y sea la misma persona (mismo
-  `username`).
+  `username`). **Salvo que `libraauth` viva en el core** (GestioLibra y MedLibra, ADR-082): ver el punto siguiente.
+- **`libraauth` en el core (ADR-082).** Si el core tiene `alembic_version_libraauth` y el dominio no tiene ni esa tabla ni
+  ninguna de las de auth, `unir` **clona del core** la estructura de las tablas de `libraauth` (`usuarios`, `auth_log`,
+  `password_reset_tokens`, `smtp_settings`, `demo_codigos`, `aceptaciones_terminos`, `secretos_instancia`,
+  `libraauth_captcha_usados`: secuencias, claves, índices y valores por defecto) **antes** de la cadena del motor, y las copia con
+  las demás junto con `alembic_version_libraauth`. Se clona y no se corre la cadena de `libraauth` porque `usuarios` y `auth_log`
+  tienen la forma de quien llegó primero a cada base. Si el dominio también tiene `libraauth`, `verificar` corta
+  (`auth_en_los_dos`). Después de unir, `libraauth-migrar upgrade --base dominio` sigue desde la revisión copiada. `union.json`
+  guarda la tabla de versión en `versiones_copiadas`, no en `tablas`: `revertir` no la toca.
 - **`actividad_log` (auditoría compartida): se agrega, no se copia.** Si está en las dos bases (el listener de `libraauth` la crea en
   el dominio con `ts TIMESTAMP` y `entidad_id VARCHAR`; `libracommerce-migrar` en el core con `ts TEXT` y `entidad_id INTEGER`),
   manda la forma del dominio: las filas del core se **agregan** convirtiendo los tipos y con ids nuevos (nada los referencia),
@@ -193,6 +205,9 @@ Instancia por instancia, cada una con su OK. Nada de esto se hace desde el motor
   fila en el destino es un dato y corta la unión.
 - **Una marca en el dominio**, `libracore_union_bases` (una fila): `iniciada` con la foto de las tablas que tenía, y `unida` con
   el informe. Los `alembic revision --autogenerate` de los productos tienen que ignorarla, como ya ignoran las del motor.
+- **Antes de unir GestioLibra o MedLibra:** `libragenda` ≥ v0.14.0 aplicada (renombra su `clients` a `agenda_clients` y usa
+  `alembic_version_libragenda`; si no, `clients_de_libragenda`), la `modulos` del producto renombrada (`choque_de_tablas`) y el core en
+  la cabeza de `libracore`.
 
 ### `revertir`: qué hace y qué no
 

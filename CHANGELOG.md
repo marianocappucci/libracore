@@ -8,6 +8,19 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — `libracore-unir-bases` cuando `libraauth` vive en el core: GestioLibra y MedLibra (propuesta: v1.193.0)
+
+ADR-082. **Sin migración y sin tocar el esquema.** Sólo cambia `libracore-unir-bases`; es el PR 2 del plan de GestioLibra, MedLibra y LibraDesk en la versión de escritorio. LibraCargo y LibraClub (`libraauth` en el dominio) no cambian.
+- **`libraauth` en el core.** Si el core tiene `alembic_version_libraauth` y el dominio no tiene ni esa tabla ni ninguna de las de auth, `unir` **clona** en el dominio la estructura de las tablas de `libraauth` del core (`usuarios`, `auth_log`, `password_reset_tokens`, `smtp_settings`, `demo_codigos`, `aceptaciones_terminos`, `secretos_instancia`, `libraauth_captcha_usados`: secuencias, claves primarias, únicas y foráneas con su `ON DELETE`, índices y valores por defecto), antes de la cadena del motor, y las **copia** con las demás (ids, secuencias, conteo, suma y huella) junto con `alembic_version_libraauth`. Antes: `cadena_desconocida`.
+- **Si las dos bases tienen `libraauth`, no se une** (`auth_en_los_dos`): dos juegos de usuarios no se mezclan. **Cambia un aviso a impedimento:** `alembic_version_libraauth` en las dos bases era el aviso `version_auth_en_los_dos` («manda el dominio»).
+- `clients` de `libragenda` (id de texto, hasta v0.13) todavía en el dominio: `verificar` corta con `clients_de_libragenda` y pide correr antes `libragenda-migrar upgrade` (v0.14.0 la renombra a `agenda_clients`), en lugar del `choque_de_tablas` genérico.
+- Nuevos cortes, antes de tocar nada: `auth_ddl_no_soportado` (identidad, columna generada o exclusión en una tabla de auth) y `auth_fk_externa` (una tabla de auth que apunta a una que no es de auth). Aviso `auth_se_copia`.
+- `union.json` suma `cadenas.libraauth` y `versiones_copiadas` (la tabla de versión de `libraauth`, aparte de `tablas` para que `revertir` no la toque); `verificar --informe` suma `libraauth_en_el_core`. El formato sigue en versión 1.
+
+### Para los productos
+- GestioLibra y MedLibra: nada que cambiar acá. Para unir sus bases hace falta antes `libragenda` ≥ v0.14.0 aplicada, la `modulos` del producto renombrada y el core en la cabeza; el procedimiento es el del README, «Unir las dos bases de un producto».
+
+
 ## [Unreleased] — Un ciclo de bloqueos con el candado del esquema falla en 1 s con `deadlock detected`, no a los 120 s (propuesta: v1.192.1)
 
 ADR-081. **Sin migración, sin API nueva.** Medido en LibraClub con `WEB_CONCURRENCY=2`: un worker murió con `TimeoutError: 'libracommerce.esquema' ... 120 s`.
