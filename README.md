@@ -119,11 +119,16 @@ Alembic y SQLAlchemy **no son dependencias de runtime**: viven en el extra
 
 ## Unir las dos bases de un producto
 
-Los productos de la familia corren con **una** base (ContaLibra, RestoLibra, VentaLibra, LibraDesk, LibraCargo) o con **dos**: la
-del dominio y la del core (`<producto>_core`, con el esquema de este motor). `libracore-unir-bases` pasa de dos a una (ADR-078): crea
-en la base del dominio las tablas del motor, copia las filas del core **conservando los ids** y deja un informe con el que se
-compara. Lo usa LibraClub; GestioLibra y MedLibra, cuando resuelvan lo que les falta (ADR-078, «Consecuencias»; ADR-082: en ellos
-`libraauth` vive en el core).
+Los productos de la familia corren con **una** base: la del dominio, con el esquema de este motor adentro. Hasta ADR-083 (2026-10-25) GestioLibra
+y MedLibra llevaban **dos** (la del dominio y `<producto>_core`); `libracore-unir-bases` pasa de dos a una (ADR-078): crea en la base del
+dominio las tablas del motor, copia las filas del core **conservando los ids** y deja un informe con el que se compara. Lo usó LibraClub
+y lo usan GestioLibra y MedLibra (ADR-082: en ellos `libraauth` vive en el core).
+
+**`url_de_instancia._UNA_SOLA_BASE` nombra a los productos de una sola base** (hoy los ocho, ADR-083). Es una lista y no una deducción:
+con ella, `libracore-migrar` y `libraauth-migrar --base core` caen a la base del dominio cuando no hay `<PREFIJO>_LIBRACORE_DATABASE_URL`
+y el alta (`provisioning`) crea **una** base, aunque el producto siga pasando `base_core_separada=True`. Un producto que no figura falla
+en vez de adivinar. Si el producto renombró su tabla de módulos (GestioLibra: `gestiolibra_modulos`, para no chocar con la `modulos` del
+motor en la base unida), lo declara en `provisioning.configure(tabla_modulos="gestiolibra_modulos")`; sin declararlo es `modulos`.
 
 ```
 libracore-unir-bases --prefijo libraclub verificar --informe verificacion.json   # sólo lectura
@@ -173,7 +178,8 @@ Instancia por instancia, cada una con su OK. Nada de esto se hace desde el motor
    idempotente: correrlo de nuevo sobre una base ya unida no cambia nada y lo dice. Si se corta a mitad, la transacción no deja
    nada copiado y se reintenta.
 6. **Cambiar el compose** (con una copia del anterior): la variable del core (`<PREFIJO>_LIBRACORE_DATABASE_URL`) apunta a la base
-   **del dominio**. Cuando el producto figure en `_UNA_SOLA_BASE` (otro PR), la variable se saca.
+   **del dominio**. Con el producto en `_UNA_SOLA_BASE` (desde ADR-083 lo están todos) la variable se puede sacar: sin ella el core
+   se resuelve en el dominio. Se saca en el despliegue del producto, no antes: una instancia que todavía no se unió la necesita.
 7. **Levantar** la app y **comparar con el informe**: los conteos y las sumas de `union.json` contra las tablas del dominio, la
    pantalla de inicio sin errores, y una operación de caja de prueba en una transacción que se revierte.
 8. **El core viejo se conserva intacto** (es la red de `revertir`). Se borra recién con un OK aparte, tras un ciclo de uso.

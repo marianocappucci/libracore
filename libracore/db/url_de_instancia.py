@@ -7,7 +7,8 @@ convenciones entre seis productos, y dos de ellas mentían:
 | Producto | Dominio | LibraCore |
 |---|---|---|
 | contalibra, restolibra | `<PREFIJO>_DATABASE_URL` | (la misma) |
-| libradesk, gestiolibra, medlibra | `DATABASE_URL` | — / `<PREFIJO>_LIBRACORE_DB_PATH` |
+| libradesk | `DATABASE_URL` | — (una sola base) |
+| gestiolibra, medlibra | `DATABASE_URL` | — (una sola base desde ADR-083) / `<PREFIJO>_LIBRACORE_DB_PATH` histórico |
 | ventalibra | `VENTALIBRA_DB_PATH` | `VENTALIBRA_LIBRACORE_DB_PATH` |
 | libracargo, libraclub | `DATABASE_URL` | `<PREFIJO>_LIBRACORE_DATABASE_URL` |
 
@@ -51,6 +52,10 @@ _HISTORICOS = {
     ("libracargo", False): ("DATABASE_URL",),
     ("libraclub", False): ("DATABASE_URL",),
     ("ventalibra", False): ("VENTALIBRA_DB_PATH",),
+    # 🔴 GestioLibra y MedLibra siguen acá a propósito (ADR-083): son de una sola base, pero sus composes de dev y demo
+    # todavía traen `<PREFIJO>_LIBRACORE_DB_PATH` y su `app/config.py` lo lee por `url_de_instancia(..., core=True)`.
+    # Sacarlos antes de que los productos saquen la variable (PR 6) haría que una instancia que todavía no se unió caiga
+    # al dominio en silencio. Se borran juntos, en el PR que saca la variable de los composes.
     ("gestiolibra", True): ("GESTIOLIBRA_LIBRACORE_DB_PATH",),
     ("medlibra", True): ("MEDLIBRA_LIBRACORE_DB_PATH",),
     ("ventalibra", True): ("VENTALIBRA_LIBRACORE_DB_PATH",),
@@ -63,9 +68,9 @@ _HISTORICOS = {
 #:
 #: **Se nombra, no se deduce** (2026-09-16, decisión del humano). Hasta esa fecha
 #: la regla era "si la variable del core no existe, el producto no separa las
-#: bases". Eso es cierto para estos cuatro y falso para los otros cuatro:
-#: Gestiolibra, MedLibra, LibraCargo y LibraClub llevan el core APARTE, y ahí la
-#: ausencia de la variable no dice "una sola base" sino "falta configuración".
+#: bases". Eso era cierto para unos y falso para otros: los que llevaban el core
+#: APARTE (Gestiolibra, MedLibra, LibraCargo y LibraClub) y ahí la ausencia de la
+#: variable no dice "una sola base" sino "falta configuración".
 #: Caer al dominio migraría la base equivocada **sin fallar**. Se volvió urgente
 #: al sumar `DATABASE_URL` como histórico de LibraCargo y LibraClub: antes su
 #: dominio no resolvía y la caída fallaba por casualidad.
@@ -75,8 +80,18 @@ _HISTORICOS = {
 #:
 #: **2026-10-22: se suman LibraCargo y LibraClub** (ADR-078, decisión del humano «una sola base por producto»). LibraCargo
 #: es una sola base desde el 2026-10-05 (ADR-029 de LibraCargo) y LibraClub desde que `libracore-unir-bases` unió
-#: `libraclub-dev` y `libraclub-demo`. Quedan con el core aparte GestioLibra y MedLibra, hasta que se unan.
-_UNA_SOLA_BASE = frozenset({"contalibra", "restolibra", "ventalibra", "libradesk", "libracargo", "libraclub"})
+#: `libraclub-dev` y `libraclub-demo`.
+#:
+#: **2026-10-25: se suman GestioLibra y MedLibra** (ADR-083, PR 5 del plan de escritorio). Con `agenda_clients` y
+#: `alembic_version_libragenda` (libragenda v0.14.0), su `modulos` renombrada y `libraauth` copiado por
+#: `libracore-unir-bases` (ADR-082), las instancias de prueba (dev y demo de cada uno) se unen con esa herramienta,
+#: con respaldo y OK por instancia, **antes** de que el producto tome este pin.
+#: Desde acá una instancia nueva de estos dos nace con UNA base (`ProductConfig.db_urls`) y, sin la variable del core,
+#: `libracore-migrar` y `libraauth-migrar --base core` caen a la del dominio. **Ya no queda ningún producto con el core
+#: aparte**; la lista sigue nombrada para que un producto nuevo falle en vez de adivinar.
+_UNA_SOLA_BASE = frozenset({
+    "contalibra", "restolibra", "ventalibra", "libradesk", "libracargo", "libraclub", "gestiolibra", "medlibra",
+})
 
 
 def comparte_base_con_el_dominio(prefijo: str) -> bool:

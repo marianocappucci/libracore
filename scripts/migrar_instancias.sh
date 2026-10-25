@@ -58,8 +58,11 @@ enmascarar() { printf '%s' "$1" | sed -E 's#//[^@/]*@#//***:***@#'; }
 url_de() {
   # 🔴 **La base de LIBRACORE, que no siempre es la del producto.**
   #
-  # Gestiolibra y MedLibra corren DOS bases: la del dominio, que es de
-  # LibraGenda, y una propia de LibraCore (`<producto>_core`). La versión
+  # Gestiolibra y MedLibra corrían DOS bases hasta el 2026-10-25 (ADR-083): la
+  # del dominio, que es de LibraGenda, y una propia de LibraCore
+  # (`<producto>_core`). Una instancia que todavía no se unió sigue así, y
+  # una unida ya no trae la variable del core: cae al segundo bucle, que es
+  # el dominio, donde ahora vive todo. La versión
   # anterior de esta función tomaba la primera variable en orden alfabético, y
   # `DATABASE_URL` viene antes que `GESTIOLIBRA_LIBRACORE_DB_PATH`: elegía la
   # base equivocada.
