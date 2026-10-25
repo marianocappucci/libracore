@@ -41,6 +41,20 @@ def test_el_historico_sigue_andando_mientras_no_este_el_nuevo():
         == "postgresql://x/core"
 
 
+@pytest.mark.parametrize("prefijo", ["gestiolibra", "medlibra"])
+def test_los_historicos_del_core_de_gestiolibra_y_medlibra_siguen_hasta_que_los_productos_saquen_la_variable(prefijo):
+    """ADR-083: son de una sola base, pero sus composes de dev y demo todavía traen `<PREFIJO>_LIBRACORE_DB_PATH` y su
+    `app/config.py` lo lee con `url_de_instancia(..., core=True)`. Sacar el histórico antes del PR 6 haría que una instancia
+    todavía no unida cayera al dominio EN SILENCIO. Si este test se pone rojo porque alguien borró la línea de `_HISTORICOS`,
+    primero hay que confirmar que ningún compose ni `app/config.py` de los dos productos lo use."""
+    var = f"{prefijo.upper()}_LIBRACORE_DB_PATH"
+    assert var in nombres_aceptados(prefijo, core=True)
+    assert url_de_instancia(prefijo, core=True, entorno={var: f"postgresql://x/{prefijo}_core"}) \
+        == f"postgresql://x/{prefijo}_core"
+    # y el dominio no toma ese nombre por casualidad
+    assert var not in nombres_aceptados(prefijo)
+
+
 def test_una_variable_vacia_cuenta_como_no_puesta():
     """Un `FOO=` en un compose es casi siempre una interpolacion que no ocurrio.
     Tomarlo como bueno manda a la app a conectarse a la cadena vacia y el error
@@ -127,8 +141,8 @@ def test_los_de_una_sola_base_son_exactamente_los_medidos():
     todos = ["contalibra", "restolibra", "ventalibra", "libradesk",
              "gestiolibra", "medlibra", "libracargo", "libraclub"]
     una_sola = {p for p in todos if comparte_base_con_el_dominio(p)}
-    # 2026-10-22: LibraCargo y LibraClub, unidas (ADR-078).
-    assert una_sola == {"contalibra", "restolibra", "ventalibra", "libradesk", "libracargo", "libraclub"}
+    # 2026-10-22: LibraCargo y LibraClub, unidas (ADR-078). 2026-10-25: GestioLibra y MedLibra (ADR-083): los ocho.
+    assert una_sola == set(todos)
     # un prefijo desconocido NO comparte base: el default es fallar, no adivinar
     assert comparte_base_con_el_dominio("productonuevo") is False
     assert comparte_base_con_el_dominio("") is False

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from . import (
+    TABLA_DE_MODULOS,
     MigracionesIlegibles,
     _npm_api,
     _plans,
@@ -35,6 +36,7 @@ from . import (
     npm_available,
     resolver_plan,
     sin_root,
+    tabla_de_modulos_valida,
     tokens_instancia,
 )
 
@@ -376,8 +378,8 @@ def _diagnostico_contenedor(container: str) -> str:
 
 
 def _esperar_tabla_en_sidecar(sidecar: str, base: str, usuario: str,
-                              timeout: int = 45) -> bool:
-    """Espera a que la app cree la tabla `modulos` DENTRO del sidecar.
+                              timeout: int = 45, tabla: str = TABLA_DE_MODULOS) -> bool:
+    """Espera a que la app cree la tabla de módulos (`modulos`, o `tabla`: ADR-083) DENTRO del sidecar.
 
     🔴 **El timeout tiene que entrar en el presupuesto del proxy.** Hasta el
     2026-08-13 eran 90 s, exactamente el `proxy_read_timeout` de Nginx Proxy
@@ -407,12 +409,14 @@ def _esperar_tabla_en_sidecar(sidecar: str, base: str, usuario: str,
     """
     import time
 
+    # Se interpola en SQL: validado como identificador (`ValueError` antes de tocar Docker).
+    tabla = tabla_de_modulos_valida(tabla)
     t0 = time.time()
     while time.time() - t0 < timeout:
         r = subprocess.run(
             ["docker", "exec", sidecar, "psql", "-U", usuario, "-d", base, "-tAc",
              "select count(*) from information_schema.tables "
-             "where table_schema='public' and table_name='modulos'"],
+             f"where table_schema='public' and table_name='{tabla}'"],
             capture_output=True, text=True,
         )
         if r.returncode == 0 and r.stdout.strip() == "1":
@@ -438,12 +442,17 @@ def _aplicar_plan_en_contenedor(container: str, variable: str, plan: str) -> boo
     return r.returncode == 0
 
 
-def _aplicar_adicionales_en_contenedor(container: str, variable: str, modulos: dict) -> bool:
+def _aplicar_adicionales_en_contenedor(container: str, variable: str, modulos: dict, tabla: str = TABLA_DE_MODULOS) -> bool:
     """Prende los módulos de los adicionales contratados (`{módulo: bool}`) corriendo `provisioning.aplicar_modulos_de_adicionales` DENTRO del
-    contenedor, igual que el plan y por el mismo motivo: desde el host la URL de la base no resuelve, y no se pasa por línea de comando."""
+    contenedor, igual que el plan y por el mismo motivo: desde el host la URL de la base no resuelve, y no se pasa por línea de comando.
+
+    La tabla (ADR-083) viaja en el código: dentro del contenedor `configure()` no corrió. **Sólo se pasa `tabla=` si no es `modulos`**: la
+    imagen de un producto que todavía no subió el pin no la acepta, y a los que no renombraron nada no les cambia ni un carácter del comando."""
+    tabla = tabla_de_modulos_valida(tabla)
+    extra = "" if tabla == TABLA_DE_MODULOS else f", tabla={tabla!r}"
     codigo = (
         "import os; from libracore.provisioning import aplicar_modulos_de_adicionales; "
-        f"aplicar_modulos_de_adicionales(os.environ[{variable!r}], {modulos!r})"
+        f"aplicar_modulos_de_adicionales(os.environ[{variable!r}], {modulos!r}{extra})"
     )
     r = subprocess.run(["docker", "exec", container, "python3", "-c", codigo], capture_output=True, text=True)
     return r.returncode == 0
@@ -496,8 +505,8 @@ def _prender_adicionales(adicionales: dict, plans, slug: str, aplicar, log) -> N
     log(f"[OK] Adicionales prendidos: {', '.join(sorted(adicionales))}.")
 
 
-def _esperar_db_lista(db_path, timeout: int = 25) -> bool:
-    """Espera a que la instancia recién levantada cree su DB y la tabla `modulos`.
+def _esperar_db_lista(db_path, timeout: int = 25, tabla: str = TABLA_DE_MODULOS) -> bool:
+    """Espera a que la instancia recién levantada cree su DB y la tabla de módulos (`modulos`, o `tabla`: ADR-083).
 
     Sólo para SQLite: contra PostgreSQL hay que preguntar desde adentro —ver
     `_esperar_tabla_en_sidecar`—.
@@ -505,13 +514,14 @@ def _esperar_db_lista(db_path, timeout: int = 25) -> bool:
     import sqlite3
     import time
 
+    tabla = tabla_de_modulos_valida(tabla)
     t0 = time.time()
     while time.time() - t0 < timeout:
         if Path(db_path).exists():
             try:
                 con = sqlite3.connect(str(db_path))
                 row = con.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='modulos'"
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tabla,)
                 ).fetchone()
                 con.close()
                 if row:
@@ -1178,7 +1188,11 @@ services:
         #
         # El plan va contra la PRIMERA de `db_urls`: ahí vive el `modulos` que
         # el producto lee. En los productos con dos bases la tabla existe en
-        # las dos y sólo la del dominio tiene filas.
+        # las dos y sólo la del dominio tiene filas. (Con una sola base, como
+        # desde ADR-083 en toda la familia, es la misma base; si el producto
+        # renombró la suya —`gestiolibra_modulos`— `cfg.tabla_modulos` dice cuál
+        # esperar, porque la `modulos` del motor está ahí al lado y existe
+        # siempre: sin el nombre, la espera daría por lista una tabla ajena.)
         # 🔴 **Que el plan no se aplique NO puede ser un `[WARN]`.** Cada producto
         # siembra su tabla `modulos` con un default, y ese default es el plan MÁS
         # ALTO con todo habilitado (`plan="premium"` en
@@ -1191,12 +1205,16 @@ services:
         # regala al cliente los diez módulos y no deja rastro.
         if cfg.usa_postgres:
             variable, base = cfg.db_urls[0]
+            # La tabla de módulos del producto (ADR-083): `modulos` salvo que `configure(tabla_modulos=...)` diga otra. Sólo se
+            # pasa si es distinta, así a los demás no les cambia ni la llamada (y los dobles de los tests siguen valiendo).
+            tabla = {} if cfg.tabla_modulos == TABLA_DE_MODULOS else {"tabla": cfg.tabla_modulos}
             listo = _esperar_tabla_en_sidecar(
-                f"{container}-postgres", base, cfg.container_prefix
+                f"{container}-postgres", base, cfg.container_prefix, **tabla
             )
             if listo and _aplicar_plan_en_contenedor(container, variable, plan):
                 log(f"[OK] Plan '{plan}' aplicado.")
-                _prender_adicionales(adicionales, plans, slug, lambda m: _aplicar_adicionales_en_contenedor(container, variable, m), log)
+                _prender_adicionales(adicionales, plans, slug,
+                                     lambda m: _aplicar_adicionales_en_contenedor(container, variable, m, **tabla), log)
             elif listo:
                 raise AltaIncompleta(
                     f"La instancia '{slug}' se creó y su base está lista, pero no se "
@@ -1212,12 +1230,13 @@ services:
                 )
         else:
             db_path = data_dir / cfg.db_filename
-            if _esperar_db_lista(db_path):
+            tabla = {} if cfg.tabla_modulos == TABLA_DE_MODULOS else {"tabla": cfg.tabla_modulos}
+            if _esperar_db_lista(db_path, **tabla):
                 plans.aplicar_plan_en_db(str(db_path), plan)
                 log(f"[OK] Plan '{plan}' aplicado.")
                 from .. import provisioning
                 _prender_adicionales(adicionales, plans, slug,
-                                     lambda m: provisioning.aplicar_modulos_de_adicionales(db_path, m) or True, log)
+                                     lambda m: provisioning.aplicar_modulos_de_adicionales(db_path, m, **tabla) or True, log)
             else:
                 raise AltaIncompleta(
                     f"La instancia '{slug}' se creó pero su base nunca se armó: "

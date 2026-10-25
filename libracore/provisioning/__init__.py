@@ -36,6 +36,28 @@ from pathlib import Path
 #: Ver `ProductConfig.clientes_dir` para la precedencia.
 CLIENTES_DIR_ENV = "LIBRA_CLIENTES_DIR"
 
+#: La tabla de módulos que el alta espera y escribe cuando el producto no declara otra: la `modulos` del motor
+#: (`libracore.db.schema`) o la propia de Contalibra, Restolibra, VentaLibra y LibraDesk. Ver `ProductConfig.tabla_modulos`.
+TABLA_DE_MODULOS = "modulos"
+
+_IDENTIFICADOR_SQL = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+
+
+def tabla_de_modulos_valida(nombre) -> str:
+    """El nombre de la tabla de módulos de un producto, o `ValueError` si no es un identificador SQL seguro.
+
+    🔴 **Se interpola en SQL** (`INSERT INTO <tabla> ...`, `information_schema ... table_name='<tabla>'`): los
+    identificadores no se parametrizan. Por eso sólo se aceptan minúsculas, dígitos y `_` (sin comillas, espacios ni
+    punto: nada de `esquema.tabla`), que empiecen con letra o `_` y de hasta 63 caracteres, el máximo de PostgreSQL.
+    Minúsculas a propósito: PostgreSQL pliega a minúsculas lo que no va entre comillas y `information_schema` guarda el
+    nombre ya plegado, así que `Gestiolibra_Modulos` crearía la tabla de un nombre y la espera preguntaría por otro."""
+    if not isinstance(nombre, str) or not _IDENTIFICADOR_SQL.fullmatch(nombre):
+        raise ValueError(
+            f"Nombre de tabla de módulos inválido: {nombre!r}. Tiene que ser un identificador SQL en minúsculas "
+            "(letras, dígitos y _; hasta 63 caracteres; sin esquema ni comillas), por ejemplo 'gestiolibra_modulos'."
+        )
+    return nombre
+
 # requirements.txt de cada producto depende de libracore (paquete interno
 # privado, ver wiki/entities/libracore.md) vía git+ssh — el build necesita
 # BuildKit + --ssh con la deploy key dedicada. Misma ruta/variable de
@@ -365,7 +387,24 @@ class ProductConfig:
     #
     # Donde es `False` las dos variables apuntan a la MISMA base — que es lo que
     # pasa en VentaLibra, donde LibraCommerce y LibraCore sí conviven.
+    #
+    # 🔴 **Desde ADR-083 sólo cuenta para un producto que NO figura en
+    # `url_de_instancia._UNA_SOLA_BASE`.** Para los que figuran —los ocho, con GestioLibra y MedLibra—
+    # la lista gana: el alta nace con UNA base y escribe las dos variables apuntando a ella, aunque el producto siga
+    # pasando `True` hasta que saque el argumento. Una sola fuente de verdad para «este producto tiene una base», la que
+    # ya leen `libracore-migrar` y `libraauth-migrar`; si el alta y la migración discreparan, la instancia nacería con
+    # una base que la migración no mira.
     base_core_separada: bool = False
+
+    # El nombre de la tabla de módulos **de la base del dominio** de este producto, que el alta espera
+    # (`_esperar_tabla_en_sidecar`) y donde escribe los adicionales contratados (`aplicar_modulos_de_adicionales`). Default `modulos`: nadie
+    # que no lo declare cambia. GestioLibra y MedLibra la renombraron (`gestiolibra_modulos`, `medlibra_modulos`) para poder
+    # unir sus dos bases —la `modulos` del motor chocaba con la suya—, y sin este campo el alta esperaba una tabla que no
+    # existe y terminaba en `AltaIncompleta`. Validado como identificador SQL (`tabla_de_modulos_valida`).
+    #
+    # 🔑 **No cubre `plans.aplicar_plan_en_db`**: el plan lo aplica el `plans.py` del producto dentro del contenedor, donde
+    # `configure()` no corrió. Si ese `plans.py` es un envoltorio de `apply_plan_modules`, le pasa `tabla=` a mano.
+    tabla_modulos: str = TABLA_DE_MODULOS
 
     # `True` hace que el backup del cron (`panel_admin.cmd_backup`) arme **el
     # mismo ZIP que arma la app** en vez de su propio `tar.gz`.
@@ -428,9 +467,23 @@ class ProductConfig:
     # que decide la precedencia.
     clientes_dir_override: Path | None = None
 
+    def __post_init__(self):
+        # Desde el constructor y no sólo desde `configure()`: el nombre termina en SQL.
+        tabla_de_modulos_valida(self.tabla_modulos)
+
     @property
     def usa_postgres(self) -> bool:
         return bool(self.postgres)
+
+    @property
+    def core_separado(self) -> bool:
+        """Si el alta de este producto crea la base de LibraCore APARTE de la del dominio.
+
+        Lo declara el producto (`base_core_separada`), salvo que figure en `url_de_instancia._UNA_SOLA_BASE`: ahí la lista
+        gana (ADR-083). Ver el comentario del campo."""
+        from ..db.url_de_instancia import comparte_base_con_el_dominio
+
+        return self.base_core_separada and not comparte_base_con_el_dominio(self.container_prefix)
 
     @property
     def db_urls(self) -> tuple[tuple[str, str], ...]:
@@ -455,7 +508,7 @@ class ProductConfig:
 
         p = self.container_prefix
         base_dominio = p
-        base_core = f"{p}_core" if self.base_core_separada else p
+        base_core = f"{p}_core" if self.core_separado else p
         return (
             (nombre_normalizado(p), base_dominio),
             (nombre_normalizado(p, core=True), base_core),
@@ -918,7 +971,7 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
               postgres_image: str = "postgres:16-alpine",
               backup_zip: bool = False, health_path: str = "/health",
               migraciones: tuple[tuple[str, ...], ...] = (),
-              clientes_dir=None):
+              clientes_dir=None, tabla_modulos: str = TABLA_DE_MODULOS):
     """Configura el producto activo. Llamar una sola vez, al principio de
     `scripts/nuevo_cliente.py`/`scripts/panel_admin.py` de cada producto.
 
@@ -946,6 +999,10 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
     > la variable de entorno `LIBRA_CLIENTES_DIR` > `repo_root / "clientes"`
     (el default de siempre). Con `None` —lo que pasa si el producto no lo
     declara— no cambia nada. Ver `ProductConfig.clientes_dir`.
+
+    `tabla_modulos` es el nombre de la tabla de módulos del producto en la base del dominio (ADR-083). Default `modulos`: un
+    producto que no lo pase se comporta como siempre. Un nombre que no sea un identificador SQL en minúsculas es `ValueError`.
+    Ver `ProductConfig.tabla_modulos`.
     """
     global _cfg
     with _lock:
@@ -960,6 +1017,7 @@ def configure(*, product_name: str, image_name: str, container_prefix: str,
             health_path=health_path,
             migraciones=_migraciones_normalizadas(migraciones),
             clientes_dir_override=None if clientes_dir is None else Path(clientes_dir),
+            tabla_modulos=tabla_modulos,
         )
         for p in (repo_root, repo_root / "scripts"):
             sp = str(p)
@@ -1012,9 +1070,9 @@ def le_email_from_config():
     return npm.le_email_from_config() if npm else None
 
 
-def _como_se_escribe_habilitado(con):
+def _como_se_escribe_habilitado(con, tabla: str = TABLA_DE_MODULOS):
     """Devuelve la función que convierte el booleano al tipo que la columna
-    `modulos.habilitado` tiene **en esta base**.
+    `<tabla>.habilitado` (`modulos`, o la que el producto renombró) tiene **en esta base**.
 
     🔴 No es lo mismo en todos los productos, y en PostgreSQL el tipo del
     parámetro tiene que coincidir: los dos errores son simétricos y los dos
@@ -1034,10 +1092,11 @@ def _como_se_escribe_habilitado(con):
     En SQLite no hay `information_schema`: se cae al booleano de siempre, que es
     lo que venía andando.
     """
+    tabla = tabla_de_modulos_valida(tabla)
     try:
         fila = con.execute(
             "SELECT data_type FROM information_schema.columns "
-            "WHERE table_name='modulos' AND column_name='habilitado'"
+            "WHERE table_name=? AND column_name='habilitado'", (tabla,)
         ).fetchone()
     except Exception:
         return bool
@@ -1072,10 +1131,16 @@ def resolver_plan(plans, plan: str | None) -> str:
     raise ValueError(f"Plan inválido: {plan!r}. Los vigentes son {vigentes}.")
 
 
-def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: str) -> None:
+def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: str,
+                       tabla: str = TABLA_DE_MODULOS) -> None:
     """Escribe el estado de módulos (habilitado + plan) en la tabla `modulos`
-    de la base de un cliente (`clientes/<slug>/data/*.db`, o su base
+    (o en `tabla`, ADR-083) de la base de un cliente (`clientes/<slug>/data/*.db`, o su base
     PostgreSQL).
+
+    `tabla` es el nombre de la tabla de módulos del producto cuando no es `modulos` (GestioLibra: `gestiolibra_modulos`).
+    **Explícito y no sacado de `configure()`**: esto corre dentro del contenedor de la instancia, donde `configure()` no
+    se llamó, y un mismo cuerpo no puede escribir en una tabla desde el host y en otra desde la imagen. Validado como
+    identificador SQL (`tabla_de_modulos_valida`: `ValueError` antes de abrir la base).
 
     Idempotente (INSERT OR IGNORE + UPDATE), funciona igual sobre una base
     recién migrada o una existente. Requiere que la tabla `modulos` ya
@@ -1101,6 +1166,7 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
     """
     from ..db.core import conectar
 
+    tabla = tabla_de_modulos_valida(tabla)
     # Un plan nunca toca un adicional (ADR-048): se restan los módulos de TODOS los adicionales del producto, aunque el `plans.py` los haya
     # dejado en `all_modules`. Va por `import plans` y no por `_plans()`: esto también corre DENTRO del contenedor de la instancia, donde
     # `configure()` no se llamó. Sin `plans` importable (el doble de un test del motor) no hay adicionales que restar.
@@ -1114,7 +1180,7 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
 
     con = conectar(str(db_path))
     try:
-        convertir = _como_se_escribe_habilitado(con)
+        convertir = _como_se_escribe_habilitado(con, tabla)
         for m in sorted(all_modules):
             # 🔴 `bool`, no `1`/`0`. `modulos.habilitado` es BOOLEAN y
             # PostgreSQL no acepta un entero ahi: *"column habilitado is of
@@ -1124,11 +1190,11 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
             # de las migraciones de LibraDesk.
             on = convertir(m in active_modules)
             con.execute(
-                "INSERT OR IGNORE INTO modulos (modulo, habilitado, plan) VALUES (?,?,?)",
+                f"INSERT OR IGNORE INTO {tabla} (modulo, habilitado, plan) VALUES (?,?,?)",
                 (m, on, plan),
             )
             con.execute(
-                "UPDATE modulos SET habilitado=?, plan=? WHERE modulo=?",
+                f"UPDATE {tabla} SET habilitado=?, plan=? WHERE modulo=?",
                 (on, plan, m),
             )
         con.commit()
@@ -1136,22 +1202,23 @@ def apply_plan_modules(db_path, *, active_modules: set, all_modules: set, plan: 
         con.close()
 
 
-def aplicar_modulos_de_adicionales(db_path, modulos: dict) -> None:
+def aplicar_modulos_de_adicionales(db_path, modulos: dict, *, tabla: str = TABLA_DE_MODULOS) -> None:
     """Prende o apaga los módulos de los adicionales contratados (`{módulo: bool}`) en la base de una instancia (ADR-048).
 
     Lo usa el alta (`nuevo_cliente`) corriendo esto DENTRO del contenedor, igual que `plans.aplicar_plan_en_db` y por el mismo motivo: desde el
     host la URL de la base no resuelve. Va por `conectar()` (SQLite o PostgreSQL, sin tocar el estado global) y respeta el tipo real de
     `modulos.habilitado`. Idempotente: crea la fila con `plan="addon"` si falta y **sólo cambia `habilitado`**; nunca toca la etiqueta de plan de
-    una fila que ya existe."""
+    una fila que ya existe. `tabla` es la tabla de módulos del producto si no se llama `modulos` (ADR-083; ver `apply_plan_modules`)."""
     from ..db.core import conectar
 
+    tabla = tabla_de_modulos_valida(tabla)
     con = conectar(str(db_path))
     try:
-        convertir = _como_se_escribe_habilitado(con)
+        convertir = _como_se_escribe_habilitado(con, tabla)
         for m, prendido in sorted(modulos.items()):
             on = convertir(bool(prendido))
-            con.execute("INSERT OR IGNORE INTO modulos (modulo, habilitado, plan) VALUES (?,?,?)", (m, on, "addon"))
-            con.execute("UPDATE modulos SET habilitado=? WHERE modulo=?", (on, m))
+            con.execute(f"INSERT OR IGNORE INTO {tabla} (modulo, habilitado, plan) VALUES (?,?,?)", (m, on, "addon"))
+            con.execute(f"UPDATE {tabla} SET habilitado=? WHERE modulo=?", (on, m))
         con.commit()
     finally:
         con.close()

@@ -8,6 +8,22 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — GestioLibra y MedLibra de una sola base; la tabla de módulos del alta es del producto (propuesta: v1.194.0)
+
+ADR-083. **Sin migración y sin tocar el esquema.** PR 5 del plan de GestioLibra, MedLibra y LibraDesk en la versión de escritorio. Ninguna instancia existente cambia por subir el pin; cambia lo que hace el alta de una instancia nueva de esos dos productos y la caída de `libracore-migrar`.
+- **`url_de_instancia._UNA_SOLA_BASE` suma `gestiolibra` y `medlibra`** (ya son los ocho). Sin `<PREFIJO>_LIBRACORE_DATABASE_URL` ni su histórico, `libracore-migrar` y `libraauth-migrar --base core` caen a la base del dominio en vez de fallar con `SinURL`. Con la variable puesta (una instancia que todavía no se unió) manda la variable.
+- **El alta obedece a esa lista.** `ProductConfig.core_separado`: `base_core_separada=True` sólo cuenta para un producto que no figura en `_UNA_SOLA_BASE`. GestioLibra y MedLibra nacen con una base, sin `postgres-init/10-bases-extra.sql` y con las variables del dominio y del core (más los históricos `DATABASE_URL` y `*_LIBRACORE_DB_PATH`) a la misma URL. Aunque el producto siga pasando `base_core_separada=True`.
+- **`configure(tabla_modulos="...")`** (default `modulos`): el nombre de la tabla de módulos del producto en la base del dominio. Lo usan la espera del alta (`_esperar_tabla_en_sidecar`, `_esperar_db_lista`) y los adicionales. Es un identificador SQL validado (`provisioning.tabla_de_modulos_valida`: minúsculas, dígitos y `_`, hasta 63 caracteres; `ValueError` si no). **Sin declararlo no cambia nada**, ni un carácter de los comandos que corren dentro del contenedor.
+- **`apply_plan_modules(..., tabla=)` y `aplicar_modulos_de_adicionales(..., tabla=)`**, explícitos y con default `modulos` (corren dentro del contenedor, donde `configure()` no corrió). El tipo de `habilitado` se pregunta por la tabla que se escribe: en una base unida conviven la del motor (`INTEGER`) y la del producto (`BOOLEAN`).
+- **No se sacan** los históricos `GESTIOLIBRA_LIBRACORE_DB_PATH` y `MEDLIBRA_LIBRACORE_DB_PATH` de `url_de_instancia._HISTORICOS`: los composes de dev y demo de los dos productos y su `app/config.py` todavía los leen. Se sacan en un patch posterior, cuando el PR 6 de los productos saque la variable.
+
+### Para los productos (PR 6)
+- Subir el pin. En `scripts/nuevo_cliente.py` **y** en `scripts/panel_admin.py` (`configure()` pisa un `_cfg` global): `tabla_modulos="gestiolibra_modulos"` (`"medlibra_modulos"`) y sacar `base_core_separada=True`. Si su `plans.aplicar_plan_en_db` envuelve a `apply_plan_modules`, pasarle `tabla=` a mano.
+- `libraauth-migrar upgrade --base dominio` en la cadena; sacar la variable del core de los composes, de `scripts/reset_demo.sh` y de los tests; borrar `docker/postgres-init/10-base-de-libracore.sql`.
+- Cuando lean la `modulos` del motor (ADR-034 de GestioLibra, punto 3), dejar de pasar `tabla_modulos`.
+- LibraDesk, ContaLibra, RestoLibra, VentaLibra, LibraCargo y LibraClub: nada.
+
+
 ## [Unreleased] — `libracore-unir-bases` cuando `libraauth` vive en el core: GestioLibra y MedLibra (propuesta: v1.193.0)
 
 ADR-082. **Sin migración y sin tocar el esquema.** Sólo cambia `libracore-unir-bases`; es el PR 2 del plan de GestioLibra, MedLibra y LibraDesk en la versión de escritorio. LibraCargo y LibraClub (`libraauth` en el dominio) no cambian.

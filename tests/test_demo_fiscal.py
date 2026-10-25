@@ -702,8 +702,12 @@ def test_la_corrida_por_producto_resuelve_las_bases_como_la_app(motor, monkeypat
     assert dm.main(["auditar", "--producto", "contalibra"]) == dm.SALIDA_HALLAZGOS
     monkeypatch.delenv("CONTALIBRA_DATABASE_URL")
     assert dm.main(["auditar", "--producto", "contalibra"]) == dm.SALIDA_USO
-    # Medlibra lleva el core aparte: sin su variable, no se cae a la del dominio.
+    # Un producto que NO figura en `_UNA_SOLA_BASE` y lleva el core aparte: sin su variable, no se cae a la del dominio.
+    # (Hasta ADR-083, 2026-10-25, el ejemplo era MedLibra; desde entonces cae al dominio como contalibra.)
+    monkeypatch.setenv("PRODUCTONUEVO_DATABASE_URL", core._db_path)
+    assert dm.main(["auditar", "--producto", "productonuevo"]) == dm.SALIDA_USO
+    monkeypatch.setenv("PRODUCTONUEVO_LIBRACORE_DATABASE_URL", core._db_path)
+    assert dm.main(["auditar", "--producto", "productonuevo"]) == dm.SALIDA_HALLAZGOS
+    # MedLibra, ya de una sola base, resuelve el core en el dominio sin su variable.
     monkeypatch.setenv("MEDLIBRA_DATABASE_URL", core._db_path)
-    assert dm.main(["auditar", "--producto", "medlibra"]) == dm.SALIDA_USO
-    monkeypatch.setenv("MEDLIBRA_LIBRACORE_DATABASE_URL", core._db_path)
     assert dm.main(["auditar", "--producto", "medlibra"]) == dm.SALIDA_HALLAZGOS

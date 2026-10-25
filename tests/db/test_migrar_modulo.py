@@ -168,7 +168,8 @@ def test_un_producto_fuera_de_la_convencion_FALLA_en_vez_de_adivinar():
     histórico —lo necesitaba `libraauth-migrar`— y este test se puso rojo: la
     caída habría migrado el dominio con el schema de LibraCore. Ahora falla **a
     propósito**, porque el producto no está en `_UNA_SOLA_BASE` (desde el 2026-10-22
-    LibraCargo sí está, así que el caso se mide con GestioLibra, que sigue con el core aparte).
+    LibraCargo sí está, y desde el 2026-10-25 también GestioLibra: el caso se mide con un
+    producto que no figura).
 
     Lo que se aserta acá es que en ese caso **se frena**. La alternativa
     tentadora —caer a `DATABASE_URL` cuando el prefijo no resuelve— es
@@ -177,13 +178,14 @@ def test_un_producto_fuera_de_la_convencion_FALLA_en_vez_de_adivinar():
     la base del dominio y devolvería éxito. Para esos productos el destino tiene
     que llegar explícito, por `LIBRACORE_MIGRAR_URL`.
     """
-    entorno = {"DATABASE_URL": "postgresql://u:p@h/gestiolibra"}
-    with pytest.raises(migrar.SinURL, match="GESTIOLIBRA"):
-        migrar.url_de_core("gestiolibra", entorno=entorno)
+    entorno = {"DATABASE_URL": "postgresql://u:p@h/productonuevo",
+               "PRODUCTONUEVO_DATABASE_URL": "postgresql://u:p@h/productonuevo"}
+    with pytest.raises(migrar.SinURL, match="PRODUCTONUEVO"):
+        migrar.url_de_core("productonuevo", entorno=entorno)
 
     # Y con el destino explícito, el mismo producto resuelve sin problema.
-    entorno["LIBRACORE_MIGRAR_URL"] = "postgresql://u:p@h/gestiolibra"
-    assert migrar.url_de_core("gestiolibra", entorno=entorno).endswith("/gestiolibra")
+    entorno["LIBRACORE_MIGRAR_URL"] = "postgresql://u:p@h/productonuevo"
+    assert migrar.url_de_core("productonuevo", entorno=entorno).endswith("/productonuevo")
 
 
 @pytest.mark.parametrize("prefijo", ["libracargo", "libraclub"])
@@ -191,6 +193,20 @@ def test_libracargo_y_libraclub_caen_al_dominio_sin_variable_del_core(prefijo):
     """2026-10-22 (ADR-078): unidas, sin `<PREFIJO>_LIBRACORE_DATABASE_URL` el core es la base del dominio."""
     entorno = {"DATABASE_URL": f"postgresql://u:p@h/{prefijo}"}
     assert migrar.url_de_core(prefijo, entorno=entorno).endswith(f"/{prefijo}")
+
+
+@pytest.mark.parametrize("prefijo", ["gestiolibra", "medlibra"])
+def test_gestiolibra_y_medlibra_caen_al_dominio_sin_variable_del_core(prefijo):
+    """2026-10-25 (ADR-083): unidas, sin `<PREFIJO>_LIBRACORE_DATABASE_URL` ni su histórico `_DB_PATH` el core es la base del
+    dominio, por cualquiera de los nombres que resuelven el dominio. Con la variable puesta (una instancia que todavía no se
+    unió) manda la variable: `test_un_producto_con_variable_del_core_la_usa`."""
+    for dominio in ({"DATABASE_URL": f"postgresql://u:p@h/{prefijo}"},
+                    {f"{prefijo.upper()}_DATABASE_URL": f"postgresql://u:p@h/{prefijo}"}):
+        assert migrar.url_de_core(prefijo, entorno=dominio) == f"postgresql://u:p@h/{prefijo}"
+    # y un histórico del core que SIGUE puesto (compose sin tocar) gana sobre la caída: no migra el dominio por error
+    sin_unir = {"DATABASE_URL": f"postgresql://u:p@h/{prefijo}",
+                f"{prefijo.upper()}_LIBRACORE_DB_PATH": f"postgresql://u:p@h/{prefijo}_core"}
+    assert migrar.url_de_core(prefijo, entorno=sin_unir) == f"postgresql://u:p@h/{prefijo}_core"
 
 
 def test_url_de_core_sin_nada_falla_nombrando_las_variables():
@@ -318,13 +334,15 @@ def test_la_cli_migra_de_verdad_con_prefijo(tmp_path, monkeypatch, capsys):
 
 # ── El endurecimiento del paso 3 (2026-09-16, decision del humano) ───────────
 
-@pytest.mark.parametrize("prefijo", ["gestiolibra", "medlibra"])
+@pytest.mark.parametrize("prefijo", ["productonuevo", "otroproducto"])
 def test_un_producto_de_core_aparte_sin_variable_del_core_FALLA(prefijo):
     """🔴 El defecto que se cierra. Con el dominio resoluble y sin la variable del
     core, la regla vieja caia al dominio y migraba ahi el schema de LibraCore,
     **sin fallar**. Gestiolibra y MedLibra lo tenian desde siempre; LibraCargo y
-    LibraClub lo habrian tenido al sumar su historico (desde el 2026-10-22 son de
-    una sola base: `test_libracargo_y_libraclub_caen_al_dominio_sin_variable_del_core`)."""
+    LibraClub lo habrian tenido al sumar su historico. Desde el 2026-10-22 (LibraCargo y
+    LibraClub) y el 2026-10-25 (GestioLibra y MedLibra, ADR-083) los ocho son de una sola base
+    (`test_gestiolibra_y_medlibra_caen_al_dominio_sin_variable_del_core`): el caso se mide con
+    un producto que no figura en `_UNA_SOLA_BASE`, que es lo que la guarda existe para frenar."""
     entorno = {"DATABASE_URL": f"postgresql://u:p@h/{prefijo}",
                f"{prefijo.upper()}_DATABASE_URL": f"postgresql://u:p@h/{prefijo}"}
     with pytest.raises(migrar.SinURL, match="una sola base"):
@@ -332,7 +350,7 @@ def test_un_producto_de_core_aparte_sin_variable_del_core_FALLA(prefijo):
 
 
 @pytest.mark.parametrize("prefijo", ["gestiolibra", "medlibra", "libracargo", "libraclub"])
-def test_un_producto_de_core_aparte_CON_variable_del_core_la_usa(prefijo):
+def test_un_producto_con_variable_del_core_la_usa(prefijo):
     """Control del anterior: el endurecimiento frena la CAIDA, no el caso normal."""
     entorno = {"DATABASE_URL": f"postgresql://u:p@h/{prefijo}",
                f"{prefijo.upper()}_LIBRACORE_DATABASE_URL": f"postgresql://u:p@h/{prefijo}_core"}
