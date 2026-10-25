@@ -576,7 +576,7 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
     # Medido el 2026-08-11 con un alta real en VentaLibra, que es exactamente
     # como se encontró. Los dos nombres apuntan a la misma URL, así que sirven
     # las dos imágenes; se saca junto con `_HISTORICOS`, en el mismo momento.
-    from ..db.url_de_instancia import nombres_aceptados
+    from ..db.url_de_instancia import escribe_la_variable_del_core, nombres_aceptados
 
     # 🔴 `postgresql+psycopg://` y NO `postgresql://` a secas.
     #
@@ -598,8 +598,16 @@ def _bloques_postgres(cfg, slug: str, container: str, client_dir: Path):
     # exactamente esta conversión, con este mismo comentario, sólo que del lado
     # del consumo — o sea que la trampa estaba documentada y el generador la
     # seguía pisando.
+    #
+    # 🔴 **La del core no se escribe para un producto de una sola base** (`url_de_instancia._UNA_SOLA_BASE`, ADR-084):
+    # apuntaba a la misma URL que la del dominio y no decía nada, y `libracore-migrar`, `libraauth-migrar --base core` y las
+    # apps caen a la del dominio cuando falta. La excepción es el producto que todavía la exige
+    # (`_EXIGEN_LA_VARIABLE_DEL_CORE`, hoy VentaLibra). El histórico `*_LIBRACORE_DB_PATH` va con ella: sin la normalizada
+    # no tiene sentido. El del dominio (`DATABASE_URL` y compañía) se escribe siempre.
     lineas = []
     for (var, base), core in zip(cfg.db_urls, (False, True)):
+        if core and not escribe_la_variable_del_core(cfg.container_prefix):
+            continue
         url = f"postgresql+psycopg://{usuario}:{clave}@{sidecar}:5432/{base}"
         for nombre in nombres_aceptados(cfg.container_prefix, core=core):
             lineas.append(f"      - {nombre}={url}\n")

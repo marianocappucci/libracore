@@ -218,6 +218,11 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
   más viejos primero y sin numerar nunca local, y deja el estado (`emitido`, `a_revisar`, `incierto`). `db/cola_arca.py`
   son las filas y las transiciones (tabla `cola_arca`, migración `0029`); `cola_arca_router.py`, la API del nodo; y
   `nodo_offline.ta_para_el_nodo(servicio=)` presta el ticket de `wscpe`.
+- **`nodo_conexion_router.py`** (ADR-084): `build_conexion_del_nodo_router(conexion=, usuario_actual=, a_facturar=)`, la
+  `GET /api/nodo/conexion` que lee el cartel «sin conexión» de libra-ui, **sin `PuertoDeVentas`** (LibraCargo, LibraClub, GestioLibra,
+  MedLibra). La respuesta es `ConexionDelNodo.estado()`; la ruta del punto de venta (`build_facturacion_del_nodo_router`) usa la misma.
+- **`cola_arca_respuesta.py`** (ADR-084): `respuesta_en_cola(pedido)` y `cuerpo_en_cola(pedido)`, la forma única del 202 «quedó en la
+  cola» (`en_cola`, `codigo`, `estado`, `pedido_id`, `mensaje`, `motivo`) que libra-ui reconoce con `esRespuestaEnCola`.
 - **`security_headers.py`**, **`modules_gate.py`** (gating de módulos por
   instancia, `db/modulos`), **`feriados.py`**, **`geografia.py`**,
   **`medios_pago.py`**, **`registro_de_clientes.py`**,

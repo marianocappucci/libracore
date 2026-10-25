@@ -303,16 +303,17 @@ def build_facturacion_del_nodo_router(
     facturacion_habilitada: Callable[[], bool] = _siempre_facturable,
 ) -> APIRouter:
     """`GET /conexion` y `POST /facturar-pendientes` del nodo offline (ADR-074). Se monta con el mismo gate que el
-    cobro de ventas. Fuera de un nodo contestan igual (`es_nodo: false`) y no hacen nada."""
+    cobro de ventas. Fuera de un nodo contestan igual (`es_nodo: false`) y no hacen nada.
+
+    Un producto **sin** `PuertoDeVentas` (LibraCargo, LibraClub, GestioLibra, MedLibra) monta sólo `GET /conexion` con
+    `nodo_conexion_router.build_conexion_del_nodo_router` (ADR-084): la misma respuesta, sin ventas."""
     router = APIRouter(prefix=prefix, tags=["nodo"])
 
     @router.get("/conexion")
     def conexion(user: dict = Depends(usuario_actual)):
         """`{"es_nodo", "en_linea", "node_id", "a_facturar"}`. `a_facturar` es cuántas ventas de este nodo esperan
         la factura en la bandeja. La pantalla lo consulta para avisar «sin conexión» y apagar el QR."""
-        c = ventas.conexion
-        return {"es_nodo": c.es_nodo(), "en_linea": not c.sin_conexion(), "node_id": c.node_id(),
-                "a_facturar": ventas_a_facturar(ventas)}
+        return ventas.conexion.estado(ventas_a_facturar(ventas))
 
     @router.post("/facturar-pendientes")
     def facturar_pendientes(user: dict = Depends(usuario_actual)):
