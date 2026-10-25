@@ -324,7 +324,7 @@ def test_la_instancia_desde_el_entorno_pone_primero_la_del_dominio(tmp_path):
     (tmp_path / "logos").mkdir()
     (tmp_path / "backups").mkdir()
     entorno = {
-        "GESTIOLIBRA_LIBRACORE_DB_PATH": "postgresql+psycopg://u:p@db:5432/gestiolibra_core",
+        "GESTIOLIBRA_LIBRACORE_DATABASE_URL": "postgresql+psycopg://u:p@db:5432/gestiolibra_core",
         "DATABASE_URL": "postgresql://u:p@db:5432/gestiolibra",
         "OTRA": "no es una url",
     }

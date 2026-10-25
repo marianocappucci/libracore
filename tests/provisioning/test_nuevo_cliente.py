@@ -932,16 +932,12 @@ def test_con_un_prefijo_REAL_el_compose_trae_el_nombre_viejo_y_el_nuevo(
     assert "VENTALIBRA_DATABASE_URL" in pares
     assert "VENTALIBRA_DB_PATH" in pares, \
         "sin el nombre historico, una imagen vieja cae a SQLite y el sidecar queda vacio"
-    assert "VENTALIBRA_LIBRACORE_DATABASE_URL" in pares
-    assert "VENTALIBRA_LIBRACORE_DB_PATH" in pares
+    # y ninguno del core: VentaLibra es de una sola base y su app cae al dominio sin la variable (ventalibra#693, ADR-084)
+    assert not [k for k in pares if "LIBRACORE" in k], sorted(pares)
 
     # y apuntando a la MISMA base, o una imagen vieja y una nueva irian a
     # lugares distintos
     assert pares["VENTALIBRA_DATABASE_URL"] == pares["VENTALIBRA_DB_PATH"]
-    assert pares["VENTALIBRA_LIBRACORE_DATABASE_URL"] == pares["VENTALIBRA_LIBRACORE_DB_PATH"]
-
-    # ventalibra tiene UNA sola base: las dos variables van al mismo destino
-    assert pares["VENTALIBRA_DATABASE_URL"] == pares["VENTALIBRA_LIBRACORE_DATABASE_URL"]
 
 
 # Capturadas ANTES de que ningun fixture las reemplace: el `fake_docker` las

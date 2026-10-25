@@ -8,6 +8,17 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — Sin los históricos del core de GestioLibra y MedLibra, y sin la excepción de VentaLibra en el alta (propuesta: v1.195.1)
+
+ADR-084 (addendum). **Patch, sin migración y sin tocar el esquema.** Ninguna instancia existente cambia por subir el pin; cambia lo que hace el alta de una instancia **nueva** de VentaLibra.
+- **`url_de_instancia._HISTORICOS`:** salen `GESTIOLIBRA_LIBRACORE_DB_PATH` y `MEDLIBRA_LIBRACORE_DB_PATH`. Medido sobre `origin/main` de los productos (2026-10-25): nadie las nombra ya. El core de los dos se resuelve sólo por `<P>_LIBRACORE_DATABASE_URL`; una instancia que todavía llevara el histórico lo vería ignorado y el core caería a la base del dominio (la unida). `VENTALIBRA_LIBRACORE_DB_PATH` **se queda**: su compose de desarrollo y sus tests todavía la ponen.
+- **`url_de_instancia._EXIGEN_LA_VARIABLE_DEL_CORE`:** se borra. ventalibra#693 hace que VentaLibra arranque sin la variable (el core cae a la base del dominio). `escribe_la_variable_del_core(prefijo)` queda como `not comparte_base_con_el_dominio(prefijo)`: **el alta de VentaLibra ya no escribe `VENTALIBRA_LIBRACORE_DATABASE_URL` ni `VENTALIBRA_LIBRACORE_DB_PATH`**. Requiere una imagen de VentaLibra con ventalibra#693.
+
+### Para los productos
+- **VentaLibra:** nada (la imagen con #693 ya está). **GestioLibra, MedLibra:** nada.
+- **Backoffice y panel:** subir el pin.
+
+
 ## [Unreleased] — `GET /api/nodo/conexion` sin `PuertoDeVentas`, una sola forma del 202 «en cola» y el alta sin la variable del core (propuesta: v1.195.0)
 
 ADR-084. **Sin migración y sin tocar el esquema.** Tres pendientes del nodo de LibraCargo y LibraClub. Ninguna instancia existente cambia por subir el pin; cambia lo que hace el alta de una instancia **nueva** (tercer punto).

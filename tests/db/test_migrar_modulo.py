@@ -109,9 +109,9 @@ ENTORNOS = [
     # (prefijo, entorno, esperado, por qué)
     ("gestiolibra",
      {"DATABASE_URL": "postgresql://u:p@h/gestiolibra",
-      "GESTIOLIBRA_LIBRACORE_DB_PATH": "postgresql://u:p@h/gestiolibra_core"},
+      "GESTIOLIBRA_LIBRACORE_DATABASE_URL": "postgresql://u:p@h/gestiolibra_core"},
      "postgresql://u:p@h/gestiolibra_core",
-     "base separada, con el nombre HISTORICO de la variable"),
+     "base separada (todavía sin unir), con el nombre normalizado"),
     ("medlibra",
      {"DATABASE_URL": "postgresql://u:p@h/medlibra",
       "MEDLIBRA_LIBRACORE_DATABASE_URL": "postgresql://u:p@h/medlibra_core"},
@@ -197,16 +197,17 @@ def test_libracargo_y_libraclub_caen_al_dominio_sin_variable_del_core(prefijo):
 
 @pytest.mark.parametrize("prefijo", ["gestiolibra", "medlibra"])
 def test_gestiolibra_y_medlibra_caen_al_dominio_sin_variable_del_core(prefijo):
-    """2026-10-25 (ADR-083): unidas, sin `<PREFIJO>_LIBRACORE_DATABASE_URL` ni su histórico `_DB_PATH` el core es la base del
-    dominio, por cualquiera de los nombres que resuelven el dominio. Con la variable puesta (una instancia que todavía no se
-    unió) manda la variable: `test_un_producto_con_variable_del_core_la_usa`."""
+    """2026-10-25 (ADR-083): unidas, sin `<PREFIJO>_LIBRACORE_DATABASE_URL` el core es la base del dominio, por cualquiera de los
+    nombres que resuelven el dominio. Con la variable puesta (una instancia que todavía no se unió) manda la variable:
+    `test_un_producto_con_variable_del_core_la_usa`."""
     for dominio in ({"DATABASE_URL": f"postgresql://u:p@h/{prefijo}"},
                     {f"{prefijo.upper()}_DATABASE_URL": f"postgresql://u:p@h/{prefijo}"}):
         assert migrar.url_de_core(prefijo, entorno=dominio) == f"postgresql://u:p@h/{prefijo}"
-    # y un histórico del core que SIGUE puesto (compose sin tocar) gana sobre la caída: no migra el dominio por error
-    sin_unir = {"DATABASE_URL": f"postgresql://u:p@h/{prefijo}",
-                f"{prefijo.upper()}_LIBRACORE_DB_PATH": f"postgresql://u:p@h/{prefijo}_core"}
-    assert migrar.url_de_core(prefijo, entorno=sin_unir) == f"postgresql://u:p@h/{prefijo}_core"
+    # El histórico `_DB_PATH` ya no se acepta (ADR-084, v1.195.1): una instancia que todavía lo llevara cae al dominio, la base
+    # unida. Con la variable normalizada sí manda: `test_un_producto_con_variable_del_core_la_usa`.
+    con_el_historico = {"DATABASE_URL": f"postgresql://u:p@h/{prefijo}",
+                        f"{prefijo.upper()}_LIBRACORE_DB_PATH": f"postgresql://u:p@h/{prefijo}_core"}
+    assert migrar.url_de_core(prefijo, entorno=con_el_historico) == f"postgresql://u:p@h/{prefijo}"
 
 
 def test_url_de_core_sin_nada_falla_nombrando_las_variables():

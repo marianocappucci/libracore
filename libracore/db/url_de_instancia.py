@@ -8,7 +8,7 @@ convenciones entre seis productos, y dos de ellas mentían:
 |---|---|---|
 | contalibra, restolibra | `<PREFIJO>_DATABASE_URL` | (la misma) |
 | libradesk | `DATABASE_URL` | — (una sola base) |
-| gestiolibra, medlibra | `DATABASE_URL` | — (una sola base desde ADR-083) / `<PREFIJO>_LIBRACORE_DB_PATH` histórico |
+| gestiolibra, medlibra | `DATABASE_URL` | — (una sola base desde ADR-083) |
 | ventalibra | `VENTALIBRA_DB_PATH` | `VENTALIBRA_LIBRACORE_DB_PATH` |
 | libracargo, libraclub | `DATABASE_URL` | `<PREFIJO>_LIBRACORE_DATABASE_URL` |
 
@@ -52,15 +52,9 @@ _HISTORICOS = {
     ("libracargo", False): ("DATABASE_URL",),
     ("libraclub", False): ("DATABASE_URL",),
     ("ventalibra", False): ("VENTALIBRA_DB_PATH",),
-    # 🔴 GestioLibra y MedLibra siguen acá a propósito (ADR-083, vuelto a medir en ADR-084 el 2026-10-25): son de una sola
-    # base y sus instancias de dev y demo ya están unidas y sin la variable (no tienen clientes reales), pero sobre
-    # `origin/main` de los dos productos `<PREFIJO>_LIBRACORE_DB_PATH` todavía se nombra en `scripts/reset_demo.sh` (lo lee
-    # con `printenv`) y en `tests/test_una_sola_base.py` (que afirma que el histórico se respeta), y su `app/config.py` lo
-    # resuelve por `url_de_instancia(..., core=True)`. Sacarlo de acá antes de que el producto saque esas líneas pondría
-    # rojos sus tests al subir el pin, y una instancia que todavía lo llevara caería al dominio en silencio. Se borran
-    # juntos: primero el producto (sin tocar su `config.py`, que sigue andando), después esta línea en un patch.
-    ("gestiolibra", True): ("GESTIOLIBRA_LIBRACORE_DB_PATH",),
-    ("medlibra", True): ("MEDLIBRA_LIBRACORE_DB_PATH",),
+    # GestioLibra y MedLibra ya no figuran con el core (patch v1.195.1, ADR-084): son de una sola base y, medido el 2026-10-25
+    # sobre `origin/main` de los dos, ningún código, compose ni test nombra `<PREFIJO>_LIBRACORE_DB_PATH`. Una instancia que
+    # todavía lo llevara en el entorno lo vería ignorado y el core caería al dominio, que para ellos es la base unida.
     ("ventalibra", True): ("VENTALIBRA_LIBRACORE_DB_PATH",),
 }
 
@@ -102,28 +96,17 @@ def comparte_base_con_el_dominio(prefijo: str) -> bool:
     return (prefijo or "").strip().lower() in _UNA_SOLA_BASE
 
 
-#: 🔴 Los productos de `_UNA_SOLA_BASE` cuya app todavía **necesita** la variable del core en su entorno (ADR-084).
-#:
-#: El alta de una instancia nueva deja de escribir `<PREFIJO>_LIBRACORE_DATABASE_URL` (y el histórico
-#: `<PREFIJO>_LIBRACORE_DB_PATH`) para los productos de `_UNA_SOLA_BASE`: apuntaban a la misma base que la del dominio y
-#: no decían nada. Se midió sobre `origin/main` de cada producto (2026-10-25) que arrancan sin ellas, **salvo
-#: VentaLibra**: `app/main.py` resuelve el core con `url_de_instancia("ventalibra", core=True, default="./data/ventalibra_libracore.db")`
-#: y, sin la variable, `billing.configure` recibe una ruta SQLite que rechaza. Mientras VentaLibra no deje de pedirla
-#: (el día que lo haga se saca de acá y listo), su alta sigue escribiéndola.
-#:
-#: Un producto que figure acá **y** en `_UNA_SOLA_BASE` conserva el comportamiento de siempre; uno que no figura en
-#: `_UNA_SOLA_BASE` tiene el core aparte y la variable es la que dice cuál es.
-_EXIGEN_LA_VARIABLE_DEL_CORE = frozenset({"ventalibra"})
-
-
 def escribe_la_variable_del_core(prefijo: str) -> bool:
     """Si el alta de este producto tiene que escribir `<PREFIJO>_LIBRACORE_DATABASE_URL` (y su histórico) en el compose.
 
     - Producto con el core **aparte** (no figura en `_UNA_SOLA_BASE`): sí, la variable dice cuál es esa base.
     - Producto de **una sola base**: no, la ausencia significa «la del dominio» (`libracore.migrar.url_de_core`, las
-      apps). Salvo los que todavía la exigen (`_EXIGEN_LA_VARIABLE_DEL_CORE`)."""
-    p = (prefijo or "").strip().lower()
-    return p not in _UNA_SOLA_BASE or p in _EXIGEN_LA_VARIABLE_DEL_CORE
+      apps): la variable apuntaría a la misma URL y no diría nada (ADR-084).
+
+    Hasta el patch v1.195.1 una excepción (`_EXIGEN_LA_VARIABLE_DEL_CORE`) cubría a VentaLibra, cuya app resolvía el core con un
+    default SQLite que `billing.configure` rechaza. Con ventalibra#693 (`url_de_instancia("ventalibra", core=True, default=db_path)`)
+    ya no hay ningún producto así y la excepción se borró: si aparece otro, se vuelve a escribir con su medición."""
+    return not comparte_base_con_el_dominio(prefijo)
 
 
 def nombre_normalizado(prefijo: str, *, core: bool = False) -> str:
