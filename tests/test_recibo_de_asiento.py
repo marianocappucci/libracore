@@ -125,3 +125,22 @@ def test_el_origen_es_parte_de_la_lista_cerrada():
     assert db_recibos.ORIGEN_ASIENTO in db_recibos.ORIGENES
     with pytest.raises(ValueError):
         db_recibos.create_recibo("2026-11-05", "X", "suelto", 1, [])
+
+
+def test_anular_en_la_transaccion_del_producto(base):
+    r = recibos.emitir_recibo_de_asiento(_cobro(), pagos=EFECTIVO)
+    conn = core.get_connection()
+    try:
+        assert db_recibos.anular_recibo(r["id"], motivo="Rebotó", conn=conn) is True
+        conn.rollback()
+    finally:
+        conn.close()
+    assert db_recibos.get_recibo(r["id"])["anulado"] is False
+    conn = core.get_connection()
+    try:
+        db_recibos.anular_recibo(r["id"], motivo="Rebotó", conn=conn)
+        conn.commit()
+    finally:
+        conn.close()
+    assert db_recibos.get_recibo(r["id"])["anulado"] is True
+    assert db_recibos.anular_recibo(r["id"]) is False

@@ -178,7 +178,8 @@ def contar_recibos(desde="", hasta="", q="", cliente_id=None,
         ).fetchone()[0]
 
 
-def anular_recibo(recibo_id: int, motivo: str = "", usuario_id=None) -> bool:
+def anular_recibo(recibo_id: int, motivo: str = "", usuario_id=None, *,
+                  conn: Conexion | None = None) -> bool:
     """Marca el recibo como anulado. Devuelve False si ya lo estaba.
 
     **No borra.** El número queda consumido a propósito: un correlativo con
@@ -186,8 +187,11 @@ def anular_recibo(recibo_id: int, motivo: str = "", usuario_id=None) -> bool:
     salió impreso con ese número. Anular no toca la caja ni la cuenta
     corriente — el recibo es el comprobante del cobro, no el cobro; revertir la
     plata es una operación aparte y del producto.
+
+    Con `conn`, va en la transacción de quien llama (ADR-025): el producto
+    revierte el cobro y anula su recibo juntos (LibraInmo, addendum de ADR-087).
     """
-    with get_connection() as conn:
+    with _con(conn) as conn:
         cur = conn.execute(
             "UPDATE recibos SET anulado=1, anulado_motivo=?, "
             "anulado_at=datetime('now','-3 hours'), usuario_id=COALESCE(?, usuario_id) "
