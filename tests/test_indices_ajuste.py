@@ -13,6 +13,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -202,6 +203,51 @@ def test_ipc_variacion_sin_un_mes(base):
     with pytest.raises(ia.IndiceFaltante) as e:
         ia.ajustar("ipc_variacion", "1000", "2026-05-01", "2026-08-01")
     assert e.value.fechas == ["2026-07-01", "2026-08-01"]
+
+
+# ── el dólar A 3500 se publica sólo en días hábiles ─────────────────────────────────────────────────────────
+
+
+def test_el_dolar_en_un_sabado_toma_el_viernes(base):
+    db.guardar("dolar_a3500", "2026-09-25", "1400", "bcra")
+    db.guardar("dolar_a3500", "2026-10-23", "1528.263", "bcra")       # viernes
+    r = ia.ajustar("dolar_a3500", "1000", "2026-09-25", "2026-10-25")   # domingo
+    assert r["valores"][1] == {"fecha": "2026-10-23", "valor": Decimal("1528.263"), "fuente": "bcra",
+                               "fecha_pedida": "2026-10-25"}
+    assert "fecha_pedida" not in r["valores"][0]
+    assert r["importe_nuevo"] == Decimal("1091.62")
+
+
+def test_el_dolar_en_un_feriado_toma_el_ultimo_habil(base):
+    from libracore import feriados
+    assert feriados.es_feriado(date(2026, 10, 12))                       # lunes feriado
+    db.guardar("dolar_a3500", "2026-10-09", "1500", "bcra")              # viernes
+    db.guardar("dolar_a3500", "2026-09-09", "1450", "bcra")
+    r = ia.ajustar("dolar_a3500", "1000", "2026-09-09", "2026-10-12")
+    assert r["valores"][1]["fecha"] == "2026-10-09" and r["valores"][1]["fecha_pedida"] == "2026-10-12"
+
+
+def test_un_dia_habil_sin_valor_no_se_tapa_con_el_anterior(base):
+    db.guardar("dolar_a3500", "2026-09-09", "1450", "bcra")
+    db.guardar("dolar_a3500", "2026-10-21", "1520", "bcra")              # miércoles: falta el jueves 22
+    with pytest.raises(ia.IndiceFaltante) as e:
+        ia.ajustar("dolar_a3500", "1000", "2026-09-09", "2026-10-23")
+    assert e.value.fechas == ["2026-10-23"]
+
+
+def test_no_toma_un_valor_de_mas_de_diez_dias(base):
+    db.guardar("dolar_a3500", "2026-09-09", "1450", "bcra")
+    db.guardar("dolar_a3500", "2026-10-09", "1500", "bcra")
+    with pytest.raises(ia.IndiceFaltante):
+        ia.ajustar("dolar_a3500", "1000", "2026-09-09", "2026-10-25")
+
+
+def test_el_icl_no_tiene_esa_excepcion(base):
+    """El ICL se publica todos los días: un sábado sin valor es un dato que falta."""
+    db.guardar("icl", "2026-09-25", "36", "bcra")
+    db.guardar("icl", "2026-10-23", "37.02", "bcra")
+    with pytest.raises(ia.IndiceFaltante):
+        ia.ajustar("icl", "1000", "2026-09-25", "2026-10-24")
 
 
 # ── la descarga, sin red ─────────────────────────────────────────────────────────────────────────────

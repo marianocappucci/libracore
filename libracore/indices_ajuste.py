@@ -21,7 +21,10 @@ baja de la fuente oficial con `libracore.indices_descarga`.
 3. **Qué fecha o qué mes se toma es del producto.** El motor ajusta entre las dos fechas que le pasan. Si un
    contrato dice «el IPC del segundo mes anterior», la cuenta de qué mes es ése la hace quien conoce el contrato.
 4. **Si falta un valor, no hay ajuste** (`IndiceFaltante`). No se usa el anterior ni se interpola: un aumento
-   calculado con el índice equivocado es una diferencia que se le cobra a alguien.
+   calculado con el índice equivocado es una diferencia que se le cobra a alguien. **Una excepción, decidida por el
+   humano el 2026-10-26:** un índice que se publica sólo en días hábiles (el dólar A 3500) toma, en un fin de semana o
+   feriado, el valor del último día hábil anterior. No es tapar un dato que falta: ese día no hay dato que publicar.
+   El valor tomado dice su fecha y la `fecha_pedida`.
 5. **Exacto de punta a punta**: `Decimal`, y el importe se redondea a centavos con `ROUND_HALF_UP` una sola vez, al
    final, como `libradesk/app/services/cuotas.py`. El coeficiente se devuelve sin redondear: quien lo imprime elige
    cuántos decimales muestra, y la cuenta no cambia por eso.
@@ -32,9 +35,10 @@ importe ajustado (lo guarda quien lo usa, igual que la cuota de LibraDesk congel
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
+from libracore import feriados
 from libracore.db import indices_ajuste as db
 
 DIARIA = "diaria"
@@ -59,6 +63,9 @@ class Indice:
     fuente: str
     #: El id de la serie en la fuente (`idVariable` del BCRA, `ids` de datos.gob.ar). `None` si se carga a mano.
     serie: int | str | None
+    #: Se publica sólo en días hábiles (el dólar A 3500): una fecha sin valor toma la del último día hábil anterior,
+    #: si todos los días del medio son fin de semana o feriado (decisión del humano, 2026-10-26).
+    solo_dias_habiles: bool = False
 
 
 #: Las series se midieron el 2026-10-26 contra la v4 de la API del BCRA y la de series de datos.gob.ar
@@ -72,7 +79,7 @@ INDICES: dict[str, Indice] = {i.clave: i for i in (
            FUENTE_BCRA, 30),
     Indice("uva", "Unidad de Valor Adquisitivo (UVA)", DIARIA, NIVEL, FUENTE_BCRA, 31),
     Indice("dolar_a3500", "Tipo de cambio mayorista de referencia (Comunicación A 3500)", DIARIA, NIVEL,
-           FUENTE_BCRA, 5),
+           FUENTE_BCRA, 5, solo_dias_habiles=True),
     Indice("casa_propia", "Coeficiente Casa Propia", MENSUAL, NIVEL, FUENTE_MANUAL, None),
 )}
 
@@ -160,6 +167,44 @@ def aplicar_porcentaje(importe, porcentaje) -> dict:
             "porcentaje": Decimal(porcentaje)}
 
 
+#: Cuántos días hacia atrás se busca el último día hábil. Diez cubren el fin de semana largo más largo del calendario
+#: (Carnaval o Semana Santa pegados a un puente) sin llegar a tomar un valor de otra semana por un dato que falta.
+_DIAS_HACIA_ATRAS = 10
+
+
+def _no_habil(dia: date) -> bool:
+    if dia.weekday() >= 5:
+        return True
+    try:
+        return feriados.es_feriado(dia) is not None
+    except feriados.FueraDeCobertura:
+        # Sin el calendario de ese año, sólo el fin de semana es seguro: un hábil que no se puede probar no se saltea.
+        return False
+
+
+def _valor_en(ind: Indice, f: str, conn) -> dict | None:
+    """El valor de `ind` en `f`; para un índice de días hábiles, el del último día hábil anterior si `f` no lo es.
+
+    🔑 **Sólo si todos los días del medio son no hábiles.** Un hábil sin valor es un dato que falta, no un fin de
+    semana, y no se tapa con el anterior: eso sí sería ajustar con el índice equivocado (decisión 4 del módulo)."""
+    fila = db.obtener(ind.clave, f, conn=conn)
+    if fila is not None or not ind.solo_dias_habiles:
+        return fila
+    pedido = date.fromisoformat(f)
+    previo = db.ultimo_hasta(ind.clave, f, conn=conn)
+    if previo is None:
+        return None
+    desde = date.fromisoformat(previo["fecha"])
+    if (pedido - desde).days > _DIAS_HACIA_ATRAS:
+        return None
+    dia = desde + timedelta(days=1)
+    while dia <= pedido:
+        if not _no_habil(dia):
+            return None
+        dia += timedelta(days=1)
+    return previo
+
+
 def ajustar(clave: str, importe, fecha_base: date | str, fecha_ajuste: date | str, *, conn=None) -> dict:
     """El importe ajustado por `clave` entre `fecha_base` y `fecha_ajuste`, con los valores que tomó.
 
@@ -172,12 +217,13 @@ def ajustar(clave: str, importe, fecha_base: date | str, fecha_ajuste: date | st
 
     if ind.forma == NIVEL:
         fechas = [fecha_del_indice(clave, base), fecha_del_indice(clave, ajuste)]
-        valores = {f: db.obtener(clave, f, conn=conn) for f in fechas}
+        valores = {f: _valor_en(ind, f, conn) for f in fechas}
         faltan = [f for f, v in valores.items() if v is None]
         if faltan:
             raise IndiceFaltante(clave, faltan)
         coef = coeficiente_por_niveles(valores[fechas[0]]["valor"], valores[fechas[1]]["valor"])
-        tomados = [{"fecha": f, "valor": valores[f]["valor"], "fuente": valores[f]["fuente"]} for f in fechas]
+        tomados = [{"fecha": valores[f]["fecha"], "valor": valores[f]["valor"], "fuente": valores[f]["fuente"],
+                    **({"fecha_pedida": f} if valores[f]["fecha"] != f else {})} for f in fechas]
     else:
         meses = _meses_entre(base, ajuste)
         valores = {m: db.obtener(clave, m, conn=conn) for m in meses}

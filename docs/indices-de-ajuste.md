@@ -19,7 +19,7 @@ fuente cambia de forma, se vuelve a medir y se actualiza este archivo **antes** 
 | ICL (base 30-06-2020 = 1) | 40 | diaria, también fines de semana | 2020-07-01 | 37,09 (2026-10-26) |
 | CER (base 02-02-2002 = 1) | 30 | diaria | — | 860,18437604432 (2026-10-26) |
 | UVA (base 31-03-2016 = 14,05) | 31 | diaria | 2016 | 2.168,29 (2026-10-26) |
-| Dólar mayorista A 3500 | 5 | días hábiles | — | 1.528,263 (2026-10-23) |
+| Dólar mayorista A 3500 | 5 | días hábiles: un fin de semana o feriado toma el último hábil (ADR-085, addendum) | — | 1.528,263 (2026-10-23) |
 | Inflación mensual (variación % del IPC) | 27 | mensual, fechada el **último día del mes**, **un decimal** | 1943 | 1,9 (2026-09-30) |
 
 ## datos.gob.ar — API de series de tiempo
