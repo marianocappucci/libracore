@@ -88,6 +88,8 @@ _HISTORICOS = {
 #: aparte**; la lista sigue nombrada para que un producto nuevo falle en vez de adivinar.
 _UNA_SOLA_BASE = frozenset({
     "contalibra", "restolibra", "ventalibra", "libradesk", "libracargo", "libraclub", "gestiolibra", "medlibra",
+    # LibraInmo nace de una sola base (ADR-087): el schema del motor vive en la del dominio desde el primer día.
+    "librainmo",
 })
 
 

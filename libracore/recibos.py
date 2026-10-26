@@ -17,7 +17,7 @@ tres motivos que se arreglan juntos con la tabla `recibos`:
    porque no hay factura de la cual colgarlo. Ese pago se registraba en
    `cc_pagos` y no emitía nada.
 
-## Las tres entradas
+## Las cuatro entradas
 
 Una por origen, y cada una decide sola entre emitir y reimprimir, para que la
 pantalla tenga **un solo botón** y no le pregunte al usuario algo que el
@@ -32,6 +32,11 @@ sistema ya sabe:
   **los cobros que ningún recibo vigente cubra ya**, mirando el
   `caja_movimiento_id` que quedó guardado en el snapshot de cada recibo. Sin
   eso, apretar el botón dos veces emitiría dos recibos por la misma plata.
+- `emitir_recibo_de_asiento(asiento_id, pagos=...)` — 1:1 con el **haber** de un
+  tercero en el libro de terceros (ADR-087). Es el cobro de un producto que lleva
+  la cuenta como libro: el alquiler que una inmobiliaria cobra al inquilino
+  **por cuenta y orden** del propietario (LibraInmo). Va en la transacción del
+  producto (`conn=`), así el cobro y su recibo entran o salen juntos.
 
 Un recibo **anulado no cubre nada**: su plata vuelve a estar disponible para
 uno nuevo. Eso lo resuelve `get_recibos_de_origen`, que por defecto los
@@ -45,7 +50,7 @@ import datetime
 
 from libracore import fechas
 from libracore.db import recibos as db_recibos
-from libracore.db.recibos import ORIGEN_CC_PAGO, ORIGEN_FACTURA, ORIGEN_VENTA
+from libracore.db.recibos import ORIGEN_ASIENTO, ORIGEN_CC_PAGO, ORIGEN_FACTURA, ORIGEN_VENTA
 
 
 class SinCobros(ValueError):
@@ -90,7 +95,7 @@ def _pago_desde_movimiento(mov: dict) -> dict:
 
 def _emitir(*, fecha, cliente_razon, origen_tipo, origen_id, total, pagos,
             concepto, punto_venta, cliente_id, cliente_cuit, cliente_domicilio,
-            observaciones, usuario_id) -> dict:
+            observaciones, usuario_id, conn=None) -> dict:
     """Inserta y **relee**. Releer no es paranoia: `create_recibo` reintenta
     ante colisión de numeración, así que el número que terminó en la base
     puede no ser el que se calculó."""
@@ -108,8 +113,9 @@ def _emitir(*, fecha, cliente_razon, origen_tipo, origen_id, total, pagos,
         cliente_domicilio=cliente_domicilio or "",
         observaciones=observaciones,
         usuario_id=usuario_id,
+        conn=conn,
     )
-    return db_recibos.get_recibo(recibo_id)
+    return db_recibos.get_recibo(recibo_id, conn=conn)
 
 
 # ── Cobranza de cuenta corriente ─────────────────────────────────────────────
@@ -301,4 +307,67 @@ def emitir_recibo_factura(factura_id: int, punto_venta: int = 1, usuario_id=None
         cliente_domicilio=factura.get("cliente_domicilio"),
         observaciones=observaciones,
         usuario_id=usuario_id,
+    )
+
+
+# ── Cobro asentado en el libro de terceros ───────────────────────────────────
+
+def emitir_recibo_de_asiento(asiento_id: int, *, pagos: list[dict], concepto: str | None = None,
+                             por_cuenta_de: str | None = None, punto_venta: int = 1,
+                             usuario_id=None, observaciones: str = "", conn=None) -> dict:
+    """El recibo del cobro que quedó como **haber** del tercero en `cc_asientos` (ADR-087). Idempotente.
+
+    El tercero del asiento es un cliente del motor (`clients.id`): de ahí salen la razón, el CUIT y el domicilio del
+    papel. `pagos` es la lista de medios con que se cobró (`fecha`, `medio_pago`, `referencia`, `monto`), que el
+    producto conoce y el asiento no; tiene que sumar el importe del asiento. `por_cuenta_de` es el nombre de quien
+    recibe la plata cuando el que cobra es un mandatario —la inmobiliaria cobra el alquiler para el propietario— y
+    queda escrito en el «en concepto de».
+
+    🔴 **Sólo un haber.** Un debe es una deuda, no plata que entró: el recibo afirma que se cobró, y de un cargo no
+    hay nada que afirmar (`SinCobros`).
+    """
+    from libracore.db import libro_de_terceros as libro
+    from libracore.db.facturas import _con
+
+    asiento = libro.get_asiento(asiento_id, conn=conn)
+    if not asiento or not float(asiento.get("haber") or 0) > 0:
+        raise SinCobros(MENSAJE_SIN_COBROS)
+
+    previos = db_recibos.get_recibos_de_origen(ORIGEN_ASIENTO, asiento_id, conn=conn)
+    if previos:
+        return previos[-1]
+
+    total = round(float(asiento["haber"]), 2)
+    suma = round(sum(float(p.get("monto") or 0) for p in pagos or []), 2)
+    if not pagos or suma != total:
+        raise ValueError(f"Los medios de pago suman {suma:.2f} y el cobro es de {total:.2f}: tienen que coincidir.")
+
+    with _con(conn) as c:
+        cliente = c.execute(
+            "SELECT id, name, cuit_dni, address FROM clients WHERE id=?", (asiento["tercero_id"],)
+        ).fetchone()
+    cliente = dict(cliente) if cliente else {}
+
+    texto = (concepto or asiento.get("concepto") or "").strip() or "Cobro"
+    if por_cuenta_de:
+        texto = f"{texto}, por cuenta y orden de {por_cuenta_de.strip()}"
+
+    return _emitir(
+        fecha=str(asiento["fecha"])[:10],
+        cliente_razon=cliente.get("name"),
+        origen_tipo=ORIGEN_ASIENTO,
+        origen_id=asiento_id,
+        total=total,
+        pagos=[{"fecha": p.get("fecha") or str(asiento["fecha"])[:10], "medio_pago": p.get("medio_pago") or "",
+                "referencia": p.get("referencia") or "", "monto": round(float(p.get("monto") or 0), 2),
+                **({"caja_movimiento_id": p["caja_movimiento_id"]} if p.get("caja_movimiento_id") else {})}
+               for p in pagos],
+        concepto=texto,
+        punto_venta=punto_venta,
+        cliente_id=cliente.get("id"),
+        cliente_cuit=cliente.get("cuit_dni"),
+        cliente_domicilio=cliente.get("address"),
+        observaciones=observaciones,
+        usuario_id=usuario_id,
+        conn=conn,
     )

@@ -2115,3 +2115,19 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 **Tests.** `tests/test_periodos.py` (102) y `tests/test_mora.py` (57): los casos de aritmética de LibraDesk (12/31 desde el 20, 10/31 hasta el 10, febrero, 31 de enero más un mes, trimestral alineado) más bisiestos, periodicidades largas, HALF_UP sobre 0,125, gracia, fin de semana largo y feriado puente de julio de 2026, y base mensual contra diaria.
 
 **Addendum (2026-10-26, v1.196.1): `periodo_anclado` y `sumar_meses` públicos.** Para que LibraDesk deje su copia entera (no sólo la de las cuotas), sube también `visitas.periodo_anclado`: el período contado desde el arranque del contrato, que es además el que necesita el ajuste por índice de LibraInmo («cada tres meses desde el inicio»). `_sumar_meses` pasa a `sumar_meses`, porque las visitas lo usan. 🔴 **Corrige un caso borde de LibraDesk**: su cuenta de meses restaba uno cuando el día del ancla era menor que el del arranque, y con un arranque a fin de mes el ancla quedaba fuera del período devuelto (arranque 31-01: el 28-02 daba el período del 31-01 al 27-02, y el 30-04 el del 31-03 al 29-04; reproducido con el código de `origin/develop`). Acá la estimación se corrige hasta que el período contenga al ancla, y un test recorre tres años día por día con arranques el 29, 30 y 31 para cada periodicidad. Sin migración.
+
+## ADR-087 — El recibo de un cobro asentado en el libro de terceros, «por cuenta y orden de», y LibraInmo de una sola base
+
+**Estado:** aceptada (2026-10-26). Fase 1 de LibraInmo (`wiki/analyses/inmobiliaria-administracion-alquileres-diseno.md`).
+
+**Contexto.** La inmobiliaria cobra el alquiler al inquilino **como mandataria** del propietario: la plata entra a su cuenta y el recibo dice que se cobró por cuenta y orden de él. LibraInmo lleva las cuentas de inquilinos y propietarios en el libro de terceros (`cc_asientos`, ADR-026), y el recibo del motor sólo nacía de una factura, una venta o un `cc_pago` de la cuenta de clientes. Además `create_recibo` abría su propia conexión, así que no podía ir en la transacción del producto: un cobro que se revierte dejaba su recibo emitido.
+
+**Qué ya existe** (`git grep` de `recibo` en el motor y los diez productos). `libracore.recibos` con tres entradas idempotentes por origen y `db.recibos` con numeración y reintento. LibraCargo, el otro producto que usa el libro de terceros, **no emite recibos del motor**: guarda el número de recibo como texto en su movimiento de caja (`app/models/cuentas.py`). No hay nada que reutilizar del lado del producto.
+
+**Decisión.**
+1. **Un cuarto origen, `asiento`** (`db.recibos.ORIGEN_ASIENTO`): el haber de un tercero en `cc_asientos`; `origen_id` es el id del asiento. La lista sigue cerrada.
+2. **`recibos.emitir_recibo_de_asiento(asiento_id, pagos=, concepto=, por_cuenta_de=, conn=)`**: idempotente por asiento; **sólo un haber** (un debe es una deuda: `SinCobros`); el tercero es un `clients.id` y de ahí salen razón, CUIT y domicilio; los `pagos` (medios) los pone el producto y tienen que sumar el haber; `por_cuenta_de` se escribe en el «en concepto de».
+3. **`create_recibo`, `get_next_recibo_numero`, `get_recibo` y `get_recibos_de_origen` aceptan `conn=`** (ADR-025): el cobro y su recibo entran o salen juntos. Cada intento de numeración va en un `SAVEPOINT`, como `create_factura`, para que el reintento no aborte la transacción de PostgreSQL.
+4. **`librainmo` entra en `_UNA_SOLA_BASE`**: nace con el schema del motor en la base del dominio, y `libracore-migrar --prefijo librainmo` cae ahí sin variable.
+
+**Tests.** `tests/test_recibo_de_asiento.py` (sqlite y postgres): el mandato en el concepto, idempotencia y numeración, el debe sin recibo, la suma de los medios, la transacción revertida sin recibo ni asiento, y el PDF.
