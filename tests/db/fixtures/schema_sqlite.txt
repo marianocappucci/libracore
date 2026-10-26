@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (439)
+## tablas (447)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -245,6 +245,14 @@ facturas|subtotal|REAL|NN|
 facturas|tipo|INTEGER|NN|
 facturas|total|REAL|NN|
 facturas|usuario_id|INTEGER||
+indices_ajuste|created_at|TEXT||datetime('now','-3 hours')
+indices_ajuste|fecha|TEXT|NN|
+indices_ajuste|fuente|TEXT|NN|
+indices_ajuste|id|INTEGER||
+indices_ajuste|indice|TEXT|NN|
+indices_ajuste|updated_at|TEXT||datetime('now','-3 hours')
+indices_ajuste|usuario_id|INTEGER||
+indices_ajuste|valor|TEXT|NN|
 lista_precio_items|lista_id|INTEGER|NN|
 lista_precio_items|precio|REAL|NN|0
 lista_precio_items|producto_id|INTEGER|NN|
@@ -441,7 +449,7 @@ ventas|total|REAL|NN|0
 ventas|turno_id|INTEGER||
 ventas|usuario_id|INTEGER||
 
-## claves primarias (37)
+## claves primarias (38)
 arca_config|id
 arca_credenciales_servicio|id
 auth_log|id
@@ -462,6 +470,7 @@ egresos|id
 envios_email|id
 facturacion_alias|id
 facturas|id
+indices_ajuste|id
 lista_precio_items|lista_id,producto_id
 listas_precio|id
 modulos|id
@@ -480,7 +489,7 @@ usuarios|id
 ventas_pagos|id
 ventas|id
 
-## claves foráneas (49)
+## claves foráneas (50)
 caja_movimientos|caja_id|cajas|id|SET NULL|NO ACTION
 caja_movimientos|turno_id|turnos_caja|id|SET NULL|NO ACTION
 caja_movimientos|usuario_id|usuarios|id|SET NULL|NO ACTION
@@ -504,6 +513,7 @@ facturacion_alias|cliente_id|clients|id|CASCADE|NO ACTION
 facturas|anulada_por|usuarios|id|SET NULL|NO ACTION
 facturas|emisor_id|arca_config|id|RESTRICT|NO ACTION
 facturas|usuario_id|usuarios|id|SET NULL|NO ACTION
+indices_ajuste|usuario_id|usuarios|id|SET NULL|NO ACTION
 lista_precio_items|lista_id|listas_precio|id|CASCADE|NO ACTION
 lista_precio_items|producto_id|productos|id|CASCADE|NO ACTION
 movimientos_stock|deposito_id|depositos|id|SET NULL|NO ACTION
@@ -531,7 +541,7 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (40)
+## índices (41)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
 arca_credenciales_servicio|sqlite_autoindex_arca_credenciales_servicio_1|UNIQUE implícito (empresa,servicio,ambiente)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
@@ -557,6 +567,7 @@ facturacion_alias|sqlite_autoindex_facturacion_alias_1|UNIQUE implícito (tipo,v
 facturas|idx_facturas_cliente_cuit|CREATE INDEX idx_facturas_cliente_cuit ON facturas(cliente_cuit)
 facturas|idx_facturas_fecha|CREATE INDEX idx_facturas_fecha ON facturas(fecha)
 facturas|idx_facturas_numeracion|CREATE UNIQUE INDEX idx_facturas_numeracion ON facturas(COALESCE(emisor_id, 0), ambiente, tipo, punto_venta, numero)
+indices_ajuste|idx_indices_ajuste_fecha|CREATE UNIQUE INDEX idx_indices_ajuste_fecha ON indices_ajuste(indice, fecha)
 lista_precio_items|sqlite_autoindex_lista_precio_items_1|UNIQUE implícito (lista_id,producto_id)
 modulos|sqlite_autoindex_modulos_1|UNIQUE implícito (modulo)
 movimientos_stock|idx_movimientos_stock_producto|CREATE INDEX idx_movimientos_stock_producto ON movimientos_stock(producto_id)
