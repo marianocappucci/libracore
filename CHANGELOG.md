@@ -8,6 +8,15 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — `periodo_anclado` y `sumar_meses` en el motor (propuesta: v1.196.1)
+
+ADR-086 (addendum). **Patch, sin migración.**
+- **`libracore.periodos.periodo_anclado(cadencia, ancla=, arranque=)`:** el período contado desde el arranque (las visitas de LibraDesk, el ajuste por índice). Corrige el caso de LibraDesk en que, con un arranque a fin de mes, el ancla quedaba fuera del período (31-01 → el 28-02 caía en el 31-01 al 27-02).
+- **`sumar_meses`** pasa a ser público (antes `_sumar_meses`).
+
+### Para los productos
+- **LibraDesk:** con esto deja su copia de la aritmética en `cuotas.py` y `visitas.py`.
+
 ## [Unreleased] — Períodos de contrato y mora en el motor (propuesta: v1.196.0)
 
 ADR-086. **Sin migración y sin tocar el esquema.** Módulos puros nuevos; ningún producto cambia por subir el pin.

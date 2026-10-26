@@ -4,7 +4,7 @@ Los casos vienen de `tests/test_cuotas.py` de LibraDesk (devengado, 2026-08-15),
 los mismos números sin nada de eso. Lo que se fija es lo que sale mal una vez al año: los meses cortos, el bisiesto, el prorrateo con
 divisor real y el redondeo que no es el del banquero.
 """
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -13,12 +13,13 @@ from libracore.periodos import (
     PERIODICIDADES,
     CuotaPropuesta,
     Periodo,
-    _sumar_meses,
     clave_de_periodo,
+    periodo_anclado,
     periodo_de,
     periodo_por_cadencia,
     proponer_cuota,
     redondear,
+    sumar_meses,
     vencimiento_de,
     ya_generada,
 )
@@ -58,8 +59,8 @@ def test_redondear_es_half_up_a_centavos(valor, esperado):
     (date(2026, 8, 20), 0, date(2026, 8, 20)),
     (date(2028, 2, 29), 12, date(2029, 2, 28)),   # el 29 de febrero un año después
 ])
-def test_sumar_meses_recorta_el_dia_al_ultimo_del_mes_destino(origen, meses, esperado):
-    assert _sumar_meses(origen, meses) == esperado
+def testsumar_meses_recorta_el_dia_al_ultimo_del_mes_destino(origen, meses, esperado):
+    assert sumar_meses(origen, meses) == esperado
 
 
 # ── El período que contiene al ancla ───────────────────────────────────────
@@ -316,3 +317,48 @@ def test_la_clave_de_la_cuota_prorrateada_es_su_desde():
         fecha_inicio=date(2026, 8, 20), fecha_fin=None, periodicidad="mensual", importe=D("31000"), ancla=date(2026, 8, 25),
     )
     assert clave_de_periodo("C-1", cuota.periodo) == ("C-1", date(2026, 8, 20))
+
+
+# ── el período anclado al arranque (visitas de LibraDesk, ajuste por índice de LibraInmo) ──────────────────────────────
+
+
+@pytest.mark.parametrize("cadencia, arranque, ancla, desde, hasta", [
+    # Mensual desde el 20: el 5 de marzo es del período de febrero (20-02 al 19-03), no del de marzo.
+    ("mensual", date(2026, 1, 20), date(2026, 3, 5), date(2026, 2, 20), date(2026, 3, 19)),
+    ("mensual", date(2026, 1, 20), date(2026, 3, 20), date(2026, 3, 20), date(2026, 4, 19)),
+    # Trimestral desde el 15-02: feb-may, no ene-mar.
+    ("trimestral", date(2026, 2, 15), date(2026, 4, 1), date(2026, 2, 15), date(2026, 5, 14)),
+    ("trimestral", date(2026, 2, 15), date(2026, 12, 1), date(2026, 11, 15), date(2027, 2, 14)),
+    # 🔴 Arranque a fin de mes: el 28-02 es del segundo período, no del primero (LibraDesk daba 31-01 al 27-02).
+    ("mensual", date(2026, 1, 31), date(2026, 2, 28), date(2026, 2, 28), date(2026, 3, 30)),
+    ("mensual", date(2026, 1, 31), date(2026, 2, 27), date(2026, 1, 31), date(2026, 2, 27)),
+    ("mensual", date(2026, 1, 31), date(2026, 3, 31), date(2026, 3, 31), date(2026, 4, 29)),
+    # Anual desde un 29 de febrero.
+    ("anual", date(2024, 2, 29), date(2025, 3, 1), date(2025, 2, 28), date(2026, 2, 27)),
+    # El mismo día del arranque es el primer período.
+    ("semestral", date(2026, 7, 10), date(2026, 7, 10), date(2026, 7, 10), date(2027, 1, 9)),
+])
+def test_periodo_anclado(cadencia, arranque, ancla, desde, hasta):
+    p = periodo_anclado(cadencia, ancla=ancla, arranque=arranque)
+    assert (p.desde, p.hasta) == (desde, hasta)
+    assert p.desde <= ancla <= p.hasta
+
+
+@pytest.mark.parametrize("cadencia", PERIODICIDADES)
+@pytest.mark.parametrize("arranque", [date(2026, 1, 31), date(2026, 1, 30), date(2024, 2, 29), date(2026, 8, 20)])
+def test_periodo_anclado_siempre_contiene_al_ancla_y_se_encadena(cadencia, arranque):
+    """Día por día durante tres años: el período contiene al ancla y el siguiente arranca al otro día del anterior."""
+    anterior = None
+    d = arranque
+    while d < date(arranque.year + 3, 1, 1):
+        p = periodo_anclado(cadencia, ancla=d, arranque=arranque)
+        assert p.desde <= d <= p.hasta
+        if anterior is not None and p != anterior:
+            assert p.desde == anterior.hasta + timedelta(days=1)
+        anterior = p
+        d += timedelta(days=1)
+
+
+def test_periodo_anclado_rechaza_una_cadencia_desconocida():
+    with pytest.raises(ValueError):
+        periodo_anclado("quincenal", ancla=date(2026, 1, 1), arranque=date(2026, 1, 1))

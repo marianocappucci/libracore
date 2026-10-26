@@ -118,7 +118,7 @@ def _ultimo_dia(anio: int, mes: int) -> int:
     return calendar.monthrange(anio, mes)[1]
 
 
-def _sumar_meses(d: date, meses: int) -> date:
+def sumar_meses(d: date, meses: int) -> date:
     """`d` más N meses, recortando el día al último del mes destino.
 
     El 31 de enero más un mes es el 28 (o 29) de febrero. Sin este recorte la aritmética de períodos revienta con
@@ -158,7 +158,7 @@ def periodo_por_cadencia(cadencia: str, ancla: date) -> Periodo:
 
     Es la aritmética a secas, con el nombre de la cadencia y no del cobro, porque tiene dos usos que no son lo mismo: cobrar y visitar
     (en LibraDesk se puede cobrar mensual y visitar trimestral). Una sola función con dos llamadores y no dos copias que puedan
-    divergir: el recorte de día de `_sumar_meses()` y la alineación al año de los multi-mes son sutiles.
+    divergir: el recorte de día de `sumar_meses()` y la alineación al año de los multi-mes son sutiles.
 
     Para el mensual el bloque es su mes; para los multi-mes se alinea al año (ver el docstring del módulo, decisión 3).
     """
@@ -169,8 +169,46 @@ def periodo_por_cadencia(cadencia: str, ancla: date) -> Periodo:
     # En qué bloque del año cae el ancla. Para el mensual (paso 1) esto es simplemente su mes.
     bloque = (ancla.month - 1) // paso
     desde = date(ancla.year, bloque * paso + 1, 1)
-    hasta = _sumar_meses(desde, paso) - _UN_DIA
+    hasta = sumar_meses(desde, paso) - _UN_DIA
     return Periodo(desde=desde, hasta=hasta)
+
+
+def periodo_anclado(cadencia: str, *, ancla: date, arranque: date) -> Periodo:
+    """El período que contiene a `ancla`, **contado desde `arranque`** y no alineado al calendario.
+
+    Es la diferencia con `periodo_por_cadencia()`. Un trimestral que arranca el 15-02 va de feb a abr, de may a jul, de ago a oct y de nov
+    a ene, que es como se pacta con un cliente. Lo usan las visitas de mantenimiento de LibraDesk (de donde viene, `app/services/visitas.py`)
+    y el ajuste por índice de LibraInmo («se ajusta cada tres meses desde el inicio del contrato»). **Las cuotas siguen usando la de
+    calendario**: el prorrateo del primer mes lo exige (decisión 3 del módulo), y una visita o un ajuste no se prorratean.
+
+    Los períodos se encadenan desde `arranque` (`sumar_meses(arranque, n × paso)`), no uno desde el anterior: un mensual que arranca el 31-01
+    va del 31-01 al 27-02, del 28-02 al 30-03 y del 31-03 al 30-04, sin que el recorte de febrero se arrastre a los meses siguientes.
+
+    🔴 **El período se corrige hasta que contenga a `ancla`.** La cuenta de meses de LibraDesk restaba uno cuando el día del ancla era menor
+    que el del arranque, y con un arranque a fin de mes eso falla: arranque 31-01 y ancla 28-02 daba el período del 31-01 al 27-02, que no
+    contiene al 28. Acá la estimación se corrige mirando el período armado, que es lo que no se puede equivocar.
+
+    Con `ancla` anterior a `arranque` devuelve el período anterior al primero: quien llama controla la vigencia, como en LibraDesk.
+    """
+    try:
+        paso = MESES_POR_PERIODICIDAD[cadencia]
+    except KeyError:
+        raise ValueError(f"Periodicidad desconocida: {cadencia!r}. Las válidas son {list(PERIODICIDADES)}.") from None
+    meses = (ancla.year - arranque.year) * 12 + (ancla.month - arranque.month)
+    n = meses // paso
+
+    def armar(k: int) -> Periodo:
+        desde = sumar_meses(arranque, k * paso)
+        return Periodo(desde=desde, hasta=sumar_meses(arranque, (k + 1) * paso) - _UN_DIA)
+
+    periodo = armar(n)
+    while ancla < periodo.desde:
+        n -= 1
+        periodo = armar(n)
+    while ancla > periodo.hasta:
+        n += 1
+        periodo = armar(n)
+    return periodo
 
 
 def periodo_de(periodicidad: str, ancla: date) -> Periodo:
