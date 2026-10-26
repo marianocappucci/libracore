@@ -807,6 +807,15 @@ def _migraciones_de_fuente(fuente: str, script) -> tuple:
         )
     kws = [k for k in llamadas[0].keywords if k.arg == "migraciones"]
     if not kws:
+        # 🔴 Un `configure(**CONFIG)` puede traer `migraciones` adentro y desde acá
+        # no se ve: suponer «ninguna» hizo que el alta de la demo de LibraInmo
+        # (2026-10-26) arrancara sin migrar. Sólo es «ninguna» si no hay `**`.
+        if any(k.arg is None for k in llamadas[0].keywords):
+            raise MigracionesIlegibles(
+                f"{script} llama a configure(**...) (línea {llamadas[0].lineno}): "
+                "las migraciones= pueden venir adentro y no se pueden leer sin "
+                "ejecutar el script. Declaralas literal en el configure(...)."
+            )
         return ()
     try:
         valor = ast.literal_eval(kws[0].value)

@@ -271,6 +271,8 @@ def test_no_ejecuta_el_script(tmp_path):
     ("x = 1\n", "0 llamadas"),
     ("configure(migraciones=('alembic', 'upgrade', 'head'))\n", "secuencia de COMANDOS"),
     ("configure(migraciones=(\n", "no se puede parsear"),
+    ("CONFIG = dict(migraciones=(('a', 'b'),))\nconfigure(**CONFIG)\n", r"configure\(\*\*\.\.\.\)"),
+    ("configure(product_name='X', **CONFIG)\n", r"configure\(\*\*\.\.\.\)"),
 ])
 def test_lo_que_no_se_puede_leer_falla(tmp_path, fuente, motivo):
     _panel(tmp_path, fuente)
