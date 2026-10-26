@@ -2093,3 +2093,21 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 **Lo que no hace.** No tiene router: la pantalla para ver y cargar valores la arma el primer producto que la necesite, sobre estas funciones. No baja el coeficiente Casa Propia (no se encontró una API: se carga a mano).
 
 **Tests.** `tests/test_indices_ajuste.py` (sqlite y postgres): la cuenta pura, el redondeo, la equivalencia de las dos series del IPC, el faltante con todas las fechas, el valor exacto del CER, lo manual que no se pisa, la paginación del BCRA, la fecha de los mensuales, una respuesta rara, una fuente caída, el comando y la `0030` sobre una base de antes. Más `test_schema.py` y las dos fixtures del esquema congelado (448 columnas).
+
+## ADR-086 — La aritmética de períodos de contrato y de mora sube al motor: `libracore.periodos` y `libracore.mora`
+
+**Estado:** aceptada (2026-10-26). Fase 0 de LibraInmo (`wiki/analyses/inmobiliaria-administracion-alquileres-diseno.md`). El humano pidió que, después del tag, LibraDesk deje su copia y la use desde el motor.
+
+**Contexto.** El devengado de contratos existe desde el 2026-08-15, pero **en un producto**: `libradesk/app/services/cuotas.py` (fase 2 del alquiler de equipos). LibraInmo cobra alquileres por período con las mismas reglas: qué ventana cubre la cuota, el prorrateo de la primera y la última, el mes adelantado, el vencimiento y no emitir dos veces el mismo mes. Por la regla de la familia (el arreglo de fondo vive en el motor), un segundo devengado en otro producto no se escribe: se sube el que hay. La mora (el punitorio de un pago fuera de término) no la calculaba nadie: LibraDesk tiene el estado `vencida` y nada más.
+
+**Qué ya existe** (`rag_query`, `docs/` y `git grep` en el motor y en los diez productos por `contratos_cuotas`, `ContratoCuota`, `cuota_contrato`, `periodicidad`, `punitorio`, `mora`). `cuotas.py` de LibraDesk y sus tests, `ORIGEN_CUOTA_CONTRATO` en la bandeja de comprobantes del motor, y `libracore.feriados` para los días hábiles. Nada de mora.
+
+**Decisión.**
+1. **`libracore.periodos`**, puro y con la forma de `abono.py`: recibe datos simples (inicio, fin, periodicidad, importe, día de vencimiento) y no un `Contrato`. `Periodo`, `periodo_de`, `periodo_por_cadencia`, `vencimiento_de`, `proponer_cuota` (período cubierto, días cubiertos sobre días del período, importe prorrateado o completo, emisión y vencimiento), `clave_de_periodo`, `ya_generada` y `redondear`. Las decisiones del 2026-08-15 pasan tal cual: mes adelantado, prorrateo por días sobre el período entero en las dos puntas, períodos de calendario alineados al año y HALF_UP.
+2. **La idempotencia se parte en dos**: la clave `(contrato, desde)` es del motor; el índice único parcial (sin las anuladas) es SQL y queda en cada producto.
+3. **`libracore.mora.calcular_punitorio`**: interés simple; `tasa` en porcentaje con `base="diaria"` o `"mensual"` (mensual sobre 30 días fijos); días de gracia corridos e inclusive; el vencimiento que cae en día no hábil se corre al siguiente hábil (`feriados.es_feriado` más `dias_no_habiles` del producto); el interés corre desde el vencimiento o, con `desde_fin_de_gracia=True`, desde el fin de la gracia. Un solo redondeo al final. Devuelve el detalle para el recibo.
+4. **Lo que se queda en el producto**: el modelo, el repositorio, la emisión con confirmación, el texto del concepto, el nombre del cargo y el importe congelado al generar.
+
+**Abierto.** `vencimiento_de` se portó tal cual: en una cuota prorrateada que arranca después del día de vencimiento (arranca el 20, vence el 10), el vencimiento queda antes de la emisión. Es lo que hace LibraDesk hoy y lo fija un test. Antes de que LibraInmo calcule mora sobre ese vencimiento hay que decidir si se toma `max(vencimiento, emisión)`.
+
+**Tests.** `tests/test_periodos.py` (102) y `tests/test_mora.py` (57): los casos de aritmética de LibraDesk (12/31 desde el 20, 10/31 hasta el 10, febrero, 31 de enero más un mes, trimestral alineado) más bisiestos, periodicidades largas, HALF_UP sobre 0,125, gracia, fin de semana largo y feriado puente de julio de 2026, y base mensual contra diaria.

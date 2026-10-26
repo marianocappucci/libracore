@@ -8,6 +8,16 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — Períodos de contrato y mora en el motor (propuesta: v1.196.0)
+
+ADR-086. **Sin migración y sin tocar el esquema.** Módulos puros nuevos; ningún producto cambia por subir el pin.
+- **`libracore.periodos`:** la aritmética del devengado que vivía en `libradesk/app/services/cuotas.py` (períodos de calendario, prorrateo por días en las dos puntas, mes adelantado, vencimiento, clave de idempotencia), con `proponer_cuota(...)`.
+- **`libracore.mora`:** `calcular_punitorio(...)` con tasa diaria o mensual, días de gracia y vencimiento corrido al siguiente día hábil.
+
+### Para los productos
+- **LibraDesk:** reemplazar la aritmética de `cuotas.py` por `libracore.periodos`, sin cambiar su comportamiento (paso propio, pedido por el humano el 2026-10-26).
+
+
 ## [Unreleased] — Los índices de ajuste: ICL, IPC, CER, UVA y dólar, con su cuenta y su descarga (propuesta: v1.196.0)
 
 ADR-085. **Minor, con migración `0030` (aditiva: una tabla nueva, vacía).** Ninguna instancia cambia de comportamiento por subir el pin.
