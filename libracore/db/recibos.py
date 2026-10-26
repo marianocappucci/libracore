@@ -16,7 +16,8 @@ módulo sólo escribe y lee filas.
 import json
 import sqlite3
 
-from libracore.db.core import get_connection, sql_busqueda
+from libracore.db.core import Conexion, get_connection, sql_busqueda
+from libracore.db.facturas import _con, _savepoint
 from libracore.fechas import rango_por_dia
 
 # Los tres orígenes posibles. Un recibo siempre nace de una operación que ya
@@ -25,8 +26,13 @@ from libracore.fechas import rango_por_dia
 ORIGEN_FACTURA = "factura"
 ORIGEN_VENTA   = "venta"
 ORIGEN_CC_PAGO = "cc_pago"
+# Un cobro asentado en el libro de terceros (`cc_asientos`, ADR-026): el haber del
+# tercero que pagó. Es el de un producto que lleva la cuenta como libro, como el
+# alquiler que cobra una inmobiliaria (LibraInmo, ADR-087). `origen_id` es el id
+# del asiento.
+ORIGEN_ASIENTO = "asiento"
 
-ORIGENES = (ORIGEN_FACTURA, ORIGEN_VENTA, ORIGEN_CC_PAGO)
+ORIGENES = (ORIGEN_FACTURA, ORIGEN_VENTA, ORIGEN_CC_PAGO, ORIGEN_ASIENTO)
 
 
 def _row_a_dict(row) -> dict:
@@ -36,9 +42,9 @@ def _row_a_dict(row) -> dict:
     return d
 
 
-def get_next_recibo_numero(punto_venta: int = 1) -> int:
+def get_next_recibo_numero(punto_venta: int = 1, *, conn: Conexion | None = None) -> int:
     """Devuelve el próximo número correlativo para `punto_venta`."""
-    with get_connection() as conn:
+    with _con(conn) as conn:
         row = conn.execute(
             "SELECT MAX(numero) FROM recibos WHERE punto_venta=?", (punto_venta,)
         ).fetchone()
@@ -48,7 +54,7 @@ def get_next_recibo_numero(punto_venta: int = 1) -> int:
 def create_recibo(fecha, cliente_razon, origen_tipo, total, pagos,
                   punto_venta=1, numero=None, cliente_id=None, cliente_cuit="",
                   cliente_domicilio="", origen_id=None, concepto="",
-                  observaciones="", usuario_id=None) -> int:
+                  observaciones="", usuario_id=None, *, conn: Conexion | None = None) -> int:
     """Inserta un recibo y devuelve su id.
 
     `numero` se calcula solo si no se pasa. Ante colisión con
@@ -61,6 +67,11 @@ def create_recibo(fecha, cliente_razon, origen_tipo, total, pagos,
     `fecha`, `medio_pago`, `referencia`, `monto` y —cuando el cobro salió de la
     caja— `caja_movimiento_id`, que es lo que después permite saber qué cobros
     ya tienen recibo.
+
+    Con `conn`, trabaja en la transacción de quien llama y no confirma nada
+    (ADR-025): el producto asienta el cobro y emite el recibo juntos. Cada
+    intento va en un `SAVEPOINT`, como `create_factura`, para que el reintento
+    por numeración no aborte la transacción de PostgreSQL.
     """
     if origen_tipo not in ORIGENES:
         raise ValueError(
@@ -70,10 +81,10 @@ def create_recibo(fecha, cliente_razon, origen_tipo, total, pagos,
     MAX_INTENTOS = 5
     for intento in range(MAX_INTENTOS):
         if numero is None:
-            numero = get_next_recibo_numero(punto_venta)
+            numero = get_next_recibo_numero(punto_venta, conn=conn)
         try:
-            with get_connection() as conn:
-                cur = conn.execute(
+            with _con(conn) as c, _savepoint(conn, "recibo_numero"):
+                cur = c.execute(
                     """INSERT INTO recibos
                        (punto_venta, numero, fecha, cliente_id, cliente_razon,
                         cliente_cuit, cliente_domicilio, origen_tipo, origen_id,
@@ -99,14 +110,15 @@ def create_recibo(fecha, cliente_razon, origen_tipo, total, pagos,
             numero = None
 
 
-def get_recibo(recibo_id: int) -> dict | None:
-    with get_connection() as conn:
+def get_recibo(recibo_id: int, *, conn: Conexion | None = None) -> dict | None:
+    with _con(conn) as conn:
         row = conn.execute("SELECT * FROM recibos WHERE id=?", (recibo_id,)).fetchone()
         return _row_a_dict(row) if row else None
 
 
 def get_recibos_de_origen(origen_tipo: str, origen_id: int,
-                          incluir_anulados: bool = False) -> list[dict]:
+                          incluir_anulados: bool = False, *,
+                          conn: Conexion | None = None) -> list[dict]:
     """Los recibos emitidos sobre una operación, del más viejo al más nuevo.
 
     Por defecto **excluye los anulados**, que es lo que quiere quien pregunta
@@ -117,7 +129,7 @@ def get_recibos_de_origen(origen_tipo: str, origen_id: int,
     if not incluir_anulados:
         sql += " AND anulado=0"
     sql += " ORDER BY id"
-    with get_connection() as conn:
+    with _con(conn) as conn:
         rows = conn.execute(sql, (origen_tipo, origen_id)).fetchall()
         return [_row_a_dict(r) for r in rows]
 

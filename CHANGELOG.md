@@ -8,6 +8,18 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — El recibo de un cobro del libro de terceros, «por cuenta y orden de» (propuesta: v1.197.0)
+
+ADR-087. **Minor, sin migración.** Ningún producto cambia de comportamiento por subir el pin.
+- **`recibos.emitir_recibo_de_asiento(asiento_id, pagos=, concepto=, por_cuenta_de=, conn=)`**: el recibo del haber de un tercero en `cc_asientos`, idempotente, con el mandato en el concepto. Origen nuevo `asiento`.
+- **`db.recibos.create_recibo`, `get_next_recibo_numero`, `get_recibo` y `get_recibos_de_origen` aceptan `conn=`** (la transacción de quien llama, con `SAVEPOINT` por intento).
+- **`librainmo` en `_UNA_SOLA_BASE`.**
+
+### Para los productos
+- **Todos:** nada.
+- **LibraInmo** (nuevo): es su primer consumidor.
+
+
 ## [Unreleased] — El dólar A 3500 de un fin de semana o feriado es el del último día hábil (propuesta: v1.196.2)
 
 ADR-085 (addendum). **Patch, sin migración.**
