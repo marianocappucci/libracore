@@ -905,6 +905,24 @@ def init_core_schema(conn: Conexion):
             ON cola_arca(origen_producto, origen_instancia, origen_tipo, origen_id);
         CREATE INDEX IF NOT EXISTS idx_cola_arca_estado
             ON cola_arca(estado, id);
+
+        -- Los valores de los índices de ajuste (ADR-085): un valor publicado de un índice en una fecha (el ICL de un
+        -- día, el IPC de un mes, fechado el primero). `valor` es TEXT y no REAL: es el decimal tal cual lo publicó la
+        -- fuente, y un ajuste que se recalcula tiene que dar lo mismo. `fuente` es `bcra`, `datos_gob_ar` o `manual`,
+        -- y lo cargado a mano no lo pisa una descarga (`libracore.db.indices_ajuste`). Ojo: este script se parte por
+        -- el punto y coma, así que ningún comentario puede llevar uno.
+        CREATE TABLE IF NOT EXISTS indices_ajuste (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            indice      TEXT NOT NULL CHECK (indice <> ''),
+            fecha       TEXT NOT NULL,
+            valor       TEXT NOT NULL,
+            fuente      TEXT NOT NULL CHECK (fuente <> ''),
+            usuario_id  INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+            created_at  TEXT DEFAULT (datetime('now','-3 hours')),
+            updated_at  TEXT DEFAULT (datetime('now','-3 hours'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_indices_ajuste_fecha
+            ON indices_ajuste(indice, fecha);
     """)
 
     if is_postgres():

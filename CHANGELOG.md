@@ -8,6 +8,18 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — Los índices de ajuste: ICL, IPC, CER, UVA y dólar, con su cuenta y su descarga (propuesta: v1.196.0)
+
+ADR-085. **Minor, con migración `0030` (aditiva: una tabla nueva, vacía).** Ninguna instancia cambia de comportamiento por subir el pin.
+- **Tabla `indices_ajuste`** y `libracore.db.indices_ajuste` (`guardar`, `obtener`, `ultimo_hasta`, `listar`, `borrar`): el valor de un índice en una fecha, como texto decimal exacto. Lo cargado a mano no lo pisa una descarga.
+- **`libracore.indices_ajuste`:** el catálogo (`INDICES`), `ajustar(indice, importe, fecha_base, fecha_ajuste)` con los valores que tomó, `aplicar`, `aplicar_porcentaje` y `IndiceFaltante`.
+- **`libracore.indices_descarga`:** `sincronizar`, `sincronizar_todos` y `python -m libracore.indices_descarga`, contra la **v4** de la API del BCRA (la v3 está dada de baja) y la de series de datos.gob.ar.
+
+### Para los productos
+- **Todos:** correr `libracore-migrar` (la `0030`) al subir el pin. Nada más.
+- **LibraDesk:** su `metodo_actualizacion='indice'` puede dejar de comportarse como `manual` usando `ajustar` (paso propio, pedido por el humano el 2026-10-26).
+- **LibraInmo** (nuevo): es su primer consumidor.
+
 ## [Unreleased] — Sin los históricos del core de GestioLibra y MedLibra, y sin la excepción de VentaLibra en el alta (propuesta: v1.195.1)
 
 ADR-084 (addendum). **Patch, sin migración y sin tocar el esquema.** Ninguna instancia existente cambia por subir el pin; cambia lo que hace el alta de una instancia **nueva** de VentaLibra.
