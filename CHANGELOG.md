@@ -8,6 +8,14 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — `anular_recibo` en la transacción de quien llama (propuesta: v1.197.1)
+
+ADR-087 (addendum). **Patch, sin migración.**
+- **`db.recibos.anular_recibo(..., conn=)`**: el producto revierte un cobro y anula su recibo juntos.
+
+### Para los productos
+- **LibraInmo:** anula el recibo dentro de la anulación del cobro.
+
 ## [Unreleased] — El recibo de un cobro del libro de terceros, «por cuenta y orden de» (propuesta: v1.197.0)
 
 ADR-087. **Minor, sin migración.** Ningún producto cambia de comportamiento por subir el pin.

@@ -2131,3 +2131,5 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 4. **`librainmo` entra en `_UNA_SOLA_BASE`**: nace con el schema del motor en la base del dominio, y `libracore-migrar --prefijo librainmo` cae ahí sin variable.
 
 **Tests.** `tests/test_recibo_de_asiento.py` (sqlite y postgres): el mandato en el concepto, idempotencia y numeración, el debe sin recibo, la suma de los medios, la transacción revertida sin recibo ni asiento, y el PDF.
+
+**Addendum (2026-10-26, v1.197.1): `anular_recibo(conn=)`.** LibraInmo anula el cobro (contraasientos y cuota otra vez pendiente) y su recibo: con la función abriendo su propia conexión, el recibo se anulaba recién después de confirmar, y un error ahí dejaba un cobro anulado con el recibo vigente. Ahora va en la misma transacción. Sin migración.
