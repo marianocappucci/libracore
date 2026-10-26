@@ -2094,6 +2094,8 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 
 **Tests.** `tests/test_indices_ajuste.py` (sqlite y postgres): la cuenta pura, el redondeo, la equivalencia de las dos series del IPC, el faltante con todas las fechas, el valor exacto del CER, lo manual que no se pisa, la paginación del BCRA, la fecha de los mensuales, una respuesta rara, una fuente caída, el comando y la `0030` sobre una base de antes. Más `test_schema.py` y las dos fixtures del esquema congelado (448 columnas).
 
+**Addendum (2026-10-26, v1.196.2): un índice de días hábiles toma el último día hábil.** Decisión del humano: el dólar A 3500 no se publica los fines de semana ni los feriados, y un ajuste que caía uno de esos días no encontraba valor nunca. `Indice.solo_dias_habiles` (hoy sólo `dolar_a3500`): sin valor en la fecha pedida, `ajustar` toma el último anterior **si todos los días del medio son no hábiles** (fin de semana o `feriados.es_feriado`) y si está a 10 días o menos. Un día hábil sin valor sigue siendo un dato que falta (`IndiceFaltante`): no se tapa. El valor tomado dice su `fecha` y la `fecha_pedida`. Sin el calendario de feriados de ese año, sólo el fin de semana cuenta como no hábil. Sin migración.
+
 ## ADR-086 — La aritmética de períodos de contrato y de mora sube al motor: `libracore.periodos` y `libracore.mora`
 
 **Estado:** aceptada (2026-10-26). Fase 0 de LibraInmo (`wiki/analyses/inmobiliaria-administracion-alquileres-diseno.md`). El humano pidió que, después del tag, LibraDesk deje su copia y la use desde el motor.

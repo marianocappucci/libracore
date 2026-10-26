@@ -8,6 +8,14 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — El dólar A 3500 de un fin de semana o feriado es el del último día hábil (propuesta: v1.196.2)
+
+ADR-085 (addendum). **Patch, sin migración.**
+- **`ajustar` con un índice de días hábiles** (`Indice.solo_dias_habiles`; hoy `dolar_a3500`) toma, para una fecha sin valor, el del último día hábil anterior, si todos los días del medio son no hábiles y si está a 10 días o menos. El valor tomado trae `fecha` y `fecha_pedida`. Un día hábil sin valor sigue dando `IndiceFaltante`.
+
+### Para los productos
+- **LibraDesk:** su ajuste por índice con dólar deja de fallar los fines de semana. Nada que cambiar.
+
 ## [Unreleased] — `periodo_anclado` y `sumar_meses` en el motor (propuesta: v1.196.1)
 
 ADR-086 (addendum). **Patch, sin migración.**
