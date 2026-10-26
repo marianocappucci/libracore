@@ -8,7 +8,15 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
-## [Unreleased] — `anular_recibo` en la transacción de quien llama (propuesta: v1.197.1)
+## [Unreleased] — el lector de migraciones falla ante `configure(**...)` (propuesta: v1.197.2)
+
+**Patch, sin migración.**
+- **`provisioning.migraciones_declaradas` / `migraciones_de_la_imagen`**: si el `configure(...)` del script no trae `migraciones=` pero sí un `**`, lanza `MigracionesIlegibles` en vez de devolver `()`. Pasó con LibraInmo (2026-10-26): `configure(**CONFIGURACION)` escondía las tres cadenas y el alta de la demo arrancó sin migrar.
+
+### Para los productos
+- Nada que cambiar si el `configure(...)` es literal (los doce lo son). Un producto con `**` deja de poder hacer altas y deploys hasta declararlo literal.
+
+## v1.197.1 — `anular_recibo` en la transacción de quien llama
 
 ADR-087 (addendum). **Patch, sin migración.**
 - **`db.recibos.anular_recibo(..., conn=)`**: el producto revierte un cobro y anula su recibo juntos.
