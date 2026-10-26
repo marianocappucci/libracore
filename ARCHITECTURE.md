@@ -226,6 +226,9 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
 - **`indices_ajuste.py`** (ADR-085): el catálogo de índices de ajuste (ICL, IPC, CER, UVA, dólar A 3500, Casa Propia) y
   `ajustar(indice, importe, fecha_base, fecha_ajuste)`, exacto en `Decimal`. `db/indices_ajuste.py` son los valores (tabla
   `indices_ajuste`, migración `0030`) e `indices_descarga.py` los baja de la v4 del BCRA y de datos.gob.ar.
+- **`periodos.py`** (ADR-086): la aritmética pura del devengado de un contrato (`proponer_cuota`: período de calendario,
+  prorrateo por días, mes adelantado, vencimiento y clave de idempotencia), subida desde LibraDesk. **`mora.py`**
+  (ADR-086): `calcular_punitorio`, con gracia y vencimiento corrido al siguiente día hábil.
 - **`security_headers.py`**, **`modules_gate.py`** (gating de módulos por
   instancia, `db/modulos`), **`feriados.py`**, **`geografia.py`**,
   **`medios_pago.py`**, **`registro_de_clientes.py`**,
