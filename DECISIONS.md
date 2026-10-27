@@ -2133,3 +2133,33 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 **Tests.** `tests/test_recibo_de_asiento.py` (sqlite y postgres): el mandato en el concepto, idempotencia y numeración, el debe sin recibo, la suma de los medios, la transacción revertida sin recibo ni asiento, y el PDF.
 
 **Addendum (2026-10-26, v1.197.1): `anular_recibo(conn=)`.** LibraInmo anula el cobro (contraasientos y cuota otra vez pendiente) y su recibo: con la función abriendo su propia conexión, el recibo se anulaba recién después de confirmar, y un error ahí dejaba un cobro anulado con el recibo vigente. Ahora va en la misma transacción. Sin migración.
+
+## ADR-088 — La moneda del libro de terceros y del recibo
+
+**Fecha:** 2026-10-27. **Estado:** aceptada (decisión del humano: «multimoneda completa ya»).
+
+**Contexto.** LibraInmo admite contratos de alquiler pactados en dólares, y la documentación de su landing encontró que
+se mostraban con `$` y que la liquidación al propietario sumaba sin mirar la moneda. El problema de fondo es del
+motor: el libro de terceros (`cc_asientos`, ADR-026) no tenía moneda, así que la cuenta de un inquilino con un
+contrato en pesos y otro en dólares —o la de un propietario con los dos— daba un saldo que no es nada, y el recibo
+(ADR-087) decía `$` siempre.
+
+**Decisión.**
+1. **`libracore.monedas`**: `ARS` y `USD`, con su símbolo (`$`, `US$`) y nombre. `validar` normaliza y rechaza el
+   resto. **No convierte**: una cotización la elige quien la necesita.
+2. **`cc_asientos.moneda` y `recibos.moneda`** (`TEXT NOT NULL DEFAULT 'ARS'`, revisión `0031`). Todo lo que había
+   queda en pesos, que es lo que era.
+3. **`libro_de_terceros.asentar(moneda=)`**, pesos por defecto; `contraasentar` copia la del original; `corregir` no
+   la cambia (cambiar la moneda es otro asiento). `saldo` y `extracto` (con su saldo anterior) aceptan `moneda=`, y
+   sin ella toman todo, como siempre; **`saldos` devuelve una fila por tercero, rol y moneda** (la fila suma la clave
+   `moneda`).
+4. **El recibo es de la moneda del asiento** (`emitir_recibo_de_asiento`) o de la que se pase (`create_recibo(moneda=)`),
+   y el PDF imprime su símbolo.
+
+**Qué no.** No hay tipo de cambio ni conversión, ni moneda en `facturas` (ARCA factura en pesos en toda la familia; una
+factura en dólares es otra decisión, con `MonId` y cotización). La cuenta corriente de clientes que se calcula desde los
+documentos (`cuenta_corriente`) sigue en pesos.
+
+**Para los productos.** Nada que cambiar si sólo asientan en pesos. Quien compare la salida de `saldos` con un
+diccionario exacto ve la clave nueva.
+

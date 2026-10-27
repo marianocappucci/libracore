@@ -95,7 +95,7 @@ def _pago_desde_movimiento(mov: dict) -> dict:
 
 def _emitir(*, fecha, cliente_razon, origen_tipo, origen_id, total, pagos,
             concepto, punto_venta, cliente_id, cliente_cuit, cliente_domicilio,
-            observaciones, usuario_id, conn=None) -> dict:
+            observaciones, usuario_id, moneda="ARS", conn=None) -> dict:
     """Inserta y **relee**. Releer no es paranoia: `create_recibo` reintenta
     ante colisión de numeración, así que el número que terminó en la base
     puede no ser el que se calculó."""
@@ -113,6 +113,7 @@ def _emitir(*, fecha, cliente_razon, origen_tipo, origen_id, total, pagos,
         cliente_domicilio=cliente_domicilio or "",
         observaciones=observaciones,
         usuario_id=usuario_id,
+        moneda=moneda,
         conn=conn,
     )
     return db_recibos.get_recibo(recibo_id, conn=conn)
@@ -321,7 +322,8 @@ def emitir_recibo_de_asiento(asiento_id: int, *, pagos: list[dict], concepto: st
     papel. `pagos` es la lista de medios con que se cobró (`fecha`, `medio_pago`, `referencia`, `monto`), que el
     producto conoce y el asiento no; tiene que sumar el importe del asiento. `por_cuenta_de` es el nombre de quien
     recibe la plata cuando el que cobra es un mandatario —la inmobiliaria cobra el alquiler para el propietario— y
-    queda escrito en el «en concepto de».
+    queda escrito en el «en concepto de». La moneda del recibo es la del asiento (ADR-088): un cobro en dólares
+    sale con `US$`.
 
     🔴 **Sólo un haber.** Un debe es una deuda, no plata que entró: el recibo afirma que se cobró, y de un cargo no
     hay nada que afirmar (`SinCobros`).
@@ -369,5 +371,6 @@ def emitir_recibo_de_asiento(asiento_id: int, *, pagos: list[dict], concepto: st
         cliente_domicilio=cliente.get("address"),
         observaciones=observaciones,
         usuario_id=usuario_id,
+        moneda=asiento.get("moneda") or "ARS",
         conn=conn,
     )

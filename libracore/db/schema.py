@@ -723,6 +723,10 @@ def init_core_schema(conn: Conexion):
             -- cuenta de clientes que lleva el motor (`libro_de_clientes`). No es
             -- único: el original y su reversión comparten el origen.
             origen           TEXT,
+            -- En qué moneda está el asiento (ADR-088, `libracore.monedas`): una
+            -- cuenta no suma pesos con dólares. Los productos que sólo usan pesos
+            -- no la pasan.
+            moneda           TEXT NOT NULL DEFAULT 'ARS',
             CHECK (debe >= 0 AND haber >= 0),
             -- Un asiento mueve el debe o el haber, nunca los dos ni ninguno.
             -- Lo migrado de un sistema viejo puede traer los dos en cero.
@@ -762,6 +766,8 @@ def init_core_schema(conn: Conexion):
             -- depende del origen, y el origen puede anularse después.
             concepto          TEXT DEFAULT '',
             total             REAL NOT NULL,
+            -- La moneda del total y de los pagos (ADR-088): el papel dice $ o US$.
+            moneda            TEXT NOT NULL DEFAULT 'ARS',
             pagos             TEXT NOT NULL DEFAULT '[]',
             observaciones     TEXT DEFAULT '',
             anulado           INTEGER NOT NULL DEFAULT 0,
@@ -1110,6 +1116,13 @@ def init_core_schema(conn: Conexion):
     cols_asientos = [r[1] for r in conn.execute("PRAGMA table_info(cc_asientos)").fetchall()]
     if "origen" not in cols_asientos:
         conn.execute("ALTER TABLE cc_asientos ADD COLUMN origen TEXT")
+    # La moneda del asiento y del recibo (ADR-088, revisión `0031`). Todo lo que ya
+    # había es en pesos: el default lo deja así sin tocar una fila.
+    if "moneda" not in cols_asientos:
+        conn.execute("ALTER TABLE cc_asientos ADD COLUMN moneda TEXT NOT NULL DEFAULT 'ARS'")
+    cols_recibos = [r[1] for r in conn.execute("PRAGMA table_info(recibos)").fetchall()]
+    if "moneda" not in cols_recibos:
+        conn.execute("ALTER TABLE recibos ADD COLUMN moneda TEXT NOT NULL DEFAULT 'ARS'")
 
     # La pre factura (ADR-030): `comprobantes_pendientes` con número interno, emisor,
     # tipo y el ciclo enviada / aceptada. Todas nacen vacías (`NULL`): una fila de la

@@ -50,9 +50,10 @@ def test_un_gasto_de_dos_patas_y_sus_saldos(base):
     assert libro.saldo(9, "fletero") == 2500
     # La misma persona en otro rol es otra cuenta.
     assert libro.saldo(9, "cliente") == 0
-    assert libro.saldos() == [{"tercero_id": 9, "rol": "fletero", "saldo": 2500.0},
-                              {"tercero_id": 7, "rol": "proveedor", "saldo": 1500.0}]
-    assert libro.saldos("fletero") == [{"tercero_id": 9, "rol": "fletero", "saldo": 2500.0}]
+    # Sin moneda, todo es en pesos (ADR-088): la fila lo dice.
+    assert libro.saldos() == [{"tercero_id": 9, "rol": "fletero", "moneda": "ARS", "saldo": 2500.0},
+                              {"tercero_id": 7, "rol": "proveedor", "moneda": "ARS", "saldo": 1500.0}]
+    assert libro.saldos("fletero") == [{"tercero_id": 9, "rol": "fletero", "moneda": "ARS", "saldo": 2500.0}]
 
 
 @pytest.mark.parametrize("debe, haber", [(0, 0), (10, 10), (-5, 0)])

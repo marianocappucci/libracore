@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (447)
+## tablas (449)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -70,6 +70,7 @@ cc_asientos|factura_id|INTEGER||
 cc_asientos|fecha|TEXT|NN|
 cc_asientos|haber|REAL|NN|0
 cc_asientos|id|INTEGER||
+cc_asientos|moneda|TEXT|NN|'ARS'
 cc_asientos|origen_legado|TEXT||
 cc_asientos|origen|TEXT||
 cc_asientos|rol|TEXT|NN|
@@ -371,6 +372,7 @@ recibos|concepto|TEXT||''
 recibos|created_at|TEXT||datetime('now','-3 hours')
 recibos|fecha|TEXT|NN|
 recibos|id|INTEGER||
+recibos|moneda|TEXT|NN|'ARS'
 recibos|numero|INTEGER|NN|
 recibos|observaciones|TEXT||''
 recibos|origen_id|INTEGER||

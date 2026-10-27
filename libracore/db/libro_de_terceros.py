@@ -19,7 +19,16 @@ de dos patas —el proveedor al debe y el fletero al haber en la misma transacci
 
 Todas las funciones aceptan `conn=` (ADR-025): con ella trabajan en la transacción
 de quien llama y no confirman nada, así el producto asienta junto con su documento.
+
+## La moneda (ADR-088)
+
+Cada asiento dice en qué moneda está (`ARS` por defecto, `libracore.monedas`). **Una
+cuenta no suma pesos con dólares**: `saldo` y `extracto` filtran por la moneda que se
+les pide, y `saldos` devuelve una fila por tercero, rol **y moneda**. Sin `moneda`,
+`saldo` y `extracto` toman todo, que es lo de siempre para quien sólo asienta en pesos;
+quien lleva cuentas en más de una moneda la pasa siempre.
 """
+from libracore import monedas
 from libracore.db.core import Conexion
 from libracore.db.facturas import _con
 from libracore.fechas import dia_iso, rango_por_dia
@@ -48,7 +57,8 @@ def _validar_importes(debe, haber, origen_legado) -> tuple[float, float]:
 def asentar(tercero_id: int, rol: str, fecha: str, concepto: str, *, debe=0, haber=0,
             descripcion: str | None = None, factura_id: int | None = None,
             origen_legado: str | None = None, usuario_id: int | None = None,
-            origen: str | None = None, conn: Conexion | None = None) -> int:
+            origen: str | None = None, moneda: str = monedas.PESOS,
+            conn: Conexion | None = None) -> int:
     """Escribe un asiento y devuelve su id. `fecha` es `AAAA-MM-DD`.
 
     `origen` es el hecho que lo originó (`cc_pago:12`): lo usa la cuenta de clientes
@@ -59,12 +69,16 @@ def asentar(tercero_id: int, rol: str, fecha: str, concepto: str, *, debe=0, hab
     if not (concepto or "").strip():
         raise AsientoInvalido("El asiento necesita un concepto.")
     debe, haber = _validar_importes(debe, haber, origen_legado)
+    try:
+        moneda = monedas.validar(moneda)
+    except monedas.MonedaInvalida as e:
+        raise AsientoInvalido(str(e)) from None
     with _con(conn) as c:
         cur = c.execute(
             "INSERT INTO cc_asientos (fecha, tercero_id, rol, concepto, descripcion, debe, haber, "
-            "factura_id, origen_legado, usuario_id, origen) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "factura_id, origen_legado, usuario_id, origen, moneda) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (fecha, tercero_id, rol.strip(), concepto.strip(), descripcion, debe, haber,
-             factura_id, origen_legado, usuario_id, origen),
+             factura_id, origen_legado, usuario_id, origen, moneda),
         )
         return cur.lastrowid
 
@@ -125,7 +139,7 @@ def contraasentar(asiento_id: int, *, fecha: str | None = None, concepto: str | 
     nuevo —un cobro que se devuelve hoy— pasa la fecha.
 
     Un asiento se revierte una vez, y una contrapartida no se revierte. La reversión
-    lleva el `origen` del original: los dos son del mismo hecho.
+    lleva el `origen` y la `moneda` del original: los dos son del mismo hecho.
     """
     with _con(conn) as c:
         original = get_asiento(asiento_id, conn=c)
@@ -139,12 +153,12 @@ def contraasentar(asiento_id: int, *, fecha: str | None = None, concepto: str | 
             raise AsientoInvalido(f"El asiento {asiento_id} ya tiene contrapartida.")
         cur = c.execute(
             "INSERT INTO cc_asientos (fecha, tercero_id, rol, concepto, descripcion, debe, haber, "
-            "factura_id, contrapartida_de, origen_legado, usuario_id, origen) "
-            "VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?)",
+            "factura_id, contrapartida_de, origen_legado, usuario_id, origen, moneda) "
+            "VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?,?)",
             (fecha or original["fecha"], original["tercero_id"], original["rol"],
              concepto or f"Reversión: {original['concepto']}", original["descripcion"],
              original["haber"], original["debe"], original["factura_id"], asiento_id, usuario_id,
-             original.get("origen")),
+             original.get("origen"), original.get("moneda") or monedas.PESOS),
         )
         return cur.lastrowid
 
@@ -154,10 +168,23 @@ def _rango(desde: str | None, hasta: str | None) -> tuple[str, tuple]:
     return "".join(f" AND {c}" for c in conds), tuple(params)
 
 
-def saldo(tercero_id: int, rol: str, *, hasta: str | None = None,
+def _de_moneda(moneda: str | None) -> tuple[str, tuple]:
+    """El filtro por moneda: vacío si no se pide (todas, lo de siempre)."""
+    if moneda is None:
+        return "", ()
+    try:
+        return " AND moneda = ?", (monedas.validar(moneda),)
+    except monedas.MonedaInvalida as e:
+        raise AsientoInvalido(str(e)) from None
+
+
+def saldo(tercero_id: int, rol: str, *, hasta: str | None = None, moneda: str | None = None,
           conn: Conexion | None = None) -> float:
-    """El debe menos el haber de la cuenta, hasta una fecha inclusive si se pide."""
+    """El debe menos el haber de la cuenta, hasta una fecha inclusive si se pide, y de una
+    moneda si se pide (ADR-088: con más de una moneda en la cuenta, se pide siempre)."""
     filtro, params = _rango(None, hasta)
+    filtro_moneda, params_moneda = _de_moneda(moneda)
+    filtro, params = filtro + filtro_moneda, params + params_moneda
     with _con(conn) as c:
         fila = c.execute(
             "SELECT COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) FROM cc_asientos "
@@ -166,14 +193,18 @@ def saldo(tercero_id: int, rol: str, *, hasta: str | None = None,
 
 
 def extracto(tercero_id: int, rol: str, *, desde: str | None = None, hasta: str | None = None,
-             conn: Conexion | None = None) -> dict:
+             moneda: str | None = None, conn: Conexion | None = None) -> dict:
     """Los asientos de la cuenta en el rango, con el saldo anterior y el saldo corrido.
 
     Devuelve `{"saldo_anterior": ..., "asientos": [... con "saldo"]}`, en orden de fecha
     y de alta. El saldo anterior es el de antes de `desde`: con él, un extracto de un
     mes cierra con el saldo real de la cuenta y no con la suma de ese mes.
+
+    Con `moneda`, sólo los asientos de esa moneda, también en el saldo anterior (ADR-088).
     """
     filtro, params = _rango(desde, hasta)
+    filtro_moneda, params_moneda = _de_moneda(moneda)
+    filtro, params = filtro + filtro_moneda, params + params_moneda
     with _con(conn) as c:
         anterior = 0.0
         if desde:
@@ -183,8 +214,8 @@ def extracto(tercero_id: int, rol: str, *, desde: str | None = None, hasta: str 
             dia = dia_iso(desde)
             fila = c.execute(
                 "SELECT COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) FROM cc_asientos "
-                "WHERE tercero_id = ? AND rol = ? AND fecha < ?",
-                (tercero_id, rol, dia.isoformat() if dia else desde)).fetchone()
+                f"WHERE tercero_id = ? AND rol = ? AND fecha < ?{filtro_moneda}",
+                (tercero_id, rol, dia.isoformat() if dia else desde, *params_moneda)).fetchone()
             anterior = float(fila[0] or 0)
         filas = c.execute(
             f"SELECT * FROM cc_asientos WHERE tercero_id = ? AND rol = ?{filtro} ORDER BY fecha, id",
@@ -197,14 +228,27 @@ def extracto(tercero_id: int, rol: str, *, desde: str | None = None, hasta: str 
     return {"saldo_anterior": round(anterior, 2), "asientos": asientos}
 
 
-def saldos(rol: str | None = None, *, incluir_en_cero: bool = False,
+def saldos(rol: str | None = None, *, incluir_en_cero: bool = False, moneda: str | None = None,
            conn: Conexion | None = None) -> list[dict]:
-    """El saldo de cada cuenta, del rol pedido o de todos: `[{tercero_id, rol, saldo}]`."""
-    where, params = ("WHERE rol = ?", (rol,)) if rol else ("", ())
+    """El saldo de cada cuenta, del rol pedido o de todos: `[{tercero_id, rol, moneda, saldo}]`.
+
+    🔑 **Una fila por moneda** (ADR-088): un tercero con asientos en pesos y en dólares
+    tiene dos saldos, nunca uno sumado. Con `moneda`, sólo los de esa moneda.
+    """
+    conds, params = [], []
+    if rol:
+        conds.append("rol = ?")
+        params.append(rol)
+    filtro_moneda, params_moneda = _de_moneda(moneda)
+    if filtro_moneda:
+        conds.append(filtro_moneda.removeprefix(" AND "))
+        params.extend(params_moneda)
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
     with _con(conn) as c:
         filas = c.execute(
-            "SELECT tercero_id, rol, COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) AS saldo "
-            f"FROM cc_asientos {where} GROUP BY tercero_id, rol ORDER BY rol, tercero_id",
-            params).fetchall()
-    salida = [{"tercero_id": f[0], "rol": f[1], "saldo": round(float(f[2] or 0), 2)} for f in filas]
+            "SELECT tercero_id, rol, moneda, COALESCE(SUM(debe), 0) - COALESCE(SUM(haber), 0) AS saldo "
+            f"FROM cc_asientos {where} GROUP BY tercero_id, rol, moneda ORDER BY rol, tercero_id, moneda",
+            tuple(params)).fetchall()
+    salida = [{"tercero_id": f[0], "rol": f[1], "moneda": f[2], "saldo": round(float(f[3] or 0), 2)}
+              for f in filas]
     return salida if incluir_en_cero else [s for s in salida if s["saldo"] != 0]
