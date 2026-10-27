@@ -1711,6 +1711,14 @@ Y nada lo vigilaba: ningún test corría una semilla y miraba qué quedó.
 
 **Tests.** `tests/test_estado_del_sistema.py` (SQLite y PostgreSQL): ARCA (sin certificado, vigente, por vencer, el umbral, vencido, ilegible, el servicio que más apura, demo); respaldo (ninguno, el último por fecha y no por nombre, viejo, copia externa que falló sin filtrar el error, al día); LibraEdge (fuera de un nodo, en línea con pendientes sin el `ultimo_error`, sin conexión, sin archivo, la bandeja que falla, el central con nodos); el router (admin, cajero sin ARCA ni respaldo, vencido resumido para el cajero, visitante de demo, `es_admin`/`sucursal`/`version` del producto, `factura_con_arca`, en un nodo, con el `PuertoDeVentas`, nodos del central sólo para admin, un bloque roto, sin versión, sin rutas ni CUIT). Ajustados: `test_guardia_booleanos` (la factory nueva), `test_el_par_en_disco_es_una_sola_llamada` (un módulo más usa `paths_en_disco`).
 
+**Addendum (2026-10-27): el respaldo nocturno, «falló» o «no corrió».** Lo que quedó descartado arriba hasta que existiera
+el archivo: `provisioning.panel_admin.cmd_backup_all` deja en cada instancia `data/backups/.nocturno.json` con el último
+intento (`cuando` en UTC, `ok`, y el error recortado **sólo en el archivo**), también cuando el respaldo falla o explota
+(`libracore.respaldo_nocturno`, mismo patrón que `resguardo_estado`). `estado_respaldo` suma `motivo` (`null`, `"fallo"`,
+`"sin_respaldos"`, `"no_corrio"`, `"viejo"`) y `nocturno` (`{"ultimo_intento", "fallo"}` o `null`). Un intento fallido
+posterior al último ZIP es `error`; uno anterior (alguien respaldó a mano después) ya no cuenta. Minor, sin migración;
+los productos no cambian nada, y el kit muestra «Falló el respaldo nocturno» con `motivo == "fallo"`.
+
 ## ADR-076 — La caja del nodo sube al central: ganchos de caja, `origen` en las filas y la guarda `solo_en_el_central` (`libracore.ganchos_de_caja`)
 
 **Estado:** propuesta (2026-10-21; decisión del humano ese día: «la caja y los turnos de caja del nodo suben al central» —apertura, cierre, ingresos, egresos y retiros, anulaciones, cierre del día y arqueos—). Es la parte del motor (v1.188.0) de la fase 2 de LibraEdge; `libracommerce` arma las operaciones del outbox y los aplicadores del central.

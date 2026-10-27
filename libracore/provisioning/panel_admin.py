@@ -855,8 +855,27 @@ def cmd_estado_externo(slugs: list[str] | None = None):
         sys.exit(1)
 
 
+def _anotar_intento_nocturno(c: dict, *, ok: bool, error: str | None = None) -> None:
+    """Deja en la instancia cómo salió el intento de esta noche (`respaldo_nocturno`), para que la barra del pie
+    distinga «falló» de «no corrió» (ADR-075). Sin `data/` no hay dónde, y anotar nunca corta el `backup-all`."""
+    from ..respaldo_nocturno import escribir_intento
+
+    data_dir = c.get("dir") and Path(c["dir"]) / "data"
+    if not data_dir or not data_dir.is_dir():
+        return
+    try:
+        destino_dir = data_dir / "backups"
+        sin_root.asegurar_directorio(destino_dir)
+        escribir_intento(destino_dir, ok=ok, error=error)
+    except Exception as e:  # noqa: BLE001 - el respaldo de las demás instancias importa más que este aviso
+        print(f"[ADVERTENCIA] No se pudo anotar el intento de '{c['slug']}': {e}")
+
+
 def cmd_backup_all():
-    """Backup de todos los clientes activos — pensado para cron diario."""
+    """Backup de todos los clientes activos — pensado para cron diario.
+
+    Después de cada instancia anota el intento en su `data/backups/.nocturno.json`, también cuando falla
+    (`_anotar_intento_nocturno`)."""
     clientes = load_clients()
     if not clientes:
         print("[*] Sin clientes para respaldar.")
@@ -867,13 +886,16 @@ def cmd_backup_all():
             ok = cmd_backup(c["slug"], quiet=True)
         except Exception as e:
             print(f"[ERROR] Falló el backup de '{c['slug']}': {e}")
+            _anotar_intento_nocturno(c, ok=False, error=str(e))
             continue
         # 🔴 Antes se imprimía `[OK]` sin mirar: una instancia sin base dejaba
         # su `[ERROR]` y, en la línea siguiente, "respaldado".
         if ok is False:
             print(f"[ERROR] '{c['slug']}' NO quedó respaldado (ver arriba).")
+            _anotar_intento_nocturno(c, ok=False, error="no quedó respaldado")
         else:
             print(f"[OK] '{c['slug']}' respaldado.")
+            _anotar_intento_nocturno(c, ok=True)
 
 
 def _zips_dir(c: dict) -> Path:

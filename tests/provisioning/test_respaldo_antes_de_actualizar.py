@@ -245,3 +245,32 @@ def test_backup_all_no_dice_ok_de_lo_que_no_respaldo(monkeypatch, capsys):
     assert "[OK] 'uno'" not in salida
     assert "'uno' NO quedó respaldado" in salida
     assert "[OK] 'dos' respaldado." in salida
+
+
+def test_backup_all_anota_el_intento_de_cada_instancia(tmp_path, monkeypatch, capsys):
+    """La barra del pie distingue «falló» de «no corrió» por el `.nocturno.json` (ADR-075): se escribe también cuando
+    el respaldo falla o explota, y una instancia sin `data/` no corta a las demás."""
+    from libracore.respaldo_nocturno import leer_intento
+
+    def cliente(slug, con_data=True):
+        d = tmp_path / slug
+        if con_data:
+            (d / "data").mkdir(parents=True)
+        return {"slug": slug, "dir": d}
+
+    clientes = [cliente("bien"), cliente("mal"), cliente("explota"), cliente("sin-data", con_data=False)]
+    monkeypatch.setattr(pa, "load_clients", lambda: clientes)
+
+    def respaldar(slug, **k):
+        if slug == "explota":
+            raise RuntimeError("pg_dump: sin conexión")
+        return slug == "bien"
+
+    monkeypatch.setattr(pa, "cmd_backup", respaldar)
+    pa.cmd_backup_all()
+
+    estado = {c["slug"]: leer_intento(c["dir"] / "data" / "backups") for c in clientes}
+    assert estado["bien"]["ok"] is True
+    assert estado["mal"]["ok"] is False and estado["explota"]["ok"] is False
+    assert estado["sin-data"] is None and not (tmp_path / "sin-data").exists()
+    assert "[OK] 'bien' respaldado." in capsys.readouterr().out
