@@ -8,7 +8,17 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
-## [Unreleased] — HTTPS forzado en el alta con NPM 2.16 (propuesta: v1.197.3)
+## [Unreleased] — la moneda del libro de terceros y del recibo (propuesta: v1.198.0)
+
+ADR-088. **Minor, con migración `0031`** (aditiva: dos columnas con default `'ARS'`).
+- **`libracore.monedas`**: `ARS`/`USD`, símbolo y nombre, `validar`.
+- **`libro_de_terceros`**: `asentar(moneda=)`; `contraasentar` copia la moneda; `saldo`/`extracto` con `moneda=`; `saldos` agrupa por moneda y suma la clave `moneda` a cada fila.
+- **Recibos**: `recibos.moneda`, `create_recibo(moneda=)`, el recibo de un asiento toma su moneda y el PDF imprime `US$` cuando corresponde.
+
+### Para los productos
+- Correr las migraciones (`libracore-migrar upgrade`). Nada más si sólo usan pesos. LibraInmo la adopta para sus contratos en dólares.
+
+## v1.197.3 — HTTPS forzado en el alta con NPM 2.16
 
 **Patch, sin migración.**
 - **`npm_api.NPMClient.create_proxy_host(ssl=True)`**: NPM 2.16 crea el certificado pero deja el host con `ssl_forced` y `http2_support` en `false` (lo inserta antes de tener certificado). Si vuelve así, se reaplica lo pedido con un `PUT`. Probado contra el NPM del VPS el 2026-10-26: antes, `http://` respondía 200; ahora redirige con 301.

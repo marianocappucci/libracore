@@ -8,7 +8,7 @@ from fpdf import FPDF  # fpdf2 >= 2.8
 from fpdf.enums import Corner as _Cor
 from fpdf.enums import RenderStyle as _RS
 
-from . import config_manager, emisor_del_pdf, medios_pago
+from . import config_manager, emisor_del_pdf, medios_pago, monedas
 from . import tipos_comprobante as tipos
 from .db import arca_config as _db_arca_config
 
@@ -1638,6 +1638,7 @@ def generate_pdf_recibo_doc(recibo: dict, *, resolvedor=None) -> bytes:
         "total":             float(recibo.get("total") or 0),
         "anulado":           bool(recibo.get("anulado")),
         "anulado_motivo":    recibo.get("anulado_motivo") or "",
+        "moneda":            recibo.get("moneda") or "ARS",
     })
 
 
@@ -1725,7 +1726,9 @@ def _render_recibo(documento: dict, resolvedor, d: dict) -> bytes:
     pdf.set_font("Helvetica", "B", 14)
     pdf.set_text_color(*_ACCENT)
     pdf.set_xy(lx + 60, fy + 2)
-    pdf.cell(cw - 64, 12, f"$ {_ar(total_cobrado)}", align="R")
+    # ADR-088: el símbolo es el de la moneda del recibo (`US$` para un cobro en dólares).
+    simbolo = monedas.simbolo(d.get("moneda"))
+    pdf.cell(cw - 64, 12, f"{simbolo} {_ar(total_cobrado)}", align="R")
 
     fy += 22
 
@@ -1791,7 +1794,7 @@ def _render_recibo(documento: dict, resolvedor, d: dict) -> bytes:
                 _fmt_fecha((c.get("fecha") or "")[:10]),
                 medios_pago.label(c.get("medio_pago", "")) or "-",
                 c.get("referencia") or "-",
-                f"$ {_ar(float(c.get('monto', 0)))}",
+                f"{simbolo} {_ar(float(c.get('monto', 0)))}",
             ]
             aligns = ["L", "L", "L", "R"]
             for val, w, al in zip(vals, cols_w, aligns):
@@ -1813,7 +1816,7 @@ def _render_recibo(documento: dict, resolvedor, d: dict) -> bytes:
         pdf.set_xy(lx, fy)
         pdf.cell(cw - cols_w[-1], 7, "Total recibido:", align="R")
         pdf.set_text_color(*_ACCENT)
-        pdf.cell(cols_w[-1], 7, f"$ {_ar(total_cobrado)}", align="R")
+        pdf.cell(cols_w[-1], 7, f"{simbolo} {_ar(total_cobrado)}", align="R")
         fy += 14
 
     # ── Firma y sello ─────────────────────────────────────────────────────────

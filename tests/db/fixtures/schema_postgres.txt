@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (447)
+## tablas (449)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -70,6 +70,7 @@ cc_asientos|factura_id|integer||
 cc_asientos|fecha|text|NN|
 cc_asientos|haber|numeric|NN|0
 cc_asientos|id|bigint|NN|nextval('cc_asientos_id_seq'::regclass)
+cc_asientos|moneda|text|NN|'ARS'::text
 cc_asientos|origen_legado|text||
 cc_asientos|origen|text||
 cc_asientos|rol|text|NN|
@@ -371,6 +372,7 @@ recibos|concepto|text||''::text
 recibos|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
 recibos|fecha|text|NN|
 recibos|id|bigint|NN|nextval('recibos_id_seq'::regclass)
+recibos|moneda|text|NN|'ARS'::text
 recibos|numero|integer|NN|
 recibos|observaciones|text||''::text
 recibos|origen_id|integer||

@@ -54,8 +54,10 @@ def get_next_recibo_numero(punto_venta: int = 1, *, conn: Conexion | None = None
 def create_recibo(fecha, cliente_razon, origen_tipo, total, pagos,
                   punto_venta=1, numero=None, cliente_id=None, cliente_cuit="",
                   cliente_domicilio="", origen_id=None, concepto="",
-                  observaciones="", usuario_id=None, *, conn: Conexion | None = None) -> int:
-    """Inserta un recibo y devuelve su id.
+                  observaciones="", usuario_id=None, *, moneda: str = "ARS",
+                  conn: Conexion | None = None) -> int:
+    """Inserta un recibo y devuelve su id. `moneda` es la del total y los pagos
+    (ADR-088, `libracore.monedas`): pesos si no se dice.
 
     `numero` se calcula solo si no se pasa. Ante colisión con
     `idx_recibos_numero_unico` se recalcula y se reintenta — igual que
@@ -77,6 +79,8 @@ def create_recibo(fecha, cliente_razon, origen_tipo, total, pagos,
         raise ValueError(
             f"origen_tipo invalido: {origen_tipo!r} (esperado uno de {ORIGENES})"
         )
+    from libracore import monedas
+    moneda = monedas.validar(moneda)
 
     MAX_INTENTOS = 5
     for intento in range(MAX_INTENTOS):
@@ -88,13 +92,13 @@ def create_recibo(fecha, cliente_razon, origen_tipo, total, pagos,
                     """INSERT INTO recibos
                        (punto_venta, numero, fecha, cliente_id, cliente_razon,
                         cliente_cuit, cliente_domicilio, origen_tipo, origen_id,
-                        concepto, total, pagos, observaciones, usuario_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        concepto, total, pagos, observaciones, usuario_id, moneda)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (punto_venta, numero, fecha, cliente_id, cliente_razon,
                      cliente_cuit, cliente_domicilio, origen_tipo, origen_id,
                      concepto, float(total),
                      json.dumps(pagos or [], ensure_ascii=False),
-                     observaciones, usuario_id),
+                     observaciones, usuario_id, moneda),
                 )
                 return cur.lastrowid
         except sqlite3.IntegrityError as e:
