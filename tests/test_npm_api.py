@@ -154,6 +154,44 @@ def test_create_proxy_host_con_ssl_pide_certificado(monkeypatch):
     assert captured["body"]["meta"]["letsencrypt_email"] == "ssl@test.com"
 
 
+def _npm_que_apaga_ssl_forzado(monkeypatch, *, certificate_id=42):
+    """Imita a NPM 2.16: el host vuelve con el certificado pero con `ssl_forced` y `http2_support` en `false`."""
+    puts = []
+
+    def fake_post(url, json=None, **kwargs):  # noqa: F811 (imita la firma de httpx.post)
+        if url.endswith("/api/tokens"):
+            return httpx.Response(200, json={"token": "TOK"})
+        return httpx.Response(201, json={"id": 7, "certificate_id": certificate_id,
+                                         "ssl_forced": False, "http2_support": False})
+
+    def fake_put(url, json=None, **kwargs):  # noqa: F811
+        puts.append((url, json))
+        return httpx.Response(200, json={"id": 7, "certificate_id": certificate_id, **json})
+
+    _patch_httpx(monkeypatch, post=fake_post, put=fake_put)
+    return npm_api.NPMClient("http://npm:81", "a@b.com", "secret"), puts
+
+
+def test_create_proxy_host_reaplica_https_forzado_si_npm_lo_apaga(monkeypatch):
+    client, puts = _npm_que_apaga_ssl_forzado(monkeypatch)
+    host = client.create_proxy_host(domain="cliente.test", forward_host="app", forward_port=8000)
+    assert puts == [("http://npm:81/api/nginx/proxy-hosts/7", {"ssl_forced": True, "http2_support": True})]
+    assert host["ssl_forced"] is True and host["http2_support"] is True
+
+
+def test_create_proxy_host_respeta_lo_pedido_al_reaplicar(monkeypatch):
+    client, puts = _npm_que_apaga_ssl_forzado(monkeypatch)
+    client.create_proxy_host(domain="cliente.test", forward_host="app", forward_port=8000, force_ssl=False)
+    assert puts[0][1] == {"ssl_forced": False, "http2_support": True}
+
+
+def test_create_proxy_host_sin_certificado_no_toca_nada(monkeypatch):
+    client, puts = _npm_que_apaga_ssl_forzado(monkeypatch, certificate_id=0)
+    client.create_proxy_host(domain="cliente.test", forward_host="app", forward_port=8000)
+    client.create_proxy_host(domain="cliente.test", forward_host="app", forward_port=8000, ssl=False)
+    assert puts == []
+
+
 def test_delete_proxy_host(monkeypatch):
     def fake_post(url, **kwargs):
         return httpx.Response(200, json={"token": "TOK"})

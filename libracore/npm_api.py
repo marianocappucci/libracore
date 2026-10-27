@@ -99,6 +99,18 @@ class NPMClient:
         """
         Crea un proxy host en NPM.
         Con ssl=True solicita un certificado Let's Encrypt automáticamente.
+
+        🔴 **NPM 2.16 apaga `ssl_forced` y `http2_support` en ese camino
+        (2026-10-26).** Inserta el host antes de tener el certificado, y
+        `cleanSslHstsData` los pone en `false` porque todavía no hay
+        `certificate_id`; después le asigna el certificado y nada más. El
+        host quedaba con HTTPS pero sin redirigir HTTP. Por eso, si el host
+        vuelve con certificado y sin lo pedido, se reaplica con un `PUT`.
+
+        `letsencrypt_email` y `letsencrypt_agree` en `meta` los usan las
+        versiones viejas de NPM. La 2.16 toma el mail de la cuenta y los
+        rechaza en `POST /api/nginx/certificates`, pero en este camino no
+        valida el `meta`, así que se siguen mandando.
         """
         body: dict = {
             "domain_names":          [domain],
@@ -122,7 +134,11 @@ class NPMClient:
         }
         if ssl:
             body["certificate_id"] = "new"
-        return self._post("/api/nginx/proxy-hosts", body)
+        host = self._post("/api/nginx/proxy-hosts", body)
+        pedido = {"ssl_forced": force_ssl, "http2_support": http2}
+        if ssl and host.get("certificate_id") and any(host.get(k) != v for k, v in pedido.items()):
+            host = self.update_proxy_host(host["id"], pedido)
+        return host
 
     def update_proxy_host(self, host_id: int, changes: dict) -> dict:
         return self._put(f"/api/nginx/proxy-hosts/{host_id}", changes)

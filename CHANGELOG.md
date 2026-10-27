@@ -8,7 +8,15 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
-## [Unreleased] — el lector de migraciones falla ante `configure(**...)` (propuesta: v1.197.2)
+## [Unreleased] — HTTPS forzado en el alta con NPM 2.16 (propuesta: v1.197.3)
+
+**Patch, sin migración.**
+- **`npm_api.NPMClient.create_proxy_host(ssl=True)`**: NPM 2.16 crea el certificado pero deja el host con `ssl_forced` y `http2_support` en `false` (lo inserta antes de tener certificado). Si vuelve así, se reaplica lo pedido con un `PUT`. Probado contra el NPM del VPS el 2026-10-26: antes, `http://` respondía 200; ahora redirige con 301.
+
+### Para los productos
+- Nada que cambiar: lo usan `nuevo_cliente`, `panel_admin` (`npm crear`) y el backoffice.
+
+## v1.197.2 — el lector de migraciones falla ante `configure(**...)`
 
 **Patch, sin migración.**
 - **`provisioning.migraciones_declaradas` / `migraciones_de_la_imagen`**: si el `configure(...)` del script no trae `migraciones=` pero sí un `**`, lanza `MigracionesIlegibles` en vez de devolver `()`. Pasó con LibraInmo (2026-10-26): `configure(**CONFIGURACION)` escondía las tres cadenas y el alta de la demo arrancó sin migrar.
