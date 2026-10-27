@@ -13,9 +13,20 @@ app.include_router(build_clientes_router(),
 
 El gate lo pone el producto al montar; el add-on mayorista de Contalibra
 comparte el prefijo con su propio router y su propio gate.
+
+## Lo que impide la baja es también del producto (`impide_desactivar`)
+
+El motor sólo sabe de sus documentos: no da de baja a quien tiene presupuestos
+aprobados. Lo que un producto tiene en sus propias tablas —LibraInmo, un contrato
+vigente del inquilino o una propiedad del propietario— el motor no lo ve, y una
+baja ahí dejaría el contrato apuntando a un cliente inactivo. El producto pasa
+`impide_desactivar(cliente_id) -> str | None`: si devuelve un texto, la baja se
+rechaza con ese motivo (422, como la de los presupuestos).
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -49,7 +60,8 @@ class AliasPayload(BaseModel):
     valor: str
 
 
-def build_clientes_router(*, prefix: str = "/api/clientes") -> APIRouter:
+def build_clientes_router(*, prefix: str = "/api/clientes",
+                          impide_desactivar: Callable[[int], str | None] | None = None) -> APIRouter:
     router = APIRouter(prefix=prefix, tags=["clientes"])
 
     def _o_404(cliente_id: int) -> dict:
@@ -132,6 +144,9 @@ def build_clientes_router(*, prefix: str = "/api/clientes") -> APIRouter:
                 f"No se puede desactivar {cliente['name']} porque tiene presupuestos aprobados. "
                 "Primero hay que cancelar o rechazar esos presupuestos.",
             )
+        motivo = impide_desactivar(cliente_id) if impide_desactivar else None
+        if motivo:
+            raise HTTPException(422, f"No se puede desactivar {cliente['name']}: {motivo}")
         db_clients.desactivar_cliente(cliente_id)
         return db_clients.get_client(cliente_id)
 

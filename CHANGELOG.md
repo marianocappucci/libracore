@@ -8,7 +8,15 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
-## [Unreleased] — la moneda del libro de terceros y del recibo (propuesta: v1.198.0)
+## [Unreleased] — el producto puede impedir la baja de un cliente (propuesta: v1.199.0)
+
+**Minor, sin migración.**
+- **`build_clientes_router(impide_desactivar=)`**: `(cliente_id) -> str | None`; con un texto, `POST /api/clientes/{id}/desactivar` contesta 422 con ese motivo. Es lo que el producto tiene en sus tablas y el motor no ve: en LibraInmo, el contrato vigente del inquilino o la propiedad del propietario.
+
+### Para los productos
+- Nada que cambiar si no lo pasan.
+
+## v1.198.0 — la moneda del libro de terceros y del recibo
 
 ADR-088. **Minor, con migración `0031`** (aditiva: dos columnas con default `'ARS'`).
 - **`libracore.monedas`**: `ARS`/`USD`, símbolo y nombre, `validar`.
