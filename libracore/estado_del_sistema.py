@@ -12,8 +12,8 @@ miraba hasta que fallaban:
 4. **ARCA:** el certificado que vence pronto (`DIAS_AVISO_CERTIFICADO`) o ya venció, de la facturación y de los
    servicios (`arca_credenciales_servicio`). Una instancia sin certificado en disco (no factura con ARCA, una demo,
    un nodo, que firma con el ticket prestado) da `null`.
-5. **Respaldo:** cuándo fue el último ZIP de `data/backups` y si la copia externa (`resguardo_estado`) falló o está
-   vieja.
+5. **Respaldo:** cuándo fue el último ZIP de `data/backups`, si el respaldo de la noche falló o no corrió
+   (`respaldo_nocturno`) y si la copia externa (`resguardo_estado`) falló o está vieja.
 
 El motor no sabe de roles ni de sucursales: el producto monta el router con su `usuario_actual` y, si hace falta, su
 `es_admin` y su `sucursal`. Todo lo demás sale de acá, igual para los ocho.
@@ -216,14 +216,21 @@ def estado_arca(*, dias_aviso: int = DIAS_AVISO_CERTIFICADO, ahora: datetime | N
 
 
 def estado_respaldo(backups_dir, *, horas: int = HORAS_RESPALDO_VIEJO, ahora: datetime | None = None) -> dict:
-    """`{"nivel", "ultimo", "horas_desde_el_ultimo", "externo"}` de la carpeta de respaldos de la instancia.
+    """`{"nivel", "ultimo", "horas_desde_el_ultimo", "motivo", "nocturno", "externo"}` de la carpeta de respaldos.
 
     - `ultimo`: el ZIP más nuevo **por fecha** (no por nombre: `backup_manual_…` ordena después de
       `backup_automatico_…`), en ISO con zona. Sin ninguno, `null` y `atencion`.
+    - `nocturno`: el último intento del respaldo de la noche (`respaldo_nocturno`, lo escribe `backup-all`),
+      `{"ultimo_intento", "fallo"}` sin el texto del error; `null` si nunca corrió en esta instancia (dev, una PC).
+    - `motivo`, por qué el bloque no está en `ok` (`null` si lo está), para que la pantalla diga a quién avisar:
+      `"fallo"` (el último intento falló y es posterior al último ZIP: `error`), `"sin_respaldos"`, `"no_corrio"`
+      (el último ZIP es viejo y no hubo intento en ese plazo: es el cron o el host) y `"viejo"` (hubo intento
+      bueno pero el ZIP es viejo, que no debería pasar).
     - `externo`: la copia a la nube del cliente (`resguardo_estado.resumen`), `null` si no está contratada;
       `{"al_dia", "fallo", "ultimo"}`, sin el texto del error. Si la última subida falló, el bloque es `error`.
     """
     from libracore.resguardo_estado import leer_estado, resumen
+    from libracore.respaldo_nocturno import leer_intento
 
     ahora = ahora or datetime.now(UTC)
     carpeta = Path(backups_dir)
@@ -237,7 +244,20 @@ def estado_respaldo(backups_dir, *, horas: int = HORAS_RESPALDO_VIEJO, ahora: da
             if ultimo is None or cuando > ultimo:
                 ultimo = cuando
     horas_desde = round((ahora - ultimo).total_seconds() / 3600, 1) if ultimo else None
-    nivel = ATENCION if ultimo is None or horas_desde > horas else OK
+
+    intento = leer_intento(carpeta)
+    nocturno = None
+    if intento:
+        nocturno = {"ultimo_intento": _a_iso(intento["cuando"]), "fallo": not intento["ok"]}
+    if intento and not intento["ok"] and (ultimo is None or intento["cuando"] >= ultimo):
+        nivel, motivo = ERROR, "fallo"
+    elif ultimo is None:
+        nivel, motivo = ATENCION, "sin_respaldos"
+    elif horas_desde > horas:
+        reciente = intento and (ahora - intento["cuando"]).total_seconds() / 3600 <= horas
+        nivel, motivo = ATENCION, "viejo" if reciente else "no_corrio"
+    else:
+        nivel, motivo = OK, None
 
     externo = None
     datos = resumen(carpeta)
@@ -247,7 +267,8 @@ def estado_respaldo(backups_dir, *, horas: int = HORAS_RESPALDO_VIEJO, ahora: da
         externo = {"al_dia": datos.get("al_dia") is True, "fallo": fallo,
                    "ultimo": (datos.get("detalle") or {}).get("cuando")}
         nivel = _peor([nivel, ERROR if fallo else OK if externo["al_dia"] else ATENCION])
-    return {"nivel": nivel, "ultimo": _a_iso(ultimo), "horas_desde_el_ultimo": horas_desde, "externo": externo}
+    return {"nivel": nivel, "ultimo": _a_iso(ultimo), "horas_desde_el_ultimo": horas_desde, "motivo": motivo,
+            "nocturno": nocturno, "externo": externo}
 
 
 # ── Versión y usuario ───────────────────────────────────────────────────────

@@ -139,7 +139,8 @@ def _zip(carpeta, nombre, horas_atras):
 
 def test_sin_respaldos_es_atencion(tmp_path):
     r = eds.estado_respaldo(tmp_path / "backups")
-    assert r == {"nivel": "atencion", "ultimo": None, "horas_desde_el_ultimo": None, "externo": None}
+    assert r == {"nivel": "atencion", "ultimo": None, "horas_desde_el_ultimo": None, "motivo": "sin_respaldos",
+                 "nocturno": None, "externo": None}
 
 
 def test_el_ultimo_respaldo_es_por_fecha_y_no_por_nombre(tmp_path):
@@ -156,6 +157,55 @@ def test_respaldo_viejo_es_atencion(tmp_path):
     _zip(carpeta, "backup_automatico_20261018_030000.zip", 50)
     assert eds.estado_respaldo(carpeta)["nivel"] == "atencion"
     assert eds.estado_respaldo(carpeta, horas=72)["nivel"] == "ok"
+
+
+def _intento(carpeta, *, ok, horas_atras, error=None):
+    from libracore.respaldo_nocturno import escribir_intento
+
+    escribir_intento(carpeta, ok=ok, error=error, cuando=datetime.now(UTC) - timedelta(hours=horas_atras))
+
+
+def test_respaldo_de_anoche_que_fallo_es_error_y_sin_el_texto_del_error(tmp_path):
+    carpeta = tmp_path / "backups"
+    _zip(carpeta, "backup_automatico_20261019_030000.zip", 27)
+    _intento(carpeta, ok=False, horas_atras=3, error="pg_dump: connection to postgresql://u:clave@db/x failed")
+    r = eds.estado_respaldo(carpeta)
+    assert r["nivel"] == "error" and r["motivo"] == "fallo" and r["nocturno"]["fallo"] is True
+    assert r["nocturno"]["ultimo_intento"].endswith("+00:00")
+    assert "pg_dump" not in json.dumps(r) and "clave" not in json.dumps(r)
+
+
+def test_un_fallo_anterior_al_ultimo_zip_ya_no_cuenta(tmp_path):
+    """Falló a la noche y alguien hizo un respaldo a mano después: hay un ZIP más nuevo que el fallo."""
+    carpeta = tmp_path / "backups"
+    _intento(carpeta, ok=False, horas_atras=5)
+    _zip(carpeta, "backup_manual_20261020_080000.zip", 1)
+    r = eds.estado_respaldo(carpeta)
+    assert r["nivel"] == "ok" and r["motivo"] is None and r["nocturno"]["fallo"] is True
+
+
+def test_sin_intento_reciente_el_respaldo_viejo_es_que_no_corrio(tmp_path):
+    carpeta = tmp_path / "backups"
+    _zip(carpeta, "backup_automatico_20261018_030000.zip", 50)
+    assert eds.estado_respaldo(carpeta)["motivo"] == "no_corrio"
+    _intento(carpeta, ok=True, horas_atras=50)
+    assert eds.estado_respaldo(carpeta)["motivo"] == "no_corrio"
+
+
+def test_un_intento_bueno_reciente_con_zip_viejo_es_viejo(tmp_path):
+    carpeta = tmp_path / "backups"
+    _zip(carpeta, "backup_automatico_20261018_030000.zip", 50)
+    _intento(carpeta, ok=True, horas_atras=2)
+    r = eds.estado_respaldo(carpeta)
+    assert (r["nivel"], r["motivo"], r["nocturno"]["fallo"]) == ("atencion", "viejo", False)
+
+
+def test_un_nocturno_ilegible_se_ignora(tmp_path):
+    carpeta = tmp_path / "backups"
+    _zip(carpeta, "backup_automatico_20261020_030000.zip", 3)
+    (carpeta / ".nocturno.json").write_text("{roto")
+    r = eds.estado_respaldo(carpeta)
+    assert (r["nivel"], r["motivo"], r["nocturno"]) == ("ok", None, None)
 
 
 def test_copia_externa_que_fallo_es_error_y_sin_el_texto_del_error(tmp_path):

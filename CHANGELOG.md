@@ -8,7 +8,20 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
-## [Unreleased] — el producto puede impedir la baja de un cliente (propuesta: v1.199.0)
+## [Unreleased] — el respaldo nocturno, «falló» o «no corrió» (propuesta: v1.200.0)
+
+**Minor, sin migración.** Addendum del ADR-075.
+- **`libracore.respaldo_nocturno`** (`escribir_intento`, `leer_intento`): el `data/backups/.nocturno.json` de cada
+  instancia, que `backup-all` escribe después de cada intento, también cuando falla.
+- **`estado_respaldo`** (la barra del pie) suma `motivo` (`"fallo"`, `"sin_respaldos"`, `"no_corrio"`, `"viejo"` o
+  `null`) y `nocturno` (`{"ultimo_intento", "fallo"}`), sin el texto del error. El intento fallido posterior al último
+  ZIP pone el bloque en `error`.
+
+### Para los productos
+- Nada que cambiar. El aviso aparece con el `.venv-scripts` del VPS en esta versión (es el que corre `backup-all`) y
+  con libra-ui en la versión que lea `motivo`.
+
+## v1.199.0 — el producto puede impedir la baja de un cliente
 
 **Minor, sin migración.**
 - **`build_clientes_router(impide_desactivar=)`**: `(cliente_id) -> str | None`; con un texto, `POST /api/clientes/{id}/desactivar` contesta 422 con ese motivo. Es lo que el producto tiene en sus tablas y el motor no ve: en LibraInmo, el contrato vigente del inquilino o la propiedad del propietario.
