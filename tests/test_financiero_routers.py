@@ -103,6 +103,27 @@ def test_no_se_desactiva_un_cliente_con_presupuestos_aprobados(client):
     assert r.status_code == 422 and "presupuestos aprobados" in r.json()["detail"]
 
 
+def test_el_producto_puede_impedir_la_baja_con_su_motivo(entorno):
+    """El gancho `impide_desactivar`: lo que el producto tiene en sus tablas (LibraInmo, un contrato vigente)."""
+    vistos = []
+
+    def impide(cliente_id):
+        vistos.append(cliente_id)
+        return "tiene el contrato C-000001 vigente." if cliente_id == 1 else None
+
+    app = FastAPI()
+    app.include_router(build_clientes_router(impide_desactivar=impide))
+    c = TestClient(app)
+    uno = c.post("/api/clientes", json={"name": "Inquilina Ficticia"}).json()["id"]
+    dos = c.post("/api/clientes", json={"name": "Garante Ficticio"}).json()["id"]
+    r = c.post(f"/api/clientes/{uno}/desactivar")
+    assert r.status_code == 422
+    assert r.json()["detail"] == "No se puede desactivar Inquilina Ficticia: tiene el contrato C-000001 vigente."
+    assert c.get(f"/api/clientes/{uno}").json()["activo"] == 1
+    assert c.post(f"/api/clientes/{dos}/desactivar").json()["activo"] == 0
+    assert vistos == [uno, dos]
+
+
 # ── Proveedores y egresos ────────────────────────────────────────────────
 
 
