@@ -1596,3 +1596,39 @@ def _probar_filtro_de_envio(client, monkeypatch):
     assert ids(envio="sin_enviar") == ({fallida["id"], nunca["id"]}, 2)
     assert ids() == ({enviada["id"], fallida["id"], nunca["id"]}, 3)
     assert ids(envio="cualquiera")[1] == 3
+
+
+def test_en_una_demo_el_comprobante_no_se_manda_ni_deja_rastro(client, monkeypatch, smtp_que_no_debe_salir):
+    """🔴 Una demo con SMTP cargado mandaba facturas de verdad a los mails ficticios de la semilla (ADR-090, v1.203.0).
+
+    403 con el mensaje de la demo, sin PDF de por medio ni fila en el rastro de envíos; y **antes** de mirar el SMTP: sin servidor
+    configurado, la demo no manda a configurar nada."""
+    from libracore import config_manager as cm
+
+    cm.save({"email_smtp_host": "smtp.example.com", "email_smtp_user": "yo@example.com", "email_smtp_password": "x"})
+    factura = _emitir(client)
+    monkeypatch.setenv("DEMO_MODE", "1")
+
+    r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "cliente@example.com"})
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] == "En la demo los mails no se envían."
+    assert client.get(f"{API}/{factura['id']}/envios").json() == []
+
+    cm.save({"email_smtp_host": "", "email_smtp_user": ""})
+    r = client.post(f"{API}/{factura['id']}/enviar-email", json={"email": "cliente@example.com"})
+    assert r.status_code == 403 and "En la demo" in r.json()["detail"]
+    assert smtp_que_no_debe_salir == []
+
+
+def test_en_una_demo_el_envio_directo_del_motor_tampoco_sale(client, monkeypatch, smtp_que_no_debe_salir):
+    """La red de seguridad: aunque la ruta no preguntara, `enviar_comprobante_por_mail` pasa por `email_sender`, que corta."""
+    from libracore import config_manager as cm
+    from libracore.email_sender import MailsDeshabilitadosEnDemo
+
+    cm.save({"email_smtp_host": "smtp.example.com", "email_smtp_user": "yo@example.com", "email_smtp_password": "x"})
+    _emitir(client)
+    monkeypatch.setenv("DEMO_MODE", "1")
+    with pytest.raises(MailsDeshabilitadosEnDemo):
+        fr.enviar_comprobante_por_mail(to_email="a@b.example", to_name="A", pdf_path="x",
+                                       factura_label="Factura", total=1.0)
+    assert smtp_que_no_debe_salir == []

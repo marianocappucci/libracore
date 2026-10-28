@@ -231,7 +231,9 @@ consumido del grupo; es público y contesta 400/200, nunca 500, ante un cuerpo q
   mandar, intentos, reintento, `registrado` terminal sólo para un simulado), `telefono_para_whatsapp`, `configuracion` (modo y
   conexión a Evolution; la `apikey` en el almacén de secretos) y `agenda.NotificacionPorAvisos` (adaptador de `libragenda`).
   `db/avisos_envios.py` son las filas (tabla `avisos_envios`, migración `0032`); `avisos_router.py`, la API de configuración,
-  «probar» y el registro.
+  «probar» y el registro. `canales.py` decide **un canal por aviso** (`avisar`, `canal_para`: WhatsApp si se puede, mail si no o si
+  WhatsApp rechaza el número; `politica="todos"` para los dos). `email_sender._entregar` es además la guarda de demo de todo mail
+  del motor (ADR-091): en una demo no sale ninguno.
 - **`periodos.py`** (ADR-086): la aritmética pura del devengado de un contrato (`proponer_cuota`: período de calendario,
   prorrateo por días, mes adelantado, vencimiento y clave de idempotencia), subida desde LibraDesk. **`mora.py`**
   (ADR-086): `calcular_punitorio`, con gracia y vencimiento corrido al siguiente día hábil.

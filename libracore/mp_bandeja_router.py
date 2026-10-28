@@ -49,6 +49,7 @@ from libracore import (
 )
 from libracore.db import facturas as db_facturas
 from libracore.db import mp as db_mp
+from libracore.facturas_router import sin_mails_en_demo
 from libracore.registro_de_clientes import RegistroDeClientes, el_registro
 from libracore.validacion import sin_booleanos
 
@@ -327,6 +328,7 @@ def build_mp_bandeja_router(
         if not factura:
             raise HTTPException(404, "Factura no encontrada")
 
+        sin_mails_en_demo()
         cfg = config_manager.load()
         smtp_host = cfg.get("email_smtp_host", "")
         smtp_user = cfg.get("email_smtp_user", "")

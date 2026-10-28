@@ -191,3 +191,21 @@ def _origen_de_ventas_por_defecto():
     libro_de_clientes.registrar_origen_de_ventas(VENTAS_LIBRACORE)
     yield
     libro_de_clientes.registrar_origen_de_ventas(VENTAS_LIBRACORE)
+
+
+@pytest.fixture
+def smtp_que_no_debe_salir(monkeypatch):
+    """`smtplib.SMTP` reemplazado por algo que anota la llamada y falla: la lista de abajo tiene que quedar **vacía**.
+
+    Se anota además de fallar porque casi todos los llamadores atrapan `Exception`: un `AssertionError` solo se tragaría y el test
+    pasaría igual. Para los tests de «una demo no manda mails» (ADR-090, v1.203.0)."""
+    import smtplib
+
+    llamadas: list = []
+
+    def _no(*args, **kwargs):
+        llamadas.append((args, kwargs))
+        raise AssertionError("smtplib.SMTP se llamó: salió a la red")
+
+    monkeypatch.setattr(smtplib, "SMTP", _no)
+    return llamadas

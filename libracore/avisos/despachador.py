@@ -264,6 +264,22 @@ def cerrado(proveedor: Proveedor, clave: str, *, max_intentos: int = MAX_INTENTO
     return fila is not None and _cierra_el_tema(fila, proveedor, max_intentos)
 
 
+def ya_salio(clave: str, canales, *, nodo: Callable[[], str | None] | None = None) -> Envio | None:
+    """El aviso de esa `clave` en el primero de esos `canales` donde ya **salió** (`enviado`), con `repetido=True`; `None` si en ninguno.
+
+    Es la comprobación entre canales de la política `preferir_whatsapp` (`canales.avisar`): lo que ya salió por mail no sale por
+    WhatsApp porque la configuración cambió entre dos corridas, ni al revés. Sólo cuenta `enviado`: un `registrado` (modo prueba) no
+    entregó nada, y un `fallido` o `rechazado` no salió. En un nodo no toca la tabla y contesta `None` (`despachar` dirá `en_nodo`)."""
+    clave = _validar_clave(clave)
+    if _en_un_nodo(nodo):
+        return None
+    for canal in canales:
+        fila = db.obtener(canal, clave)
+        if fila is not None and fila["estado"] == ESTADO_ENVIADO:
+            return _como_envio(fila, repetido=True)
+    return None
+
+
 def cerradas(proveedor: Proveedor, claves, *, max_intentos: int = MAX_INTENTOS) -> set[str]:
     """Cuáles de esas claves ya no hay que despachar con este proveedor (`cerrado` para muchas, en pocas consultas).
 
@@ -305,4 +321,4 @@ def reintentar_fallidos(proveedor: Proveedor, *, max_intentos: int = MAX_INTENTO
 
 
 __all__ = ["EN_NODO", "ESPERA_ENTRE_INTENTOS", "MAX_INTENTOS", "NO_DISPONIBLE", "Envio", "Resumen", "cerrado", "cerradas",
-           "despachar", "omitir", "reintentar_fallidos"]
+           "despachar", "omitir", "reintentar_fallidos", "ya_salio"]

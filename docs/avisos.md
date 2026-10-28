@@ -107,8 +107,57 @@ Evolution es `POST {url}/message/sendText/{instancia}` con el header `apikey` y 
 
 **Una demo (`DEMO_MODE=1`) nunca manda, por ningún canal.** WhatsApp es siempre `registro`. El mail: `ProveedorSmtp.enviar` no toca la
 red y devuelve `registrado` (`simulado = True`, así que cierra el tema); la semilla de una demo trae mails ficticios y un SMTP cargado
-los recibiría de verdad. Esto vale sólo para los avisos: el envío de comprobantes y presupuestos por mail (`facturas_router`,
-`email_sender.enviar_comprobante`) tiene su propia ruta y no mira `DEMO_MODE`.
+los recibiría de verdad. Desde v1.204.0 vale también para **todo mail del motor** (ADR-091): `email_sender` no abre la sesión SMTP en una
+demo, y el envío de facturas, presupuestos y pre facturas, el reenvío de la bandeja de MercadoPago y *Probar conexión* contestan 403
+«En la demo los mails no se envían.» (ver «Una demo y los mails» más abajo).
+
+## Un aviso, un canal (v1.204.0)
+
+Un aviso sale por **un solo canal**. La política por defecto, `preferir_whatsapp`:
+
+| Situación del cliente / de la instancia | Sale por |
+|---|---|
+| WhatsApp disponible (`registro` o `evolution`) y un teléfono que WhatsApp reconoce | **sólo WhatsApp** (en `registro` queda anotado y no sale ningún mail) |
+| Sin teléfono válido | mail (y queda un `omitido` de WhatsApp con el motivo) |
+| WhatsApp apagado o sin configurar | mail (no se escribe nada de WhatsApp) |
+| WhatsApp devuelve `rechazado` (el número no tiene WhatsApp) o `fallido` con los 3 intentos agotados | mail, **con la misma clave** (es otro canal, no choca) |
+| WhatsApp `fallido` con intentos por delante | sigue por WhatsApp: lo reintenta el barrido o `reintentar_fallidos` |
+| Ya salió (`enviado`) por cualquiera de los dos | no vuelve a salir por ninguno, aunque la configuración haya cambiado entre las dos corridas |
+
+`politica="todos"` es el comportamiento de v1.202 (cada canal con destino, sin mirar los otros): hay que pedirlo explícitamente.
+
+```python
+from libracore.avisos import avisar, canal_para, proveedores, ya_salio
+
+prov = proveedores(smtp_config)
+# Un barrido propio (LibraClub): por cada candidato
+contacto = {"email": c.email, "telefono": c.telefono}
+envios = avisar(prov, contacto, lambda canal: Mensaje("", asunto=..., cuerpo=redactar(c, canal)),
+                clave=f"reserva:{c.id}:recordatorio:24", tipo="recordatorio")   # list[Envio]; no levanta
+canal_para(contacto, prov)   # Via(canal, proveedor, destino) o None: la decisión sola, sin despachar ni escribir
+ya_salio(clave, ("whatsapp", "email"))   # Envio(enviado, repetido=True) si ya salió por alguno; para descartar antes de armar el texto
+```
+
+- `redactar(canal)` devuelve el `Mensaje` de ese canal (el `destino` lo pone `avisar`); `None` = por ahí no se avisa (se prueba el
+  siguiente).
+- La clave **no lleva el canal**: es la misma para WhatsApp y mail. `(canal, clave)` ya es la unicidad de `avisos_envios`.
+- **Pendiente:** un `fallido` de WhatsApp que `reintentar_fallidos` termina dejando `rechazado` **no** cae a mail (el reintento no tiene
+  el contacto ni el texto del mail). Queda `rechazado` en `GET /api/avisos/envios`. Ver ADR-090, addendum de v1.204.0.
+
+## Una demo y los mails (ADR-091)
+
+Con `DEMO_MODE=1` ningún mail sale por ningún camino del motor:
+
+| Camino | En una demo |
+|---|---|
+| `email_sender.enviar_comprobante` / `enviar_documento` / `enviar_texto` | levantan `MailsDeshabilitadosEnDemo` (un `OSError`) antes de abrir la sesión: **la guarda central** |
+| `POST /{id}/enviar-email` (facturas, presupuestos, pre facturas) y `POST /facturas/{id}/reenviar` (bandeja MP) | 403 «En la demo los mails no se envían.», antes de mirar el SMTP; sin fila en `envios_email` y sin cambiar el estado |
+| Mail automático al facturar un cobro de MercadoPago | no sale; la factura sí |
+| `POST /admin/smtp/probar` (*Probar conexión*) | 403 «En la demo no se prueba la conexión de correo.»: ni siquiera abre TCP |
+| `ProveedorSmtp` (avisos) | `registrado`, sin red |
+| Recuperación de contraseña (`libraauth`) | fuera del motor: `libraauth/email_sender.py` tiene su propio SMTP y no se tocó |
+
+Un producto con su propio envío puede llamar `email_sender.exigir_envio_real()` (levanta) o `facturas_router.sin_mails_en_demo()` (403).
 
 ## GestioLibra y MedLibra (`libragenda`)
 
@@ -125,6 +174,8 @@ app.state.reminder_dispatcher = ReminderDispatcher(
     DEFAULT_REMINDER_POLICIES,
 )
 ```
+
+Por defecto el recordatorio sale por un solo canal (`politica="preferir_whatsapp"`; `politica="todos"` para los dos).
 
 `send` no levanta por un fallo de envío (cortaría la tanda de `dispatch`): el fallo queda `fallido` y lo reintenta
 `reintentar_fallidos(proveedor)` en el mismo cron (antes o después de `dispatch`: espera 5 minutos desde el último intento).

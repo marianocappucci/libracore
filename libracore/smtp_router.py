@@ -31,6 +31,13 @@ Los otros dos lo montaron en otro lado y lo pasan: Contalibra y Restolibra usan
 `/api/config/smtp`, que es lo que ya publicaron y cambiarlo rompería su frontend
 desplegado sin ganar nada.
 
+## Una demo no prueba la conexión (ADR-090, addendum de v1.204.0)
+
+Con `DEMO_MODE=1` el botón contesta 403 «En la demo no se prueba la conexión de correo.» y **no abre ninguna sesión**. No manda
+ningún mail, pero abre una conexión TCP con login a un `host:puerto` que cargó quien use la demo (la pantalla de SMTP deja guardar
+cualquiera): desde un contenedor del servidor, es un escáner de puertos y un probador de credenciales ajenas. Una demo no tiene un
+correo propio que probar, así que bloquearlo no le saca nada.
+
 ## El gate lo pone el producto
 
 Como en el resto de los routers del motor. Acá no alcanza con "logueado": una
@@ -45,6 +52,7 @@ import smtplib
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from libracore import config_manager
 from libracore.facturas_router import smtp_efectivo
 
 #: Segundos de espera. Diez alcanzan para un servidor que anda y no dejan la
@@ -78,6 +86,8 @@ def build_smtp_probe_router(smtp_config, *, prefix: str = "/admin/smtp") -> APIR
 
     @router.post("/probar", response_model=PruebaSmtpOut)
     def probar():
+        if config_manager.es_demo():
+            raise HTTPException(403, "En la demo no se prueba la conexión de correo.")
         cfg = smtp_efectivo(smtp_config)
         host = (cfg.get("host") or "").strip()
         usuario = (cfg.get("user") or "").strip()

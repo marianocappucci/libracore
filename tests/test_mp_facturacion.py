@@ -241,3 +241,13 @@ def test_el_cae_simulado_de_dev_queda_en_la_factura(conn, mp_fact):
     de producción."""
     factura_id, _, _, _ = _facturar(mp_fact)
     assert db_facturas.get_factura(factura_id)["cae"], "dev tiene que estampar un CAE simulado"
+
+
+def test_en_una_demo_la_factura_sale_y_el_mail_no(conn, mp_fact, monkeypatch, smtp_que_no_debe_salir):
+    """Con SMTP completo, `DEMO_MODE=1` factura igual (ya tiene CAE) y devuelve `enviado=False` sin tocar la red (ADR-090, v1.203.0)."""
+    cfg = {**CFG_MONOTRIBUTO, "email_smtp_host": "smtp.example.com", "email_smtp_user": "yo@example.com",
+           "email_smtp_password": "x", "email_from": "yo@example.com"}
+    monkeypatch.setenv("DEMO_MODE", "1")
+    factura_id, _, _, enviado = _facturar(mp_fact, cfg=cfg)
+    assert factura_id and enviado is False
+    assert smtp_que_no_debe_salir == []

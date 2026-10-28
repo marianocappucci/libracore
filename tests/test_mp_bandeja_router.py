@@ -422,3 +422,21 @@ def test_lo_sembrado_queda_pendiente_y_no_facturado(armar):
     bandeja = cliente.get("/api/mp-bandeja", headers=ADMIN).json()
     assert [p["estado_factura"] for p in bandeja["pendientes"]] == ["pendiente"]
     assert bandeja["historial"] == []
+
+
+def test_en_una_demo_reenviar_no_manda_nada(armar, entorno, monkeypatch, smtp_que_no_debe_salir):
+    """ADR-090, v1.203.0: 403 con el mensaje de la demo, aun con el SMTP completo."""
+    entorno.save({"email_smtp_host": "smtp.example.com", "email_smtp_user": "yo@example.com",
+                  "email_smtp_password": "x", "email_from": "yo@example.com"})
+    factura_id = db_facturas.create_factura(
+        tipo=11, punto_venta=1, numero=1, fecha="2026-08-20",
+        cliente_cuit="", cliente_razon="X", cliente_iva_cond=5,
+        items=[], subtotal=1.0, iva_amount=0.0, total=1.0,
+        ambiente="produccion",
+    )
+    cliente = armar()
+    monkeypatch.setenv("DEMO_MODE", "1")
+    r = cliente.post(f"/api/mp-bandeja/facturas/{factura_id}/reenviar", headers=ADMIN)
+    assert r.status_code == 403
+    assert r.json()["detail"] == "En la demo los mails no se envían."
+    assert smtp_que_no_debe_salir == []

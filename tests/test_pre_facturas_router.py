@@ -566,3 +566,22 @@ def test_el_prefijo_se_puede_cambiar(motor):
     app = FastAPI()
     app.include_router(pre_facturas_router.build_pre_facturas_router(origen_producto="libracargo", prefix="/api/v2/pf"))
     assert TestClient(app).get("/api/v2/pf").status_code == 200
+
+
+@patch("libracore.email_sender.smtplib.SMTP")
+def test_en_una_demo_la_pre_factura_no_se_manda_y_queda_como_estaba(mock_smtp, motor, monkeypatch):
+    """ADR-090, v1.203.0: 403 con el mensaje de la demo, antes de mirar el SMTP; la pre factura sigue `pendiente`."""
+    api = Producto().cliente(smtp_resolver=_smtp_resuelto())
+    pf = _crear(api)
+    monkeypatch.setenv("DEMO_MODE", "1")
+    r = api.post(f"/api/pre-facturas/{pf['id']}/enviar-email", json={"email": "cliente@example.com"}, headers=ADMIN)
+    assert r.status_code == 403 and r.json()["detail"] == "En la demo los mails no se envían."
+    sin_smtp = Producto().cliente(smtp_resolver=_smtp_resuelto(configurado=False))
+    r = sin_smtp.post(f"/api/pre-facturas/{pf['id']}/enviar-email", json={"email": "a@example.com"}, headers=ADMIN)
+    assert r.status_code == 403 and "En la demo" in r.json()["detail"]
+    mock_smtp.assert_not_called()
+    assert pre_facturas.get(pf["id"])["estado"] == "pendiente"
+    from libracore.email_sender import MailsDeshabilitadosEnDemo
+    with pytest.raises(MailsDeshabilitadosEnDemo):  # la red de seguridad, en el dominio
+        pre_facturas.enviar_por_correo(pf["id"], "cliente@example.com", smtp_resolver=_smtp_resuelto())
+    mock_smtp.assert_not_called()

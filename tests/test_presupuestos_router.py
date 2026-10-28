@@ -164,3 +164,15 @@ def test_cada_envio_deja_rastro_y_el_listado_lo_marca(app_client):
     assert resumen["ultimo_estado"] == "enviado" and resumen["ultimo_destino"] == "c@d.com"
     assert len(app_client.get(f"/api/presupuestos/{pid}").json()["envios_email"]) == 2
     assert app_client.get("/api/presupuestos/99999/envios").status_code == 404
+
+
+def test_en_una_demo_el_presupuesto_no_se_manda_y_sigue_en_borrador(app_client, monkeypatch):
+    """ADR-090, v1.203.0: ni siquiera se llama al envío inyectado por el producto (que podría no pasar por `email_sender`)."""
+    pid = _crear(app_client).json()["id"]
+    monkeypatch.setenv("DEMO_MODE", "1")
+    resp = app_client.post(f"/api/presupuestos/{pid}/enviar-email", json={"email": "a@b.com"})
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"] == "En la demo los mails no se envían."
+    assert app_client.reg["email"] == []
+    assert app_client.get(f"/api/presupuestos/{pid}").json()["status"] == "borrador"
+    assert app_client.get(f"/api/presupuestos/{pid}").json()["envios_email"] == []

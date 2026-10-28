@@ -18,18 +18,20 @@ sí es común:
   excepción cortaría el resto de la tanda. El fallo queda `fallido` en el registro de avisos y lo reintenta `reintentar_fallidos`
   (5 minutos después del último intento: da igual si va antes o después de `dispatch` en el cron).
 - La clave es `agenda:{appointment_id}:{policy_id}`: aunque `dispatch` repita una notificación, **no sale dos veces**.
+- **Un solo canal por recordatorio (v1.204.0, política `preferir_whatsapp`):** WhatsApp si está disponible y el paciente tiene un
+  teléfono válido; si no, mail; y si WhatsApp rechaza el número, mail con la misma clave. Lo que ya salió por un canal no sale por
+  el otro aunque la configuración haya cambiado entre dos corridas. `politica="todos"` es el comportamiento de v1.202.
 - Un canal sin destino (el paciente no dejó teléfono) queda `omitido` con su motivo; un canal apagado o sin configurar no escribe nada.
   Si **ninguno** está disponible, `libragenda` igual da el recordatorio por visto (igual que con el `LoggingNotificationPort`): prender un
   canal después no reenvía lo viejo, y un recordatorio de un turno que ya pasó no le sirve a nadie.
 """
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Callable, Mapping
 
-from libracore.avisos.despachador import Envio, despachar, omitir
-from libracore.avisos.mensaje import CANAL_EMAIL, CANAL_WHATSAPP, Mensaje, Proveedor
-from libracore.avisos.telefono import telefono_para_whatsapp
+from libracore.avisos.canales import CANALES_POR_DEFECTO, POLITICAS, PREFERIR_WHATSAPP, avisar
+from libracore.avisos.despachador import Envio
+from libracore.avisos.mensaje import Mensaje, Proveedor
 
 TIPO = "recordatorio"
 
@@ -44,39 +46,28 @@ class NotificacionPorAvisos:
     - `proveedores`: `{canal: Proveedor}` o un callable que lo devuelve (`libracore.avisos.proveedores(smtp_config)`).
     - `contacto(client_id)`: `{"email": ..., "telefono": ...}` del cliente; lo que falte, vacío.
     - `redactar(notificacion, canal)`: el `Mensaje` de ese canal (el `destino` lo pone el adaptador). `None` = no avisar por ahí.
-    - `canales`: en qué orden se prueba; por defecto los dos, y un recordatorio sale por cada uno que tenga destino.
+    - `canales`: en qué orden se prueba; por defecto WhatsApp y después mail.
+    - `politica`: `preferir_whatsapp` (por defecto) → **un solo canal**: WhatsApp si está disponible y el cliente tiene un teléfono
+      válido, y si no, mail; si WhatsApp rechaza el número, cae al mail con la misma clave. `todos` → un recordatorio por cada
+      canal con destino (el comportamiento de v1.202). Ver `libracore.avisos.canales`.
     """
 
     def __init__(self, proveedores: Mapping[str, Proveedor] | Callable[[], Mapping[str, Proveedor]], *,
                  contacto: Callable[[str], Mapping[str, str]], redactar: Callable[[object, str], Mensaje | None],
-                 canales: tuple[str, ...] = (CANAL_WHATSAPP, CANAL_EMAIL), tipo: str = TIPO,
+                 canales: tuple[str, ...] = CANALES_POR_DEFECTO, tipo: str = TIPO, politica: str = PREFERIR_WHATSAPP,
                  nodo: Callable[[], str | None] | None = None) -> None:
+        if politica not in POLITICAS:
+            raise ValueError(f"La política de canales tiene que ser una de: {', '.join(POLITICAS)}.")
         self._proveedores = proveedores if callable(proveedores) else (lambda: proveedores)
         self._contacto = contacto
         self._redactar = redactar
         self._canales = canales
         self._tipo = tipo
+        self._politica = politica
         self._nodo = nodo
 
     def send(self, notification) -> list[Envio]:
         clave = clave_de_recordatorio(notification.appointment_id, notification.policy_id)
-        proveedores = self._proveedores()
-        contacto = self._contacto(notification.client_id) or {}
-        envios: list[Envio] = []
-        for canal in self._canales:
-            proveedor = proveedores.get(canal)
-            if proveedor is None or not proveedor.disponible():
-                continue
-            destino = (telefono_para_whatsapp(contacto.get("telefono")) if canal == CANAL_WHATSAPP
-                       else (contacto.get("email") or "").strip())
-            if not destino:
-                dato = "un teléfono que WhatsApp reconozca" if canal == CANAL_WHATSAPP else "email"
-                envios.append(omitir(canal, clave, motivo=f"El cliente no tiene {dato}.", tipo=self._tipo,
-                                    nodo=self._nodo))
-                continue
-            mensaje = self._redactar(notification, canal)
-            if mensaje is None:
-                continue
-            envios.append(despachar(proveedor, dataclasses.replace(mensaje, destino=destino), clave=clave, tipo=self._tipo,
-                                    nodo=self._nodo))
-        return envios
+        return avisar(self._proveedores(), self._contacto(notification.client_id) or {},
+                      lambda canal: self._redactar(notification, canal), clave=clave, tipo=self._tipo,
+                      politica=self._politica, canales=self._canales, nodo=self._nodo)

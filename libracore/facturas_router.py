@@ -318,6 +318,19 @@ def smtp_configurado(resolver=None) -> bool:
     return bool(smtp["host"] and smtp["user"])
 
 
+def sin_mails_en_demo() -> None:
+    """La guarda de **ruta** de todo envío de comprobantes por mail: en una demo (`DEMO_MODE=1`), 403 «En la demo los mails no se envían.».
+
+    Va **antes** de mirar el SMTP, el PDF y el destinatario: en una demo no hay nada que configurar ni que generar, y mandar a
+    quien configure la pantalla de correo («Configurá el servidor SMTP») es mandarlo a hacer algo que después no sirve. 403 con
+    mensaje y no 401 (que el kit toma como sesión vencida) ni 5xx (que se lee como una falla); el mismo criterio que el
+    router de ARCA en una demo. La red de seguridad de fondo es `email_sender.exigir_envio_real()`, adentro del envío."""
+    try:
+        email_sender.exigir_envio_real()
+    except email_sender.MailsDeshabilitadosEnDemo as e:
+        raise HTTPException(403, str(e)) from None
+
+
 def enviar_comprobante_por_mail(
     *, to_email: str, to_name: str, pdf_path: str, factura_label: str, total: float,
     resolver=None, empresa_nombre: str | None = None,
@@ -511,6 +524,7 @@ def _registrar_enviar_email(
     @router.post("/{factura_id}/enviar-email")
     def enviar_email(factura_id: int, payload: EmailPayload, usuario: dict | None = Depends(dep_usuario)):
         factura = exigir(factura_id)
+        sin_mails_en_demo()
         if not smtp_configurado(smtp_config):
             raise HTTPException(
                 400, f"Configurá el servidor SMTP en {donde_configurar_smtp}."
