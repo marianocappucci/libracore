@@ -2171,3 +2171,36 @@ documentos (`cuenta_corriente`) sigue en pesos.
 **Para los productos.** Nada que cambiar si sólo asientan en pesos. Quien compare la salida de `saldos` con un
 diccionario exacto ve la clave nueva.
 
+
+## ADR-089 — La nota de crédito de una factura de `facturas` sin HTTP, y con motivo (`emitir_nota_de_credito_de_factura`)
+
+**Fecha:** 2026-10-28. **Estado:** aceptada. Addendum del ADR-014 (la nota es del motor) y del ADR-065 (la plata).
+
+**Contexto.** `notas_de_credito.emitir_nota_de_credito` ya recibía un `motivo` y lo escribía en las `observaciones` de la
+nota (`armar_nota`), pero `POST /{factura_id}/nota-credito` no lo exponía (`NotaCreditoIn` es `extra="forbid"`). Y todo lo
+que rodea a la emisión —buscar la factura, decidir la plata **antes** del CAE, emitir, abonar la cuenta corriente o
+mover la caja— vivía **adentro de la ruta**: un producto con su propio borde (GestioLibra llega desde el turno y no
+desde el id de la factura, y quiere el motivo) tenía que buscar la función en `router.routes` y llamarla con un
+`Depends` a mano, o copiarla.
+
+**Decisión.**
+1. **`NotaCreditoIn.motivo`** (opcional): una línea, sin espacios de más, de hasta `MOTIVO_MAXIMO` (200) caracteres
+   —si pasa, 422—. Vacío es igual a no mandarlo. Queda en las `observaciones` de la nota
+   (`Anula Factura B 0001-00000012 — <motivo>`) y por eso también en su PDF.
+2. **`facturas_router.emitir_nota_de_credito_de_factura(factura_id, usuario_id, *, importe, motivo, destino,
+   medio_pago, emisor_del_pdf, turno_de, exigir_turno)`**: lo que hacía el cuerpo de la ruta, sin HTTP y sin cambiarle
+   una línea de lógica. Devuelve la nota (más `reintegro` si se pidió un destino) y levanta `NotaNoPermitida`. La ruta
+   la llama y traduce el código con `_STATUS_DE_NOTA`: no se duplica nada. Es síncrona y corre ARCA con `asyncio.run`:
+   se llama desde un hilo (una ruta `def`), no desde un loop ya corriendo.
+3. **Dos códigos nuevos de `NotaNoPermitida`**, porque antes eran `HTTPException` adentro de la ruta y una función sin
+   HTTP no puede levantarlas: `NO_ENCONTRADA` (404, «Factura no encontrada») y `ANULADA` (409, «El comprobante está
+   anulado.»). Mismo status y mismo texto que antes. El `dict` código → status de la ruta pasa a ser público (`STATUS_DE_NOTA`; `_STATUS_DE_NOTA` queda como alias) para que un borde propio traduzca igual que la ruta.
+
+**Compatibilidad.** Sin `motivo` la nota sale exactamente igual (`test_sin_motivo_la_nota_sale_como_siempre`). La ruta,
+sus códigos y sus textos no cambian; `build_comprobantes_router` y `build_nota_de_credito_router` siguen siendo los
+mismos factories. Un producto que traducía los códigos de `NotaNoPermitida` con un `dict` cerrado no ve los dos
+nuevos salvo que llame a la función nueva.
+
+**Para los productos.** Nada que cambiar. Quien quiera un borde propio (otra ruta, otro id) llama a la función en vez de
+montar el router. GestioLibra (ADR-039 de allá) es el primero: llega desde el turno, exige el motivo y lo deja también en
+su log.

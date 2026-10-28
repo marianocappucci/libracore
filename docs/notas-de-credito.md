@@ -69,7 +69,13 @@ rechazó), el motor no atrapa nada: el producto decide qué queda (en una transa
 
 `POST /api/facturas/{id}/nota-credito` con `{"destino": "devolver", "medio_pago": "efectivo"}` (egreso de caja) o `{"destino": "a_favor"}` (abono en la cuenta corriente del cliente). Sin `destino` no se mueve plata. Se mueve lo que la nota deja cobrado de más, sólo con la nota autorizada, con la marca `nc:factura:<id>:<nota_id>`; `GET …/nota-credito/destino?importe=` dice qué preguntar. Detalle en `libracore/reintegro_de_nota.py` y el ADR-065.
 
+## El motivo y la función sin HTTP (ADR-089)
+
+`POST /api/facturas/{id}/nota-credito` acepta `{"motivo": "..."}` (opcional, una línea, hasta 200 caracteres): queda en las `observaciones` de la nota —`Anula Factura B 0001-00000012 — <motivo>`— y en su PDF. Sin él, la nota sale como siempre.
+
+Lo que hace la ruta vive en `facturas_router.emitir_nota_de_credito_de_factura(factura_id, usuario_id, *, importe, motivo, destino, medio_pago, ...)`, sin HTTP: la llama la ruta y la puede llamar un producto con su propio borde. Devuelve la nota (más `reintegro` si hubo destino) y levanta `NotaNoPermitida` (con `NO_ENCONTRADA` y `ANULADA` además de los de siempre). Es síncrona: se llama desde un hilo, no desde un loop corriendo.
+
 ## Qué falta (fases siguientes)
 
-El **motivo** obligatorio y guardado; guardar y mostrar las observaciones
+Que el motivo sea **obligatorio** (hoy lo decide cada producto); guardar y mostrar las observaciones
 de ARCA; y que `anular_venta` use esto cuando la venta tiene factura con CAE.

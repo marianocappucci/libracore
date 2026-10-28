@@ -64,6 +64,8 @@ class NotaNoPermitida(Exception):
     ORIGINAL_SIN_CAE = "original_sin_cae"  # el comprobante no tiene CAE: ARCA no lo conoce (la nota de débito lo exige)
     DESTINO = "destino"              # el destino de la plata (devolver / a favor) no sirve para esta factura (ADR-065)
     SIN_TURNO = "sin_turno"          # hay que devolver plata de la caja y quien emite no tiene un turno abierto (ADR-065)
+    NO_ENCONTRADA = "no_encontrada"  # la factura a acreditar no existe (`emitir_nota_de_credito_de_factura`, ADR-089)
+    ANULADA = "anulada"              # la factura está anulada (ADR-022): no admite notas (`emitir_nota_de_credito_de_factura`)
 
     def __init__(self, mensaje: str, codigo: str):
         super().__init__(mensaje)
