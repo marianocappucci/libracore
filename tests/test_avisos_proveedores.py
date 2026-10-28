@@ -14,6 +14,7 @@ Lo que se fija:
 import json
 import logging
 import smtplib
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -329,3 +330,36 @@ def test_es_telefono_normalizado(texto, ok):
 def test_lo_que_devuelve_telefono_para_whatsapp_siempre_pasa_el_proveedor():
     for crudo in ("11 5555-1234", "+54 11 5555 1234", "2255-123456", "+598 99 123 456"):
         assert es_telefono_normalizado(telefono_para_whatsapp(crudo)), crudo
+
+
+# ── Una demo nunca manda mails ────────────────────────────────────────────────────────────────────────────
+
+
+def test_una_demo_no_manda_mails_aunque_tenga_smtp(monkeypatch):
+    """Una demo con SMTP cargado mandaría los recordatorios a los mails ficticios de la semilla."""
+    monkeypatch.setenv("DEMO_MODE", "1")
+    llamadas = []
+    p = ProveedorSmtp(lambda: _Cfg(), enviar_texto=lambda **kw: llamadas.append(kw))
+    assert p.disponible(), "sigue disponible si hay SMTP: lo que cambia es que no sale"
+    assert p.simulado, "para que su `registrado` cierre el tema, como el de WhatsApp en una demo"
+
+    r = p.enviar(Mensaje("jugador@ejemplo.example", "Turno confirmado", "Mañana 19:00"))
+
+    assert r.estado == REGISTRADO and "demo" in r.detalle
+    assert llamadas == []
+
+
+def test_una_demo_no_toca_smtplib_con_el_camino_real(monkeypatch):
+    monkeypatch.setenv("DEMO_MODE", "1")
+    with patch("libracore.email_sender.smtplib.SMTP") as smtp:
+        r = ProveedorSmtp(lambda: _Cfg()).enviar(Mensaje("jugador@ejemplo.example", "x", "y"))
+    assert r.estado == REGISTRADO
+    smtp.assert_not_called()
+
+
+def test_fuera_de_una_demo_el_smtp_manda_y_no_es_simulado(monkeypatch):
+    monkeypatch.delenv("DEMO_MODE", raising=False)
+    llamadas = []
+    p = ProveedorSmtp(lambda: _Cfg(), enviar_texto=lambda **kw: llamadas.append(kw))
+    assert not p.simulado
+    assert p.enviar(Mensaje("jugador@ejemplo.example", "x", "y")).estado == ENVIADO and len(llamadas) == 1

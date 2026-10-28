@@ -34,10 +34,10 @@ envio.estado   # enviado | registrado | fallido | rechazado | omitido | no_dispo
 
 | Estado | Qué es | ¿Se vuelve a intentar? |
 |---|---|---|
-| `enviando` | alguien lo está mandando ahora | no; si pasan 10 minutos se lo da por abandonado |
+| `enviando` | alguien lo está mandando ahora | no; si pasan 10 minutos se lo da por abandonado y se reintenta (si ya no le quedan intentos, pasa a `fallido`: no queda `enviando` para siempre) |
 | `enviado` | el proveedor lo aceptó | no |
 | `registrado` | un proveedor **simulado** lo anotó sin mandar nada | sí, con un proveedor real (con uno simulado, no) |
-| `fallido` | no salió (timeout, servidor caído, apikey mala) | sí, hasta 3 intentos |
+| `fallido` | no salió (timeout, servidor caído, apikey mala) | sí, hasta 3 intentos; `reintentar_fallidos` espera 5 minutos desde el último |
 | `rechazado` | el destino no sirve (número sin WhatsApp) | no |
 | `omitido` | no correspondía mandarlo (sin teléfono, pidió no recibir) | no |
 
@@ -58,8 +58,13 @@ for c in candidatos:
         resumen = resumen.sumar(omitir("whatsapp", clave(c), motivo="El cliente no tiene un teléfono que WhatsApp reconozca."))
         continue
     resumen = resumen.sumar(despachar(whatsapp, Mensaje(destino, cuerpo=redactar(c)), clave=clave(c), tipo=c.tipo))
-reintentar_fallidos(whatsapp)                           # los fallidos de las últimas 24 horas, con el mensaje guardado
+reintentar_fallidos(whatsapp)                           # los fallidos de las últimas 24 horas con 5 minutos desde su último intento
 ```
+
+`reintentar_fallidos` espera `espera=ESPERA_ENTRE_INTENTOS` (5 minutos) desde el último intento de cada `fallido`, así que da igual
+llamarlo antes o después de `despachar` en el mismo cron: un fallo de Evolution no se lleva dos de los tres intentos en el mismo
+segundo. Es un parámetro (`reintentar_fallidos(p, espera=timedelta(minutes=15))`). `despachar` con la misma clave no tiene espera:
+cuando el barrido vuelve sobre el hecho, vuelve a probar.
 
 **El script de un cron (`docker exec`) tiene que enchufar el almacén de secretos** (`config_manager.usar_almacen_de_secretos`) antes de
 despachar, y configurar `core` (`libracore.db.core.configure`). Sin el almacén, Evolution no tiene la `apikey`:
@@ -85,6 +90,11 @@ app.include_router(build_avisos_router(
 
 La `apikey` **nunca vuelve** por la API. En un nodo, `PUT` y `probar` dan 409 `solo_en_el_central`.
 
+**Probar la ruta desde un producto, sin red:** `build_avisos_router(..., transporte=httpx.MockTransport(handler), enviar_texto=fake)`.
+`transporte` reemplaza el transporte HTTP de Evolution (WhatsApp) y `enviar_texto` a `email_sender.enviar_texto` (mail); sin ellos, todo
+sale como siempre. `proveedores(smtp_config, transporte=, enviar_texto=)` acepta los mismos dos para armar los proveedores de un barrido
+en un test.
+
 ## Conectar WhatsApp a una instancia
 
 1. `PUT /config {"modo": "registro"}`: los avisos se **anotan** (`registrado`) y no sale nada. Se miran en `GET /envios`.
@@ -93,7 +103,12 @@ La `apikey` **nunca vuelve** por la API. En un nodo, `PUT` y `probar` dan 409 `s
 4. `PUT /config {"modo": "evolution"}`. Lo que quedó `registrado` en el paso 1 se manda en el próximo barrido.
 
 Evolution es `POST {url}/message/sendText/{instancia}` con el header `apikey` y `{"number", "text"}`. Un 400 con `exists: false` es
-«el número no tiene WhatsApp» (`rechazado`); cualquier otro error es `fallido` y se reintenta. Una demo (`DEMO_MODE=1`) nunca manda.
+«el número no tiene WhatsApp» (`rechazado`); cualquier otro error es `fallido` y se reintenta.
+
+**Una demo (`DEMO_MODE=1`) nunca manda, por ningún canal.** WhatsApp es siempre `registro`. El mail: `ProveedorSmtp.enviar` no toca la
+red y devuelve `registrado` (`simulado = True`, así que cierra el tema); la semilla de una demo trae mails ficticios y un SMTP cargado
+los recibiría de verdad. Esto vale sólo para los avisos: el envío de comprobantes y presupuestos por mail (`facturas_router`,
+`email_sender.enviar_comprobante`) tiene su propia ruta y no mira `DEMO_MODE`.
 
 ## GestioLibra y MedLibra (`libragenda`)
 
@@ -112,7 +127,7 @@ app.state.reminder_dispatcher = ReminderDispatcher(
 ```
 
 `send` no levanta por un fallo de envío (cortaría la tanda de `dispatch`): el fallo queda `fallido` y lo reintenta
-`reintentar_fallidos(proveedor)`, que corre después de `dispatch` en el mismo cron.
+`reintentar_fallidos(proveedor)` en el mismo cron (antes o después de `dispatch`: espera 5 minutos desde el último intento).
 
 ## Lo que el registro guarda
 

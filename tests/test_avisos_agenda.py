@@ -5,11 +5,12 @@ contacto y el texto que pone el producto. Lo que se fija: sale por cada canal co
 un fallo no levanta (cortaría la tanda de `ReminderDispatcher`) y queda reintentable, y un canal sin destino queda omitido.
 """
 import dataclasses
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
-from libracore.avisos import Mensaje, Resultado, reintentar_fallidos
+from libracore import fechas
+from libracore.avisos import ESPERA_ENTRE_INTENTOS, Mensaje, Resultado, reintentar_fallidos
 from libracore.avisos.agenda import NotificacionPorAvisos, clave_de_recordatorio
 from libracore.db import avisos_envios as db
 from libracore.db import core
@@ -96,7 +97,8 @@ def test_un_fallo_no_levanta_y_lo_reintenta_el_motor():
     (envio,) = puerto.send(Notificacion())  # no levanta: cortaría la tanda de ReminderDispatcher
     assert envio.estado == "fallido"
 
-    resumen = reintentar_fallidos(wa)
+    assert reintentar_fallidos(wa).enviados == 0, "en el mismo cron no gasta otro intento: espera"
+    resumen = reintentar_fallidos(wa, ahora=fechas.ahora() + ESPERA_ENTRE_INTENTOS + timedelta(seconds=30))
     assert resumen.enviados == 1 and len(wa.enviados) == 2
     assert db.listar()[0]["estado"] == "enviado"
 

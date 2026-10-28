@@ -62,9 +62,12 @@ def _texto_de_prueba() -> str:
 
 def build_avisos_router(*, require_admin: Callable[..., Any], smtp_config: Callable | None = None,
                         prefix: str = "/api/avisos", transporte: httpx.BaseTransport | None = None,
-                        nodo: Callable[[], str | None] | None = None) -> APIRouter:
+                        enviar_texto: Callable | None = None, nodo: Callable[[], str | None] | None = None) -> APIRouter:
     """Ver el docstring del módulo. `smtp_config` es el resolver de SMTP del producto (el mismo que el del envío de comprobantes);
-    `transporte` es para los tests; `nodo` reemplaza la lectura de la identidad del nodo (default `LIBRAEDGE_NODE_ID`)."""
+    `nodo` reemplaza la lectura de la identidad del nodo (default `LIBRAEDGE_NODE_ID`).
+
+    `transporte` (un `httpx.MockTransport` para Evolution) y `enviar_texto` (reemplaza a `email_sender.enviar_texto`) son para los
+    tests de un producto: con ellos `POST /probar` se prueba sin red, por WhatsApp y por mail. Sin ellos, todo sale como siempre."""
     router = APIRouter(prefix=prefix, tags=["avisos"], dependencies=[Depends(require_admin)])
     solo_central = [Depends(guarda_solo_en_el_central(nodo=nodo))]
 
@@ -95,7 +98,7 @@ def build_avisos_router(*, require_admin: Callable[..., Any], smtp_config: Calla
     @router.post("/probar", dependencies=solo_central)
     def probar(cuerpo: PruebaIn):
         if cuerpo.canal == CANAL_EMAIL:
-            proveedor = configuracion.proveedor_email(smtp_config)
+            proveedor = configuracion.proveedor_email(smtp_config, enviar_texto=enviar_texto)
             destino = cuerpo.destino.strip()
         else:
             proveedor = configuracion.proveedor_whatsapp(transporte=transporte)

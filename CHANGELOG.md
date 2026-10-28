@@ -8,6 +8,14 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — avisos: una demo no manda mails, espera entre reintentos y sin `enviando` eternos (propuesta: v1.202.1)
+
+ADR-090 (addendum). **Patch, sin migración** (`updated_at` ya guarda el momento del último intento). Lo encontró la adopción de GestioLibra.
+- **Una demo nunca manda mails.** `ProveedorSmtp` no miraba `DEMO_MODE`: sólo WhatsApp estaba protegido. Ahora, con `DEMO_MODE=1`, `enviar` no toca la red y devuelve `registrado` (`simulado = True`, como `ProveedorRegistro`). El envío de comprobantes y presupuestos por mail (`facturas_router`) **no tiene guarda de demo y no se tocó**.
+- **`reintentar_fallidos(espera=ESPERA_ENTRE_INTENTOS)`:** un `fallido` se reintenta recién 5 minutos después de su último intento. Antes, `despachar` seguido de `reintentar_fallidos` en el mismo cron gastaba dos de los tres intentos en el mismo segundo. **Cambio de comportamiento:** quien llamaba `reintentar_fallidos` y esperaba un reintento inmediato (por ejemplo en un test) tiene que pasar `espera=timedelta(0)` o un `ahora=` posterior.
+- **Un `enviando` abandonado con los intentos agotados pasa a `fallido` (terminal)** en `reintentar_fallidos` y en `despachar`; antes quedaba `enviando` para siempre. `db.avisos_envios.cerrar_abandonados_sin_intentos`.
+- **Para los tests de un producto:** `build_avisos_router(enviar_texto=)` (el `transporte=` de Evolution ya existía) y `proveedor_email` / `proveedores(enviar_texto=)`.
+
 ## [Unreleased] — los avisos por mail y WhatsApp en el motor (propuesta: v1.202.0)
 
 ADR-090. **Minor, con migración `0032` (aditiva: una tabla nueva, vacía).** Ninguna instancia cambia de comportamiento por subir el pin: WhatsApp nace `apagado` y nada manda hasta que un producto lo use.

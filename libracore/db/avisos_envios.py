@@ -144,16 +144,40 @@ def listar(*, canal: str | None = None, estado: str | None = None, tipo: str | N
     return [_fila(r) for r in rows]
 
 
-def a_reintentar(canal: str, *, max_intentos: int, actualizado_desde: str, vencido_antes_de: str, limite: int = 100,
-                 conn: Conexion | None = None) -> list[dict]:
+def a_reintentar(canal: str, *, max_intentos: int, actualizado_desde: str, vencido_antes_de: str,
+                 fallido_antes_de: str | None = None, limite: int = 100, conn: Conexion | None = None) -> list[dict]:
     """Los `fallido` con intentos de sobra y los `enviando` abandonados de ese canal, el más viejo primero.
 
     `actualizado_desde` acota por antigüedad (un recordatorio de hace tres días ya no sirve) y `vencido_antes_de` es el piso de
-    un `enviando` para darlo por abandonado."""
+    un `enviando` para darlo por abandonado. `fallido_antes_de` es la espera entre intentos: un `fallido` cuyo último intento
+    (`updated_at`) es posterior no se devuelve todavía. Sin él, no hay espera."""
+    sql = (f"SELECT {_CAMPOS_DE_LISTADO} FROM avisos_envios WHERE canal=? AND updated_at >= ? AND "
+           "((estado=? AND intentos < ?{espera}) OR (estado=? AND updated_at < ? AND intentos < ?)) ORDER BY id LIMIT ?")
+    args = [canal, actualizado_desde, ESTADO_FALLIDO, int(max_intentos)]
+    if fallido_antes_de is not None:
+        args.append(fallido_antes_de)
+    args += [ESTADO_ENVIANDO, vencido_antes_de, int(max_intentos), int(limite)]
     with _con(conn) as c:
-        rows = c.execute(
-            f"SELECT {_CAMPOS_DE_LISTADO} FROM avisos_envios WHERE canal=? AND updated_at >= ? AND "
-            "((estado=? AND intentos < ?) OR (estado=? AND updated_at < ? AND intentos < ?)) ORDER BY id LIMIT ?",
-            (canal, actualizado_desde, ESTADO_FALLIDO, int(max_intentos), ESTADO_ENVIANDO, vencido_antes_de,
-             int(max_intentos), int(limite))).fetchall()
+        rows = c.execute(sql.format(espera=" AND updated_at <= ?" if fallido_antes_de is not None else ""),
+                         tuple(args)).fetchall()
     return [_fila(r) for r in rows]
+
+
+#: El motivo con el que se cierra un `enviando` abandonado al que ya no le quedan intentos.
+DETALLE_DEL_ABANDONO = "El envío quedó a medias (el proceso se interrumpió) y ya no quedan intentos."
+
+
+def cerrar_abandonados_sin_intentos(canal: str, *, max_intentos: int, vencido_antes_de: str, clave: str | None = None,
+                                    conn: Conexion | None = None) -> int:
+    """Pasa a `fallido` (terminal: ya no le quedan intentos) los `enviando` abandonados con `intentos >= max_intentos`.
+
+    Sin esto quedan `enviando` para siempre: `despachar` no los rescata (no hay intentos) y `a_reintentar` tampoco, así que ni
+    `cerrado` los da por cerrados ni el listado cuenta lo que pasó. `vencido_antes_de` es el mismo piso que en `a_reintentar`; `clave`
+    acota a un solo aviso. Devuelve cuántos cerró."""
+    sql = "UPDATE avisos_envios SET estado=?, detalle=?, updated_at=? WHERE canal=? AND estado=? AND updated_at < ? AND intentos >= ?"
+    args = [ESTADO_FALLIDO, DETALLE_DEL_ABANDONO, _ar_now(), canal, ESTADO_ENVIANDO, vencido_antes_de, int(max_intentos)]
+    if clave is not None:
+        sql += " AND clave=?"
+        args.append(clave)
+    with _con(conn) as c:
+        return c.execute(sql, tuple(args)).rowcount or 0

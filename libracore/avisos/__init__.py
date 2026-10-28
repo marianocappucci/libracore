@@ -31,6 +31,7 @@ from libracore.avisos.configuracion import (
 )
 from libracore.avisos.despachador import (
     EN_NODO,
+    ESPERA_ENTRE_INTENTOS,
     MAX_INTENTOS,
     NO_DISPONIBLE,
     Envio,

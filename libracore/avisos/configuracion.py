@@ -22,10 +22,14 @@ cron de MercadoPago (`config_manager.secretos_fuera_de_alcance`).
 
 Con `DEMO_MODE=1` el WhatsApp siempre es `registro`, diga lo que diga la configuración, y no se puede guardar `evolution`. Una demo
 pública con Evolution conectado le dejaría a cualquiera con un código de demo mandar mensajes a cualquier número.
+
+El mail sigue la misma regla: en una demo `ProveedorSmtp.enviar` no toca la red y devuelve `registrado` (la semilla de una demo
+trae mails ficticios, y un SMTP cargado los recibiría de verdad).
 """
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -188,11 +192,18 @@ def proveedor_whatsapp(*, transporte: httpx.BaseTransport | None = None) -> Prov
     return ProveedorEvolution(cfg.url, cfg.instancia, _apikey(), transporte=transporte)
 
 
-def proveedor_email(smtp_config=None) -> ProveedorSmtp:
-    """El proveedor de mail: el SMTP que la instancia ya tiene (`smtp_config` es el resolver del producto)."""
-    return ProveedorSmtp(smtp_config)
+def proveedor_email(smtp_config=None, *, enviar_texto: Callable | None = None) -> ProveedorSmtp:
+    """El proveedor de mail: el SMTP que la instancia ya tiene (`smtp_config` es el resolver del producto).
+
+    En una demo, `ProveedorSmtp` no manda (devuelve `registrado`). `enviar_texto` reemplaza a `email_sender.enviar_texto`: es para
+    los tests (la contraparte de `transporte` en WhatsApp)."""
+    return ProveedorSmtp(smtp_config, enviar_texto=enviar_texto)
 
 
-def proveedores(smtp_config=None, *, transporte: httpx.BaseTransport | None = None) -> dict[str, Proveedor]:
-    """`{canal: proveedor}` de la instancia. Lo que arma un barrido: `proveedores(...)["whatsapp"]`."""
-    return {CANAL_EMAIL: proveedor_email(smtp_config), CANAL_WHATSAPP: proveedor_whatsapp(transporte=transporte)}
+def proveedores(smtp_config=None, *, transporte: httpx.BaseTransport | None = None,
+                enviar_texto: Callable | None = None) -> dict[str, Proveedor]:
+    """`{canal: proveedor}` de la instancia. Lo que arma un barrido: `proveedores(...)["whatsapp"]`.
+
+    `transporte` (WhatsApp) y `enviar_texto` (mail) son para los tests de un producto: ninguno sale a la red."""
+    return {CANAL_EMAIL: proveedor_email(smtp_config, enviar_texto=enviar_texto),
+            CANAL_WHATSAPP: proveedor_whatsapp(transporte=transporte)}
