@@ -8,7 +8,21 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
-## [Unreleased] — `librafarma` en `_UNA_SOLA_BASE` (propuesta: v1.203.0)
+## [Unreleased] — un aviso, un canal; y una demo no manda mails por ningún camino (propuesta: v1.204.0)
+
+ADR-090 (addendum) y ADR-091. **Minor, sin migración, con cambio de comportamiento por defecto.** Decisión del humano (2026-10-28).
+- **Un aviso sale por un solo canal (`libracore.avisos.canales`).** Política por defecto `preferir_whatsapp`: con WhatsApp disponible (`registro` o `evolution`) y un teléfono válido, sólo WhatsApp; sin teléfono o con WhatsApp apagado, mail; si WhatsApp deja el aviso `rechazado` (o `fallido` con los intentos agotados), cae al mail **con la misma clave**. `politica="todos"` es el comportamiento anterior. **Cambio de comportamiento:** `NotificacionPorAvisos` (GestioLibra, MedLibra) ya no manda por los dos canales; quien lo quiera tiene que pasar `politica="todos"`.
+- **Idempotencia entre corridas:** antes de elegir, `despachador.ya_salio(clave, canales)` mira si la clave ya salió (`enviado`) por cualquier canal; si cambió la configuración entre dos corridas, no sale por el otro.
+- **Nuevo, para los barridos propios (LibraClub):** `avisar(proveedores, contacto, redactar, clave=, tipo=, politica=)`, `canal_para(contacto, proveedores)`, `Via`, `PREFERIR_WHATSAPP`, `TODOS`.
+- **Una demo (`DEMO_MODE=1`) no manda mails por ningún camino.** `email_sender` (`enviar_comprobante`, `enviar_documento`, `enviar_texto`) levanta `MailsDeshabilitadosEnDemo` (un `OSError`) antes de abrir la sesión SMTP: es la guarda central. Los `enviar-email` de facturas, presupuestos y pre facturas y el `reenviar` de la bandeja de MercadoPago contestan **403** «En la demo los mails no se envían.» antes de mirar el SMTP, sin dejar un error en `envios_email` y sin cambiar el estado del documento. El mail automático al facturar un cobro de MercadoPago no sale y la factura sí. *Probar conexión* (`smtp_router`) da 403 en una demo: no abre ninguna sesión. `email_sender.exigir_envio_real()` y `facturas_router.sin_mails_en_demo()` son públicas para los productos.
+- **Pendiente documentado:** un `fallido` de WhatsApp que el reintento (`reintentar_fallidos`) termina en `rechazado` no cae al mail (ADR-090, addendum, punto 6). `libraauth` tiene su propio envío de mail (recuperación de contraseña) y no se tocó.
+
+### Para los productos
+- **GestioLibra y MedLibra:** subir el pin y listo; los recordatorios pasan a salir por un canal. Si quieren los dos, `NotificacionPorAvisos(..., politica="todos")`.
+- **LibraClub:** al adoptar `libracore.avisos`, su `barrer` usa `avisar(...)` (o `canal_para` + `despachar`) en vez de un ciclo propio por canal; la clave (`reserva:{id}:{tipo}:{horas}`) es la misma para ambos canales. Para descartar lo ya enviado antes de armar el texto, `ya_salio(clave, ("whatsapp", "email"))`.
+- **Todos:** nada que cambiar por la guarda de demo. Un producto con su propio `smtplib` o su `enviar_comprobante` inyectado puede llamar `email_sender.exigir_envio_real()`.
+
+## v1.203.0 — `librafarma` en `_UNA_SOLA_BASE`
 
 **Minor, sin migración.** Ningún producto cambia de comportamiento por subir el pin.
 - **`librafarma` en `_UNA_SOLA_BASE`**: LibraFarma nace con el schema del motor en la base del dominio, como LibraInmo

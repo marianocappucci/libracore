@@ -278,3 +278,19 @@ def test_el_prefijo_lo_puede_cambiar_el_producto(cm, monkeypatch):
     assert cliente.post("/api/correo/probar").status_code == 200
     # Control: en el prefijo de siempre ya no está.
     assert cliente.post("/admin/smtp/probar").status_code == 404
+
+
+def test_en_una_demo_no_se_prueba_la_conexion_y_no_sale_a_la_red(armar, monkeypatch):
+    """Con SMTP cargado y todo, `DEMO_MODE=1` corta antes de abrir la sesión (ADR-090, v1.203.0): 403 y mensaje."""
+    cliente, registro, configurar, llamadas = armar
+    configurar(devuelve=lambda: _Cfg())
+    monkeypatch.setenv("DEMO_MODE", "1")
+
+    r = cliente.post("/admin/smtp/probar", headers=ADMIN)
+
+    assert r.status_code == 403
+    assert r.json()["detail"] == "En la demo no se prueba la conexión de correo."
+    assert registro == [] and llamadas == []
+
+    monkeypatch.delenv("DEMO_MODE")
+    assert cliente.post("/admin/smtp/probar", headers=ADMIN).status_code == 200  # el control: sin demo prueba

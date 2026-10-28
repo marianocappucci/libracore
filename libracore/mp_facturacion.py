@@ -293,6 +293,10 @@ def _mandar_por_mail(cfg, client, payer_email, pdf_path, etiqueta, total) -> boo
         )
         logger.info("Email enviado a %s para %s", to_email, etiqueta)
         return True
+    except email_sender.MailsDeshabilitadosEnDemo:
+        # Una demo no manda mails (no es un error): la factura sale igual y `email_sent` queda en falso.
+        logger.info("Demo: el comprobante %s no se manda por mail.", etiqueta)
+        return False
     except Exception as e:
         # Que no salga el mail no invalida la factura: ya tiene CAE.
         logger.error("Error email a %s: %s", to_email, e)

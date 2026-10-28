@@ -27,7 +27,7 @@ from libracore.db import clients as _clients
 from libracore.db import envios_email
 from libracore.db import remitos_presupuestos as _rp
 from libracore.db.envios_email import TIPO_PRESUPUESTO
-from libracore.facturas_router import calcular_totales
+from libracore.facturas_router import calcular_totales, sin_mails_en_demo
 from libracore.validacion import sin_booleanos
 
 _ESTADOS_VALIDOS = {"borrador", "enviado", "aceptado", "rechazado", "vencido", "facturado"}
@@ -213,6 +213,7 @@ def build_presupuestos_router(
         pres = _rp.get_presupuesto(pres_id)
         if not pres:
             raise HTTPException(404, "Presupuesto no encontrado")
+        sin_mails_en_demo()
         if not smtp_configurado():
             raise HTTPException(400, f"Configurá el servidor SMTP en {donde_configurar_smtp}.")
         if not payload.email.strip():

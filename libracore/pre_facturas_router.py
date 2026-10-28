@@ -58,6 +58,7 @@ from libracore import pre_facturas as dominio
 from libracore.db import comprobantes_pendientes as bandeja
 from libracore.db.arca_config import cuenta_de_cobro
 from libracore.db.core import get_connection
+from libracore.facturas_router import sin_mails_en_demo
 from libracore.validacion import sin_booleanos
 
 _PREFIJO = "/api/pre-facturas"
@@ -293,6 +294,7 @@ def build_pre_facturas_router(
     @router.post("/{pre_factura_id}/enviar-email")
     def enviar_email(pre_factura_id: int, payload: EmailPayload):
         pf = _propia(pre_factura_id)
+        sin_mails_en_demo()
         with _traducir():
             try:
                 return _con_cuenta(dominio.enviar_por_correo(

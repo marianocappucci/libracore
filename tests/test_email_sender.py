@@ -131,3 +131,51 @@ def test_enviar_documento_en_memoria_sin_nombre_usa_uno_por_defecto(mock_smtp_cl
         from_email="f@example.com", from_name="", pdf_bytes=b"%PDF-1.4")
     adjunto = next(mock_server.send_message.call_args[0][0].iter_attachments())
     assert adjunto.get_filename() == "documento.pdf"
+
+
+# ── Una demo no manda mails (ADR-090, addendum de v1.203.0) ───────────────────
+
+_SMTP = dict(smtp_host="smtp.example.com", smtp_port=587, smtp_user="yo@example.com", smtp_password="clave-de-prueba",
+             from_email="yo@example.com", from_name="Yo")
+
+
+def test_en_una_demo_ninguna_funcion_de_envio_sale_a_la_red(monkeypatch, tmp_path, smtp_que_no_debe_salir):
+    from libracore import email_sender
+
+    monkeypatch.setenv("DEMO_MODE", "1")
+    pdf = tmp_path / "f.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    llamadas = [
+        lambda: email_sender.enviar_comprobante(to_email="a@b.example", to_name="A", pdf_path=str(pdf), empresa_nombre="E",
+                                                factura_label="Factura C 1", total=1.0, **_SMTP),
+        lambda: email_sender.enviar_documento(to_email="a@b.example", to_name="A", pdf_path=str(pdf), asunto="x", cuerpo="y", **_SMTP),
+        lambda: email_sender.enviar_documento(to_email="a@b.example", to_name="A", pdf_path="", asunto="x", cuerpo="y",
+                                              pdf_bytes=b"%PDF-1.4", **_SMTP),
+        lambda: email_sender.enviar_texto(to_email="a@b.example", asunto="x", cuerpo="y", **_SMTP),
+    ]
+    for enviar in llamadas:
+        with pytest.raises(email_sender.MailsDeshabilitadosEnDemo, match="En la demo los mails no se envían"):
+            enviar()
+    assert smtp_que_no_debe_salir == []
+
+
+def test_el_error_de_demo_es_un_OSError_y_no_pisa_a_uno_de_verdad(monkeypatch):
+    """Lo que hoy atrapa un fallo de red (`except OSError`) lo atrapa también; y fuera de una demo la guarda no existe."""
+    from libracore import email_sender
+
+    monkeypatch.setenv("DEMO_MODE", "1")
+    assert issubclass(email_sender.MailsDeshabilitadosEnDemo, OSError)
+    monkeypatch.setenv("DEMO_MODE", "0")
+    email_sender.exigir_envio_real()  # no levanta
+    monkeypatch.delenv("DEMO_MODE")
+    email_sender.exigir_envio_real()
+
+
+def test_fuera_de_una_demo_el_mismo_envio_si_abre_la_sesion(monkeypatch, tmp_path, smtp_que_no_debe_salir):
+    """El control: el fixture detecta la llamada. Sin esto, «no se llamó» podría ser un fixture roto."""
+    from libracore import email_sender
+
+    monkeypatch.delenv("DEMO_MODE", raising=False)
+    with pytest.raises(AssertionError, match="salió a la red"):
+        email_sender.enviar_texto(to_email="a@b.example", asunto="x", cuerpo="y", **_SMTP)
+    assert len(smtp_que_no_debe_salir) == 1

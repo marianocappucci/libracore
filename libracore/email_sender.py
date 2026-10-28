@@ -4,10 +4,37 @@ Contalibra/Restolibra, donde `email_sender.py` era byte-idéntico y activo
 (usado por `web/routers/webhooks.py`, `web/helpers/email_helper.py`,
 `web/api/mp_bandeja.py` y `mp_facturacion.py` en ambos) — ver
 wiki/analyses/auditoria-duplicacion-familia-libra.md.
+
+## Una demo no manda mails (ADR-090, addendum de v1.204.0)
+
+`_entregar` es el único lugar del motor que abre una sesión SMTP para **mandar**, y `enviar_documento`, `enviar_comprobante` y
+`enviar_texto` pasan por ahí. (El otro `smtplib.SMTP` del motor es el de *Probar conexión*, `smtp_router`, que no manda nada y
+tiene su propia guarda.) Con `DEMO_MODE=1` **ninguna sale a la red**: levantan `MailsDeshabilitadosEnDemo` (un `OSError`, así que
+lo que ya atrapa los errores de red de `smtplib` lo trata como un fallo de envío, con un mensaje que se entiende). La semilla de una
+demo trae mails ficticios, y una demo con SMTP cargado mandaba facturas y presupuestos de verdad.
+
+Los routers (`facturas_router`, `presupuestos_router`, `pre_facturas_router`, `mp_bandeja_router`) preguntan antes, con
+`exigir_envio_real()`, para contestar «En la demo los mails no se envían» (403) sin generar el PDF ni dejar un error en el rastro
+de envíos. La guarda de acá es la red de seguridad de todo lo demás: un producto que llame a `email_sender` por su cuenta también queda
+cubierto.
 """
 import os
 import smtplib
 from email.message import EmailMessage
+
+from libracore import config_manager
+
+MENSAJE_DEMO = "En la demo los mails no se envían."
+
+
+class MailsDeshabilitadosEnDemo(OSError):
+    """Se quiso mandar un mail desde una demo. Es un `OSError` a propósito: los llamadores ya tratan así un fallo de red."""
+
+
+def exigir_envio_real() -> None:
+    """Levanta `MailsDeshabilitadosEnDemo` si esta instancia es una demo (`DEMO_MODE=1`); no hace nada si no."""
+    if config_manager.es_demo():
+        raise MailsDeshabilitadosEnDemo(MENSAJE_DEMO)
 
 
 def enviar_comprobante(
@@ -70,6 +97,7 @@ def enviar_documento(
     total) quedó como caso particular de ésta. Se separó al agregar el resumen
     automático de cuenta corriente, cuyo adjunto no es un comprobante.
     """
+    exigir_envio_real()  # antes de leer el PDF: en una demo no hay nada que armar
     msg = EmailMessage()
     msg["Subject"] = asunto
     msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
@@ -105,6 +133,7 @@ def enviar_texto(
     Es la misma sesión que `enviar_documento` (STARTTLS y login), con dos diferencias: no hay adjunto y **tiene
     `timeout`**. Un aviso sale desde un barrido, y un servidor que no contesta no puede dejarlo colgado.
     """
+    exigir_envio_real()
     msg = EmailMessage()
     msg["Subject"] = asunto
     msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
@@ -114,7 +143,10 @@ def enviar_texto(
 
 
 def _entregar(msg: EmailMessage, smtp_host, smtp_port, smtp_user, smtp_password, **opciones):
-    """La sesión SMTP con STARTTLS y login. `opciones` se pasa a `smtplib.SMTP` (`timeout`)."""
+    """La sesión SMTP con STARTTLS y login. `opciones` se pasa a `smtplib.SMTP` (`timeout`).
+
+    🔴 Lo único del motor que manda un mail: en una demo no abre la conexión (ver el docstring del módulo)."""
+    exigir_envio_real()
     with smtplib.SMTP(smtp_host, int(smtp_port), **opciones) as server:
         server.ehlo()
         server.starttls()

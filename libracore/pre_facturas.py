@@ -494,6 +494,7 @@ def enviar_por_correo(pre_factura_id: int, destinatario: str, *, smtp_resolver=N
     Sin servidor, `SmtpNoConfigurado`. Si el envío falla (cualquier excepción de
     `smtplib`) **sube y la pre factura queda como estaba**: el estado sigue al hecho.
     """
+    email_sender.exigir_envio_real()  # una demo no manda mails (`MailsDeshabilitadosEnDemo`, un OSError)
     destinatario = str(destinatario or "").strip()
     if not destinatario:
         raise ValueError("Ingresá una dirección de correo.")

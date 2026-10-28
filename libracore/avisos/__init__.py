@@ -19,9 +19,21 @@ lleva sigue siendo del producto.
   (`libracore.db.avisos_envios`), una clave única por aviso, intentos y reintento.
 - `telefono_para_whatsapp`: el teléfono tal como lo piden los proveedores. Ante la duda, vacío.
 - `libracore.avisos.configuracion`: el modo de cada canal y la conexión a Evolution, con la apikey en el almacén cifrado.
+- `avisar` / `canal_para` (`libracore.avisos.canales`): **un aviso, un canal** (v1.204.0): WhatsApp si se puede, mail si no, y mail si
+  WhatsApp rechaza el número. `politica="todos"` para mandar por los dos. Es lo que usan `NotificacionPorAvisos` y el barrido de
+  LibraClub.
 - `libracore.avisos.agenda.NotificacionPorAvisos`: el adaptador de `libragenda.NotificationPort` para GestioLibra y MedLibra.
 - `libracore.avisos_router.build_avisos_router`: la API de configuración, «probar envío» y el registro, que cada producto monta.
 """
+from libracore.avisos.canales import (
+    CANALES_POR_DEFECTO,
+    POLITICAS,
+    PREFERIR_WHATSAPP,
+    TODOS,
+    Via,
+    avisar,
+    canal_para,
+)
 from libracore.avisos.configuracion import (
     ConfigWhatsApp,
     ErrorDeConfiguracion,
@@ -41,6 +53,7 @@ from libracore.avisos.despachador import (
     despachar,
     omitir,
     reintentar_fallidos,
+    ya_salio,
 )
 from libracore.avisos.mensaje import (
     CANAL_EMAIL,
