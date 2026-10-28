@@ -8,6 +8,18 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — la nota de crédito con motivo y sin HTTP (propuesta: v1.201.0)
+
+**Minor, sin migración.** ADR-089 (addendum del ADR-014 y el ADR-065).
+- **`POST /{factura_id}/nota-credito` acepta `motivo`** (opcional, una línea de hasta 200 caracteres): queda en las
+  `observaciones` de la nota (`Anula Factura B 0001-00000012 — <motivo>`) y en su PDF. Sin `motivo`, todo igual.
+- **`facturas_router.emitir_nota_de_credito_de_factura(...)`**: lo que hacía la ruta, sin HTTP. La ruta la llama. Levanta
+  `NotaNoPermitida`, que suma `NO_ENCONTRADA` (404) y `ANULADA` (409) —antes eran `HTTPException` adentro de la ruta—.
+- `facturas_router.MOTIVO_MAXIMO` (200) y `facturas_router.STATUS_DE_NOTA` (el `dict` código → status HTTP de la ruta, ahora público; `_STATUS_DE_NOTA` sigue como alias).
+
+### Para los productos
+- Nada que cambiar. GestioLibra la usa para llegar a la nota desde el turno y pasar el motivo.
+
 ## [Unreleased] — el respaldo nocturno, «falló» o «no corrió» (propuesta: v1.200.0)
 
 **Minor, sin migración.** Addendum del ADR-075.

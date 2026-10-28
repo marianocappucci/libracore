@@ -603,9 +603,10 @@ def _detalle(factura: dict) -> dict:
     }
 
 
-#: Cómo traduce este router cada motivo del núcleo (`notas_de_credito`) a su respuesta HTTP. Los otros
+#: Cómo traduce este router cada motivo del núcleo (`notas_de_credito`) a su respuesta HTTP (público desde ADR-089: un
+#: producto que llama a `emitir_nota_de_credito_de_factura` con su propio borde lo usa). Los otros
 #: productos que emiten notas traducen los mismos códigos como les convenga.
-_STATUS_DE_NOTA = {
+STATUS_DE_NOTA = {
     notas_de_credito.NotaNoPermitida.TIPO: 400,
     notas_de_credito.NotaNoPermitida.YA_TIENE_NOTA: 409,
     notas_de_credito.NotaNoPermitida.NOTA_SIN_CAE: 409,
@@ -615,7 +616,10 @@ _STATUS_DE_NOTA = {
     notas_de_credito.NotaNoPermitida.SUPERA_SALDO: 409,
     notas_de_credito.NotaNoPermitida.DESTINO: 422,
     notas_de_credito.NotaNoPermitida.SIN_TURNO: 409,
+    notas_de_credito.NotaNoPermitida.NO_ENCONTRADA: 404,
+    notas_de_credito.NotaNoPermitida.ANULADA: 409,
 }
+_STATUS_DE_NOTA = STATUS_DE_NOTA   # el nombre de antes, por si alguien lo importaba
 
 
 def _registrar_nota(nota: dict, ambiente: str, usuario_id: int, emisor_id: int | None, *, conn=None) -> int:
@@ -694,7 +698,7 @@ def _debitar_nota_en_la_cuenta(nota: dict, usuario_id: int, caja_id: int | None,
 
 async def _emitir_nota_de_credito(
     orig: dict, usuario_id: int, importe: Decimal | None = None,
-    emisor_del_pdf: Callable[[dict], dict | None] | None = None,
+    emisor_del_pdf: Callable[[dict], dict | None] | None = None, motivo: str = "",
 ) -> int:
     """La nota de crédito de este router: el núcleo del motor con las costuras de la tabla `facturas`."""
     emisor_id = orig.get("emisor_id")
@@ -725,10 +729,14 @@ async def _emitir_nota_de_credito(
             cargar_previas=lambda: db_facturas.get_nc_de_factura(
                 orig["tipo"], orig["punto_venta"], orig["numero"],
                 emisor_id=emisor_id, ambiente=orig.get("ambiente")),
-            numerar=numerar, registrar=registrar, pedir_cae=pedir_cae, importe=importe,
+            numerar=numerar, registrar=registrar, pedir_cae=pedir_cae, importe=importe, motivo=motivo,
             conn=conn_del_candado,
         )
     return emitida.registro
+
+
+#: Lo más largo que puede ser el motivo de una nota de crédito: va a las observaciones del comprobante y a su PDF.
+MOTIVO_MAXIMO = 200
 
 
 class NotaCreditoIn(BaseModel):
@@ -742,6 +750,9 @@ class NotaCreditoIn(BaseModel):
     cliente; la factura tiene que tener uno identificado). Sin `destino` no se mueve plata, como siempre. No se manda
     en una factura a cuenta corriente (la nota abona la cuenta sola, 422) y se ignora si no hay nada cobrado de más.
     Si la nota no obtiene CAE, el destino queda anotado y la plata se mueve cuando se autorice (`/autorizar`, ADR-067).
+
+    `motivo` (opcional, ADR-089) queda en las `observaciones` de la nota —`Anula Factura B 0001-00000012 — <motivo>`— y, con
+    ellas, en su PDF. Sin `motivo` la nota sale exactamente como siempre.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -749,7 +760,17 @@ class NotaCreditoIn(BaseModel):
     importe: Decimal | None = None
     destino: Literal["devolver", "a_favor"] | None = None
     medio_pago: str | None = None
+    motivo: str | None = None
     _no_son_booleanos = sin_booleanos("importe")
+
+    @field_validator("motivo")
+    @classmethod
+    def _motivo_limpio(cls, valor: str | None) -> str | None:
+        """Una sola línea, sin espacios de más y de hasta `MOTIVO_MAXIMO` caracteres. Vacío es lo mismo que no mandarlo."""
+        limpio = " ".join((valor or "").split())
+        if len(limpio) > MOTIVO_MAXIMO:
+            raise ValueError(f"El motivo no puede pasar de {MOTIVO_MAXIMO} caracteres.")
+        return limpio or None
 
 
 def _turno_abierto_de(usuario: dict, usuario_del_turno: Callable[[dict], int | None] | None) -> dict | None:
@@ -803,6 +824,84 @@ def _mover_el_reintegro_pendiente(
     return {**detalle, "reintegro": reintegro}
 
 
+def emitir_nota_de_credito_de_factura(
+    factura_id: int, usuario_id: int, *, importe: Decimal | None = None, motivo: str = "",
+    destino: Literal["devolver", "a_favor"] | None = None, medio_pago: str | None = None,
+    emisor_del_pdf: Callable[[dict], dict | None] | None = None,
+    turno_de: Callable[[], dict | None] | None = None, exigir_turno: bool = False,
+) -> dict:
+    """La nota de crédito de una factura de la tabla `facturas`, **sin HTTP**: lo mismo que
+    `POST /{factura_id}/nota-credito` (ADR-089). La ruta la llama; un producto con su propio borde la llama directo.
+
+    Hace todo lo que hace la ruta: las guardas del núcleo (`notas_de_credito`: una factura no se acredita dos veces, el tope de
+    las parciales, un pedido a la vez entre procesos), el comprobante asociado, el CAE, el PDF y, si el original era a
+    cuenta corriente, el abono de la cuenta; si era al contado y estaba cobrado, el destino de la plata (ADR-065: la
+    decisión se toma **antes** de pedirle nada a ARCA, y se mueve sólo con la nota autorizada).
+
+    - `importe` (con IVA): sin él la nota es total; con él, parcial. `motivo` va a las `observaciones` de la nota y a su PDF.
+    - `destino` / `medio_pago`: qué pasa con la plata de una factura al contado cobrada (ver `reintegro_de_nota`).
+    - `turno_de()` y `exigir_turno`: el turno de caja abierto de quien emite, para `devolver` (ADR-060).
+    - Devuelve la nota como la deja la base, más `reintegro` si se pidió un destino.
+
+    Levanta `NotaNoPermitida` (las guardas, `NO_ENCONTRADA` y `ANULADA` incluidas): es el mismo conjunto de códigos que
+    traduce la ruta a 400, 404, 409 o 422.
+
+    🔴 **Es síncrona y corre ARCA con `asyncio.run`**: llamarla desde un hilo (una ruta `def`, que FastAPI corre en su
+    threadpool), nunca desde adentro de un loop de eventos ya corriendo.
+    """
+    orig = db_facturas.get_factura(factura_id)
+    if not orig:
+        raise notas_de_credito.NotaNoPermitida("Factura no encontrada", notas_de_credito.NotaNoPermitida.NO_ENCONTRADA)
+    if orig.get("anulada_en"):
+        raise notas_de_credito.NotaNoPermitida("El comprobante está anulado.", notas_de_credito.NotaNoPermitida.ANULADA)
+    plan = None
+    if destino is not None or medio_pago:
+        # 🔑 Con destino, la plata se decide ANTES de pedirle nada a ARCA: una nota autorizada no se deshace.
+        # Primero las guardas de la nota (409/422 propios), después las del destino.
+        notas_de_credito.validar_nota_de_credito(orig, db_facturas.get_nc_de_factura(
+            orig["tipo"], orig["punto_venta"], orig["numero"],
+            emisor_id=orig.get("emisor_id"), ambiente=orig.get("ambiente")), importe)
+        plan = reintegro_de_nota.planear(
+            orig, importe if importe is not None else orig["total"], destino, medio_pago,
+            turno_de=turno_de, exigir_turno=exigir_turno)
+    nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario_id, importe, emisor_del_pdf, motivo or ""))
+
+    # Si el original era a crédito, la deuda del cliente se cancela: quedó
+    # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
+    # no debe.
+    if orig.get("condicion_venta") == "Cuenta Corriente":
+        cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
+        if cliente:
+            nota_db = db_facturas.get_factura(nota_id)
+            db_cc.create_cc_pago(
+                # El importe de ESTA nota (en la total es el de la factura; en una parcial, el acreditado).
+                cliente_id=cliente["id"], monto=nota_db["total"],
+                fecha=fechas.hoy().isoformat(),
+                concepto=(
+                    f"NC {_numero(orig)} (anula "
+                    f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
+                    f"{_numero(orig)})"
+                ),
+                # La marca que dice que la nota ya abonó: `anular_venta` no acredita otra vez.
+                referencia=notas_de_credito.referencia_cc_de_nota(factura_id, nota_id),
+                medio_pago="Cuenta Corriente", caja_id=None,
+                usuario_id=usuario_id,
+            )
+        return db_facturas.get_factura(nota_id)
+
+    # Una factura al contado ya cobrada: la plata va adonde se eligió (ADR-065), y sólo con la nota autorizada.
+    # `solicitar_cae` no levanta si ARCA rechaza —deja el motivo en la nota—, así que se mira el CAE acá.
+    nota_db = db_facturas.get_factura(nota_id)
+    if plan is None:
+        reintegro = reintegro_de_nota.nada_que_mover(destino) if destino is not None else None
+    elif notas_de_credito._es_cae(nota_db.get("cae")):
+        reintegro = reintegro_de_nota.aplicar(plan, orig, nota_db, usuario_id)
+    else:
+        # Sin CAE el destino se anota (ADR-067): `/autorizar` mueve la plata cuando la nota se autorice.
+        reintegro = reintegro_de_nota.dejar_pendiente(plan, orig, nota_db)
+    return nota_db if reintegro is None else {**nota_db, "reintegro": reintegro}
+
+
 def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..., Any],
                                solo_admin: Callable[..., Any],
                                emisor_del_pdf: Callable[[dict], dict | None] | None = None,
@@ -836,63 +935,17 @@ def _registrar_nota_de_credito(router: APIRouter, *, usuario_actual: Callable[..
 
     @router.post("/{factura_id}/nota-credito", dependencies=[Depends(solo_admin)])
     def nota_credito(factura_id: int, payload: NotaCreditoIn | None = None, usuario: dict = Depends(usuario_actual)):
-        orig = db_facturas.get_factura(factura_id)
-        if not orig:
-            raise HTTPException(404, "Factura no encontrada")
-        _exigir_vigente(orig)
-        importe = payload.importe if payload else None
-        destino = payload.destino if payload else None
-        plan = None
         try:
-            if destino is not None or (payload and payload.medio_pago):
-                # 🔑 Con destino, la plata se decide ANTES de pedirle nada a ARCA: una nota autorizada no se deshace.
-                # Primero las guardas de la nota (409/422 propios), después las del destino.
-                notas_de_credito.validar_nota_de_credito(orig, db_facturas.get_nc_de_factura(
-                    orig["tipo"], orig["punto_venta"], orig["numero"],
-                    emisor_id=orig.get("emisor_id"), ambiente=orig.get("ambiente")), importe)
-                plan = reintegro_de_nota.planear(
-                    orig, importe if importe is not None else orig["total"], destino, payload.medio_pago,
-                    turno_de=((lambda: turno_de_quien_emite(usuario))
-                              if exigir_turno or usuario_del_turno is not None else None),
-                    exigir_turno=exigir_turno)
-            nota_id = asyncio.run(_emitir_nota_de_credito(orig, usuario["id"], importe, emisor_del_pdf))
+            return emitir_nota_de_credito_de_factura(
+                factura_id, usuario["id"],
+                importe=payload.importe if payload else None, motivo=(payload.motivo if payload else None) or "",
+                destino=payload.destino if payload else None, medio_pago=payload.medio_pago if payload else None,
+                emisor_del_pdf=emisor_del_pdf,
+                turno_de=((lambda: turno_de_quien_emite(usuario))
+                          if exigir_turno or usuario_del_turno is not None else None),
+                exigir_turno=exigir_turno)
         except notas_de_credito.NotaNoPermitida as e:
             raise HTTPException(_STATUS_DE_NOTA[e.codigo], str(e)) from None
-
-        # Si el original era a crédito, la deuda del cliente se cancela: quedó
-        # anulada, y dejarla en la cuenta corriente sería cobrarle algo que ya
-        # no debe.
-        if orig.get("condicion_venta") == "Cuenta Corriente":
-            cliente = db_clients.get_client_by_cuit(orig.get("cliente_cuit", ""))
-            if cliente:
-                nota_db = db_facturas.get_factura(nota_id)
-                db_cc.create_cc_pago(
-                    # El importe de ESTA nota (en la total es el de la factura; en una parcial, el acreditado).
-                    cliente_id=cliente["id"], monto=nota_db["total"],
-                    fecha=fechas.hoy().isoformat(),
-                    concepto=(
-                        f"NC {_numero(orig)} (anula "
-                        f"{TIPO_LABEL.get(orig['tipo'], 'comprobante')} "
-                        f"{_numero(orig)})"
-                    ),
-                    # La marca que dice que la nota ya abonó: `anular_venta` no acredita otra vez.
-                    referencia=notas_de_credito.referencia_cc_de_nota(factura_id, nota_id),
-                    medio_pago="Cuenta Corriente", caja_id=None,
-                    usuario_id=usuario["id"],
-                )
-            return db_facturas.get_factura(nota_id)
-
-        # Una factura al contado ya cobrada: la plata va adonde se eligió (ADR-065), y sólo con la nota autorizada.
-        # `solicitar_cae` no levanta si ARCA rechaza —deja el motivo en la nota—, así que se mira el CAE acá.
-        nota_db = db_facturas.get_factura(nota_id)
-        if plan is None:
-            reintegro = reintegro_de_nota.nada_que_mover(destino) if destino is not None else None
-        elif notas_de_credito._es_cae(nota_db.get("cae")):
-            reintegro = reintegro_de_nota.aplicar(plan, orig, nota_db, usuario["id"])
-        else:
-            # Sin CAE el destino se anota (ADR-067): `/autorizar` mueve la plata cuando la nota se autorice.
-            reintegro = reintegro_de_nota.dejar_pendiente(plan, orig, nota_db)
-        return nota_db if reintegro is None else {**nota_db, "reintegro": reintegro}
 
 
 def build_nota_de_credito_router(
