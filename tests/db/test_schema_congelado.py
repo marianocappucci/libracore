@@ -140,6 +140,9 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         # ella: la cifra base se comparó contra las diez instancias vivas, así
         # que también tiene que ser sensible.
         #
+        # 467 desde el 2026-10-28 (era 450), cuando entró `avisos_envios` (17 columnas): el registro de los avisos por mail y
+        # WhatsApp, con su clave única para no mandar dos veces (ADR-090).
+        #
         # 448 desde el 2026-10-26 (era 440), cuando entró `indices_ajuste` (8 columnas): los valores de los índices de
         # ajuste (ICL, IPC, CER, UVA, dólar), bajados de la fuente oficial o cargados a mano (ADR-085).
         #
@@ -213,7 +216,7 @@ def test_el_volcado_ve_una_columna_agregada(tmp_path):
         #
         # Es 450 desde el 2026-10-27, cuando entraron `cc_asientos.moneda` y `recibos.moneda`
         # (ADR-088): un contrato de alquiler en dólares no se suma con los de pesos.
-        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (450)"}
+        assert agregadas == {"clients|prueba_del_gate|TEXT||'x'", "## tablas (467)"}
     finally:
         conn.close()
         _liberar()

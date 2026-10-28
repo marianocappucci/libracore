@@ -90,6 +90,12 @@ DEFAULTS = {
     "email_smtp_password":    "",
     "email_from":             "",
     "email_from_name":        "",
+    # Avisos por WhatsApp (ADR-090, `libracore.avisos.configuracion`). La apikey de Evolution NO está acá ni en
+    # CLAVES_SECRETAS a propósito: va directo al almacén cifrado, para que ningún `GET /api/config` que devuelve `load()` entero
+    # pueda filtrarla.
+    "avisos_whatsapp_modo":      "apagado",   # apagado | registro | evolution
+    "avisos_evolution_url":       "",
+    "avisos_evolution_instancia": "",
     # Impresora de tickets (ticketeadora térmica)
     "ticket_ancho_mm":        "80",      # 58 | 80
     "ticket_fuente_size":     "9",       # puntos

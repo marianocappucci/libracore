@@ -8,6 +8,20 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — los avisos por mail y WhatsApp en el motor (propuesta: v1.202.0)
+
+ADR-090. **Minor, con migración `0032` (aditiva: una tabla nueva, vacía).** Ninguna instancia cambia de comportamiento por subir el pin: WhatsApp nace `apagado` y nada manda hasta que un producto lo use.
+- **`libracore.avisos`:** `Mensaje(destino, asunto, cuerpo, plantilla, variables)`, el contrato `Proveedor` y tres proveedores —`ProveedorSmtp` (el SMTP que la instancia ya tiene), `ProveedorEvolution` (WhatsApp por Evolution API, con timeout) y `ProveedorRegistro` (modo prueba)— más `ProveedorApagado`.
+- **El despachador** (`despachar`, `reintentar_fallidos`, `cerrado`, `cerradas`, `omitir`): clave única por aviso, reservada **antes** de salir a la red (dos procesos a la vez mandan una vez), intentos, reintento y la regla de que un `registrado` sólo cierra el tema para un proveedor simulado. El nodo de LibraEdge no manda.
+- **Tabla `avisos_envios`** y `libracore.db.avisos_envios`. `telefono_para_whatsapp` (ante la duda, vacío).
+- **`libracore.avisos.configuracion`** y **`build_avisos_router(require_admin=, smtp_config=)`**: `GET`/`PUT /api/avisos/config` (modo, URL, instancia y `apikey` **sólo de escritura**, guardada en el almacén cifrado), `POST /probar` y `GET /envios`.
+- **`libracore.avisos.agenda.NotificacionPorAvisos`:** el adaptador de `libragenda.NotificationPort`.
+- `email_sender.enviar_texto` (mail de texto con timeout); `config_manager.DEFAULTS` suma `avisos_whatsapp_modo`, `avisos_evolution_url` y `avisos_evolution_instancia`.
+
+### Para los productos
+- **Todos:** correr `libracore-migrar` (la `0032`) al subir el pin. Nada más.
+- **LibraClub, GestioLibra y MedLibra:** adoptan en un PR propio (ADR-090, «Cómo adopta»). Ningún otro producto necesita cambiar.
+
 ## [Unreleased] — la nota de crédito con motivo y sin HTTP (propuesta: v1.201.0)
 
 **Minor, sin migración.** ADR-089 (addendum del ADR-014 y el ADR-065).

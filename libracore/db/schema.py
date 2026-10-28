@@ -929,6 +929,39 @@ def init_core_schema(conn: Conexion):
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_indices_ajuste_fecha
             ON indices_ajuste(indice, fecha);
+
+        -- El registro de lo que la instancia le avisó a alguien por mail o por WhatsApp (ADR-090): una fila por
+        -- aviso, no por intento. `clave` la pone quien avisa y dice «de qué hecho es este aviso» (la reserva 41, su
+        -- recordatorio de 24 horas). `(canal, clave)` es UNIQUE: es lo que impide mandar dos veces lo mismo, aunque
+        -- dos procesos corran a la vez. `estado` es enviando (alguien lo está mandando), enviado, registrado (un
+        -- proveedor simulado lo anotó sin mandar nada), fallido (se reintenta hasta `intentos`), rechazado (el
+        -- destino no sirve y no se reintenta) u omitido (no correspondía mandarlo). `variables` es el JSON de la
+        -- plantilla. Sin FK a propósito: quien avisa puede ser cualquier tabla de cualquier producto. Ojo: este
+        -- script se parte por el punto y coma, así que ningún comentario puede llevar uno.
+        CREATE TABLE IF NOT EXISTS avisos_envios (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            canal       TEXT NOT NULL CHECK (canal <> ''),
+            clave       TEXT NOT NULL CHECK (clave <> ''),
+            tipo        TEXT NOT NULL DEFAULT '',
+            destino     TEXT NOT NULL DEFAULT '',
+            asunto      TEXT NOT NULL DEFAULT '',
+            cuerpo      TEXT NOT NULL DEFAULT '',
+            plantilla   TEXT NOT NULL DEFAULT '',
+            variables   TEXT NOT NULL DEFAULT '{}',
+            proveedor   TEXT NOT NULL DEFAULT '',
+            estado      TEXT NOT NULL
+                CHECK (estado IN ('enviando', 'enviado', 'registrado', 'fallido', 'rechazado', 'omitido')),
+            intentos    INTEGER NOT NULL DEFAULT 0,
+            detalle     TEXT NOT NULL DEFAULT '',
+            id_externo  TEXT NOT NULL DEFAULT '',
+            enviado_at  TEXT NOT NULL DEFAULT '',
+            created_at  TEXT DEFAULT (datetime('now','-3 hours')),
+            updated_at  TEXT DEFAULT (datetime('now','-3 hours'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_avisos_envios_clave
+            ON avisos_envios(canal, clave);
+        CREATE INDEX IF NOT EXISTS idx_avisos_envios_estado
+            ON avisos_envios(estado, id);
     """)
 
     if is_postgres():
