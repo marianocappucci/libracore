@@ -147,9 +147,10 @@ def test_los_de_una_sola_base_son_exactamente_los_medidos():
     las bases reales el 2026-09-16. Cambiarla es una decision, no un ajuste: por
     eso se fija entera y no con `in`."""
     todos = ["contalibra", "restolibra", "ventalibra", "libradesk",
-             "gestiolibra", "medlibra", "libracargo", "libraclub"]
+             "gestiolibra", "medlibra", "libracargo", "libraclub", "librainmo", "librafarma"]
     una_sola = {p for p in todos if comparte_base_con_el_dominio(p)}
     # 2026-10-22: LibraCargo y LibraClub, unidas (ADR-078). 2026-10-25: GestioLibra y MedLibra (ADR-083): los ocho.
+    # LibraInmo (ADR-087) y LibraFarma (2026-10-28) nacen así.
     assert una_sola == set(todos)
     # un prefijo desconocido NO comparte base: el default es fallar, no adivinar
     assert comparte_base_con_el_dominio("productonuevo") is False

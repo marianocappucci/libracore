@@ -90,6 +90,8 @@ _UNA_SOLA_BASE = frozenset({
     "contalibra", "restolibra", "ventalibra", "libradesk", "libracargo", "libraclub", "gestiolibra", "medlibra",
     # LibraInmo nace de una sola base (ADR-087): el schema del motor vive en la del dominio desde el primer día.
     "librainmo",
+    # LibraFarma también (2026-10-28, F0 de su plan): una sola base con libraauth, el motor, libracommerce y el dominio.
+    "librafarma",
 })
 
 

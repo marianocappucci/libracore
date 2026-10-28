@@ -8,6 +8,16 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — `librafarma` en `_UNA_SOLA_BASE` (propuesta: v1.203.0)
+
+**Minor, sin migración.** Ningún producto cambia de comportamiento por subir el pin.
+- **`librafarma` en `_UNA_SOLA_BASE`**: LibraFarma nace con el schema del motor en la base del dominio, como LibraInmo
+  (ADR-087), y `libracore-migrar --prefijo librafarma` cae ahí sin variable. Plan del producto en el wiki
+  (`librafarma-plan`).
+
+### Para los productos
+- **Todos:** nada.
+
 ## [Unreleased] — avisos: una demo no manda mails, espera entre reintentos y sin `enviando` eternos (propuesta: v1.202.1)
 
 ADR-090 (addendum). **Patch, sin migración** (`updated_at` ya guarda el momento del último intento). Lo encontró la adopción de GestioLibra.
