@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator
 from libracore import (
     adicionales_router,
     arca_router,
+    avisos_router,
     caja_router,
     clientes_router,
     cola_arca_router,
@@ -162,6 +163,7 @@ def _routers_del_motor(carpeta: pathlib.Path):
         tesoreria_router.build_tesoreria_router(usuario_actual=_usuario),
         ventas_cobro_router.build_cobro_de_ventas_router(ventas=MagicMock(spec=PuertoDeVentas), usuario_actual=_usuario),
         cola_arca_router.build_cola_del_nodo_router(cola=MagicMock(spec=ColaDeArca), usuario_actual=_usuario),
+        avisos_router.build_avisos_router(require_admin=_sin_gate),
         nodo_conexion_router.build_conexion_del_nodo_router(conexion=FUERA_DE_NODO, usuario_actual=_usuario),
         geografia.build_geo_router(),
         feriados.build_feriados_router(),

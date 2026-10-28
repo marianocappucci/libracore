@@ -1,6 +1,6 @@
 # motor: postgresql
 
-## tablas (449)
+## tablas (466)
 arca_config|activo|integer||1
 arca_config|alias|text||
 arca_config|ambiente|text||'homologacion'::text
@@ -31,6 +31,23 @@ auth_log|id|bigint|NN|nextval('auth_log_id_seq'::regclass)
 auth_log|ip|text||
 auth_log|ts|text|NN|to_char(LOCALTIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'::text)
 auth_log|username|text|NN|
+avisos_envios|asunto|text|NN|''::text
+avisos_envios|canal|text|NN|
+avisos_envios|clave|text|NN|
+avisos_envios|created_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+avisos_envios|cuerpo|text|NN|''::text
+avisos_envios|destino|text|NN|''::text
+avisos_envios|detalle|text|NN|''::text
+avisos_envios|enviado_at|text|NN|''::text
+avisos_envios|estado|text|NN|
+avisos_envios|id_externo|text|NN|''::text
+avisos_envios|id|bigint|NN|nextval('avisos_envios_id_seq'::regclass)
+avisos_envios|intentos|integer|NN|0
+avisos_envios|plantilla|text|NN|''::text
+avisos_envios|proveedor|text|NN|''::text
+avisos_envios|tipo|text|NN|''::text
+avisos_envios|updated_at|text||to_char(((CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text) + '-03:00:00'::interval), 'YYYY-MM-DD HH24:MI:SS'::text)
+avisos_envios|variables|text|NN|'{}'::text
 caja_movimientos|anulado|integer|NN|0
 caja_movimientos|caja_id|integer||
 caja_movimientos|cc_pago_id|integer||
@@ -451,10 +468,11 @@ ventas|total|numeric|NN|0
 ventas|turno_id|integer||
 ventas|usuario_id|integer||
 
-## claves primarias (38)
+## claves primarias (39)
 arca_config|PRIMARY KEY (id)
 arca_credenciales_servicio|PRIMARY KEY (id)
 auth_log|PRIMARY KEY (id)
+avisos_envios|PRIMARY KEY (id)
 caja_movimientos|PRIMARY KEY (id)
 cajas|PRIMARY KEY (id)
 categorias_egreso|PRIMARY KEY (id)
@@ -543,12 +561,15 @@ ventas|ventas_remito_id_fkey|FOREIGN KEY (remito_id) REFERENCES remitos(id) ON D
 ventas|ventas_turno_id_fkey|FOREIGN KEY (turno_id) REFERENCES turnos_caja(id) ON DELETE SET NULL
 ventas|ventas_usuario_id_fkey|FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE SET NULL
 
-## índices (78)
+## índices (81)
 arca_config|arca_config_empresa_key|CREATE UNIQUE INDEX arca_config_empresa_key ON public.arca_config USING btree (empresa)
 arca_config|arca_config_pkey|CREATE UNIQUE INDEX arca_config_pkey ON public.arca_config USING btree (id)
 arca_credenciales_servicio|arca_credenciales_servicio_empresa_servicio_ambiente_key|CREATE UNIQUE INDEX arca_credenciales_servicio_empresa_servicio_ambiente_key ON public.arca_credenciales_servicio USING btree (empresa, servicio, ambiente)
 arca_credenciales_servicio|arca_credenciales_servicio_pkey|CREATE UNIQUE INDEX arca_credenciales_servicio_pkey ON public.arca_credenciales_servicio USING btree (id)
 auth_log|auth_log_pkey|CREATE UNIQUE INDEX auth_log_pkey ON public.auth_log USING btree (id)
+avisos_envios|avisos_envios_pkey|CREATE UNIQUE INDEX avisos_envios_pkey ON public.avisos_envios USING btree (id)
+avisos_envios|idx_avisos_envios_clave|CREATE UNIQUE INDEX idx_avisos_envios_clave ON public.avisos_envios USING btree (canal, clave)
+avisos_envios|idx_avisos_envios_estado|CREATE INDEX idx_avisos_envios_estado ON public.avisos_envios USING btree (estado, id)
 caja_movimientos|caja_movimientos_pkey|CREATE UNIQUE INDEX caja_movimientos_pkey ON public.caja_movimientos USING btree (id)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON public.caja_movimientos USING btree (fecha)
 caja_movimientos|idx_caja_movimientos_origen|CREATE UNIQUE INDEX idx_caja_movimientos_origen ON public.caja_movimientos USING btree (origen, origen_id) WHERE (origen IS NOT NULL)
@@ -623,9 +644,12 @@ ventas|idx_ventas_fecha|CREATE INDEX idx_ventas_fecha ON public.ventas USING btr
 ventas|ventas_numero_key|CREATE UNIQUE INDEX ventas_numero_key ON public.ventas USING btree (numero)
 ventas|ventas_pkey|CREATE UNIQUE INDEX ventas_pkey ON public.ventas USING btree (id)
 
-## checks (13)
+## checks (16)
 arca_credenciales_servicio|arca_credenciales_servicio_ambiente_check|CHECK ((ambiente = ANY (ARRAY['homologacion'::text, 'produccion'::text])))
 arca_credenciales_servicio|arca_credenciales_servicio_servicio_check|CHECK ((servicio <> ''::text))
+avisos_envios|avisos_envios_canal_check|CHECK ((canal <> ''::text))
+avisos_envios|avisos_envios_clave_check|CHECK ((clave <> ''::text))
+avisos_envios|avisos_envios_estado_check|CHECK ((estado = ANY (ARRAY['enviando'::text, 'enviado'::text, 'registrado'::text, 'fallido'::text, 'rechazado'::text, 'omitido'::text])))
 cc_asientos|cc_asientos_check1|CHECK (((((debe)::double precision > (0)::double precision) AND ((haber)::double precision = (0)::double precision)) OR (((haber)::double precision > (0)::double precision) AND ((debe)::double precision = (0)::double precision)) OR (origen_legado IS NOT NULL)))
 cc_asientos|cc_asientos_check|CHECK ((((debe)::double precision >= (0)::double precision) AND ((haber)::double precision >= (0)::double precision)))
 cc_asientos|cc_asientos_rol_check|CHECK ((rol <> ''::text))

@@ -84,7 +84,38 @@ def enviar_documento(
         nombre = filename or os.path.basename(pdf_path)
     msg.add_attachment(contenido, maintype="application", subtype="pdf", filename=nombre)
 
-    with smtplib.SMTP(smtp_host, int(smtp_port)) as server:
+    _entregar(msg, smtp_host, smtp_port, smtp_user, smtp_password)
+
+
+def enviar_texto(
+    to_email: str,
+    asunto: str,
+    cuerpo: str,
+    smtp_host: str,
+    smtp_port: int,
+    smtp_user: str,
+    smtp_password: str,
+    from_email: str,
+    from_name: str = "",
+    to_name: str = "",
+    timeout: float = 30,
+):
+    """Manda un mail de texto plano, sin adjunto (ADR-090: el proveedor SMTP de `libracore.avisos`).
+
+    Es la misma sesión que `enviar_documento` (STARTTLS y login), con dos diferencias: no hay adjunto y **tiene
+    `timeout`**. Un aviso sale desde un barrido, y un servidor que no contesta no puede dejarlo colgado.
+    """
+    msg = EmailMessage()
+    msg["Subject"] = asunto
+    msg["From"] = f"{from_name} <{from_email}>" if from_name else from_email
+    msg["To"] = f"{to_name} <{to_email}>" if to_name else to_email
+    msg.set_content(cuerpo)
+    _entregar(msg, smtp_host, smtp_port, smtp_user, smtp_password, timeout=timeout)
+
+
+def _entregar(msg: EmailMessage, smtp_host, smtp_port, smtp_user, smtp_password, **opciones):
+    """La sesión SMTP con STARTTLS y login. `opciones` se pasa a `smtplib.SMTP` (`timeout`)."""
+    with smtplib.SMTP(smtp_host, int(smtp_port), **opciones) as server:
         server.ehlo()
         server.starttls()
         server.login(smtp_user, smtp_password)

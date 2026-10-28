@@ -1,6 +1,6 @@
 # motor: sqlite
 
-## tablas (449)
+## tablas (466)
 arca_config|activo|INTEGER||1
 arca_config|alias|TEXT||
 arca_config|ambiente|TEXT||'homologacion'
@@ -31,6 +31,23 @@ auth_log|id|INTEGER||
 auth_log|ip|TEXT||
 auth_log|ts|TEXT|NN|datetime('now','localtime')
 auth_log|username|TEXT|NN|
+avisos_envios|asunto|TEXT|NN|''
+avisos_envios|canal|TEXT|NN|
+avisos_envios|clave|TEXT|NN|
+avisos_envios|created_at|TEXT||datetime('now','-3 hours')
+avisos_envios|cuerpo|TEXT|NN|''
+avisos_envios|destino|TEXT|NN|''
+avisos_envios|detalle|TEXT|NN|''
+avisos_envios|enviado_at|TEXT|NN|''
+avisos_envios|estado|TEXT|NN|
+avisos_envios|id_externo|TEXT|NN|''
+avisos_envios|id|INTEGER||
+avisos_envios|intentos|INTEGER|NN|0
+avisos_envios|plantilla|TEXT|NN|''
+avisos_envios|proveedor|TEXT|NN|''
+avisos_envios|tipo|TEXT|NN|''
+avisos_envios|updated_at|TEXT||datetime('now','-3 hours')
+avisos_envios|variables|TEXT|NN|'{}'
 caja_movimientos|anulado|INTEGER|NN|0
 caja_movimientos|caja_id|INTEGER||
 caja_movimientos|cc_pago_id|INTEGER||
@@ -451,10 +468,11 @@ ventas|total|REAL|NN|0
 ventas|turno_id|INTEGER||
 ventas|usuario_id|INTEGER||
 
-## claves primarias (38)
+## claves primarias (39)
 arca_config|id
 arca_credenciales_servicio|id
 auth_log|id
+avisos_envios|id
 caja_movimientos|id
 cajas|id
 categorias_egreso|id
@@ -543,9 +561,11 @@ ventas|remito_id|remitos|id|SET NULL|NO ACTION
 ventas|turno_id|turnos_caja|id|SET NULL|NO ACTION
 ventas|usuario_id|usuarios|id|SET NULL|NO ACTION
 
-## índices (41)
+## índices (43)
 arca_config|sqlite_autoindex_arca_config_1|UNIQUE implícito (empresa)
 arca_credenciales_servicio|sqlite_autoindex_arca_credenciales_servicio_1|UNIQUE implícito (empresa,servicio,ambiente)
+avisos_envios|idx_avisos_envios_clave|CREATE UNIQUE INDEX idx_avisos_envios_clave ON avisos_envios(canal, clave)
+avisos_envios|idx_avisos_envios_estado|CREATE INDEX idx_avisos_envios_estado ON avisos_envios(estado, id)
 caja_movimientos|idx_caja_movimientos_fecha|CREATE INDEX idx_caja_movimientos_fecha ON caja_movimientos(fecha)
 caja_movimientos|idx_caja_movimientos_origen|CREATE UNIQUE INDEX idx_caja_movimientos_origen ON caja_movimientos(origen, origen_id) WHERE origen IS NOT NULL
 categorias_egreso|sqlite_autoindex_categorias_egreso_1|UNIQUE implícito (nombre)
