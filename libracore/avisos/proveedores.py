@@ -29,6 +29,7 @@ from urllib.parse import quote
 
 import httpx
 
+from libracore import config_manager
 from libracore.avisos.mensaje import CANAL_EMAIL, CANAL_WHATSAPP, Mensaje, Resultado
 from libracore.avisos.telefono import es_telefono_normalizado
 
@@ -179,11 +180,19 @@ class ProveedorSmtp:
     Reusa `facturas_router.smtp_efectivo`: la misma resolución que el envío de comprobantes, el de presupuestos, la recuperación de
     contraseña y el botón «Probar conexión» (`smtp_router`). Un segundo lugar donde cargar un servidor de correo sería uno más donde
     el dueño puede cargarlo mal. `smtp_config` es el resolver del producto (`lambda: resolver_smtp_config(fabrica)`): se llama **en
-    cada envío**, porque la pantalla de Configuración lo edita mientras el proceso corre. Sin resolver, sale `config.json`."""
+    cada envío**, porque la pantalla de Configuración lo edita mientras el proceso corre. Sin resolver, sale `config.json`.
+
+    🔴 **Una demo (`DEMO_MODE=1`) nunca manda.** Con el SMTP cargado, `enviar` no toca la red: devuelve `registrado`, igual que
+    WhatsApp en una demo (`configuracion.proveedor_whatsapp`), y `simulado` pasa a ser `True` para que ese `registrado` cierre el
+    tema. Una demo con SMTP real mandaría los recordatorios a los mails ficticios de su semilla. La guarda está **acá y no en la
+    fábrica** para que valga también para quien arma `ProveedorSmtp(...)` a mano."""
 
     canal = CANAL_EMAIL
     nombre = "smtp"
-    simulado = False
+
+    @property
+    def simulado(self) -> bool:
+        return config_manager.es_demo()
 
     def __init__(self, smtp_config: Callable | None = None, *, timeout: float = TIMEOUT_SMTP,
                  enviar_texto: Callable | None = None) -> None:
@@ -200,6 +209,8 @@ class ProveedorSmtp:
         from libracore import email_sender
         from libracore.facturas_router import smtp_efectivo
 
+        if config_manager.es_demo():
+            return Resultado.registrado("Registrado en una demo: no se mandó nada.")
         destino = (mensaje.destino or "").strip()
         if not _parece_un_mail(destino):
             return Resultado.rechazado("La dirección de mail no es válida.")

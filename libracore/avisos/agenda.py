@@ -16,7 +16,7 @@ sí es común:
   tenga `appointment_id`, `policy_id` y `client_id`.
 - **No levanta por un fallo de envío.** `ReminderDispatcher.dispatch` marca el recordatorio como enviado apenas `send` vuelve, y una
   excepción cortaría el resto de la tanda. El fallo queda `fallido` en el registro de avisos y lo reintenta `reintentar_fallidos`
-  (la misma tanda del cron, después de `dispatch`).
+  (5 minutos después del último intento: da igual si va antes o después de `dispatch` en el cron).
 - La clave es `agenda:{appointment_id}:{policy_id}`: aunque `dispatch` repita una notificación, **no sale dos veces**.
 - Un canal sin destino (el paciente no dejó teléfono) queda `omitido` con su motivo; un canal apagado o sin configurar no escribe nada.
   Si **ninguno** está disponible, `libragenda` igual da el recordatorio por visto (igual que con el `LoggingNotificationPort`): prender un

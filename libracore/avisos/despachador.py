@@ -6,7 +6,8 @@
    dos procesos que pasan a la vez por la misma clave, uno manda y el otro ve que ya está. La clave la pone quien avisa y dice
    *de qué hecho* es el aviso (`reserva:41:recordatorio:24`); mandar la misma clave dos veces, aunque con otro texto, no manda dos.
 2. **Un fallo se reintenta, con tope.** Un aviso `fallido` vuelve a intentarse cuando quien avisa lo pide otra vez (el barrido
-   siguiente) o con `reintentar_fallidos`, hasta `MAX_INTENTOS`. Un `rechazado` (el destino no sirve) no se reintenta.
+   siguiente) o con `reintentar_fallidos` (que espera `ESPERA_ENTRE_INTENTOS` desde el último intento), hasta `MAX_INTENTOS`.
+   Un `rechazado` (el destino no sirve) no se reintenta.
 3. **`registrado` sólo cierra el tema para un proveedor simulado.** Un aviso que un proveedor de prueba anotó sin mandar nada
    **se manda** cuando llega un proveedor real con esa misma clave. Es lo que permite prender WhatsApp en modo registro, mirar qué
    saldría, y recién después conectar Evolution sin perder ni duplicar nada.
@@ -49,6 +50,11 @@ MAX_INTENTOS = 3
 #: Pasado este tiempo, un aviso que sigue `enviando` se da por abandonado (el proceso murió) y se puede tomar de nuevo.
 #: Tiene que ser bastante más que el peor envío (`TIMEOUT_SMTP`, 30 segundos): si no, un envío lento se pisaría con su reintento.
 VENCE_EL_ENVIO = timedelta(minutes=10)
+
+#: Cuánto espera `reintentar_fallidos` desde el último intento de un `fallido` antes de volver a probarlo. Sin esto, un cron que
+#: despacha y después reintenta gastaba los intentos del mismo aviso en el mismo segundo: Evolution caído una vez se llevaba dos de
+#: tres. Con la espera, el orden dentro del cron no importa.
+ESPERA_ENTRE_INTENTOS = timedelta(minutes=5)
 
 #: Hasta cuándo `reintentar_fallidos` insiste con un aviso. Un recordatorio de hace tres días ya no le sirve a nadie.
 REINTENTO_HASTA = timedelta(hours=24)
@@ -212,8 +218,12 @@ def _reservar(proveedor: Proveedor, clave: str, campos: dict, max_intentos: int,
     vencido_antes_de = None
     if fila["estado"] == ESTADO_ENVIANDO:
         vencido_antes_de = _texto(ahora - VENCE_EL_ENVIO)
-        if fila["updated_at"] >= vencido_antes_de or fila["intentos"] >= max_intentos:
-            return None, 0  # lo está mandando otro ahora, o se agotó
+        if fila["updated_at"] >= vencido_antes_de:
+            return None, 0  # lo está mandando otro ahora
+        if fila["intentos"] >= max_intentos:
+            # Abandonado y sin intentos: queda `fallido` terminal, no `enviando` para siempre.
+            db.cerrar_abandonados_sin_intentos(canal, max_intentos=max_intentos, vencido_antes_de=vencido_antes_de, clave=clave)
+            return None, 0
     reiniciar = fila["estado"] == ESTADO_REGISTRADO
     if not db.tomar(fila, vencido_antes_de=vencido_antes_de, reiniciar=reiniciar, **campos):
         return None, 0
@@ -264,19 +274,29 @@ def cerradas(proveedor: Proveedor, claves, *, max_intentos: int = MAX_INTENTOS) 
 
 
 def reintentar_fallidos(proveedor: Proveedor, *, max_intentos: int = MAX_INTENTOS, limite: int = 100,
-                        antiguedad: timedelta = REINTENTO_HASTA, nodo: Callable[[], str | None] | None = None,
-                        ahora: datetime | None = None) -> Resumen:
+                        antiguedad: timedelta = REINTENTO_HASTA, espera: timedelta = ESPERA_ENTRE_INTENTOS,
+                        nodo: Callable[[], str | None] | None = None, ahora: datetime | None = None) -> Resumen:
     """Vuelve a mandar, con el mensaje que quedó guardado, los avisos `fallido` de ese canal que todavía tienen intentos, y los
     `enviando` que se abandonaron. Es para quien no tiene un barrido propio que repita la consulta.
 
     **No reenvía los `registrado`**: lo que se anotó en modo prueba pudo ser hace días y ya no tiene sentido; si importa, quien
-    avisa lo deduce de nuevo y llama a `despachar`. Tampoco pasa de `antiguedad` (24 horas): un recordatorio viejo no se manda."""
+    avisa lo deduce de nuevo y llama a `despachar`. Tampoco pasa de `antiguedad` (24 horas): un recordatorio viejo no se manda.
+
+    **Espera entre intentos:** un `fallido` se vuelve a probar recién `espera` (5 minutos) después de su último intento. Por eso da
+    igual si el cron llama a `despachar` antes o después: un fallo de Evolution no gasta dos intentos en el mismo segundo. (La
+    espera es sólo de este reintento: `despachar` con la misma clave sigue probando cuando quien avisa lo pide.)
+
+    Además cierra como `fallido` (terminal) los `enviando` abandonados a los que ya no les quedan intentos."""
     resumen = Resumen()
     if _en_un_nodo(nodo) or not proveedor.disponible():
         return resumen
     ahora = ahora or fechas.ahora()
+    vencido_antes_de = _texto(ahora - VENCE_EL_ENVIO)
+    cerrados = db.cerrar_abandonados_sin_intentos(proveedor.canal, max_intentos=max_intentos, vencido_antes_de=vencido_antes_de)
+    if cerrados:
+        logger.warning("Avisos %s: %s envío(s) abandonado(s) sin intentos quedaron fallidos.", proveedor.canal, cerrados)
     filas = db.a_reintentar(proveedor.canal, max_intentos=max_intentos, actualizado_desde=_texto(ahora - antiguedad),
-                            vencido_antes_de=_texto(ahora - VENCE_EL_ENVIO), limite=limite)
+                            vencido_antes_de=vencido_antes_de, fallido_antes_de=_texto(ahora - espera), limite=limite)
     for fila in filas:
         mensaje = Mensaje(fila["destino"], fila["asunto"], fila["cuerpo"], fila["plantilla"], fila["variables"])
         resumen = resumen.sumar(despachar(proveedor, mensaje, clave=fila["clave"], tipo=fila["tipo"],
@@ -284,5 +304,5 @@ def reintentar_fallidos(proveedor: Proveedor, *, max_intentos: int = MAX_INTENTO
     return resumen
 
 
-__all__ = ["EN_NODO", "MAX_INTENTOS", "NO_DISPONIBLE", "Envio", "Resumen", "cerrado", "cerradas", "despachar", "omitir",
-           "reintentar_fallidos"]
+__all__ = ["EN_NODO", "ESPERA_ENTRE_INTENTOS", "MAX_INTENTOS", "NO_DISPONIBLE", "Envio", "Resumen", "cerrado", "cerradas",
+           "despachar", "omitir", "reintentar_fallidos"]

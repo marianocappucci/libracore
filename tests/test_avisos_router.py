@@ -98,12 +98,13 @@ def _gate(x_rol: str = Header(default="")):
         raise HTTPException(403, "solo administradores")
 
 
-def _app(evolution=None, *, smtp_config=None, nodo=None):
+def _app(evolution=None, *, smtp_config=None, nodo=None, enviar_texto=None):
     from libracore.avisos_router import build_avisos_router
 
     transporte = httpx.MockTransport(evolution) if evolution else None
     app = FastAPI()
-    app.include_router(build_avisos_router(require_admin=_gate, smtp_config=smtp_config, transporte=transporte, nodo=nodo))
+    app.include_router(build_avisos_router(require_admin=_gate, smtp_config=smtp_config, transporte=transporte,
+                                           enviar_texto=enviar_texto, nodo=nodo))
     return TestClient(app)
 
 
@@ -454,6 +455,43 @@ def test_probar_el_mail_sin_servidor_es_409_y_con_un_error_de_smtp_es_502(cm, al
         smtp.return_value.__enter__.return_value.login.side_effect = smtplib.SMTPAuthenticationError(535, b"mala")
         r = _app(smtp_config=lambda: cfg).post("/api/avisos/probar", headers=ADMIN, json={"canal": "email", "destino": "a@b.example"})
     assert r.status_code == 502 and "contraseña" in r.json()["detail"]["mensaje"]
+
+
+def test_probar_el_mail_se_prueba_sin_red_inyectando_enviar_texto(cm, almacen, base):
+    """Lo que un producto necesita en sus tests: `transporte` para Evolution y `enviar_texto` para el mail, sin parchear `smtplib`."""
+    cfg = MagicMock(configurado=True, host="smtp.ejemplo.example", port=587, user="avisos@ejemplo.example", password="clave-ficticia",
+                    from_email="avisos@ejemplo.example", from_name="Club")
+    llamadas = []
+    cliente = _app(smtp_config=lambda: cfg, enviar_texto=lambda **kw: llamadas.append(kw))
+    with patch("libracore.email_sender.smtplib.SMTP") as smtp:
+        r = cliente.post("/api/avisos/probar", headers=ADMIN, json={"canal": "email", "destino": "dueno@ejemplo.example"})
+    assert r.status_code == 200 and r.json()["estado"] == "enviado"
+    smtp.assert_not_called()
+    (kw,) = llamadas
+    assert kw["to_email"] == "dueno@ejemplo.example" and "Mensaje de prueba" in kw["asunto"]
+
+
+def test_proveedores_deja_inyectar_el_transporte_y_el_envio_de_mail(cm, almacen, conf):
+    conf.guardar(modo="evolution", url=URL, instancia="club-demo", apikey=APIKEY)
+    handler = _contesta(201)
+    llamadas = []
+    cfg = MagicMock(configurado=True, host="h", port=587, user="u", password="p", from_email="u@b.example", from_name="")
+    ps = conf.proveedores(lambda: cfg, transporte=httpx.MockTransport(handler), enviar_texto=lambda **kw: llamadas.append(kw))
+    assert ps["whatsapp"].enviar(Mensaje("5491155551234", cuerpo="hola")).estado == "enviado" and len(handler.pedidos) == 1
+    assert ps["email"].enviar(Mensaje("a@b.example", "s", "c")).estado == "enviado" and len(llamadas) == 1
+
+
+def test_probar_el_mail_en_una_demo_no_manda_nada(cm, almacen, base, monkeypatch):
+    monkeypatch.setenv("DEMO_MODE", "1")
+    cfg = MagicMock(configurado=True, host="smtp.ejemplo.example", port=587, user="avisos@ejemplo.example", password="clave-ficticia",
+                    from_email="avisos@ejemplo.example", from_name="Club")
+    llamadas = []
+    cliente = _app(smtp_config=lambda: cfg, enviar_texto=lambda **kw: llamadas.append(kw))
+    with patch("libracore.email_sender.smtplib.SMTP") as smtp:
+        r = cliente.post("/api/avisos/probar", headers=ADMIN, json={"canal": "email", "destino": "dueno@ejemplo.example"})
+    assert r.status_code == 200 and r.json()["estado"] == "registrado" and r.json()["simulado"] is True
+    assert llamadas == []
+    smtp.assert_not_called()
 
 
 # ── Nodo ──────────────────────────────────────────────────────────────────────────────────────────────────

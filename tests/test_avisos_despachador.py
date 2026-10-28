@@ -98,6 +98,11 @@ def _fila(canal="whatsapp", clave=CLAVE):
     return db.obtener(canal, clave)
 
 
+def _tras_la_espera():
+    """Un `ahora` pasada la espera entre intentos de `reintentar_fallidos`."""
+    return fechas.ahora() + modulo.ESPERA_ENTRE_INTENTOS + timedelta(seconds=30)
+
+
 # ── Una sola vez ──────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -311,6 +316,30 @@ def test_un_envio_abandonado_con_los_intentos_agotados_no_se_rescata(base):
     assert p.enviados == []
 
 
+def test_un_envio_abandonado_sin_intentos_queda_fallido_y_no_enviando_para_siempre(base):
+    _dejar_enviando(intentos=MAX_INTENTOS)
+    p = Falso()
+    e = despachar(p, MSG, clave=CLAVE, ahora=fechas.ahora() + timedelta(hours=1))
+    assert p.enviados == [] and e.estado == "fallido" and e.repetido
+    assert _fila()["estado"] == "fallido" and "no quedan intentos" in _fila()["detalle"]
+    assert cerrado(p, CLAVE), "terminal: el barrido que deduce candidatos lo descarta"
+
+
+def test_un_envio_sin_intentos_pero_todavia_en_curso_no_se_cierra(base):
+    _dejar_enviando(intentos=MAX_INTENTOS)
+    despachar(Falso(), MSG, clave=CLAVE)
+    reintentar_fallidos(Falso())
+    assert _fila()["estado"] == "enviando", "recién empezado: el proceso puede estar mandándolo"
+
+
+def test_reintentar_fallidos_cierra_los_abandonados_sin_intentos(base):
+    _dejar_enviando(intentos=MAX_INTENTOS)
+    p = Falso()
+    assert reintentar_fallidos(p, ahora=fechas.ahora() + modulo.VENCE_EL_ENVIO + timedelta(minutes=1)) == Resumen()
+    assert p.enviados == [] and _fila()["estado"] == "fallido"
+    assert reintentar_fallidos(p, ahora=fechas.ahora() + timedelta(hours=1)) == Resumen(), "y ahí queda"
+
+
 def test_tomar_es_una_compare_and_swap(base):
     """Dos que leyeron el mismo `fallido` y quieren reintentarlo: gana uno."""
     despachar(Falso(Resultado.fallido("x")), MSG, clave=CLAVE)
@@ -355,7 +384,7 @@ def test_reintentar_fallidos_manda_lo_que_quedo_guardado(base):
               clave=CLAVE, tipo="recordatorio")
     p = Falso(Resultado.enviado("ok"))
 
-    resumen = reintentar_fallidos(p)
+    resumen = reintentar_fallidos(p, ahora=_tras_la_espera())
 
     assert resumen.enviados == 1 and not resumen.fallidos
     (m,) = p.enviados
@@ -374,8 +403,33 @@ def test_reintentar_fallidos_respeta_el_tope_la_antiguedad_y_el_canal(base):
     p = Falso()
     futuro = fechas.ahora() + timedelta(hours=25)
     assert reintentar_fallidos(p, ahora=futuro) == Resumen(), "pasadas 24 horas un recordatorio ya no sirve"
-    assert reintentar_fallidos(p).enviados == 1, "el de whatsapp; el agotado y el de mail no"
+    assert reintentar_fallidos(p, ahora=_tras_la_espera()).enviados == 1, "el de whatsapp; el agotado y el de mail no"
     assert [m.cuerpo for m in p.enviados] == [MSG.cuerpo]
+
+
+def test_reintentar_fallidos_espera_entre_intentos(base):
+    despachar(Falso(Resultado.fallido("Evolution caído")), MSG, clave=CLAVE)
+    p = Falso(Resultado.enviado("ok"))
+
+    assert reintentar_fallidos(p) == Resumen(), "recién falló: no se reintenta en el mismo segundo"
+    assert reintentar_fallidos(p, ahora=fechas.ahora() + timedelta(minutes=4)) == Resumen()
+    assert p.enviados == [] and _fila()["intentos"] == 1
+
+    assert reintentar_fallidos(p, ahora=_tras_la_espera()).enviados == 1
+    assert _fila()["estado"] == "enviado" and _fila()["intentos"] == 2
+
+
+def test_despachar_y_reintentar_en_el_mismo_cron_no_gastan_dos_intentos(base):
+    """El caso del cron: un fallo de Evolution en `despachar`, y `reintentar_fallidos` justo después."""
+    despachar(Falso(Resultado.fallido("Evolution caído")), MSG, clave=CLAVE)
+    p = Falso(Resultado.fallido("Evolution caído"))
+    reintentar_fallidos(p)
+    assert p.enviados == [] and _fila()["intentos"] == 1, "queda el intento del barrido siguiente, no se gastó"
+
+
+def test_la_espera_entre_intentos_se_puede_cambiar(base):
+    despachar(Falso(Resultado.fallido("x")), MSG, clave=CLAVE)
+    assert reintentar_fallidos(Falso(), espera=timedelta(0), ahora=fechas.ahora() + timedelta(seconds=1)).enviados == 1
 
 
 def test_reintentar_fallidos_no_reenvia_lo_registrado_en_modo_prueba(base):
@@ -395,6 +449,25 @@ def test_reintentar_fallidos_en_un_nodo_o_sin_proveedor_no_hace_nada(base):
     despachar(Falso(Resultado.fallido("x")), MSG, clave=CLAVE)
     assert reintentar_fallidos(Falso(), nodo=lambda: "n1") == Resumen()
     assert reintentar_fallidos(Falso(disponible=False)) == Resumen()
+
+
+# ── Una demo no manda mails ───────────────────────────────────────────────────────────────────────────────
+
+
+def test_en_una_demo_el_smtp_registra_y_cierra_el_tema(base, monkeypatch):
+    from libracore.avisos import ProveedorSmtp
+
+    monkeypatch.setenv("DEMO_MODE", "1")
+    salidas = []
+    cfg = type("C", (), {"configurado": True, "host": "h", "port": 587, "user": "u", "password": "p",
+                         "from_email": "u@b.example", "from_name": ""})()
+    p = ProveedorSmtp(lambda: cfg, enviar_texto=lambda **kw: salidas.append(kw))
+    mail = Mensaje("jugador@ejemplo.example", "Recordatorio", "Mañana 19:00")
+
+    e = despachar(p, mail, clave=CLAVE, tipo="recordatorio")
+    assert e.estado == "registrado" and salidas == []
+    assert despachar(p, mail, clave=CLAVE).repetido, "registrado por un simulado cierra el tema: no se acumula ni se reintenta"
+    assert salidas == []
 
 
 # ── El resumen y el listado ───────────────────────────────────────────────────────────────────────────────
