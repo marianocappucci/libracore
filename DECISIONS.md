@@ -2295,3 +2295,37 @@ su log.
 **Tests** (en rojo sin el cambio, con `smtplib.SMTP` reemplazado por algo que anota la llamada y falla, fixture `smtp_que_no_debe_salir`): las cuatro funciones de `email_sender`, el envío de factura (con y sin SMTP, sin rastro), la red de seguridad de `enviar_comprobante_por_mail`, presupuesto (el envío del producto ni se llama), pre factura, reenvío de la bandeja, el mail automático de MercadoPago y *Probar conexión*; más un control de que fuera de una demo la sesión sí se abre.
 
 **Qué cambia en los productos.** Nada que hacer: suben el pin. Si un producto tiene su propio `smtplib` o su propio `enviar_comprobante` inyectado, puede llamar `email_sender.exigir_envio_real()` (o `facturas_router.sin_mails_en_demo()` en una ruta). Una pantalla que muestre el 403 como error de la ruta ya funciona; si quiere ocultar el botón en una demo, `GET /api/avisos/config` no cambia (`email.disponible` sigue diciendo si hay SMTP).
+
+
+## ADR-092 — La marca de la instancia: nombre, logo y color en runtime (`libracore.marca_router`)
+
+**Estado:** propuesta (2026-10-29), pedida por el humano para vender los productos a marca blanca. Sin migración. Primer PR de un plan de catorce; el diseño completo y sus decisiones están en el wiki (`marca-blanca-piloto-diseno`).
+
+**Contexto.** Hoy el nombre, el logo y los íconos de cada producto están **compilados** en su frontend: `<title>`, `manifest.webmanifest`, `frontend/src/assets/logo-<producto>.png`. Un revendedor que vende una instancia con su nombre de fantasia no tiene dónde cargarlos. Lo que sí existe es el tema de colores en runtime (ADR-012, `tema_router`): cada instancia guarda el suyo y la SPA lo lee de ella, no del backoffice. La marca copia ese patrón.
+
+**Decisión.** `libracore.marca_router` con dos constructores, igual que el tema:
+
+| Ruta | Gate | |
+|---|---|---|
+| `GET /api/marca` | público | `{propia, nombre, nombre_corto, color, logo}` |
+| `GET /api/marca/logo`, `GET /api/marca/icono/{192,512,maskable,apple}.png` | público | el logo y los íconos generados |
+| `GET /manifest.webmanifest` | público | el de la marca; sin marca, el del build del producto (`dist=`) |
+| `PUT /api/marca`, `POST`/`DELETE /api/marca/logo`, `DELETE /api/marca` | admin del producto **o token de servicio** | |
+
+La marca vive en la clave `marca` del `config.json` de la instancia; el logo, normalizado a PNG, en `config_manager.MARCA_DIR` (`$DATA_DIR/marca/`).
+
+**Por qué así.**
+- **Directorio propio para el logo.** `config_router.subir_logo` borra todo lo que empiece con `logo` en `LOGO_DIR` (el del membrete de los PDF). Compartir directorio habría hecho que subir una marca pisara el logo de las facturas. Un test fija que no se tocan.
+- **Se re-codifica a PNG y no se acepta SVG.** Quita metadatos, corta las bombas de descompresión (límite de lado, de peso y de píxeles) y deja un único formato. Un SVG puede llevar scripts y se serviría desde el mismo origen que la app.
+- **Los íconos se hacen con Pillow solo.** `herramientas/iconos_marca.py` del wiki usa `numpy` y existe para limpiar imágenes generadas con IA (sombras, recuadros torcidos). Acá el logo lo sube una persona y alcanza con encajarlo sin deformar; `numpy` no se agrega como dependencia del motor. Se conserva la zona segura del maskable (0,74) y el apple sin canal alfa.
+- **El manifest tiene que ganarle al catch-all de la SPA** (`libracore.spa`, que contesta `index.html` con 200 a cualquier cosa). Por eso el producto monta este router **antes** del catch-all y le pasa `dist`; un test lo reproduce con un catch-all real montado después. La marca sólo pisa `name`, `short_name`, `theme_color` e `icons`: el resto (`start_url`, `display`...) sigue siendo del producto.
+- **Los íconos viven bajo `/api/marca/`**, no en `/icons/*`, para no interceptar los del build ni caer en el catch-all. El favicon y el `apple-touch-icon` los cambia la SPA (`libra-ui`, PR 2).
+- **Versión en la URL.** Cada ícono se pide con `?v=<hash del logo>-<color>`: con la versión vigente se cachea para siempre; sin ella, `no-cache`.
+- **`propia`** le dice al backoffice qué instancias saltear cuando empuja el tema de la suite (PR 4): una marca propia no se pisa.
+- **Texto validado.** Nombre ≤ 40, nombre corto ≤ 12 (los lanzadores lo cortan), sin ninguna categoría Unicode `C*`: control, ceros de ancho e inversores bidireccionales no se ven y sirven para engañar.
+
+**Qué no hace.** No cambia ninguna pantalla (eso es `libra-ui`), no sabe de términos y condiciones (`libraauth`, PR 3) y no resuelve el dominio ni el correo del revendedor (ya existen por instancia). Una instancia sin marca no cambia en nada.
+
+**Qué cambia en los productos.** Nada hasta el PR de cableado de cada uno: montar `build_marca_router(dist=<build del frontend>)` **antes** del catch-all y `build_marca_admin_router()` con la misma guarda que el tema (`requiere_o_servicio("config")` en VentaLibra; la de admin a secas no acepta el token del backoffice).
+
+**Tests** (`tests/test_marca_router.py`, 42): lectura pública y escritura con gate; normalización y rechazo de texto y color; logo (PNG/JPG, tope de peso, de lado, SVG y basura); íconos (tamaños, transparencia, fondo opaco, zona segura, caché por versión); manifest (del build sin marca, de la marca con ella, sin `dist`, contra un catch-all montado después); `config.json` con basura; y que la marca no toca el logo del membrete. Se verificó que cuatro roturas deliberadas (maskable a sangre, aceptar caracteres de formato, compartir directorio con el membrete, mover la ruta del manifest) los ponen en rojo.
