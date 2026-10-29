@@ -44,7 +44,7 @@ CONFIG_PATH = os.path.join(_DATA_DIR, "config.json")
 LOGO_DIR    = os.path.join(_DATA_DIR, "logos")
 # El logo de la MARCA de la instancia (ADR-092), aparte de `LOGO_DIR`: ese es el del membrete de los PDF y `subir_logo` borra ahí adentro todo lo que empiece con `logo`.
 MARCA_DIR   = os.path.join(_DATA_DIR, "marca")
-CERTS_DIR  = os.path.join(_DATA_DIR, "arca_certs")
+CERTS_DIR   = os.path.join(_DATA_DIR, "arca_certs")
 
 _LOGO_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
