@@ -8,6 +8,16 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — la marca de la instancia, para vender a marca blanca (propuesta: v1.205.0)
+
+ADR-092. **Minor, sin migración, sin cambio de comportamiento:** nada se activa hasta que un producto monte el router.
+- **Nuevo, `libracore.marca_router`:** `build_marca_router(dist=, prefix=, ruta_manifiesto=)` (lectura pública: `GET /api/marca`, `/api/marca/logo`, `/api/marca/icono/{192,512,maskable,apple}.png` y `/manifest.webmanifest`) y `build_marca_admin_router()` (`PUT /api/marca`, `POST`/`DELETE /api/marca/logo`, `DELETE /api/marca`). La marca (`nombre`, `nombre_corto`, `color` y el logo) vive en la clave `marca` del `config.json`; el logo, normalizado a PNG, en `config_manager.MARCA_DIR`.
+- **Nuevo, `config_manager.MARCA_DIR`** (`$DATA_DIR/marca`), aparte de `LOGO_DIR` (el logo del membrete de los PDF).
+- Sin SVG; logo de hasta 1 MB y 4096 px, mínimo 192 px; íconos generados con Pillow (sin dependencias nuevas).
+
+### Para los productos
+- **Nada que hacer por subir el pin.** Para adoptarlo: montar `build_marca_router(dist=<build del frontend>)` **antes** del catch-all de la SPA y `build_marca_admin_router()` con la misma guarda que el tema (`requiere_o_servicio("config")` en VentaLibra: la de admin a secas no acepta el token del backoffice). La SPA lo consume con `libra-ui` (`cargarMarca()`, PR 2 del plan).
+
 ## [Unreleased] — un aviso, un canal; y una demo no manda mails por ningún camino (propuesta: v1.204.0)
 
 ADR-090 (addendum) y ADR-091. **Minor, sin migración, con cambio de comportamiento por defecto.** Decisión del humano (2026-10-28).
