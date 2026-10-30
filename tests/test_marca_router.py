@@ -76,7 +76,7 @@ def subir(client, datos, nombre="logo.png", tipo="image/png"):
 def test_sin_marca_devuelve_vacio_y_no_se_cachea(client):
     r = client.get("/api/marca")
     assert r.status_code == 200
-    assert r.json() == {"propia": False, "nombre": "", "nombre_corto": "", "color": "", "logo": ""}
+    assert r.json() == {"propia": False, "nombre": "", "nombre_corto": "", "color": "", "logo": "", "terminos_propios": False}
     assert r.headers["cache-control"] == "no-cache"
 
 
@@ -94,7 +94,7 @@ def test_la_lectura_es_publica_y_la_escritura_no(client):
 def test_guardar_normaliza_y_se_lee_de_vuelta(client):
     r = client.put("/api/marca", headers=ADMIN, json={"nombre": "  Mi Sistema  ", "nombre_corto": "MiSis", "color": "#ECFDF5"})
     assert r.status_code == 200
-    esperado = {"propia": True, "nombre": "Mi Sistema", "nombre_corto": "MiSis", "color": "#ecfdf5", "logo": ""}
+    esperado = {"propia": True, "nombre": "Mi Sistema", "nombre_corto": "MiSis", "color": "#ecfdf5", "logo": "", "terminos_propios": False}
     assert r.json() == esperado
     assert client.get("/api/marca").json() == esperado
 
@@ -211,7 +211,7 @@ def test_si_falta_el_archivo_del_logo_no_cuenta(client, app):
 
     subir(client, png())
     os.unlink(os.path.join(app.state.cm.MARCA_DIR, "logo.png"))
-    assert client.get("/api/marca").json() == {"propia": False, "nombre": "", "nombre_corto": "", "color": "", "logo": ""}
+    assert client.get("/api/marca").json() == {"propia": False, "nombre": "", "nombre_corto": "", "color": "", "logo": "", "terminos_propios": False}
     assert client.get("/api/marca/logo").status_code == 404
 
 

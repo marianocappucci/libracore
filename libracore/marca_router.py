@@ -15,7 +15,11 @@ que aceptar TAMBIÉN el token de servicio del backoffice (`requiere_o_servicio("
 | `GET /manifest.webmanifest` | público | el manifest **de la marca**; sin marca, el que trae el build del producto |
 | `PUT /api/marca` | admin / servicio | nombre, nombre corto y color (el logo va aparte) |
 | `POST /api/marca/logo`, `DELETE /api/marca/logo` | admin / servicio | sube o saca el logo |
-| `DELETE /api/marca` | admin / servicio | borra toda la marca: la instancia vuelve a la del producto |
+| `DELETE /api/marca` | admin / servicio | borra toda la marca y los términos propios: la instancia vuelve a la de su producto |
+| `GET`/`PUT`/`DELETE /api/marca/terminos` | admin / servicio | los Términos y Condiciones propios del revendedor (`terminos_propios`, ADR-093) |
+
+Los productos también la leen desde Python: `es_marca_propia()` (el gancho `exigir_propio` de `libraauth`) y `nombre_de_marca(por_defecto)`
+(el `product_name` del mail de recuperación).
 
 ## 🔑 Decisiones que no se ven en el código
 
@@ -38,7 +42,6 @@ import io
 import json
 import os
 import re
-import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -47,7 +50,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, field_validator
 
-from libracore import config_manager
+from libracore import config_manager, terminos_propios
 from libracore.spa import TIPOS_PROPIOS, archivo_publico
 from libracore.tema_router import normalizar_color
 
@@ -82,7 +85,7 @@ ICONOS = {
     "apple": (180, True, ESCALA_APPLE),
 }
 
-_HASH = re.compile(r"^[0-9a-f]{12}$")
+_HASH = re.compile(r"[0-9a-f]{12}")
 _ARCHIVO_LOGO = "logo.png"
 
 _INMUTABLE = "public, max-age=31536000, immutable"
@@ -112,7 +115,7 @@ def _leer() -> dict:
     if color:
         marca["color"] = color
     logo = crudo.get("logo")
-    if isinstance(logo, str) and _HASH.match(logo) and os.path.isfile(_ruta_logo()):
+    if isinstance(logo, str) and _HASH.fullmatch(logo) and os.path.isfile(_ruta_logo()):
         marca["logo"] = logo
     return marca
 
@@ -124,6 +127,19 @@ def _guardar(marca: dict) -> None:
     else:
         cfg.pop(CLAVE_CONFIG, None)
     config_manager.save(cfg)
+
+
+def es_marca_propia() -> bool:
+    """`True` si esta instancia tiene una marca propia. Es el gancho `exigir_propio` de `libraauth.terminos.TerminosRepository`: una
+    instancia con marca propia **tiene que** tener sus Términos propios y no cae a los de la familia. Barata (una lectura de
+    `config.json`): se llama en cada pedido gateado."""
+    return bool(_leer())
+
+
+def nombre_de_marca(por_defecto: str) -> str:
+    """El nombre de la marca, o `por_defecto` (el del producto) si la instancia no tiene. Es el `product_name` del mail de recuperación
+    (`libraauth.password_reset.PasswordResetService`, que acepta una función)."""
+    return _leer().get("nombre") or por_defecto
 
 
 def _version(marca: dict) -> str:
@@ -143,6 +159,8 @@ class MarcaOut(BaseModel):
     color: str = ""
     #: Ruta del logo (con su `?v=`), o vacío.
     logo: str = ""
+    #: Si la instancia tiene Términos propios cargados (ADR-093). El backoffice lo mira para avisar «marca propia sin términos».
+    terminos_propios: bool = False
 
 
 def _vista(marca: dict) -> MarcaOut:
@@ -152,6 +170,7 @@ def _vista(marca: dict) -> MarcaOut:
         nombre_corto=_nombre_corto(marca),
         color=marca.get("color", ""),
         logo=f"/api/marca/logo?v={marca['logo']}" if marca.get("logo") else "",
+        terminos_propios=terminos_propios.leer_terminos_propios() is not None,
     )
 
 
@@ -215,21 +234,6 @@ def _normalizar_logo(datos: bytes) -> bytes:
     salida = io.BytesIO()
     imagen.save(salida, format="PNG", optimize=True)
     return salida.getvalue()
-
-
-def _escribir_atomico(ruta: str, datos: bytes) -> None:
-    os.makedirs(os.path.dirname(ruta), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ruta), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(datos)
-        os.replace(tmp, ruta)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def _borrar_logo() -> None:
@@ -350,6 +354,7 @@ def build_marca_router(
 def build_marca_admin_router(*, prefix: str = "/api/marca") -> APIRouter:
     """Escritura de la marca. Va montado con el gate de admin del producto, que tiene que aceptar también el token de servicio del backoffice."""
     router = APIRouter(prefix=prefix, tags=["marca"])
+    terminos_propios.agregar_rutas(router, prefix="/terminos")
 
     @router.put("", response_model=MarcaOut)
     def guardar_marca(cuerpo: MarcaIn) -> MarcaOut:
@@ -370,7 +375,7 @@ def build_marca_admin_router(*, prefix: str = "/api/marca") -> APIRouter:
             png = _normalizar_logo(datos)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-        _escribir_atomico(_ruta_logo(), png)
+        config_manager.escribir_atomico(_ruta_logo(), png)
         marca = _leer()
         marca["logo"] = hashlib.sha256(png).hexdigest()[:12]
         _guardar(marca)
@@ -386,9 +391,11 @@ def build_marca_admin_router(*, prefix: str = "/api/marca") -> APIRouter:
 
     @router.delete("", response_model=MarcaOut)
     def borrar_marca() -> MarcaOut:
-        """La instancia vuelve a la marca de su producto."""
+        """La instancia vuelve a la marca de su producto: sin nombre, logo ni color propios, **y sin sus Términos propios**. Dejarlos
+        haría que una instancia que ya no es del revendedor siguiera pidiendo aceptar un contrato que no es el de su producto."""
         _guardar({})
         _borrar_logo()
+        terminos_propios.quitar_terminos_propios()
         return _vista({})
 
     return router

@@ -8,6 +8,18 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — los Términos propios de la instancia, para vender a marca blanca (propuesta: v1.206.0)
+
+ADR-093. **Minor, sin migración, sin cambio de comportamiento:** nada se activa hasta que un producto lo cablee. Sale junto con `libraauth` `v0.57.0` (ADR-030).
+- **Nuevo, `libracore.terminos_propios`:** `leer_terminos_propios()` (`{"version", "vigente_desde", "texto"}` o `None`), `quitar_terminos_propios()` y `agregar_rutas(router)`. Las rutas `GET`/`PUT`/`DELETE /api/marca/terminos` **ya vienen en `build_marca_admin_router()`**: nada que montar aparte. Versión y vigencia en la clave `terminos_propios` del `config.json`; el texto, normalizado a LF, en `$DATA_DIR/marca/terminos.md`. Una versión es un texto: reusarla con otro texto es 409.
+- **Nuevo, `marca_router.es_marca_propia()` y `marca_router.nombre_de_marca(por_defecto)`:** los ganchos `exigir_propio` y `product_name` de `libraauth`.
+- **Nuevo, `config_manager.escribir_atomico(ruta, datos)`** (el logo de la marca ya lo usaba, privado).
+- **`GET /api/marca` suma `terminos_propios` (bool).** `DELETE /api/marca` borra también los términos propios (no el historial).
+- **Arreglo:** el hash del logo de la marca se valida con `fullmatch`; con `match` y `$` aceptaba un salto de línea final.
+
+### Para los productos
+- **Nada que hacer por subir el pin.** Para adoptarlo, en la factory: `TerminosRepository(sessions, contrato_propio=terminos_propios.leer_terminos_propios, exigir_propio=marca_router.es_marca_propia)` y `PasswordResetService(product_name=lambda: marca_router.nombre_de_marca("<Producto>"), ...)` (necesita `libraauth` ≥ `v0.57.0`). 🔴 La `reset_url_base` sigue saliendo de `<PRODUCTO>_RESET_URL_BASE` y su default apunta a `dev.<producto>.com.ar`: en la instancia de un revendedor hay que setearla a su dominio.
+
 ## [Unreleased] — la marca de la instancia, para vender a marca blanca (propuesta: v1.205.0)
 
 ADR-092. **Minor, sin migración, sin cambio de comportamiento:** nada se activa hasta que un producto monte el router.

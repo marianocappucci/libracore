@@ -339,6 +339,25 @@ def _escribir_atomico(ruta: str, datos: dict) -> None:
         raise
 
 
+def escribir_atomico(ruta: str, datos: bytes) -> None:
+    """Escribe `datos` en `ruta` sin dejar nunca un archivo a medias: archivo temporal en el mismo directorio y `os.replace`.
+
+    Lo usan los archivos que acompañan al `config.json` (el logo de la marca, los términos propios): un corte en el medio deja el
+    anterior intacto. Cada escritura cambia el inodo, que es lo que permite cachear una lectura sin releer el contenido."""
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(ruta), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(datos)
+        os.replace(tmp, ruta)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save(data, extra_defaults: dict | None = None):
     """Persiste la config. Los secretos van al almacen y **vacios al JSON**.
 
