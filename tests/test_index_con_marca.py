@@ -150,3 +150,31 @@ def test_al_borrar_la_marca_el_index_vuelve_a_ser_el_del_producto(client):
     _marca(client, nombre="Clínica Modelo")
     assert client.delete("/api/marca", headers=ADMIN).status_code == 200
     assert client.get("/").text == INDEX
+
+
+def test_el_camino_caliente_no_toca_el_almacen_de_secretos(app, client, tmp_path):
+    """🔴 `config_manager.load()` con almacén enchufado hace una consulta a la base por clave secreta. El `index.html` y el gate de Términos
+    se piden en cada navegación y en cada pedido gateado: no pueden depender de la base (el 2026-10-30 dos productos cayeron en el CI por
+    esto: `relation "secretos_instancia" does not exist`)."""
+    from libracore import config_manager, marca_router, terminos_propios
+
+    class Almacen:
+        consultas = 0
+
+        def get(self, clave):
+            Almacen.consultas += 1
+            raise RuntimeError("la base no está")
+
+        def set(self, clave, valor):  # pragma: no cover
+            raise RuntimeError("la base no está")
+
+    _marca(client, nombre="Clínica Modelo")
+    config_manager.usar_almacen_de_secretos(Almacen())
+    try:
+        assert "<title>Clínica Modelo</title>" in client.get("/").text
+        assert client.get("/api/marca").json()["nombre"] == "Clínica Modelo"
+        assert marca_router.es_marca_propia() is True
+        assert terminos_propios.leer_terminos_propios() is None
+        assert Almacen.consultas == 0
+    finally:
+        config_manager.usar_almacen_de_secretos(None)

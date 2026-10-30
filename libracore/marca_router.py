@@ -102,7 +102,7 @@ def _ruta_logo() -> str:
 def _leer() -> dict:
     """La marca guardada, filtrada a lo válido. Nunca lanza: un `config.json` editado a mano o de otra versión no puede romper la
     lectura que hace la SPA en cada arranque. Un logo cuyo archivo no está en disco no cuenta."""
-    crudo = config_manager.load().get(CLAVE_CONFIG)
+    crudo = config_manager.leer_json_crudo().get(CLAVE_CONFIG)
     if not isinstance(crudo, dict):
         return {}
     marca: dict = {}
