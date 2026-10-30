@@ -415,6 +415,15 @@ def desvincular(backups_dir) -> dict:
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
 
+def _carpeta_de_la_marca(carpeta: str) -> str:
+    """Con marca propia (ADR-092), la carpeta que la pantalla le muestra al cliente no dice el producto («Resguardo Gestiolibra») sino
+    el nombre de la marca. Sin marca propia, la que pasó el producto."""
+    from libracore import marca_router  # acá adentro: `marca_router` no tiene por qué cargarse con el resguardo
+
+    nombre = marca_router.nombre_de_marca("") if marca_router.es_marca_propia() else ""
+    return f"Resguardo {nombre}" if nombre else carpeta
+
+
 def build_resguardo_enlace_router(
     backups_dir,
     *,
@@ -481,7 +490,7 @@ def build_resguardo_enlace_router(
                 return _volver("error", "Cancelaste el permiso, asi que no se conecto nada.")
             return _volver("error", "El proveedor no completo el enlace. Volve a intentarlo.")
         try:
-            completar(backups_dir, state=state, code=code, carpeta=carpeta)
+            completar(backups_dir, state=state, code=code, carpeta=_carpeta_de_la_marca(carpeta))
         except EnlaceError as exc:
             return _volver("error", str(exc))
         except httpx.HTTPError:
