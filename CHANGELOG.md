@@ -8,6 +8,10 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — el `index.html` sale con la marca de la instancia (marca blanca, ADR-095; propuesta: v1.207.0)
+
+**Sin migración.** El catch-all de la SPA (`libracore.spa`) reescribe el `<title>`, el favicon, el `apple-touch-icon` y el `theme-color` del `index.html` con la marca de la instancia (`marca_router.index_con_marca`), así que la pestaña y un enlace compartido ya no dicen el nombre del producto antes de que corra el JavaScript. **Sin marca propia sirve el archivo tal cual**: no cambia nada para las instancias existentes y los productos no tienen que tocar nada. Va junto con la auditoría del PR 14 (ADR-094), ya en `develop`; los dos salen en un solo tag.
+
 ## [Unreleased] — auditoría de «Libra» a la vista en lo que genera el motor (marca blanca, ADR-094)
 
 **Sin migración.** Con marca propia, la carpeta que el resguardo externo le muestra al cliente es `Resguardo <nombre de la marca>` y no el nombre del producto (`resguardo_enlace`). Sin marca propia no cambia nada. Nuevo `tests/test_libra_visible.py`: un PDF, un ticket y los mails no nombran a la familia. Todavía sin tag: sale junto con el del PR 15.

@@ -10,7 +10,7 @@ motor, con una guarda nueva: las rutas de la API que no existen dan 404 y no el
 """
 from pathlib import Path
 
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 # `mimetypes` no conoce `.webmanifest`, y sin un tipo que el navegador acepte no
@@ -95,6 +95,21 @@ def es_de_la_api(ruta: str, prefijos=PREFIJOS_API) -> bool:
     return primero in prefijos
 
 
+def _index(raiz: Path):
+    """El `index.html` del build; con marca propia (ADR-092), con su `<title>`, favicon, `apple-touch-icon` y `theme-color` (PR 15).
+
+    Sin marca propia es el archivo tal cual (`FileResponse`, como siempre). `marca_router` importa de este módulo: se importa acá adentro."""
+    from libracore import marca_router
+
+    archivo = raiz / "index.html"
+    if marca_router.es_marca_propia():
+        html = archivo.read_text(encoding="utf-8")
+        reescrito = marca_router.index_con_marca(html)
+        if reescrito is not html:
+            return HTMLResponse(reescrito, headers={"Cache-Control": SIN_CACHE})
+    return FileResponse(archivo, headers={"Cache-Control": SIN_CACHE})
+
+
 def montar_spa(app, dist, *, prefijos_api=PREFIJOS_API) -> None:
     """Monta `/assets` y el catch-all del frontend, con sus cabeceras de caché.
 
@@ -137,4 +152,4 @@ def montar_spa(app, dist, *, prefijos_api=PREFIJOS_API) -> None:
                 media_type=TIPOS_PROPIOS.get(archivo.suffix),
                 headers={"Cache-Control": SIN_CACHE},
             )
-        return FileResponse(raiz / "index.html", headers={"Cache-Control": SIN_CACHE})
+        return _index(raiz)

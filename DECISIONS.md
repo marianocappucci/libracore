@@ -2371,3 +2371,24 @@ La marca vive en la clave `marca` del `config.json` de la instancia; el logo, no
 - `provisioning/mail_cuentas.py` arma el remitente de la casilla del cliente con el dominio **del producto** (`<cliente>@libradesk.com.ar`, a propósito: ahí está la reputación de envío). Con marca blanca el revendedor tiene que cargar su propio SMTP (ya es por instancia) o el remitente dice Libra. Es parte del runbook de dominio y correo del revendedor (P4).
 - El nombre de la aplicación que ve el cliente al autorizar su nube (Google Drive / Dropbox) lo pone la app registrada por Libra, no el motor.
 - Los PDF de los demás documentos (remito, presupuesto, factura, recibo) comparten el membrete con el de la pre factura, pero no tienen su propio caso en este test.
+## ADR-095 — El `index.html` sale con la marca de la instancia (marca blanca)
+
+**Estado:** aceptada (2026-10-30). PR 15 del piloto de marca blanca; lo anotó libra-ui ADR-098 como lo que `cargarMarca` no puede hacer.
+
+**Contexto.** `libra-ui/marca` cambia el `<title>`, el favicon, el `apple-touch-icon` y el `theme-color` cuando corre el JavaScript. Hasta entonces el navegador muestra lo del `index.html` compilado (el nombre del producto), y un enlace compartido por WhatsApp o redes —que lee ese HTML sin ejecutarlo— también. Para una marca blanca «estricta» eso no alcanza.
+
+**Qué ya existe** (se miró antes). El catch-all de `libracore.spa` ya es el único punto por el que sale el `index.html` en toda la familia (`montar_spa`, ADR-020), y `marca_router` ya es quien sabe leer y validar la marca. No hace falta tocar ningún producto: todos llaman a `montar_spa`.
+
+**Decisión.**
+1. **`marca_router.index_con_marca(html)`** reescribe el `<title>` (con el nombre, **escapado**), el favicon y el `apple-touch-icon` (con los íconos de la marca, `/api/marca/icono/…?v=` con la versión del logo y el color: se cachean para siempre y cambian solos) y el `theme-color` (con el color). Reemplaza la etiqueta que había o, si el build no la traía, la agrega al final del `<head>`. **Lo que la marca no define queda como estaba** (sin logo no se toca el favicon; sin color, el `theme-color`).
+2. **`spa._index`** lo usa en el catch-all. **Sin marca propia sirve el archivo tal cual** (`FileResponse`, el camino de siempre): nada cambia para ninguna instancia existente. Con marca, lee el archivo, lo reescribe y contesta `HTMLResponse` con el mismo `Cache-Control: no-cache, must-revalidate`. `HEAD` pasa por el mismo manejador.
+3. `marca_router` se importa dentro de la función (él importa `spa`; evita el ciclo).
+
+**Por qué así.**
+- **En el servidor y no en el build:** el build es el mismo para todas las instancias de un producto; la marca es de la instancia.
+- **El nombre se escapa y el reemplazo es literal:** el nombre lo escribe un tercero (el revendedor) y va a un HTML; `re.sub` con función evita que una barra invertida se tome por plantilla. Hay un test para cada caso.
+- **Cuesta una lectura de `config.json` por navegación de la SPA** (la misma que ya hace cada pedido gateado por `es_marca_propia`); sin marca propia, nada más.
+
+**Lo que NO resuelve.** Las imágenes de vista previa para compartir (`og:image`) y la descripción: los `index.html` de los productos no las traen hoy. Y el manifest se sigue sirviendo por `/manifest.webmanifest` (ADR-092).
+
+**Tests:** `tests/test_index_con_marca.py` (sin marca, con nombre y color, con logo —y el ícono al que apunta existe—, escape del nombre, barra invertida, `<head>` sin las etiquetas, `HEAD` y rutas de la SPA, y volver al borrar la marca).
