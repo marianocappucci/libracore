@@ -43,6 +43,7 @@ import json
 import os
 import re
 import unicodedata
+from html import escape
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Response, UploadFile
@@ -140,6 +141,45 @@ def nombre_de_marca(por_defecto: str) -> str:
     """El nombre de la marca, o `por_defecto` (el del producto) si la instancia no tiene. Es el `product_name` del mail de recuperación
     (`libraauth.password_reset.PasswordResetService`, que acepta una función)."""
     return _leer().get("nombre") or por_defecto
+
+
+_TITULO = re.compile(r"<title\b[^>]*>.*?</title>", re.IGNORECASE | re.DOTALL)
+_ICONO = re.compile(r"""<link\b[^>]*\brel=["'](?:shortcut\s+)?icon["'][^>]*>""", re.IGNORECASE)
+_ICONO_APPLE = re.compile(r"""<link\b[^>]*\brel=["']apple-touch-icon["'][^>]*>""", re.IGNORECASE)
+_COLOR_DEL_TEMA = re.compile(r"""<meta\b[^>]*\bname=["']theme-color["'][^>]*>""", re.IGNORECASE)
+
+
+def _reemplazar_o_agregar(html: str, patron: re.Pattern, etiqueta: str) -> str:
+    """Cambia la etiqueta que ya está (todas las que coinciden se reemplazan por una) o, si no había, la agrega al final del `<head>`.
+    `re.sub` con una función: el texto nuevo no se interpreta como plantilla (`\\1`, `\\g<...>`)."""
+    if patron.search(html):
+        return patron.sub(lambda _m, e=etiqueta: e, html, count=1)
+    return re.sub(r"</head>", lambda _m: etiqueta + "\n  </head>", html, count=1, flags=re.IGNORECASE)
+
+
+def index_con_marca(html: str) -> str:
+    """El `index.html` del build con la marca de la instancia: el `<title>`, el favicon, el `apple-touch-icon` y el `theme-color` (PR 15).
+
+    Sin esto, la pestaña dice el nombre del producto hasta que corre el JavaScript, y un enlace compartido (WhatsApp, redes) —que lee este
+    HTML sin ejecutarlo— muestra el del producto. Sin marca propia devuelve `html` tal cual (el mismo objeto). Lo que la marca no define
+    (sin logo, sin color) se deja como estaba. Todo valor sale de `_leer()`, que ya lo validó, y el nombre se escapa."""
+    marca = _leer()
+    if not marca:
+        return html
+    if marca.get("nombre"):
+        titulo = f"<title>{escape(marca['nombre'])}</title>"
+        html = _TITULO.sub(lambda _m: titulo, html, count=1)
+    if marca.get("logo"):
+        v = _version(marca)
+        html = _reemplazar_o_agregar(
+            html, _ICONO, f'<link rel="icon" type="image/png" href="/api/marca/icono/192.png?v={v}" />'
+        )
+        html = _reemplazar_o_agregar(
+            html, _ICONO_APPLE, f'<link rel="apple-touch-icon" sizes="180x180" href="/api/marca/icono/apple.png?v={v}" />'
+        )
+    if marca.get("color"):
+        html = _reemplazar_o_agregar(html, _COLOR_DEL_TEMA, f'<meta name="theme-color" content="{marca["color"]}" />')
+    return html
 
 
 def _version(marca: dict) -> str:
