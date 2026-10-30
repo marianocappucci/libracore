@@ -8,6 +8,10 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — el `index.html` con dos íconos queda con uno solo, el de la marca (v1.207.2, ADR-095)
+
+**Sin migración.** Con marca propia, `index_con_marca` reemplazaba sólo la primera etiqueta `rel="icon"`; el `index.html` de VentaLibra trae dos (svg y png) y la segunda seguía diciendo el ícono del producto. Ahora la primera pasa a ser la de la marca y las demás se sacan. Medido en la demo de VentaLibra el 2026-10-30.
+
 ## [Unreleased] — la marca y los Términos propios se leen sin el almacén de secretos (v1.207.1)
 
 **Sin migración.** Arregla v1.207.0 y los cableados de la marca: `es_marca_propia`, `nombre_de_marca`, el `index.html` y `leer_terminos_propios` usaban `config_manager.load()`, que con almacén enchufado consulta la base por cada clave secreta, en cada pedido. Ahora leen `config_manager.leer_json_crudo()` (nuevo). Ver el addendum del ADR-095.
