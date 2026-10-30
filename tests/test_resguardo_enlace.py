@@ -327,3 +327,22 @@ def test_el_zip_del_backup_nunca_lleva_el_token(tmp_path, client, backups, prove
     # vaciando el ZIP entero.
     assert "datos/data/logos/logo.png" in nombres
     assert not [n for n in nombres if ".resguardo" in n], nombres
+
+
+# ── Marca blanca (ADR-092): la carpeta no dice el producto ─────────────────────────────────
+
+def test_con_marca_propia_la_carpeta_lleva_el_nombre_de_la_marca(client, proveedor, backups, tmp_path, monkeypatch):
+    from libracore import config_manager
+
+    monkeypatch.setattr(config_manager, "CONFIG_PATH", str(tmp_path / "config.json"))
+    config_manager.save({"marca": {"nombre": "Clinica Modelo"}})
+    _enlazar(client)
+    assert enl.enlace_de(backups)["carpeta"] == "Resguardo Clinica Modelo"
+
+
+def test_sin_marca_propia_la_carpeta_es_la_del_producto(client, proveedor, backups, tmp_path, monkeypatch):
+    from libracore import config_manager
+
+    monkeypatch.setattr(config_manager, "CONFIG_PATH", str(tmp_path / "config.json"))
+    _enlazar(client)
+    assert enl.enlace_de(backups)["carpeta"] == "Resguardo Prueba"

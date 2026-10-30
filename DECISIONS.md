@@ -2356,3 +2356,18 @@ La marca vive en la clave `marca` del `config.json` de la instancia; el logo, no
 **Qué cambia en los productos.** Nada hasta el cableado (PR 5 a 13): `TerminosRepository(sessions, contrato_propio=terminos_propios.leer_terminos_propios, exigir_propio=marca_router.es_marca_propia)` y `PasswordResetService(product_name=lambda: marca_router.nombre_de_marca("<Producto>"), ...)`. Las rutas nuevas ya vienen en `build_marca_admin_router`, con la misma guarda que el tema (`requiere_o_servicio("config")` en VentaLibra).
 
 **Tests** (`tests/test_terminos_propios.py`, 50): carga y lectura con el dict exacto que espera `libraauth`; gate de admin o servicio; la forma (versión, vigencia, tope) y que lo inválido no deje nada guardado; una versión es un texto (409, idempotencia, historial tras borrar); el contenido reemplazado con el mismo largo y varias escrituras entre dos lecturas; `config.json` con basura, archivo ausente o que no es UTF-8; los términos, el logo de la marca y el del membrete no se pisan; borrar la marca; los dos ganchos; la escritura atómica. Seis roturas deliberadas los ponen en rojo. Los tres tests del PR 1 que comparaban el JSON de la marca exacto suman el campo `terminos_propios`.
+
+## ADR-094 — Auditoría de «Libra» a la vista en lo que genera el motor (marca blanca)
+
+**Estado:** aceptada (2026-10-30). PR 14 del piloto de marca blanca (parte `libracore`; la de `libra-ui` es su ADR-099).
+
+**Contexto.** Con marca propia (ADR-092) el cliente final del revendedor no tiene que ver el nombre de la familia. Se revisó todo literal con «Libra» en `libracore/` fuera de comentarios y docstrings: los PDF (`pdf_generator`, `ticket_generator`) y los mails (`email_sender`) **no nombran a la familia**, todo sale de los datos de la empresa. Hay **un** caso visible: la carpeta que el resguardo externo le muestra al cliente («Resguardo Gestiolibra», «Resguardo LibraCargo»…), que cada producto pasa como `carpeta=`.
+
+**Decisión.**
+1. **`resguardo_enlace`**: con marca propia y con nombre, la carpeta del enlace es `Resguardo <nombre de la marca>`, pase lo que pase el producto. Sin marca propia, la que pasó el producto (nada cambia). Es un texto de pantalla: el enlace ya guardado no se reescribe, y el que se haga después queda con el nombre de la marca.
+2. **`tests/test_libra_visible.py`** genera un PDF de pre factura, un ticket de venta y los tres mails (`enviar_comprobante`, `enviar_documento`, `enviar_texto`) con datos de una empresa ficticia y falla si en lo que sale aparece `libra`. Cada uno lleva un control positivo (que el texto de la empresa sí se extrajo), para que un PDF que no se pudo leer no dé verde.
+
+**Lo que NO resuelve (anotado a propósito).**
+- `provisioning/mail_cuentas.py` arma el remitente de la casilla del cliente con el dominio **del producto** (`<cliente>@libradesk.com.ar`, a propósito: ahí está la reputación de envío). Con marca blanca el revendedor tiene que cargar su propio SMTP (ya es por instancia) o el remitente dice Libra. Es parte del runbook de dominio y correo del revendedor (P4).
+- El nombre de la aplicación que ve el cliente al autorizar su nube (Google Drive / Dropbox) lo pone la app registrada por Libra, no el motor.
+- Los PDF de los demás documentos (remito, presupuesto, factura, recibo) comparten el membrete con el de la pre factura, pero no tienen su propio caso en este test.

@@ -8,6 +8,10 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — auditoría de «Libra» a la vista en lo que genera el motor (marca blanca, ADR-094)
+
+**Sin migración.** Con marca propia, la carpeta que el resguardo externo le muestra al cliente es `Resguardo <nombre de la marca>` y no el nombre del producto (`resguardo_enlace`). Sin marca propia no cambia nada. Nuevo `tests/test_libra_visible.py`: un PDF, un ticket y los mails no nombran a la familia. Todavía sin tag: sale junto con el del PR 15.
+
 ## [Unreleased] — los Términos propios de la instancia, para vender a marca blanca (propuesta: v1.206.0)
 
 ADR-093. **Minor, sin migración, sin cambio de comportamiento:** nada se activa hasta que un producto lo cablee. Sale junto con `libraauth` `v0.57.0` (ADR-030).
