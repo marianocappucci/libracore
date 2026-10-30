@@ -178,3 +178,20 @@ def test_el_camino_caliente_no_toca_el_almacen_de_secretos(app, client, tmp_path
         assert Almacen.consultas == 0
     finally:
         config_manager.usar_almacen_de_secretos(None)
+
+
+def test_un_build_con_dos_iconos_queda_con_uno_solo_el_de_la_marca(tmp_path, app, client):
+    """VentaLibra trae un `icon` svg y otro png: con marca, las dos etiquetas se vuelven una (medido en su demo el 2026-10-30)."""
+    (tmp_path / "dist" / "index.html").write_text(
+        INDEX.replace(
+            '<link rel="icon" type="image/png" href="/icons/icon-192.png?v=abc" />',
+            '<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1" />\n    <link rel="icon" type="image/png" href="/icons/icon-192.png?v=abc" />',
+        ),
+        encoding="utf-8",
+    )
+    _marca(client, nombre="Clínica Modelo")
+    _logo(client)
+    html = client.get("/").text
+    assert html.count('rel="icon"') == 1
+    assert "/favicon.svg" not in html and "/icons/icon-192.png" not in html
+    assert "/api/marca/icono/192.png" in html

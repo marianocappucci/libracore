@@ -153,7 +153,17 @@ def _reemplazar_o_agregar(html: str, patron: re.Pattern, etiqueta: str) -> str:
     """Cambia la etiqueta que ya está (todas las que coinciden se reemplazan por una) o, si no había, la agrega al final del `<head>`.
     `re.sub` con una función: el texto nuevo no se interpreta como plantilla (`\\1`, `\\g<...>`)."""
     if patron.search(html):
-        return patron.sub(lambda _m, e=etiqueta: e, html, count=1)
+        # El build puede traer más de una (VentaLibra: un `icon` svg y otro png): la primera pasa a ser la de la marca y las demás se sacan,
+        # o el navegador (y quien lee el HTML sin JavaScript) se quedaría con el ícono del producto.
+        usada = []
+
+        def una_sola(_m):
+            if usada:
+                return ""
+            usada.append(True)
+            return etiqueta
+
+        return patron.sub(una_sola, html)
     return re.sub(r"</head>", lambda _m: etiqueta + "\n  </head>", html, count=1, flags=re.IGNORECASE)
 
 

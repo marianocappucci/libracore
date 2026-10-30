@@ -2399,3 +2399,7 @@ El primer cableado de los PR 8 a 15 leía la marca (`es_marca_propia`, `nombre_d
 
 **Decisión:** `config_manager.leer_json_crudo()` (el JSON tal cual, sin defaults, demo ni almacén) y `marca_router._leer` / `terminos_propios.leer_terminos_propios` lo usan. La marca no es secreto. Escribir sigue con `load()`/`save()` (ahí el almacén sí corresponde). Un test pone un almacén que falla y verifica que ni el `index.html`, ni `/api/marca`, ni el gate lo consultan.
 
+### Addendum 2 al ADR-095 (2026-10-30): más de un `<link rel="icon">`
+
+Probado en la demo de VentaLibra con una marca ficticia: el `index.html` de ese producto declara **dos** íconos (`image/svg+xml` y `image/png`) y `index_con_marca` sólo reemplazaba el primero, así que el HTML sin JavaScript seguía trayendo el ícono del producto. El test usaba un `index.html` con un solo ícono y no lo vio. Ahora el primero se reemplaza y los demás se sacan; hay un test con dos íconos.
+
