@@ -2392,3 +2392,10 @@ La marca vive en la clave `marca` del `config.json` de la instancia; el logo, no
 **Lo que NO resuelve.** Las imágenes de vista previa para compartir (`og:image`) y la descripción: los `index.html` de los productos no las traen hoy. Y el manifest se sigue sirviendo por `/manifest.webmanifest` (ADR-092).
 
 **Tests:** `tests/test_index_con_marca.py` (sin marca, con nombre y color, con logo —y el ícono al que apunta existe—, escape del nombre, barra invertida, `<head>` sin las etiquetas, `HEAD` y rutas de la SPA, y volver al borrar la marca).
+
+### Addendum ADR-095 (2026-10-30): la marca y los Términos propios se leen sin pasar por el almacén de secretos
+
+El primer cableado de los PR 8 a 15 leía la marca (`es_marca_propia`, `nombre_de_marca`, el `index.html`) y los Términos propios (`leer_terminos_propios`, el gate) con `config_manager.load()`. Con el almacén de secretos enchufado, `load()` consulta la base **una vez por cada clave secreta**, y esas lecturas están en el camino de cada pedido gateado y de cada navegación de la SPA. Lo mostró el CI de ContaLibra y RestoLibra (`relation "secretos_instancia" does not exist` en `test_cache_del_spa`) y, de paso, un problema de producción: una base caída o lenta tumbaba también el `index.html` y el chequeo de uptime (`HEAD /`).
+
+**Decisión:** `config_manager.leer_json_crudo()` (el JSON tal cual, sin defaults, demo ni almacén) y `marca_router._leer` / `terminos_propios.leer_terminos_propios` lo usan. La marca no es secreto. Escribir sigue con `load()`/`save()` (ahí el almacén sí corresponde). Un test pone un almacén que falla y verifica que ni el `index.html`, ni `/api/marca`, ni el gate lo consultan.
+

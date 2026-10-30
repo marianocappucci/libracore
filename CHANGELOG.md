@@ -8,6 +8,10 @@ las versiones anteriores están en la historia de Git y en la bitácora del wiki
 del ecosistema.
 
 
+## [Unreleased] — la marca y los Términos propios se leen sin el almacén de secretos (v1.207.1)
+
+**Sin migración.** Arregla v1.207.0 y los cableados de la marca: `es_marca_propia`, `nombre_de_marca`, el `index.html` y `leer_terminos_propios` usaban `config_manager.load()`, que con almacén enchufado consulta la base por cada clave secreta, en cada pedido. Ahora leen `config_manager.leer_json_crudo()` (nuevo). Ver el addendum del ADR-095.
+
 ## [Unreleased] — el `index.html` sale con la marca de la instancia (marca blanca, ADR-095; propuesta: v1.207.0)
 
 **Sin migración.** El catch-all de la SPA (`libracore.spa`) reescribe el `<title>`, el favicon, el `apple-touch-icon` y el `theme-color` del `index.html` con la marca de la instancia (`marca_router.index_con_marca`), así que la pestaña y un enlace compartido ya no dicen el nombre del producto antes de que corra el JavaScript. **Sin marca propia sirve el archivo tal cual**: no cambia nada para las instancias existentes y los productos no tienen que tocar nada. Va junto con la auditoría del PR 14 (ADR-094), ya en `develop`; los dos salen en un solo tag.

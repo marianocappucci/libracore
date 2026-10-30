@@ -295,6 +295,21 @@ def _cargar(extra_defaults: dict | None = None):
     return cfg
 
 
+def leer_json_crudo() -> dict:
+    """Lo que hay en `config.json`, tal cual: **sin defaults, sin la capa de la demo y sin tocar el almacén de secretos**. `{}` si no existe
+    o no se puede leer.
+
+    Es para lo que se lee **en cada pedido** y no es secreto (la marca y los Términos propios, ADR-092/093): `load()` con almacén enchufado
+    hace una consulta a la base por cada clave de `CLAVES_SECRETAS`, y un camino caliente (el `index.html` de la SPA, el gate de Términos)
+    no puede depender de la base ni pagarla. **Nunca para un secreto**: esos sólo salen de `load()`."""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def load(extra_defaults: dict | None = None):
     """La config efectiva (ver `_cargar`), y en una demo con la empresa ficticia encima (ADR-038)."""
     return _aplicar_empresa_demo(_cargar(extra_defaults))

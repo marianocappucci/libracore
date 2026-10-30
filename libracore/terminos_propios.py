@@ -83,7 +83,7 @@ def leer_terminos_propios() -> dict | None:
     lanza: un `config.json` o un archivo en mal estado es «no tiene».
     """
     global _ultimo
-    meta = config_manager.load().get(CLAVE_CONFIG)
+    meta = config_manager.leer_json_crudo().get(CLAVE_CONFIG)
     if not isinstance(meta, dict):
         return None
     version, desde = meta.get("version"), meta.get("vigente_desde")
